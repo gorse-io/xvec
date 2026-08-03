@@ -15,6 +15,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -492,6 +493,39 @@ func (c *CollectionStore) Manifest() Manifest {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.versions.Current()
+}
+
+// PublishSchema atomically installs a validated schema payload in a new
+// manifest generation. committed is true once CURRENT names that generation,
+// including the rare case where a post-commit directory sync reports an
+// error. Callers must update their in-memory schema whenever committed is true.
+func (c *CollectionStore) PublishSchema(ctx context.Context, schema json.RawMessage) (committed bool, err error) {
+	if c == nil {
+		return false, errors.New("db: nil collection")
+	}
+	if ctx == nil {
+		return false, errors.New("db: nil publish schema context")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := validateSchemaJSON(schema); err != nil {
+		return false, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.requireWritableLocked(); err != nil {
+		return false, err
+	}
+	current := c.versions.Current()
+	if bytes.Equal(current.Schema, schema) {
+		return false, nil
+	}
+	next := current.Clone()
+	next.Schema = slices.Clone(schema)
+	_, publishErr := c.versions.Publish(ctx, next)
+	committed = c.versions.Current().Generation != current.Generation
+	return committed, publishErr
 }
 
 // ReadOnly reports whether this handle rejects mutations.

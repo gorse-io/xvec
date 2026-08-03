@@ -40,8 +40,10 @@ schema-analyzed SQL scalar filters, and deterministic document-ID tie breaking.
 `GroupByQuery` retains a top-k per filtered scalar group and ranks groups by
 their best document. ANN and quantized indexes return `ErrNotSupported` until
 their stated milestones; the library never silently substitutes a different
-algorithm. The DDL and Optimize entry points likewise return `ErrNotSupported`
-until the v0.2 atomic metadata executor is installed.
+algorithm. `CreateIndex` is the first installed DDL operation: it atomically
+publishes implemented Flat and INVERT parameters, while later index algorithms
+still return `ErrNotSupported`. DropIndex, column DDL, and Optimize remain
+`ErrNotSupported` until their independent v0.2 units are installed.
 
 WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
 publishes an immutable segment and rotates the WAL. `Open` can acquire either

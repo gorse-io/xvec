@@ -29,11 +29,6 @@ type AlterColumnOptions struct{ Concurrency int }
 // OptimizeOptions controls segment-optimization concurrency.
 type OptimizeOptions struct{ Concurrency int }
 
-// CreateIndex will atomically build and publish a column index in v0.2+.
-func (c *Collection) CreateIndex(ctx context.Context, column string, index IndexParams, options CreateIndexOptions) error {
-	return c.unsupportedMutation(ctx, "create index", "CreateIndex requires the v0.2 DDL executor")
-}
-
 // DropIndex will atomically remove a column index in v0.2.
 func (c *Collection) DropIndex(ctx context.Context, column string) error {
 	return c.unsupportedMutation(ctx, "drop index", "DropIndex requires the v0.2 DDL executor")

@@ -376,6 +376,63 @@ func TestCollectionArgumentsAndClose(t *testing.T) {
 	}
 }
 
+func TestCollectionPublishSchemaIsAtomicAndDurable(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := store.Manifest()
+	if committed, err := store.PublishSchema(ctx, json.RawMessage(`[`)); err == nil || committed {
+		t.Fatalf("invalid schema = committed=%t error=%v", committed, err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if committed, err := store.PublishSchema(canceled, json.RawMessage(`{"name":"canceled"}`)); !errors.Is(err, context.Canceled) || committed {
+		t.Fatalf("canceled schema = committed=%t error=%v", committed, err)
+	}
+	if current := store.Manifest(); current.Generation != initial.Generation || string(current.Schema) != string(initial.Schema) {
+		t.Fatalf("failed publication changed manifest = %#v", current)
+	}
+	updatedSchema := json.RawMessage(`{"name":"articles","fields":[]}`)
+	committed, err := store.PublishSchema(ctx, updatedSchema)
+	if err != nil || !committed {
+		t.Fatalf("publish schema = committed=%t error=%v", committed, err)
+	}
+	updated := store.Manifest()
+	if updated.Generation <= initial.Generation || string(updated.Schema) != string(updatedSchema) {
+		t.Fatalf("updated manifest = %#v", updated)
+	}
+	if committed, err := store.PublishSchema(ctx, updatedSchema); err != nil || committed {
+		t.Fatalf("idempotent publication = committed=%t error=%v", committed, err)
+	}
+	if store.Manifest().Generation != updated.Generation {
+		t.Fatal("idempotent publication advanced generation")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if committed, err := store.PublishSchema(ctx, testCollectionSchema); !errors.Is(err, ErrCollectionClosed) || committed {
+		t.Fatalf("closed publication = committed=%t error=%v", committed, err)
+	}
+	readOnly, err := OpenCollection(ctx, dir, CollectionOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+	if got := readOnly.Manifest(); string(got.Schema) != string(updatedSchema) {
+		t.Fatalf("reopened schema = %s", got.Schema)
+	}
+	if committed, err := readOnly.PublishSchema(ctx, testCollectionSchema); !errors.Is(err, ErrReadOnly) || committed {
+		t.Fatalf("read-only publication = committed=%t error=%v", committed, err)
+	}
+	var nilStore *CollectionStore
+	if committed, err := nilStore.PublishSchema(ctx, testCollectionSchema); err == nil || committed {
+		t.Fatalf("nil publication = committed=%t error=%v", committed, err)
+	}
+}
+
 func createClosedCollection(t *testing.T, flush bool) (string, Manifest) {
 	t.Helper()
 	dir := t.TempDir()

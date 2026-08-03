@@ -103,3 +103,43 @@ func ExampleCollection_DeleteByFilter() {
 	// Output:
 	// 1
 }
+
+func ExampleCollection_CreateIndex() {
+	ctx := context.Background()
+	directory, err := os.MkdirTemp("", "zvec-index-example-")
+	if err != nil {
+		panic(err)
+	}
+	path := filepath.Join(directory, "books")
+	schema := zvec.NewCollectionSchema("books",
+		zvec.FieldSchema{Name: "rating", DataType: zvec.DataTypeInt32},
+		zvec.FieldSchema{
+			Name: "embedding", DataType: zvec.DataTypeVectorFP32, Dimension: 2,
+			Index: zvec.NewFlatIndexParams(zvec.MetricTypeIP),
+		},
+	)
+	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	if err != nil {
+		panic(err)
+	}
+	_, err = collection.Insert(ctx, []zvec.Document{{
+		PrimaryKey: "book", Fields: map[string]any{
+			"rating": int32(5), "embedding": zvec.VectorFP32{1, 0},
+		},
+	}})
+	if err != nil {
+		panic(err)
+	}
+	if err := collection.CreateIndex(ctx, "rating", zvec.NewInvertIndexParams(), zvec.CreateIndexOptions{Concurrency: 2}); err != nil {
+		panic(err)
+	}
+	field, _ := collection.Schema().Field("rating")
+	fmt.Println(field.IndexType())
+	if err := collection.Destroy(ctx); err != nil {
+		panic(err)
+	}
+	_ = os.Remove(directory)
+
+	// Output:
+	// INVERT
+}
