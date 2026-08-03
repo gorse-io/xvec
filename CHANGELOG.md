@@ -14,6 +14,10 @@ subject to compatible migration work throughout the 0.x series.
   restorable random-sign state, concurrent batch transforms, INT8/INT4
   parameter validation, and an exact original-vector candidate refiner with
   scale-factor expansion, filtering, radius, and deterministic ranking.
+- Added a deterministic, context-aware k-means framework with reservoir and
+  k-means++ initialization, metric-aware parallel assignment, FP64 ordered
+  centroid accumulation, explicit empty-cluster policies, spherical updates,
+  immutable models, classification, fuzz coverage, and a training benchmark.
 
 ## v0.2.0 - 2026-08-04
 
