@@ -248,21 +248,15 @@ func TestCollectionUnsupportedIndexesReturnNotSupported(t *testing.T) {
 	}
 }
 
-func TestCollectionFutureMutationsReturnNotSupported(t *testing.T) {
+func TestCollectionOptimizeReturnsNotSupported(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "later-api"), testPublicCollectionSchema(), NewCollectionOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer collection.Close()
-	operations := []func() error{
-		func() error { return collection.DropColumn(ctx, "rating") },
-		func() error { return collection.Optimize(ctx, OptimizeOptions{}) },
-	}
-	for index, operation := range operations {
-		if err := operation(); !errors.Is(err, ErrNotSupported) {
-			t.Fatalf("future operation %d = %v", index, err)
-		}
+	if err := collection.Optimize(ctx, OptimizeOptions{}); !errors.Is(err, ErrNotSupported) {
+		t.Fatalf("Optimize = %v", err)
 	}
 }
 

@@ -247,3 +247,42 @@ func ExampleCollection_AlterColumn() {
 	// Output:
 	// 4
 }
+
+func ExampleCollection_DropColumn() {
+	ctx := context.Background()
+	directory, err := os.MkdirTemp("", "zvec-drop-column-example-")
+	if err != nil {
+		panic(err)
+	}
+	path := filepath.Join(directory, "books")
+	schema := zvec.NewCollectionSchema("books",
+		zvec.FieldSchema{Name: "title", DataType: zvec.DataTypeString},
+		zvec.FieldSchema{Name: "legacy_score", DataType: zvec.DataTypeInt32},
+	)
+	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	if err != nil {
+		panic(err)
+	}
+	_, err = collection.Insert(ctx, []zvec.Document{{
+		PrimaryKey: "book", Fields: map[string]any{"title": "Go", "legacy_score": int32(4)},
+	}})
+	if err != nil {
+		panic(err)
+	}
+	if err := collection.DropColumn(ctx, "legacy_score"); err != nil {
+		panic(err)
+	}
+	documents, err := collection.Fetch(ctx, []string{"book"}, zvec.Projection{})
+	if err != nil {
+		panic(err)
+	}
+	_, found := documents[0].Fields["legacy_score"]
+	fmt.Println(found)
+	if err := collection.Destroy(ctx); err != nil {
+		panic(err)
+	}
+	_ = os.Remove(directory)
+
+	// Output:
+	// false
+}

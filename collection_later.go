@@ -29,11 +29,6 @@ type AlterColumnOptions struct{ Concurrency int }
 // OptimizeOptions controls segment-optimization concurrency.
 type OptimizeOptions struct{ Concurrency int }
 
-// DropColumn will atomically remove a field in v0.2.
-func (c *Collection) DropColumn(ctx context.Context, column string) error {
-	return c.unsupportedMutation(ctx, "drop column", "DropColumn requires the v0.2 DDL executor")
-}
-
 // Optimize will merge segments and reclaim deleted versions in v0.2.
 func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) error {
 	return c.unsupportedMutation(ctx, "optimize collection", "Optimize requires the v0.2 segment merger")

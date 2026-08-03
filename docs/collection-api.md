@@ -45,8 +45,9 @@ publishes implemented Flat and INVERT parameters, while later index algorithms
 still return `ErrNotSupported`. `DropIndex` atomically clears scalar metadata
 or restores vector fields to Flat/IP. `AddColumn` atomically installs supported
 numeric fields and backfills the live snapshot. `AlterColumn` atomically
-renames or replaces basic numeric fields. DropColumn and Optimize remain
-`ErrNotSupported` until their independent v0.2 units are installed.
+renames or replaces basic numeric fields, and `DropColumn` atomically removes
+them. Optimize remains `ErrNotSupported` until its independent v0.2 unit is
+installed.
 
 WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
 publishes an immutable segment and rotates the WAL. `Open` can acquire either
