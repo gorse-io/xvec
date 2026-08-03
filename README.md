@@ -13,7 +13,10 @@ A pure Go, embedded vector database.
 - Scalar filtering, full-text search, and hybrid retrieval.
 - Linux, macOS, and Windows support.
 
-The implementation is being developed from the storage primitives upward. The first milestone covers versioned storage, WAL recovery, immutable segments, CRUD operations, and exact flat vector search. Approximate indexes such as HNSW will be built on top of that foundation.
+The implementation is being developed from the storage primitives upward. The
+v0.2 milestone covers versioned storage, WAL recovery, CRUD, exact Flat vector
+search, SQL filtering, scalar inverted candidates, atomic DDL, and compaction.
+Quantization and approximate indexes such as IVF and HNSW are the next layer.
 
 ## Module
 
@@ -41,7 +44,7 @@ ordered Fetch, partial Update/Upsert, per-document batch results, and exact
 dense/sparse Flat queries.
 Those queries support metric-aware radius limits, deterministic projection,
 and group-by ranking across every live document version.
-The v0.2 branch now includes its SQL-style filter lexer, positioned parser,
+The v0.2 release includes its SQL-style filter lexer, positioned parser,
 typed AST, exact scalar/array predicate runtime, schema analyzer, rewriter, and
 forward execution plans for dense, sparse, and group-by Flat queries. Scalar
 INVERT fields now provide snapshot-local exact postings, sorted range routing,
@@ -61,8 +64,8 @@ contiguous-DocID segments, reclaims deleted and superseded versions, rotates
 the WAL and snapshots, and conservatively prunes obsolete native artifacts.
 Public APIs and on-disk formats are not stable before v1.0.
 
-The current library version is `v0.1.0`; its exact support boundary is recorded
-in the [v0.1 capability matrix](docs/v0.1.md) and [changelog](CHANGELOG.md).
+The current library version is `v0.2.0`; its exact support boundary is recorded
+in the [v0.2 capability matrix](docs/v0.2.md) and [changelog](CHANGELOG.md).
 
 ## Schema example
 
@@ -109,6 +112,7 @@ are exercised by `go test ./...`.
 ## Documentation
 
 - [Collection API](docs/collection-api.md)
+- [v0.2 capability matrix](docs/v0.2.md)
 - [Native Go disk format](docs/disk-format.md)
 - [Documents and projection](docs/document-projection.md)
 - [Exact vector query semantics](docs/vector-query.md)

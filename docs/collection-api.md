@@ -1,6 +1,6 @@
 # Collection API
 
-The root `zvec` package exposes the first usable collection milestone. It is a
+The root `zvec` package exposes the v0.2 native collection milestone. It is a
 pure-Go embedded database: every I/O, write, and query method accepts a
 `context.Context`; schema, options, path, and in-memory statistics getters do
 not.
