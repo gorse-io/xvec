@@ -246,6 +246,89 @@ func TestWriteEngineUpdateValidationAndCapacity(t *testing.T) {
 	}
 }
 
+func TestWriteEngineDeleteExistingAndMissing(t *testing.T) {
+	engine, manager, wal := newTestWriteEngine(t, 20, 10)
+	defer wal.Close()
+	if _, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "one"}, {PrimaryKey: "two"}}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := engine.Delete(context.Background(), []string{"missing", "one"})
+	if !errors.Is(err, ErrPrimaryKeyNotFound) || !errors.Is(results[0].Err, ErrPrimaryKeyNotFound) || results[1].Err != nil || results[1].DocID != 20 {
+		t.Fatalf("delete results = %#v, %v", results, err)
+	}
+	if !manager.Deletes().IsDeleted(20) {
+		t.Fatal("deleted document ID is not marked")
+	}
+	if _, found := manager.PrimaryKeys().Get("one"); found {
+		t.Fatal("deleted primary key remains mapped")
+	}
+	if _, found := manager.Document(20); found {
+		t.Fatal("deleted document remains visible")
+	}
+	if doc, found := manager.DocumentByPrimaryKey("two"); !found || doc.DocID != 21 {
+		t.Fatalf("unrelated document = %#v, %v", doc, found)
+	}
+	results, err = engine.Delete(context.Background(), []string{"one"})
+	if !errors.Is(err, ErrPrimaryKeyNotFound) || !errors.Is(results[0].Err, ErrPrimaryKeyNotFound) {
+		t.Fatalf("repeated delete = %#v, %v", results, err)
+	}
+
+	var final writeOperation
+	if err := wal.Replay(context.Background(), func(record WALRecord) error {
+		operation, err := decodeWriteOperation(record.Payload)
+		if err == nil {
+			final = operation
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if final.Type != writeOperationDelete || final.SegmentID != 1 || final.DocID != 20 || final.PrimaryKey != "one" || len(final.Payload) != 0 {
+		t.Fatalf("delete operation = %#v", final)
+	}
+}
+
+func TestWriteEngineDeleteValidationAndConcurrency(t *testing.T) {
+	engine, manager, wal := newTestWriteEngine(t, 0, 10)
+	defer wal.Close()
+	if _, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "shared"}}); err != nil {
+		t.Fatal(err)
+	}
+	const attempts = 8
+	var wait sync.WaitGroup
+	errs := make(chan error, attempts)
+	for range attempts {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := engine.Delete(context.Background(), []string{"shared"})
+			errs <- err
+		}()
+	}
+	wait.Wait()
+	close(errs)
+	succeeded, missing := 0, 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrPrimaryKeyNotFound):
+			missing++
+		default:
+			t.Fatal(err)
+		}
+	}
+	if succeeded != 1 || missing != attempts-1 || manager.Deletes().Count() != 1 {
+		t.Fatalf("succeeded=%d missing=%d deleted=%d", succeeded, missing, manager.Deletes().Count())
+	}
+	if results, err := engine.Delete(context.Background(), []string{""}); err == nil || results[0].Err == nil {
+		t.Fatalf("empty key delete = %#v, %v", results, err)
+	}
+	if _, err := engine.Delete(context.Background(), nil); err == nil {
+		t.Fatal("empty delete batch succeeded")
+	}
+}
+
 func TestWriteEngineConcurrentInsert(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 100, 200)
 	defer wal.Close()

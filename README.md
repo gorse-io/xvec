@@ -31,10 +31,10 @@ plus deterministic batch top-k are also implemented. Versioned, checksummed
 manifests have an atomic commit point, and the checksummed WAL repairs only
 incomplete crash tails while rejecting corruption. Collection operations are
 being built on versioned immutable segments, deterministic primary-key maps,
-and deletion snapshots. WAL-first batch insert, upsert, and immutable-version
-update are implemented internally with per-document results; delete, fetch, and
-the public collection lifecycle are still in progress. Public APIs and on-disk
-formats are not stable before v1.0.
+and deletion snapshots. WAL-first batch insert, upsert, immutable-version
+update, and logical delete are implemented internally with per-document
+results; fetch and the public collection lifecycle are still in progress.
+Public APIs and on-disk formats are not stable before v1.0.
 
 ## Schema example
 

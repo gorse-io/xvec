@@ -221,6 +221,46 @@ func (e *WriteEngine) Update(ctx context.Context, inputs []WriteInput) ([]WriteR
 	return results, nil
 }
 
+// Delete durably removes primary-key mappings and logically deletes their
+// current document IDs. Immutable segment bytes are never rewritten.
+func (e *WriteEngine) Delete(ctx context.Context, primaryKeys []string) ([]WriteResult, error) {
+	if e == nil {
+		return nil, errors.New("db: nil write engine")
+	}
+	if ctx == nil {
+		return nil, errors.New("db: nil delete context")
+	}
+	if len(primaryKeys) == 0 {
+		return nil, errors.New("db: delete batch is empty")
+	}
+	results := make([]WriteResult, len(primaryKeys))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	batchError := &BatchWriteError{}
+	for index, primaryKey := range primaryKeys {
+		results[index].PrimaryKey = primaryKey
+		if err := ctx.Err(); err != nil {
+			results[index].Err = err
+			batchError.add(err)
+			for remaining := index + 1; remaining < len(primaryKeys); remaining++ {
+				results[remaining] = WriteResult{PrimaryKey: primaryKeys[remaining], Err: err}
+				batchError.add(err)
+			}
+			break
+		}
+		docID, err := e.deleteOneLocked(ctx, primaryKey)
+		results[index].DocID = docID
+		results[index].Err = err
+		if err != nil {
+			batchError.add(err)
+		}
+	}
+	if batchError.Failed > 0 {
+		return results, batchError
+	}
+	return results, nil
+}
+
 func (e *WriteEngine) insertOneLocked(ctx context.Context, input WriteInput) (uint64, error) {
 	if err := validatePrimaryKey(input.PrimaryKey); err != nil {
 		return 0, err
@@ -354,6 +394,41 @@ func (e *WriteEngine) updateOneLocked(ctx context.Context, input WriteInput) (ui
 		return 0, fmt.Errorf("db: index WAL update: %w", err)
 	}
 	return doc.DocID, nil
+}
+
+func (e *WriteEngine) deleteOneLocked(ctx context.Context, primaryKey string) (uint64, error) {
+	if err := validatePrimaryKey(primaryKey); err != nil {
+		return 0, err
+	}
+	location, existed := e.manager.PrimaryKeys().Get(primaryKey)
+	if !existed {
+		return 0, fmt.Errorf("%w: %q", ErrPrimaryKeyNotFound, primaryKey)
+	}
+	encoded, err := encodeWriteOperation(writeOperation{
+		Type: writeOperationDelete, SegmentID: location.SegmentID,
+		DocID: location.DocID, PrimaryKey: primaryKey,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if _, err := e.wal.Append(ctx, encoded); err != nil {
+		return 0, err
+	}
+	if err := e.wal.Sync(ctx); err != nil {
+		return 0, err
+	}
+	applyContext := context.WithoutCancel(ctx)
+	if _, err := e.manager.Deletes().MarkDeleted(applyContext, location.DocID); err != nil {
+		return 0, fmt.Errorf("db: apply WAL delete: %w", err)
+	}
+	removed, found, err := e.manager.PrimaryKeys().Delete(applyContext, primaryKey)
+	if err != nil {
+		return 0, fmt.Errorf("db: remove deleted primary key: %w", err)
+	}
+	if !found || removed != location {
+		return 0, errors.New("db: primary-key map changed while applying delete")
+	}
+	return location.DocID, nil
 }
 
 func (e *BatchWriteError) add(err error) {
