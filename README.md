@@ -24,9 +24,9 @@ github.com/gorse-io/zvec
 ## Status
 
 Development is staged in independently tested changes. The public error model,
-baseline-compatible enums, and internal package boundaries are in place; storage
-and collection operations are not implemented yet. Public APIs and on-disk
-formats are not stable before v1.0.
+baseline-compatible enums, internal package boundaries, and portable low-level
+storage primitives are in place; collection operations are not implemented
+yet. Public APIs and on-disk formats are not stable before v1.0.
 
 ## Architecture
 
