@@ -143,3 +143,31 @@ func ExampleCollection_CreateIndex() {
 	// Output:
 	// INVERT
 }
+
+func ExampleCollection_DropIndex() {
+	ctx := context.Background()
+	directory, err := os.MkdirTemp("", "zvec-drop-index-example-")
+	if err != nil {
+		panic(err)
+	}
+	path := filepath.Join(directory, "books")
+	schema := zvec.NewCollectionSchema("books",
+		zvec.FieldSchema{Name: "rating", DataType: zvec.DataTypeInt32, Index: zvec.NewInvertIndexParams()},
+	)
+	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	if err != nil {
+		panic(err)
+	}
+	if err := collection.DropIndex(ctx, "rating"); err != nil {
+		panic(err)
+	}
+	field, _ := collection.Schema().Field("rating")
+	fmt.Println(field.IndexType())
+	if err := collection.Destroy(ctx); err != nil {
+		panic(err)
+	}
+	_ = os.Remove(directory)
+
+	// Output:
+	// UNDEFINED
+}

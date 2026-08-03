@@ -256,7 +256,6 @@ func TestCollectionFutureMutationsReturnNotSupported(t *testing.T) {
 	}
 	defer collection.Close()
 	operations := []func() error{
-		func() error { return collection.DropIndex(ctx, "embedding") },
 		func() error {
 			return collection.AddColumn(ctx, NewField("extra", DataTypeString), "", AddColumnOptions{})
 		},

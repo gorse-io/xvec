@@ -29,11 +29,6 @@ type AlterColumnOptions struct{ Concurrency int }
 // OptimizeOptions controls segment-optimization concurrency.
 type OptimizeOptions struct{ Concurrency int }
 
-// DropIndex will atomically remove a column index in v0.2.
-func (c *Collection) DropIndex(ctx context.Context, column string) error {
-	return c.unsupportedMutation(ctx, "drop index", "DropIndex requires the v0.2 DDL executor")
-}
-
 // AddColumn will atomically add and backfill a field in v0.2.
 func (c *Collection) AddColumn(ctx context.Context, field FieldSchema, expression string, options AddColumnOptions) error {
 	return c.unsupportedMutation(ctx, "add column", "AddColumn requires the v0.2 DDL executor")

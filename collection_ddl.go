@@ -91,6 +91,69 @@ func (c *Collection) CreateIndex(ctx context.Context, column string, index Index
 	if err := c.validateIndexBackfillLocked(ctx, nextSchema.Fields[fieldIndex], options.Concurrency); err != nil {
 		return wrapCollectionError(op, c.path, err)
 	}
+	return c.publishSchemaLocked(ctx, op, nextSchema)
+}
+
+// DropIndex atomically clears a scalar index or restores a vector field to the
+// baseline unquantized Flat/IP definition. Existing documents are unchanged.
+func (c *Collection) DropIndex(ctx context.Context, column string) error {
+	const op = "drop index"
+	if c == nil {
+		return invalidArgument(op, "collection is nil")
+	}
+	if ctx == nil {
+		return invalidArgument(op, "context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return wrapCollectionError(op, c.Path(), err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.requireOpenLocked(op); err != nil {
+		return err
+	}
+	if c.options.ReadOnly {
+		return &Error{Code: ErrorCodePermissionDenied, Op: op, Path: c.path, Message: "collection is read-only"}
+	}
+	if column == "" {
+		return invalidArgument(op, "column is empty")
+	}
+	fieldIndex := -1
+	for position := range c.schema.Fields {
+		if c.schema.Fields[position].Name == column {
+			fieldIndex = position
+			break
+		}
+	}
+	if fieldIndex < 0 {
+		return &Error{Code: ErrorCodeNotFound, Op: op, Path: c.path, Message: fmt.Sprintf("field %q does not exist", column)}
+	}
+	oldField := c.schema.Fields[fieldIndex]
+	if !oldField.DataType.IsVector() && indexParamsNil(oldField.Index) {
+		return nil
+	}
+	defaultFlat := NewFlatIndexParams(MetricTypeIP)
+	if oldField.DataType.IsVector() && equalIndexParams(oldField.EffectiveIndex(), defaultFlat) {
+		return nil
+	}
+	nextSchema := c.schema.Clone()
+	if oldField.DataType.IsVector() {
+		nextSchema.Fields[fieldIndex].Index = defaultFlat
+	} else {
+		nextSchema.Fields[fieldIndex].Index = nil
+	}
+	if err := nextSchema.Validate(); err != nil {
+		return err
+	}
+	if oldField.DataType.IsVector() {
+		if err := c.validateIndexBackfillLocked(ctx, nextSchema.Fields[fieldIndex], 0); err != nil {
+			return wrapCollectionError(op, c.path, err)
+		}
+	}
+	return c.publishSchemaLocked(ctx, op, nextSchema)
+}
+
+func (c *Collection) publishSchemaLocked(ctx context.Context, op string, nextSchema CollectionSchema) error {
 	encoded, err := marshalCollectionSchema(nextSchema)
 	if err != nil {
 		return wrapCollectionError(op, c.path, err)

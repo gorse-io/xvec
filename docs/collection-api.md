@@ -42,7 +42,8 @@ their best document. ANN and quantized indexes return `ErrNotSupported` until
 their stated milestones; the library never silently substitutes a different
 algorithm. `CreateIndex` is the first installed DDL operation: it atomically
 publishes implemented Flat and INVERT parameters, while later index algorithms
-still return `ErrNotSupported`. DropIndex, column DDL, and Optimize remain
+still return `ErrNotSupported`. `DropIndex` atomically clears scalar metadata
+or restores vector fields to Flat/IP. Column DDL and Optimize remain
 `ErrNotSupported` until their independent v0.2 units are installed.
 
 WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
