@@ -164,6 +164,16 @@ func (i *DenseFlatIndex) Vector(key uint64) ([]float32, bool) {
 // Search performs an exact top-k scan. It holds a read lock so the contiguous
 // vector storage cannot move while candidate slices are being scored.
 func (i *DenseFlatIndex) Search(ctx context.Context, query []float32, k int) ([]Result, error) {
+	return i.search(ctx, query, SearchOptions{TopK: k}, false)
+}
+
+// SearchWithOptions applies a candidate filter and metric-aware radius before
+// retaining the exact top-k.
+func (i *DenseFlatIndex) SearchWithOptions(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {
+	return i.search(ctx, query, options, true)
+}
+
+func (i *DenseFlatIndex) search(ctx context.Context, query []float32, options SearchOptions, requirePositiveTopK bool) ([]Result, error) {
 	if i == nil {
 		return nil, errors.New("core: nil dense Flat index")
 	}
@@ -175,10 +185,10 @@ func (i *DenseFlatIndex) Search(ctx context.Context, query []float32, k int) ([]
 	}
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return topKCandidates(ctx, i.metric, query, k, len(i.keys), func(position int) Candidate {
+	return topKCandidatesWithOptions(ctx, i.metric, query, options, len(i.keys), func(position int) Candidate {
 		start := position * i.dimension
 		return Candidate{Key: i.keys[position], Vector: i.vectors[start : start+i.dimension]}
-	})
+	}, requirePositiveTopK)
 }
 
 // DenseFlatIndexBuilder is a one-shot builder. The built index remains
@@ -236,9 +246,10 @@ func (m Metric) valid() bool {
 }
 
 var (
-	_ DenseProvider = (*DenseFlatIndex)(nil)
-	_ DenseSearcher = (*DenseFlatIndex)(nil)
-	_ DenseStreamer = (*DenseFlatIndex)(nil)
-	_ DenseIndex    = (*DenseFlatIndex)(nil)
-	_ DenseBuilder  = (*DenseFlatIndexBuilder)(nil)
+	_ DenseProvider      = (*DenseFlatIndex)(nil)
+	_ DenseSearcher      = (*DenseFlatIndex)(nil)
+	_ DenseStreamer      = (*DenseFlatIndex)(nil)
+	_ DenseIndex         = (*DenseFlatIndex)(nil)
+	_ DenseQuerySearcher = (*DenseFlatIndex)(nil)
+	_ DenseBuilder       = (*DenseFlatIndexBuilder)(nil)
 )

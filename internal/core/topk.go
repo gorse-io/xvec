@@ -92,6 +92,18 @@ func topKCandidates(
 	count int,
 	candidateAt func(int) Candidate,
 ) ([]Result, error) {
+	return topKCandidatesWithOptions(ctx, metric, query, SearchOptions{TopK: k}, count, candidateAt, false)
+}
+
+func topKCandidatesWithOptions(
+	ctx context.Context,
+	metric Metric,
+	query []float32,
+	options SearchOptions,
+	count int,
+	candidateAt func(int) Candidate,
+	requirePositiveTopK bool,
+) ([]Result, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil top-k context")
 	}
@@ -101,12 +113,17 @@ func topKCandidates(
 	if _, err := metric.Compute(query, query); err != nil {
 		return nil, fmt.Errorf("core: invalid query: %w", err)
 	}
-	if k < 0 {
+	if requirePositiveTopK {
+		if err := options.Validate(); err != nil {
+			return nil, err
+		}
+	} else if options.TopK < 0 {
 		return nil, errors.New("core: negative top-k")
 	}
-	if k == 0 || count == 0 {
+	if options.TopK == 0 || count == 0 {
 		return []Result{}, nil
 	}
+	k := options.TopK
 	if k > count {
 		k = count
 	}
@@ -123,9 +140,15 @@ func topKCandidates(
 			return nil, err
 		}
 		candidate := candidateAt(index)
+		if options.Filter != nil && !options.Filter(candidate.Key) {
+			continue
+		}
 		score, err := metric.Compute(candidate.Vector, query)
 		if err != nil {
 			return nil, fmt.Errorf("core: score candidate %d (key %d): %w", index, candidate.Key, err)
+		}
+		if !scoreWithinRadius(metric, score, options.Radius) {
+			continue
 		}
 		result := Result{Key: candidate.Key, Score: score}
 		if heap.Len() < k {

@@ -72,6 +72,14 @@ type SparseFlatIndex struct {
 	positions map[uint64]int
 }
 
+// Metric returns the only supported sparse metric.
+func (i *SparseFlatIndex) Metric() Metric {
+	if i == nil {
+		return 0
+	}
+	return MetricIP
+}
+
 // NewSparseFlatIndex constructs an empty sparse IP index.
 func NewSparseFlatIndex(metric Metric) (*SparseFlatIndex, error) {
 	if metric != MetricIP {
@@ -143,6 +151,16 @@ func (i *SparseFlatIndex) SparseVector(key uint64) (SparseVector, bool) {
 // SearchSparse evaluates exact inner products and returns highest scores first,
 // breaking equal scores by ascending key.
 func (i *SparseFlatIndex) SearchSparse(ctx context.Context, query SparseVector, k int) ([]Result, error) {
+	return i.searchSparse(ctx, query, SearchOptions{TopK: k}, false)
+}
+
+// SearchSparseWithOptions applies candidate and radius filtering before exact
+// top-k retention.
+func (i *SparseFlatIndex) SearchSparseWithOptions(ctx context.Context, query SparseVector, options SearchOptions) ([]Result, error) {
+	return i.searchSparse(ctx, query, options, true)
+}
+
+func (i *SparseFlatIndex) searchSparse(ctx context.Context, query SparseVector, options SearchOptions, requirePositiveTopK bool) ([]Result, error) {
 	if i == nil {
 		return nil, errors.New("core: nil sparse Flat index")
 	}
@@ -152,7 +170,11 @@ func (i *SparseFlatIndex) SearchSparse(ctx context.Context, query SparseVector, 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if k < 0 {
+	if requirePositiveTopK {
+		if err := options.Validate(); err != nil {
+			return nil, err
+		}
+	} else if options.TopK < 0 {
 		return nil, errors.New("core: negative top-k")
 	}
 	if _, err := ailego.SparseInnerProduct(query.Indices, query.Values, nil, nil); err != nil {
@@ -160,9 +182,10 @@ func (i *SparseFlatIndex) SearchSparse(ctx context.Context, query SparseVector, 
 	}
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	if k == 0 || len(i.keys) == 0 {
+	if options.TopK == 0 || len(i.keys) == 0 {
 		return []Result{}, nil
 	}
+	k := options.TopK
 	if k > len(i.keys) {
 		k = len(i.keys)
 	}
@@ -177,12 +200,18 @@ func (i *SparseFlatIndex) SearchSparse(ctx context.Context, query SparseVector, 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if options.Filter != nil && !options.Filter(key) {
+			continue
+		}
 		start, end := i.offsets[position], i.offsets[position+1]
 		score, err := ailego.SparseInnerProduct(
 			i.indices[start:end], i.values[start:end], query.Indices, query.Values,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("core: score sparse candidate %d (key %d): %w", position, key, err)
+		}
+		if !scoreWithinRadius(MetricIP, score, options.Radius) {
+			continue
 		}
 		result := Result{Key: key, Score: score}
 		if heap.Len() < k {
@@ -257,9 +286,10 @@ func (b *SparseFlatIndexBuilder) Build(ctx context.Context) (SparseIndex, error)
 }
 
 var (
-	_ SparseProvider = (*SparseFlatIndex)(nil)
-	_ SparseSearcher = (*SparseFlatIndex)(nil)
-	_ SparseStreamer = (*SparseFlatIndex)(nil)
-	_ SparseIndex    = (*SparseFlatIndex)(nil)
-	_ SparseBuilder  = (*SparseFlatIndexBuilder)(nil)
+	_ SparseProvider      = (*SparseFlatIndex)(nil)
+	_ SparseSearcher      = (*SparseFlatIndex)(nil)
+	_ SparseStreamer      = (*SparseFlatIndex)(nil)
+	_ SparseIndex         = (*SparseFlatIndex)(nil)
+	_ SparseQuerySearcher = (*SparseFlatIndex)(nil)
+	_ SparseBuilder       = (*SparseFlatIndexBuilder)(nil)
 )
