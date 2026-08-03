@@ -16,6 +16,8 @@ O(k) ranking memory beyond the candidate views and checks cancellation between
 candidates. Concurrent searches share the index; incremental adds are
 serialized and never expose partially appended vectors.
 
-Radius filtering is deliberately not part of this layer. The collection query
-executor adds radius, deleted-document masks, scalar filters, projection, and
-grouping in subsequent independently tested units.
+The extended query contract applies metric-aware radius and candidate filters
+during the scan. Group-by search independently retains a bounded top-k for
+each resolved scalar group so a dominant group cannot hide other groups before
+ranking. Collection-level deleted-document masks and projected document
+materialization are layered over these exact results.

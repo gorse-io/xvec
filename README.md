@@ -37,7 +37,9 @@ results. Ordered fetch resolves live primary keys across mutable and immutable
 segments. The internal collection lifecycle now performs WAL recovery, atomic
 segment flush and rotation, read-only opens, and cross-process single-writer or
 multi-reader locking; the root-package collection facade is the next public API
-layer.
+layer. Exact dense and sparse queries support candidate filtering, metric-aware
+radius limits, deterministic projection payloads, and cross-segment group-by
+ranking.
 Public APIs and on-disk formats are not stable before v1.0.
 
 ## Schema example
