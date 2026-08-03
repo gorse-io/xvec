@@ -1,0 +1,20 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "defaults": {
+    "invert_index": {"range": true, "extended_wildcard": false},
+    "hnsw_index": {"m": 50, "ef_construction": 500},
+    "hnsw_rabitq_index": {"total_bits": 7, "num_clusters": 16, "sample_count": 0, "m": 50, "ef_construction": 500},
+    "ivf_index": {"n_list": 1024, "n_iterations": 10, "use_soar": false},
+    "diskann_index": {"max_degree": 100, "list_size": 50, "pq_chunks": 0},
+    "vamana_index": {"max_degree": 64, "search_list_size": 100, "alpha": 1.2, "saturate_graph": false},
+    "fts_index": {"tokenizer": "standard", "filters": ["lowercase"], "extra_params": ""},
+    "flat_query": {"scale_factor": 10},
+    "hnsw_query": {"ef": 300, "prefetch_offset": 8, "prefetch_lines": 0},
+    "hnsw_rabitq_query": {"ef": 300},
+    "ivf_query": {"nprobe": 10, "scale_factor": 10},
+    "diskann_query": {"list_size": 300},
+    "vamana_query": {"ef_search": 200, "prefetch_offset": 8, "prefetch_lines": 0},
+    "fts_query": {"default_operator": ""},
+    "collection": {"max_docs_per_segment": 10000000}
+  }
+}

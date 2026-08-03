@@ -24,9 +24,32 @@ github.com/gorse-io/zvec
 ## Status
 
 Development is staged in independently tested changes. The public error model,
-baseline-compatible enums, internal package boundaries, and portable low-level
-storage primitives are in place; collection operations are not implemented
-yet. Public APIs and on-disk formats are not stable before v1.0.
+baseline-compatible enums, explicit vector types, validated schemas and index
+parameters, internal package boundaries, and portable low-level storage
+primitives are in place; collection operations are not implemented yet. Public
+APIs and on-disk formats are not stable before v1.0.
+
+## Schema example
+
+```go
+index := zvec.NewHNSWIndexParams(zvec.MetricTypeCosine)
+schema := zvec.NewCollectionSchema(
+    "books",
+    zvec.NewField("title", zvec.DataTypeString),
+    zvec.FieldSchema{
+        Name: "embedding", DataType: zvec.DataTypeVectorFP32,
+        Dimension: 768, Index: index,
+    },
+)
+if err := schema.Validate(); err != nil {
+    // Invalid schemas return *zvec.Error and match zvec.ErrInvalidArgument.
+}
+```
+
+Index parameters for later milestones can be declared and validated now. An
+accepted schema does not imply that its ANN or FTS implementation has shipped;
+operations must return `ErrNotSupported` until the corresponding milestone is
+implemented.
 
 ## Architecture
 
