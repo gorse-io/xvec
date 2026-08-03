@@ -326,6 +326,34 @@ func (c *CollectionStore) Fetch(ctx context.Context, primaryKeys []string) ([]Fe
 	return c.manager.Fetch(ctx, primaryKeys)
 }
 
+// LiveDocuments returns a stable collection-level view while excluding a
+// concurrent flush. Public query orchestration additionally serializes writes
+// so multi-step upserts cannot be observed halfway through application.
+func (c *CollectionStore) LiveDocuments(ctx context.Context) ([]StoredDocument, error) {
+	if c == nil {
+		return nil, errors.New("db: nil collection")
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.closed {
+		return nil, ErrCollectionClosed
+	}
+	return c.manager.LiveDocuments(ctx)
+}
+
+// DocumentCount returns the number of live primary keys in memory.
+func (c *CollectionStore) DocumentCount() uint64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.manager == nil || c.manager.PrimaryKeys() == nil {
+		return 0
+	}
+	return uint64(c.manager.PrimaryKeys().Count())
+}
+
 // Flush atomically turns the non-empty write segment into an immutable segment,
 // snapshots key/deletion state, publishes a new manifest, and rotates the WAL.
 func (c *CollectionStore) Flush(ctx context.Context) error {

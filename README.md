@@ -36,10 +36,11 @@ update, and logical delete are implemented internally with per-document
 results. Ordered fetch resolves live primary keys across mutable and immutable
 segments. The internal collection lifecycle now performs WAL recovery, atomic
 segment flush and rotation, read-only opens, and cross-process single-writer or
-multi-reader locking; the root-package collection facade is the next public API
-layer. Exact dense and sparse queries support candidate filtering, metric-aware
-radius limits, deterministic projection payloads, and cross-segment group-by
-ranking.
+multi-reader locking. The root-package facade exposes creation/open, lifecycle,
+ordered Fetch, partial Update/Upsert, per-document batch results, and exact
+dense/sparse Flat queries.
+Those queries support metric-aware radius limits, deterministic projection,
+and group-by ranking across every live document version.
 Public APIs and on-disk formats are not stable before v1.0.
 
 ## Schema example

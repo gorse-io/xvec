@@ -185,8 +185,8 @@ func (t QuantizeType) String() string {
 func (t QuantizeType) Valid() bool { return enumValid(quantizeTypeNames, t) }
 
 // MetricType identifies the distance or similarity function used by a vector
-// index. Lower scores rank first for L2 and MIPSL2; higher scores rank first for
-// IP and cosine.
+// index. Lower scores rank first for L2, cosine distance, and MIPSL2; higher
+// scores rank first for IP.
 type MetricType uint32
 
 const (

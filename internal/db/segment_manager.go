@@ -314,6 +314,58 @@ func (m *SegmentManager) Fetch(ctx context.Context, primaryKeys []string) ([]Fet
 	return results, nil
 }
 
+// LiveDocuments returns independent copies of every current document in
+// ascending global document-ID order. Superseded and deleted versions are
+// omitted. The caller is responsible for excluding concurrent multi-step
+// writes when it needs a transactionally stable query snapshot.
+func (m *SegmentManager) LiveDocuments(ctx context.Context) ([]StoredDocument, error) {
+	if m == nil {
+		return nil, errors.New("db: nil segment manager")
+	}
+	if ctx == nil {
+		return nil, errors.New("db: nil live-document context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	segments := m.ImmutableSegments()
+	m.mu.RLock()
+	writing := m.writing
+	m.mu.RUnlock()
+
+	result := make([]StoredDocument, 0, m.primaryKey.Count())
+	appendLive := func(documents []StoredDocument) error {
+		for _, document := range documents {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if m.deletes.IsDeleted(document.DocID) {
+				continue
+			}
+			location, found := m.primaryKey.Get(document.PrimaryKey)
+			if !found || location.DocID != document.DocID {
+				continue
+			}
+			result = append(result, document.Clone())
+		}
+		return nil
+	}
+	for _, segment := range segments {
+		if err := appendLive(segment.Documents()); err != nil {
+			return nil, err
+		}
+	}
+	if writing != nil {
+		if err := appendLive(writing.Documents()); err != nil {
+			return nil, err
+		}
+	}
+	if result == nil {
+		return []StoredDocument{}, nil
+	}
+	return result, nil
+}
+
 func (m *SegmentManager) checkRangeLocked(candidate SegmentMetadata, candidateID uint64) error {
 	if candidate.DocCount == 0 {
 		return nil

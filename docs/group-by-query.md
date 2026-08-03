@@ -31,5 +31,8 @@ groups, err := index.SearchGroups(ctx, query, core.GroupByOptions{
 })
 ```
 
-The root collection facade will translate supported scalar field values into
-the baseline-compatible group strings and materialize projected documents.
+The root collection facade translates supported scalar field values into these
+baseline-compatible strings and materializes projected `zvec.Document`
+results. Integer and Boolean values use their ordinary decimal/lowercase form;
+FLOAT and DOUBLE use the native baseline's fixed six fractional digits; NULL
+uses the empty string group.
