@@ -105,6 +105,92 @@ func TestWriteEngineInsertFullAndCanceled(t *testing.T) {
 	}
 }
 
+func TestWriteEngineUpsertCreatesAndReplaces(t *testing.T) {
+	engine, manager, wal := newTestWriteEngine(t, 50, 10)
+	defer wal.Close()
+	results, err := engine.Upsert(context.Background(), []WriteInput{{PrimaryKey: "key", Payload: []byte("v1")}})
+	if err != nil || results[0].DocID != 50 {
+		t.Fatalf("create upsert = %#v, %v", results, err)
+	}
+	results, err = engine.Upsert(context.Background(), []WriteInput{{PrimaryKey: "key", Payload: []byte("v2")}})
+	if err != nil || results[0].DocID != 51 {
+		t.Fatalf("replace upsert = %#v, %v", results, err)
+	}
+	if !manager.Deletes().IsDeleted(50) || manager.Deletes().IsDeleted(51) {
+		t.Fatal("upsert deletion set is wrong")
+	}
+	if doc, found := manager.DocumentByPrimaryKey("key"); !found || doc.DocID != 51 || string(doc.Payload) != "v2" {
+		t.Fatalf("visible version = %#v, %v", doc, found)
+	}
+	if _, found := manager.Document(50); found {
+		t.Fatal("old upsert version is visible")
+	}
+
+	var types []writeOperationType
+	if err := wal.Replay(context.Background(), func(record WALRecord) error {
+		operation, err := decodeWriteOperation(record.Payload)
+		if err == nil {
+			types = append(types, operation.Type)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(types, []writeOperationType{writeOperationUpsert, writeOperationUpsert}) {
+		t.Fatalf("operation types = %#v", types)
+	}
+}
+
+func TestWriteEngineUpsertPerDocumentErrors(t *testing.T) {
+	engine, manager, wal := newTestWriteEngine(t, 0, 2)
+	defer wal.Close()
+	results, err := engine.Upsert(context.Background(), []WriteInput{
+		{PrimaryKey: ""}, {PrimaryKey: "one", Payload: []byte("1")}, {PrimaryKey: "two", Payload: []byte("2")}, {PrimaryKey: "three"},
+	})
+	var batchError *BatchWriteError
+	if !errors.As(err, &batchError) || batchError.Failed != 2 {
+		t.Fatalf("batch error = %#v, %v", batchError, err)
+	}
+	if results[0].Err == nil || results[1].Err != nil || results[2].Err != nil || !errors.Is(results[3].Err, ErrSegmentFull) {
+		t.Fatalf("results = %#v", results)
+	}
+	if manager.PrimaryKeys().Count() != 2 {
+		t.Fatalf("primary count = %d", manager.PrimaryKeys().Count())
+	}
+	if _, err := engine.Upsert(context.Background(), nil); err == nil {
+		t.Fatal("empty upsert succeeded")
+	}
+}
+
+func TestWriteEngineConcurrentUpsertSameKey(t *testing.T) {
+	engine, manager, wal := newTestWriteEngine(t, 0, 64)
+	defer wal.Close()
+	const count = 32
+	var wait sync.WaitGroup
+	errs := make(chan error, count)
+	for index := range count {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := engine.Upsert(context.Background(), []WriteInput{{PrimaryKey: "shared", Payload: []byte(fmt.Sprintf("v%d", index))}})
+			errs <- err
+		}()
+	}
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if manager.PrimaryKeys().Count() != 1 || manager.Deletes().Count() != count-1 {
+		t.Fatalf("primary=%d deleted=%d", manager.PrimaryKeys().Count(), manager.Deletes().Count())
+	}
+	if doc, found := manager.DocumentByPrimaryKey("shared"); !found || manager.Deletes().IsDeleted(doc.DocID) {
+		t.Fatalf("latest shared document = %#v, %v", doc, found)
+	}
+}
+
 func TestWriteEngineConcurrentInsert(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 100, 200)
 	defer wal.Close()

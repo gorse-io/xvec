@@ -141,6 +141,46 @@ func (e *WriteEngine) Insert(ctx context.Context, inputs []WriteInput) ([]WriteR
 	return results, nil
 }
 
+// Upsert durably appends a new document version. If the key already exists,
+// its prior document ID is logically deleted after the WAL is synchronized.
+func (e *WriteEngine) Upsert(ctx context.Context, inputs []WriteInput) ([]WriteResult, error) {
+	if e == nil {
+		return nil, errors.New("db: nil write engine")
+	}
+	if ctx == nil {
+		return nil, errors.New("db: nil upsert context")
+	}
+	if len(inputs) == 0 {
+		return nil, errors.New("db: upsert batch is empty")
+	}
+	results := make([]WriteResult, len(inputs))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	batchError := &BatchWriteError{}
+	for index, input := range inputs {
+		results[index].PrimaryKey = input.PrimaryKey
+		if err := ctx.Err(); err != nil {
+			results[index].Err = err
+			batchError.add(err)
+			for remaining := index + 1; remaining < len(inputs); remaining++ {
+				results[remaining] = WriteResult{PrimaryKey: inputs[remaining].PrimaryKey, Err: err}
+				batchError.add(err)
+			}
+			break
+		}
+		docID, err := e.upsertOneLocked(ctx, input)
+		results[index].DocID = docID
+		results[index].Err = err
+		if err != nil {
+			batchError.add(err)
+		}
+	}
+	if batchError.Failed > 0 {
+		return results, batchError
+	}
+	return results, nil
+}
+
 func (e *WriteEngine) insertOneLocked(ctx context.Context, input WriteInput) (uint64, error) {
 	if err := validatePrimaryKey(input.PrimaryKey); err != nil {
 		return 0, err
@@ -180,6 +220,52 @@ func (e *WriteEngine) insertOneLocked(ctx context.Context, input WriteInput) (ui
 	}
 	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, DocumentLocation{SegmentID: writing.ID(), DocID: doc.DocID}); err != nil {
 		return 0, fmt.Errorf("db: index WAL insert: %w", err)
+	}
+	return doc.DocID, nil
+}
+
+func (e *WriteEngine) upsertOneLocked(ctx context.Context, input WriteInput) (uint64, error) {
+	if err := validatePrimaryKey(input.PrimaryKey); err != nil {
+		return 0, err
+	}
+	if len(input.Payload) > MaxDocumentPayloadSize {
+		return 0, fmt.Errorf("db: document payload is %d bytes, maximum %d", len(input.Payload), MaxDocumentPayloadSize)
+	}
+	previous, existed := e.manager.PrimaryKeys().Get(input.PrimaryKey)
+	writing := e.manager.Writing()
+	if writing == nil {
+		return 0, errors.New("db: no writing segment")
+	}
+	docID, err := writing.NextDocumentID()
+	if err != nil {
+		return 0, err
+	}
+	operation := writeOperation{
+		Type: writeOperationUpsert, SegmentID: writing.ID(), DocID: docID,
+		PrimaryKey: input.PrimaryKey, Payload: slices.Clone(input.Payload),
+	}
+	encoded, err := encodeWriteOperation(operation)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := e.wal.Append(ctx, encoded); err != nil {
+		return 0, err
+	}
+	if err := e.wal.Sync(ctx); err != nil {
+		return 0, err
+	}
+	applyContext := context.WithoutCancel(ctx)
+	doc, err := writing.AppendExpected(applyContext, docID, input.PrimaryKey, input.Payload)
+	if err != nil {
+		return 0, fmt.Errorf("db: apply WAL upsert: %w", err)
+	}
+	if existed {
+		if _, err := e.manager.Deletes().MarkDeleted(applyContext, previous.DocID); err != nil {
+			return 0, fmt.Errorf("db: delete prior upsert version: %w", err)
+		}
+	}
+	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, DocumentLocation{SegmentID: writing.ID(), DocID: doc.DocID}); err != nil {
+		return 0, fmt.Errorf("db: index WAL upsert: %w", err)
 	}
 	return doc.DocID, nil
 }
