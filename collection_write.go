@@ -231,6 +231,71 @@ func (c *Collection) Delete(ctx context.Context, primaryKeys []string) ([]WriteR
 	return results, nil
 }
 
+// DeleteByFilter durably removes every live document for which filter
+// evaluates to SQL TRUE. Selection and WAL-backed deletion are serialized
+// under the collection write lock, so a matched version cannot be replaced
+// between those two phases.
+func (c *Collection) DeleteByFilter(ctx context.Context, filter string) error {
+	const op = "delete by filter"
+	if c == nil {
+		return invalidArgument(op, "collection is nil")
+	}
+	if ctx == nil {
+		return invalidArgument(op, "context is nil")
+	}
+	if filter == "" {
+		return invalidArgument(op, "filter is empty")
+	}
+	if err := ctx.Err(); err != nil {
+		return wrapCollectionError(op, c.Path(), err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.requireOpenLocked(op); err != nil {
+		return err
+	}
+	if c.options.ReadOnly {
+		return &Error{Code: ErrorCodePermissionDenied, Op: op, Path: c.path, Message: "collection is read-only"}
+	}
+	plan, err := buildFilterPlan(filter, c.schema)
+	if err != nil {
+		return invalidArgument(op, "invalid filter: %v", err)
+	}
+	documents, err := c.liveDocumentsLocked(ctx)
+	if err != nil {
+		return wrapCollectionError(op, c.path, err)
+	}
+	matched, err := evaluateFilterDocuments(ctx, plan, documents)
+	if err != nil {
+		return wrapFilterEvaluationError(op, c.path, err)
+	}
+	primaryKeys := make([]string, 0, len(documents))
+	for _, document := range documents {
+		if err := ctx.Err(); err != nil {
+			return wrapCollectionError(op, c.path, err)
+		}
+		if matched(document.DocID) {
+			primaryKeys = append(primaryKeys, document.PrimaryKey)
+		}
+	}
+	if len(primaryKeys) == 0 {
+		return nil
+	}
+	results, err := c.store.Delete(ctx, primaryKeys)
+	if err != nil {
+		return wrapCollectionError(op, c.path, err)
+	}
+	if len(results) != len(primaryKeys) {
+		return &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "storage returned an incomplete delete result"}
+	}
+	for _, result := range results {
+		if result.Err != nil {
+			return wrapCollectionError(op, c.path, result.Err)
+		}
+	}
+	return nil
+}
+
 // Fetch returns one independently owned document pointer per requested key.
 // Missing or deleted keys have a nil entry and are not errors.
 func (c *Collection) Fetch(ctx context.Context, primaryKeys []string, projection Projection) ([]*Document, error) {

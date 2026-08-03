@@ -29,11 +29,6 @@ type AlterColumnOptions struct{ Concurrency int }
 // OptimizeOptions controls segment-optimization concurrency.
 type OptimizeOptions struct{ Concurrency int }
 
-// DeleteByFilter will delete documents matching a v0.2 SQL predicate.
-func (c *Collection) DeleteByFilter(ctx context.Context, filter string) error {
-	return c.unsupportedMutation(ctx, "delete by filter", "DeleteByFilter requires the v0.2 SQL executor")
-}
-
 // CreateIndex will atomically build and publish a column index in v0.2+.
 func (c *Collection) CreateIndex(ctx context.Context, column string, index IndexParams, options CreateIndexOptions) error {
 	return c.unsupportedMutation(ctx, "create index", "CreateIndex requires the v0.2 DDL executor")

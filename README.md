@@ -46,8 +46,9 @@ typed AST, exact scalar/array predicate runtime, schema analyzer, rewriter, and
 forward execution plans for dense, sparse, and group-by Flat queries. Scalar
 INVERT fields now provide snapshot-local exact postings, sorted range routing,
 array-length/contain candidates, and baseline-compatible optional extended
-wildcards, with every candidate forward-verified. Delete-by-filter is the next
-staged unit.
+wildcards, with every candidate forward-verified. WAL-backed DeleteByFilter
+now selects only current live versions under the collection write lock and is
+durable across reopen. Atomic CreateIndex is the next staged unit.
 Public APIs and on-disk formats are not stable before v1.0.
 
 The current library version is `v0.1.0`; its exact support boundary is recorded
@@ -106,6 +107,7 @@ are exercised by `go test ./...`.
 - [Scalar filter evaluation](docs/filter-evaluation.md)
 - [Schema analysis and filter plans](docs/filter-plans.md)
 - [Scalar inverted candidate indexes](docs/scalar-inverted.md)
+- [Delete by filter](docs/delete-by-filter.md)
 
 ## License
 

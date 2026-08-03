@@ -256,7 +256,6 @@ func TestCollectionFutureMutationsReturnNotSupported(t *testing.T) {
 	}
 	defer collection.Close()
 	operations := []func() error{
-		func() error { return collection.DeleteByFilter(ctx, "rating > 1") },
 		func() error {
 			return collection.CreateIndex(ctx, "rating", NewInvertIndexParams(), CreateIndexOptions{})
 		},

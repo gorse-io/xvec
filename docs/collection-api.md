@@ -23,6 +23,12 @@ A mixed batch continues past document-local errors, and its non-nil
 fields. Upsert uses partial-update semantics for an existing key and requires a
 complete document for a new key.
 
+`DeleteByFilter` schema-binds the same SQL predicate used by queries, selects
+only current live versions under the collection write lock, and deletes each
+match through the WAL. A valid no-match filter succeeds. Completed deletions
+survive reopen without Flush; cancellation can return after an already
+committed prefix, consistently with other batch mutations.
+
 `Fetch` preserves key order and represents a missing key with a nil document.
 Its `Projection` separates scalar selection from vector inclusion: nil output
 fields select all scalar fields, an empty non-nil slice selects none, and
@@ -34,8 +40,8 @@ schema-analyzed SQL scalar filters, and deterministic document-ID tie breaking.
 `GroupByQuery` retains a top-k per filtered scalar group and ranks groups by
 their best document. ANN and quantized indexes return `ErrNotSupported` until
 their stated milestones; the library never silently substitutes a different
-algorithm. The DDL, DeleteByFilter, and Optimize entry points likewise return
-`ErrNotSupported` until the v0.2 atomic metadata executor is installed.
+algorithm. The DDL and Optimize entry points likewise return `ErrNotSupported`
+until the v0.2 atomic metadata executor is installed.
 
 WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
 publishes an immutable segment and rotates the WAL. `Open` can acquire either
