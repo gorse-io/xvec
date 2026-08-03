@@ -209,3 +209,41 @@ func ExampleCollection_AddColumn() {
 	// Output:
 	// 9
 }
+
+func ExampleCollection_AlterColumn() {
+	ctx := context.Background()
+	directory, err := os.MkdirTemp("", "zvec-alter-column-example-")
+	if err != nil {
+		panic(err)
+	}
+	path := filepath.Join(directory, "books")
+	schema := zvec.NewCollectionSchema("books",
+		zvec.FieldSchema{Name: "rating", DataType: zvec.DataTypeInt32},
+	)
+	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	if err != nil {
+		panic(err)
+	}
+	_, err = collection.Insert(ctx, []zvec.Document{{
+		PrimaryKey: "book", Fields: map[string]any{"rating": int32(4)},
+	}})
+	if err != nil {
+		panic(err)
+	}
+	replacement := zvec.FieldSchema{Name: "adjusted", DataType: zvec.DataTypeInt64}
+	if err := collection.AlterColumn(ctx, "rating", "", &replacement, zvec.AlterColumnOptions{Concurrency: 2}); err != nil {
+		panic(err)
+	}
+	documents, err := collection.Fetch(ctx, []string{"book"}, zvec.Projection{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(documents[0].Fields["adjusted"])
+	if err := collection.Destroy(ctx); err != nil {
+		panic(err)
+	}
+	_ = os.Remove(directory)
+
+	// Output:
+	// 4
+}

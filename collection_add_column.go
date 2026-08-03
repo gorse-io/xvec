@@ -16,11 +16,7 @@ package zvec
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	"github.com/gorse-io/zvec/internal/ailego"
-	"github.com/gorse-io/zvec/internal/db"
 )
 
 // AddColumn atomically adds a basic numeric field and backfills every live
@@ -81,51 +77,19 @@ func (c *Collection) AddColumn(ctx context.Context, field FieldSchema, expressio
 			return invalidArgument(op, "invalid expression %q: %v", expression, err)
 		}
 	}
-	rewritten := make([]db.StoredDocument, len(documents))
-	if err := ailego.ParallelFor(ctx, len(documents), options.Concurrency, func(_ context.Context, index int) error {
-		document := documents[index]
+	return c.rewriteCollectionDocumentsLocked(ctx, op, nextSchema, documents, options.Concurrency, func(document *Document) error {
 		var value any
 		if compiled != nil {
 			evaluated, evaluateErr := compiled.evaluate(document.Fields, field.DataType)
 			if evaluateErr != nil {
-				return fmt.Errorf("document %d: %w", document.DocID, evaluateErr)
+				return evaluateErr
 			}
 			value = evaluated
 		}
 		if value == nil && !field.Nullable {
-			return fmt.Errorf("document %d expression evaluates to NULL for non-nullable field %q", document.DocID, field.Name)
+			return fmt.Errorf("expression evaluates to NULL for non-nullable field %q", field.Name)
 		}
 		document.Fields[field.Name] = value
-		if validateErr := document.Validate(nextSchema); validateErr != nil {
-			return fmt.Errorf("document %d: %w", document.DocID, validateErr)
-		}
-		payload, encodeErr := marshalDocumentPayload(document.Fields)
-		if encodeErr != nil {
-			return fmt.Errorf("document %d: %w", document.DocID, encodeErr)
-		}
-		rewritten[index] = db.StoredDocument{
-			DocID: document.DocID, PrimaryKey: document.PrimaryKey, Payload: payload,
-		}
 		return nil
-	}); err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return wrapCollectionError(op, c.path, err)
-		}
-		return invalidArgument(op, "backfill expression %q failed: %v", expression, err)
-	}
-	encodedSchema, err := marshalCollectionSchema(nextSchema)
-	if err != nil {
-		return wrapCollectionError(op, c.path, err)
-	}
-	committed, rewriteErr := c.store.RewriteDocuments(ctx, encodedSchema, rewritten)
-	if committed {
-		c.schema = nextSchema
-	}
-	if rewriteErr != nil {
-		return wrapCollectionError(op, c.path, rewriteErr)
-	}
-	if !committed {
-		return &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "column rewrite did not commit"}
-	}
-	return nil
+	})
 }

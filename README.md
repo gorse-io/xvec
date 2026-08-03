@@ -53,7 +53,8 @@ backfill validation and atomically publishes implemented Flat/INVERT
 parameters. DropIndex atomically clears scalar indexes or restores vectors to
 the default Flat/IP definition. AddColumn now atomically rewrites every live
 document with a nullable NULL or a numeric arithmetic-expression backfill while
-preserving its internal document ID.
+preserving its internal document ID. AlterColumn atomically renames or converts
+basic numeric fields with the same DocID-preserving rewrite protocol.
 Public APIs and on-disk formats are not stable before v1.0.
 
 The current library version is `v0.1.0`; its exact support boundary is recorded
@@ -116,6 +117,7 @@ are exercised by `go test ./...`.
 - [CreateIndex](docs/create-index.md)
 - [DropIndex](docs/drop-index.md)
 - [AddColumn](docs/add-column.md)
+- [AlterColumn](docs/alter-column.md)
 
 ## License
 

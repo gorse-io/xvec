@@ -16,11 +16,13 @@ package zvec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 
 	"github.com/gorse-io/zvec/internal/ailego"
 	"github.com/gorse-io/zvec/internal/core"
+	"github.com/gorse-io/zvec/internal/db"
 	dbsql "github.com/gorse-io/zvec/internal/db/sql"
 )
 
@@ -167,6 +169,57 @@ func (c *Collection) publishSchemaLocked(ctx context.Context, op string, nextSch
 	}
 	if !committed {
 		return &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "schema publication did not commit"}
+	}
+	return nil
+}
+
+func (c *Collection) rewriteCollectionDocumentsLocked(
+	ctx context.Context,
+	op string,
+	nextSchema CollectionSchema,
+	documents []Document,
+	workers int,
+	transform func(*Document) error,
+) error {
+	if transform == nil {
+		return &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "document rewrite transform is nil"}
+	}
+	rewritten := make([]db.StoredDocument, len(documents))
+	if err := ailego.ParallelFor(ctx, len(documents), workers, func(_ context.Context, index int) error {
+		document := documents[index]
+		if transformErr := transform(&document); transformErr != nil {
+			return fmt.Errorf("document %d: %w", document.DocID, transformErr)
+		}
+		if validateErr := document.Validate(nextSchema); validateErr != nil {
+			return fmt.Errorf("document %d: %w", document.DocID, validateErr)
+		}
+		payload, encodeErr := marshalDocumentPayload(document.Fields)
+		if encodeErr != nil {
+			return fmt.Errorf("document %d: %w", document.DocID, encodeErr)
+		}
+		rewritten[index] = db.StoredDocument{
+			DocID: document.DocID, PrimaryKey: document.PrimaryKey, Payload: payload,
+		}
+		return nil
+	}); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return wrapCollectionError(op, c.path, err)
+		}
+		return invalidArgument(op, "document rewrite failed: %v", err)
+	}
+	encodedSchema, err := marshalCollectionSchema(nextSchema)
+	if err != nil {
+		return wrapCollectionError(op, c.path, err)
+	}
+	committed, rewriteErr := c.store.RewriteDocuments(ctx, encodedSchema, rewritten)
+	if committed {
+		c.schema = nextSchema
+	}
+	if rewriteErr != nil {
+		return wrapCollectionError(op, c.path, rewriteErr)
+	}
+	if !committed {
+		return &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "document rewrite did not commit"}
 	}
 	return nil
 }
