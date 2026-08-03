@@ -20,11 +20,14 @@ import "fmt"
 // with Filterable=false remains visible so diagnostics can distinguish an
 // unsupported vector/FTS target from a missing field.
 type Field struct {
-	Name       string
-	Kind       ValueKind
-	Array      bool
-	Nullable   bool
-	Filterable bool
+	Name             string
+	Kind             ValueKind
+	Array            bool
+	Nullable         bool
+	Filterable       bool
+	Indexed          bool
+	RangeOptimized   bool
+	ExtendedWildcard bool
 }
 
 // Schema is an immutable filter-analysis schema.
@@ -44,6 +47,9 @@ func NewSchema(fields []Field) (Schema, error) {
 		}
 		if field.Filterable && !field.Kind.valid() {
 			return Schema{}, fmt.Errorf("sql: filterable field %q has invalid kind %d", field.Name, field.Kind)
+		}
+		if field.Indexed && !field.Filterable {
+			return Schema{}, fmt.Errorf("sql: indexed field %q is not filterable", field.Name)
 		}
 		schema.fields[field.Name] = field
 		schema.order = append(schema.order, field.Name)

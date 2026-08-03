@@ -158,6 +158,82 @@ func TestCollectionSQLFilterValidationAndCancellation(t *testing.T) {
 	}
 }
 
+func TestCollectionScalarInvertedCandidatesMatchForwardSemantics(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "inverted-filters")
+	extended := NewInvertIndexParams()
+	extended.EnableExtendedWildcard = true
+	schema := NewCollectionSchema("inverted_filters",
+		FieldSchema{Name: "title", DataType: DataTypeString, Nullable: true, Index: extended},
+		FieldSchema{Name: "code", DataType: DataTypeString, Index: NewInvertIndexParams()},
+		FieldSchema{Name: "rating", DataType: DataTypeInt32, Nullable: true, Index: NewInvertIndexParams()},
+		FieldSchema{Name: "tags", DataType: DataTypeArrayString, Nullable: true, Index: NewInvertIndexParams()},
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: NewFlatIndexParams(MetricTypeIP)},
+	)
+	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
+	plan, err := buildFilterPlan("title LIKE '%alpha' AND rating>=2", schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured := make(map[string]dbsql.Field)
+	for _, field := range plan.Fields() {
+		configured[field.Name] = field
+	}
+	if !configured["title"].Indexed || !configured["title"].ExtendedWildcard || !configured["title"].RangeOptimized ||
+		!configured["rating"].Indexed || !configured["rating"].RangeOptimized {
+		t.Fatalf("filter index configuration = %#v", configured)
+	}
+
+	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	documents := []Document{
+		invertedFilterDocument("a", "alpha", "alpha", int32(1), StringArray{"red", "blue"}, 5),
+		invertedFilterDocument("b", "alphabet", "alphabet", int32(2), StringArray{"blue"}, 4),
+		invertedFilterDocument("c", "beta", "beta", int32(3), nil, 3),
+		invertedFilterDocument("d", "gamma-alpha", "gamma-alpha", int32(4), StringArray{}, 2),
+		invertedFilterDocument("e", nil, "omega", nil, StringArray{"red"}, 1),
+	}
+	if _, err := collection.Insert(ctx, documents); err != nil {
+		t.Fatal(err)
+	}
+	assertQuery := func(filter string, want []string) {
+		t.Helper()
+		results, queryErr := collection.Query(ctx, VectorQuery{
+			Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 10, Filter: filter,
+		})
+		if queryErr != nil {
+			t.Fatalf("Query(%q): %v", filter, queryErr)
+		}
+		if got := documentKeys(results); !reflect.DeepEqual(got, want) {
+			t.Fatalf("Query(%q) = %v, want %v", filter, got, want)
+		}
+	}
+	assertQuery("title LIKE '%alpha'", []string{"a", "d"})
+	assertQuery("code LIKE '%bet'", []string{"b"})
+	assertQuery("rating>=2 AND code LIKE 'a%'", []string{"b"})
+	assertQuery("rating=1 OR code LIKE '%pha%'", []string{"a", "b", "d"})
+	assertQuery("tags CONTAIN_ANY ('red')", []string{"a", "e"})
+	assertQuery("array_length(tags)=0", []string{"d"})
+	assertQuery("title IS NULL", []string{"e"})
+
+	if err := collection.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := collection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	readOnly := NewCollectionOptions()
+	readOnly.ReadOnly = true
+	collection, err = Open(ctx, path, readOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer collection.Close()
+	assertQuery("rating>=2 AND tags NOT CONTAIN_ANY ('blue')", []string{"d"})
+}
+
 func TestFilterSchemaRejectsFTSAndValueAdapterCoversEveryScalarArray(t *testing.T) {
 	fts := NewFTSIndexParams()
 	schema := NewCollectionSchema("fts_filter",
@@ -221,5 +297,12 @@ func filterDocument(primaryKey, title string, rating, tags any, numbers Int32Arr
 		"active": active, "payload": Binary(payload),
 		"embedding": VectorFP32{score, 0},
 		"sparse":    SparseVectorFP32{Indices: []uint32{1}, Values: []float32{score}},
+	}}
+}
+
+func invertedFilterDocument(primaryKey string, title any, code string, rating any, tags any, score float32) Document {
+	return Document{PrimaryKey: primaryKey, Fields: map[string]any{
+		"title": title, "code": code, "rating": rating, "tags": tags,
+		"embedding": VectorFP32{score, 0},
 	}}
 }

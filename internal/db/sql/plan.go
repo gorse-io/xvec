@@ -14,7 +14,11 @@
 
 package sql
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/gorse-io/zvec/internal/ailego"
+)
 
 // Resolver returns one typed field value. Missing nullable fields should be
 // returned as typed NULL by the storage adapter.
@@ -80,8 +84,103 @@ func (p *Plan) Stats() PlanStats {
 }
 
 func (p *Plan) AlwaysFalse() bool {
+	if p == nil || p.root == nil {
+		return false
+	}
 	constant, ok := p.root.(*constantPlanNode)
 	return ok && constant.value == TruthFalse
+}
+
+// IndexSet maps schema field names to sealed snapshot-local indexes.
+type IndexSet map[string]*InvertedIndex
+
+// Candidates returns a safe row-ordinal prefilter. used=false means no safe
+// index prefilter exists. exact reports whether the bitmap itself represents
+// the complete SQL match set; callers may always forward-verify candidates.
+func (p *Plan) Candidates(indexes IndexSet, totalRows uint64) (bitmap *ailego.Bitmap, used, exact bool, err error) {
+	if p == nil || p.root == nil {
+		return nil, false, false, fmt.Errorf("sql: nil filter plan")
+	}
+	return candidatesForNode(p.root, indexes, totalRows)
+}
+
+func candidatesForNode(node planNode, indexes IndexSet, totalRows uint64) (*ailego.Bitmap, bool, bool, error) {
+	switch node := node.(type) {
+	case *constantPlanNode:
+		bitmap := ailego.NewBitmap(totalRows)
+		if node.value == TruthTrue {
+			for row := uint64(0); row < totalRows; row++ {
+				bitmap.Set(row)
+			}
+		}
+		return bitmap, true, true, nil
+	case *predicatePlanNode:
+		var field Field
+		var arrayLength bool
+		switch source := node.source.(type) {
+		case fieldSource:
+			field = source.field
+		case arrayLengthSource:
+			field = source.field
+			arrayLength = true
+		default:
+			return nil, false, false, nil
+		}
+		if !field.Indexed {
+			return nil, false, false, nil
+		}
+		index := indexes[field.Name]
+		if index == nil {
+			return nil, false, false, nil
+		}
+		var result InvertedResult
+		var err error
+		if arrayLength {
+			result, err = index.SearchArrayLength(node.predicate)
+		} else {
+			result, err = index.Search(node.predicate)
+		}
+		if err != nil {
+			return nil, false, false, err
+		}
+		if !result.Supported {
+			return nil, false, false, nil
+		}
+		return result.Bitmap, true, true, nil
+	case *logicalPlanNode:
+		left, leftUsed, leftExact, err := candidatesForNode(node.left, indexes, totalRows)
+		if err != nil {
+			return nil, false, false, err
+		}
+		right, rightUsed, rightExact, err := candidatesForNode(node.right, indexes, totalRows)
+		if err != nil {
+			return nil, false, false, err
+		}
+		switch node.operator {
+		case LogicalAnd:
+			if leftUsed && rightUsed {
+				left.And(right)
+				return left, true, leftExact && rightExact, nil
+			}
+			if leftUsed {
+				return left, true, false, nil
+			}
+			if rightUsed {
+				return right, true, false, nil
+			}
+			return nil, false, false, nil
+		case LogicalOr:
+			if !leftUsed || !rightUsed {
+				return nil, false, false, nil
+			}
+			left.Or(right)
+			return left, true, leftExact && rightExact, nil
+		default:
+			return nil, false, false, fmt.Errorf("sql: invalid logical plan operator %d", node.operator)
+		}
+	default:
+		return nil, false, false, nil
+	}
 }
 
 type planNode interface {

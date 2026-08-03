@@ -31,8 +31,10 @@ func buildFilterPlan(filter string, schema CollectionSchema) (*dbsql.Plan, error
 	for index, field := range schema.Fields {
 		kind, array, supported := filterValueKind(field.DataType)
 		filterable := supported && field.IndexType() != IndexTypeFTS
+		indexed, rangeOptimized, extendedWildcard := filterIndexOptions(field, kind, filterable)
 		fields[index] = dbsql.Field{
 			Name: field.Name, Kind: kind, Array: array, Nullable: field.Nullable, Filterable: filterable,
+			Indexed: indexed, RangeOptimized: rangeOptimized, ExtendedWildcard: extendedWildcard,
 		}
 	}
 	filterSchema, err := dbsql.NewSchema(fields)
@@ -40,6 +42,25 @@ func buildFilterPlan(filter string, schema CollectionSchema) (*dbsql.Plan, error
 		return nil, fmt.Errorf("build filter schema: %w", err)
 	}
 	return dbsql.BuildPlan(filter, filterSchema)
+}
+
+func filterIndexOptions(field FieldSchema, kind dbsql.ValueKind, filterable bool) (indexed, rangeOptimized, extendedWildcard bool) {
+	if !filterable || kind == dbsql.ValueBinary || indexParamsNil(field.Index) || field.Index.IndexType() != IndexTypeInvert {
+		return false, false, false
+	}
+	var params InvertIndexParams
+	switch value := field.Index.(type) {
+	case InvertIndexParams:
+		params = value
+	case *InvertIndexParams:
+		if value == nil {
+			return false, false, false
+		}
+		params = *value
+	default:
+		return false, false, false
+	}
+	return true, params.EnableRangeOptimization, params.EnableExtendedWildcard
 }
 
 func filterValueKind(dataType DataType) (kind dbsql.ValueKind, array, supported bool) {
@@ -93,10 +114,56 @@ func evaluateFilterDocuments(ctx context.Context, plan *dbsql.Plan, documents []
 	if plan.AlwaysFalse() {
 		return func(uint64) bool { return false }, nil
 	}
-	fieldCount := len(plan.Fields())
+	fields := plan.Fields()
+	fieldCount := len(fields)
+	indexes := make(dbsql.IndexSet)
+	for _, field := range fields {
+		if !field.Indexed {
+			continue
+		}
+		if _, exists := indexes[field.Name]; exists {
+			continue
+		}
+		index, err := dbsql.NewInvertedIndex(field)
+		if err != nil {
+			return nil, err
+		}
+		indexes[field.Name] = index
+	}
+	if len(indexes) > 0 {
+		for row := range documents {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			document := &documents[row]
+			for name, index := range indexes {
+				field := index.Field()
+				raw, found := document.Fields[name]
+				value, err := toFilterValue(field, raw, found)
+				if err != nil {
+					return nil, fmt.Errorf("document %d field %q: %w", document.DocID, name, err)
+				}
+				if err := index.Add(uint64(row), value); err != nil {
+					return nil, err
+				}
+			}
+		}
+		for _, index := range indexes {
+			if err := index.Seal(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	candidates, candidatesUsed, _, err := plan.Candidates(indexes, uint64(len(documents)))
+	if err != nil {
+		return nil, err
+	}
 	for index := range documents {
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		if candidatesUsed && !candidates.Contains(uint64(index)) {
+			continue
 		}
 		document := &documents[index]
 		cache := make(map[string]dbsql.Value, fieldCount)

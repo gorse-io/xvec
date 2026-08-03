@@ -253,6 +253,9 @@ func TestNewSchemaValidationAndPlanDefensiveFields(t *testing.T) {
 	if _, err := NewSchema([]Field{{Name: "a", Filterable: true}}); err == nil {
 		t.Fatal("filterable invalid kind succeeded")
 	}
+	if _, err := NewSchema([]Field{{Name: "a", Kind: ValueString, Indexed: true}}); err == nil {
+		t.Fatal("unfilterable indexed field succeeded")
+	}
 	plan, err := BuildPlan("i32=1", testFilterSchema(t))
 	if err != nil {
 		t.Fatal(err)

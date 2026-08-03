@@ -106,6 +106,27 @@ func (b *Bitmap) Or(other *Bitmap) {
 	}
 }
 
+// And retains only bits also present in other.
+func (b *Bitmap) And(other *Bitmap) {
+	if other == nil {
+		b.mu.Lock()
+		clear(b.words)
+		b.mu.Unlock()
+		return
+	}
+	if b == other {
+		return
+	}
+	words := other.Snapshot()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	common := min(len(b.words), len(words))
+	for index := 0; index < common; index++ {
+		b.words[index] &= words[index]
+	}
+	clear(b.words[common:])
+}
+
 // AndNot clears every bit present in other.
 func (b *Bitmap) AndNot(other *Bitmap) {
 	if other == nil {

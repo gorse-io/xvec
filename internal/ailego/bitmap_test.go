@@ -59,6 +59,14 @@ func TestBitmap(t *testing.T) {
 	if bitmap.Contains(9) {
 		t.Fatal("Clone shares mutable storage")
 	}
+	clone.And(bitmap)
+	if clone.Contains(9) || clone.Count() != bitmap.Count() {
+		t.Fatal("And result is incorrect")
+	}
+	clone.And(nil)
+	if clone.Count() != 0 {
+		t.Fatal("And(nil) did not clear the bitmap")
+	}
 }
 
 func TestBitmapConcurrentAccess(t *testing.T) {

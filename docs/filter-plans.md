@@ -34,6 +34,14 @@ documents. Filter results are deterministic across Flush and reopen because
 they operate on decoded native document values rather than index-specific text
 encodings.
 
-This milestone uses forward evaluation. Scalar inverted-index selection and
-range/wildcard acceleration are the next independent unit; adding those paths
-must preserve the same plan results.
+Fields configured with an INVERT index also build exact snapshot-local
+postings. The planner intersects indexed `AND` branches, unions `OR` branches
+only when both are indexable, and can retain one indexed `AND` branch as a safe
+prefilter. Sorted dictionaries accelerate ranges; prefix LIKE is always
+indexable, while suffix and single-middle-wildcard routes require the extended
+wildcard option. General wildcard forms fall back to forward evaluation.
+
+All candidate rows are still evaluated by this typed plan. This preserves
+three-valued NULL behavior even for mixed indexed/unindexed expressions. The
+current storage and lifecycle boundary is detailed in
+[Scalar inverted candidate indexes](scalar-inverted.md).

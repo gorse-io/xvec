@@ -44,7 +44,10 @@ and group-by ranking across every live document version.
 The v0.2 branch now includes its SQL-style filter lexer, positioned parser,
 typed AST, exact scalar/array predicate runtime, schema analyzer, rewriter, and
 forward execution plans for dense, sparse, and group-by Flat queries. Scalar
-inverted indexes are the next staged unit.
+INVERT fields now provide snapshot-local exact postings, sorted range routing,
+array-length/contain candidates, and baseline-compatible optional extended
+wildcards, with every candidate forward-verified. Delete-by-filter is the next
+staged unit.
 Public APIs and on-disk formats are not stable before v1.0.
 
 The current library version is `v0.1.0`; its exact support boundary is recorded
@@ -102,6 +105,7 @@ are exercised by `go test ./...`.
 - [SQL filter parser](docs/sql-filter.md)
 - [Scalar filter evaluation](docs/filter-evaluation.md)
 - [Schema analysis and filter plans](docs/filter-plans.md)
+- [Scalar inverted candidate indexes](docs/scalar-inverted.md)
 
 ## License
 
