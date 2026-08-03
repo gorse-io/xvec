@@ -56,6 +56,9 @@ document with a nullable NULL or a numeric arithmetic-expression backfill while
 preserving its internal document ID. AlterColumn atomically renames or converts
 basic numeric fields with the same DocID-preserving rewrite protocol, and
 DropColumn physically removes supported numeric fields from that live snapshot.
+Optimize now atomically compacts the complete live snapshot into bounded
+contiguous-DocID segments, reclaims deleted and superseded versions, rotates
+the WAL and snapshots, and conservatively prunes obsolete native artifacts.
 Public APIs and on-disk formats are not stable before v1.0.
 
 The current library version is `v0.1.0`; its exact support boundary is recorded
@@ -120,6 +123,7 @@ are exercised by `go test ./...`.
 - [AddColumn](docs/add-column.md)
 - [AlterColumn](docs/alter-column.md)
 - [DropColumn](docs/drop-column.md)
+- [Optimize](docs/optimize.md)
 
 ## License
 

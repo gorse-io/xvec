@@ -103,6 +103,16 @@ failure removes the new artifacts and the old schema, WAL, and segments remain
 authoritative; after it changes, recovery sees only the complete rewritten
 version. Superseded and deleted record versions are no longer referenced.
 
+Optimize uses that rewrite protocol without changing the schema. Live
+documents are split at document-ID gaps and at `MaxDocsPerSegment`; the new
+primary-key snapshot maps the preserved IDs to their new segment IDs, the
+delete snapshot is empty, and the writing segment starts at the same monotonic
+next ID. After `CURRENT` commits, obsolete files matching the native segment,
+WAL, WAL-lock, and snapshot naming schemes are removed and their directories
+are synchronized. Unknown files and manifest generations are never selected
+for pruning. A crash during pruning leaves only harmless unreferenced files;
+even a no-op Optimize retries the cleanup.
+
 `.collection.lock` controls handle ownership across processes. A writable
 collection holds it exclusively for its lifetime. Read-only collections hold
 shared locks, allowing multiple readers while preventing a concurrent writer.

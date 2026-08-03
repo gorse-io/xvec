@@ -323,6 +323,31 @@ func TestCollectionRewriteRejectsStaleSnapshot(t *testing.T) {
 	}
 }
 
+func TestRewriteDocumentRunsHonorsGapsAndCapacity(t *testing.T) {
+	documents := []StoredDocument{
+		{DocID: 0}, {DocID: 1}, {DocID: 2},
+		{DocID: 4}, {DocID: 5}, {DocID: 8},
+	}
+	runs := rewriteDocumentRuns(documents, 2)
+	want := [][]uint64{{0, 1}, {2}, {4, 5}, {8}}
+	if len(runs) != len(want) {
+		t.Fatalf("runs = %#v", runs)
+	}
+	for runIndex := range runs {
+		if len(runs[runIndex]) != len(want[runIndex]) {
+			t.Fatalf("run %d = %#v", runIndex, runs[runIndex])
+		}
+		for documentIndex := range runs[runIndex] {
+			if runs[runIndex][documentIndex].DocID != want[runIndex][documentIndex] {
+				t.Fatalf("run %d = %#v", runIndex, runs[runIndex])
+			}
+		}
+	}
+	if runs := rewriteDocumentRuns(nil, 2); runs != nil {
+		t.Fatalf("empty runs = %#v", runs)
+	}
+}
+
 func TestCollectionReadOnlyRecoveryDoesNotRepairWAL(t *testing.T) {
 	dir := t.TempDir()
 	store, err := CreateCollection(context.Background(), dir, testCollectionSchema, CollectionOptions{})

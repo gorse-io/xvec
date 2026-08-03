@@ -28,5 +28,6 @@ routing cannot change SQL three-valued semantics.
 At this v0.2 development point, postings are built in memory from the
 collection's consistent live-document snapshot for each filtered query. They
 are not a new on-disk format and require no migration; Flush and reopen produce
-the same results. Later DDL and Optimize units will own durable index metadata,
-atomic rebuilds, and lifecycle management.
+the same results. DDL persists the INVERT parameters in the schema, and
+Optimize atomically compacts the live data from which exact postings are
+rebuilt; no separate posting file can become stale.

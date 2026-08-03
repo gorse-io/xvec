@@ -13,6 +13,9 @@ subject to compatible migration work throughout the 0.x series.
   validation, index-parameter migration, rollback, and reopen recovery.
 - Added atomic `DropColumn` with physical live-payload removal, index metadata
   removal, DocID preservation, rollback, and reopen recovery.
+- Added atomic `Optimize` for live-snapshot segment compaction, deletion and
+  superseded-version reclamation, DocID-preserving WAL/snapshot rotation,
+  conservative obsolete-artifact pruning, and idempotent retry.
 
 ## v0.1.0 - 2026-08-04
 

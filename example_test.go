@@ -286,3 +286,49 @@ func ExampleCollection_DropColumn() {
 	// Output:
 	// false
 }
+
+func ExampleCollection_Optimize() {
+	ctx := context.Background()
+	directory, err := os.MkdirTemp("", "zvec-optimize-example-")
+	if err != nil {
+		panic(err)
+	}
+	path := filepath.Join(directory, "books")
+	schema := zvec.NewCollectionSchema("books",
+		zvec.FieldSchema{Name: "rating", DataType: zvec.DataTypeInt32, Index: zvec.NewInvertIndexParams()},
+	)
+	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	if err != nil {
+		panic(err)
+	}
+	_, err = collection.Insert(ctx, []zvec.Document{
+		{PrimaryKey: "keep", Fields: map[string]any{"rating": int32(5)}},
+		{PrimaryKey: "remove", Fields: map[string]any{"rating": int32(1)}},
+	})
+	if err != nil {
+		panic(err)
+	}
+	if err := collection.Flush(ctx); err != nil {
+		panic(err)
+	}
+	if _, err := collection.Delete(ctx, []string{"remove"}); err != nil {
+		panic(err)
+	}
+	if err := collection.Optimize(ctx, zvec.OptimizeOptions{Concurrency: 2}); err != nil {
+		panic(err)
+	}
+	documents, err := collection.Fetch(ctx, []string{"keep", "remove"}, zvec.Projection{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(collection.Stats().DocumentCount)
+	fmt.Println(documents[0] != nil, documents[1] == nil)
+	if err := collection.Destroy(ctx); err != nil {
+		panic(err)
+	}
+	_ = os.Remove(directory)
+
+	// Output:
+	// 1
+	// true true
+}

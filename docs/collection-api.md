@@ -46,8 +46,12 @@ still return `ErrNotSupported`. `DropIndex` atomically clears scalar metadata
 or restores vector fields to Flat/IP. `AddColumn` atomically installs supported
 numeric fields and backfills the live snapshot. `AlterColumn` atomically
 renames or replaces basic numeric fields, and `DropColumn` atomically removes
-them. Optimize remains `ErrNotSupported` until its independent v0.2 unit is
-installed.
+them. `Optimize` atomically rewrites the current live snapshot, compacts
+contiguous document-ID runs up to the schema segment limit, reclaims deleted
+and superseded versions, and prunes obsolete native segment, WAL, and snapshot
+files. This v0.2 implementation rebuilds unquantized Flat and scalar INVERT
+runtime state; a collection that actually needs compaction returns
+`ErrNotSupported` when it contains a later index algorithm.
 
 WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
 publishes an immutable segment and rotates the WAL. `Open` can acquire either

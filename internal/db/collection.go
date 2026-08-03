@@ -361,6 +361,233 @@ func (c *CollectionStore) DocumentCount() uint64 {
 	return uint64(c.manager.PrimaryKeys().Count())
 }
 
+// OptimizationNeeded reports whether rewriting would flush mutable documents,
+// remove deleted versions, or reduce the immutable layout to the canonical
+// contiguous-ID runs bounded by SegmentMaxDocuments.
+func (c *CollectionStore) OptimizationNeeded(ctx context.Context) (bool, error) {
+	if c == nil {
+		return false, errors.New("db: nil collection")
+	}
+	if ctx == nil {
+		return false, errors.New("db: nil optimization context")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.closed {
+		return false, ErrCollectionClosed
+	}
+	if writing := c.manager.Writing(); writing != nil && len(writing.Documents()) != 0 {
+		return true, nil
+	}
+	if c.manager.Deletes().Count() != 0 {
+		return true, nil
+	}
+	documents, err := c.manager.LiveDocuments(ctx)
+	if err != nil {
+		return false, err
+	}
+	expected := rewriteDocumentRuns(documents, c.versions.Current().SegmentMaxDocuments)
+	actual := c.manager.ImmutableMetadata()
+	if len(expected) != len(actual) {
+		return true, nil
+	}
+	for index := range expected {
+		run := expected[index]
+		metadata := actual[index]
+		if metadata.MinDocID != run[0].DocID || metadata.MaxDocID != run[len(run)-1].DocID || metadata.DocCount != uint64(len(run)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// PruneObsoleteArtifacts removes only storage artifacts owned by this package
+// that are no longer referenced by the current manifest. CURRENT is already
+// the commit point, so an interrupted prune is harmless and can be retried.
+// Unknown files and manifest generations are deliberately left untouched.
+func (c *CollectionStore) PruneObsoleteArtifacts(ctx context.Context) error {
+	if c == nil {
+		return errors.New("db: nil collection")
+	}
+	if ctx == nil {
+		return errors.New("db: nil artifact prune context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.requireWritableLocked(); err != nil {
+		return err
+	}
+
+	manifest := c.versions.Current()
+	keep := make(map[string]struct{})
+	keepRelative := func(relative string) {
+		if relative == "" {
+			return
+		}
+		keep[filepath.Clean(collectionPath(c.dir, relative))] = struct{}{}
+	}
+	for _, segment := range manifest.PersistedSegments {
+		for _, relative := range segment.Files {
+			keepRelative(relative)
+		}
+	}
+	if manifest.WritingSegment != nil {
+		for _, relative := range manifest.WritingSegment.Files {
+			keepRelative(relative)
+			keep[filepath.Clean(collectionPath(c.dir, relative)+".lock")] = struct{}{}
+		}
+	}
+	keepRelative(primarySnapshotName(manifest.IDMapGeneration))
+	keepRelative(deleteSnapshotName(manifest.DeleteSnapshotGeneration))
+
+	segmentRoot := filepath.Join(c.dir, "segments")
+	segmentDirectories, err := ownedSubdirectories(segmentRoot)
+	if err != nil {
+		return err
+	}
+	candidates := make([]string, 0)
+	for _, directory := range segmentDirectories {
+		matches, matchErr := ownedFiles(directory, "data-*.seg")
+		if matchErr != nil {
+			return matchErr
+		}
+		candidates = append(candidates, matches...)
+	}
+	for _, specification := range []struct {
+		directory string
+		patterns  []string
+	}{
+		{filepath.Join(c.dir, "wal"), []string{"*.wal.lock", "*.wal"}},
+		{filepath.Join(c.dir, "snapshots"), []string{"primary-*.snap", "delete-*.snap"}},
+	} {
+		matches, matchErr := ownedFiles(specification.directory, specification.patterns...)
+		if matchErr != nil {
+			return matchErr
+		}
+		candidates = append(candidates, matches...)
+	}
+	touchedDirectories := make(map[string]struct{})
+	for _, name := range candidates {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		name = filepath.Clean(name)
+		if _, retained := keep[name]; retained {
+			continue
+		}
+		info, err := os.Lstat(name)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("db: inspect obsolete artifact %q: %w", name, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("db: refuse to prune non-regular artifact %q", name)
+		}
+		if err := os.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("db: remove obsolete artifact %q: %w", name, err)
+		}
+		touchedDirectories[filepath.Dir(name)] = struct{}{}
+	}
+
+	// Persist file removals before attempting the cosmetic removal of empty
+	// segment directories. Directory fsync is a no-op where unsupported.
+	for directory := range touchedDirectories {
+		if err := syncDirectory(directory); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("db: sync pruned artifact directory %q: %w", directory, err)
+		}
+	}
+	removedDirectory := false
+	for _, directory := range segmentDirectories {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		info, err := os.Lstat(directory)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("db: inspect segment directory %q: %w", directory, err)
+		}
+		if !info.IsDir() {
+			continue
+		}
+		if err := os.Remove(directory); err == nil {
+			removedDirectory = true
+		} else if !errors.Is(err, os.ErrNotExist) {
+			// A non-empty directory contains either the current segment or an
+			// unknown file that this conservative prune must retain.
+			continue
+		}
+	}
+	if removedDirectory {
+		if err := syncDirectory(segmentRoot); err != nil {
+			return fmt.Errorf("db: sync segment directory: %w", err)
+		}
+	}
+	return nil
+}
+
+func ownedSubdirectories(directory string) ([]string, error) {
+	entries, err := ownedDirectoryEntries(directory)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink == 0 && entry.IsDir() {
+			result = append(result, filepath.Join(directory, entry.Name()))
+		}
+	}
+	return result, nil
+}
+
+func ownedFiles(directory string, patterns ...string) ([]string, error) {
+	entries, err := ownedDirectoryEntries(directory)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0)
+	for _, entry := range entries {
+		for _, pattern := range patterns {
+			matched, matchErr := filepath.Match(pattern, entry.Name())
+			if matchErr != nil {
+				return nil, fmt.Errorf("db: match artifact pattern %q: %w", pattern, matchErr)
+			}
+			if matched {
+				result = append(result, filepath.Join(directory, entry.Name()))
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func ownedDirectoryEntries(directory string) ([]os.DirEntry, error) {
+	info, err := os.Lstat(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: inspect artifact directory %q: %w", directory, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("db: refuse to scan non-directory artifact path %q", directory)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, fmt.Errorf("db: read artifact directory %q: %w", directory, err)
+	}
+	return entries, nil
+}
+
 // Flush atomically turns the non-empty write segment into an immutable segment,
 // snapshots key/deletion state, publishes a new manifest, and rotates the WAL.
 func (c *CollectionStore) Flush(ctx context.Context) error {

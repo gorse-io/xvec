@@ -248,18 +248,6 @@ func TestCollectionUnsupportedIndexesReturnNotSupported(t *testing.T) {
 	}
 }
 
-func TestCollectionOptimizeReturnsNotSupported(t *testing.T) {
-	ctx := context.Background()
-	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "later-api"), testPublicCollectionSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer collection.Close()
-	if err := collection.Optimize(ctx, OptimizeOptions{}); !errors.Is(err, ErrNotSupported) {
-		t.Fatalf("Optimize = %v", err)
-	}
-}
-
 func TestCollectionReplaysPublicDocumentPayloadWithoutFlush(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "recovery")
