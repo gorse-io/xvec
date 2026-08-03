@@ -124,6 +124,7 @@ are exercised by `go test ./...`.
 - [AlterColumn](docs/alter-column.md)
 - [DropColumn](docs/drop-column.md)
 - [Optimize](docs/optimize.md)
+- [Atomic DDL and Optimize recovery](docs/atomic-recovery.md)
 
 ## License
 

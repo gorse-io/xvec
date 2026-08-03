@@ -16,6 +16,9 @@ subject to compatible migration work throughout the 0.x series.
 - Added atomic `Optimize` for live-snapshot segment compaction, deletion and
   superseded-version reclamation, DocID-preserving WAL/snapshot rotation,
   conservative obsolete-artifact pruning, and idempotent retry.
+- Added a subprocess crash-recovery matrix for CreateIndex, DropIndex,
+  AddColumn, AlterColumn, DropColumn, and Optimize on both sides of the
+  `CURRENT` commit point, including post-commit cleanup retry.
 
 ## v0.1.0 - 2026-08-04
 

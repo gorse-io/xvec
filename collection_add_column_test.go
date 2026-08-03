@@ -17,14 +17,9 @@ package zvec
 import (
 	"context"
 	"errors"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
-	"time"
-
-	"github.com/gorse-io/zvec/internal/ailego"
 )
 
 func TestAddColumnBackfillsAtomicallyAndSurvivesReopen(t *testing.T) {
@@ -227,114 +222,6 @@ func TestAddColumnRejectsReadOnlyHandle(t *testing.T) {
 	if !errors.Is(err, ErrPermissionDenied) {
 		t.Fatalf("read-only AddColumn = %v", err)
 	}
-}
-
-func TestAddColumnCrashRecovery(t *testing.T) {
-	if path := os.Getenv("ZVEC_ADD_COLUMN_CRASH_PATH"); path != "" {
-		collection, err := Open(context.Background(), path, NewCollectionOptions())
-		if err != nil {
-			os.Exit(91)
-		}
-		field := FieldSchema{Name: "crash_added", DataType: DataTypeInt64}
-		if err := collection.AddColumn(context.Background(), field, "count + 1", AddColumnOptions{Concurrency: 2}); err != nil {
-			os.Exit(92)
-		}
-		os.Exit(93)
-	}
-	createClosed := func(t *testing.T) string {
-		t.Helper()
-		path := filepath.Join(t.TempDir(), "crash-add-column")
-		collection, err := CreateAndOpen(context.Background(), path, addColumnSchema(), NewCollectionOptions())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := collection.Insert(context.Background(), []Document{addColumnDocument("one", 1, []float32{1, 0})}); err != nil {
-			t.Fatal(err)
-		}
-		if err := collection.Close(); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
-	commandFor := func(path string) *exec.Cmd {
-		command := exec.Command(os.Args[0], "-test.run=^TestAddColumnCrashRecovery$")
-		command.Env = append(os.Environ(), "ZVEC_ADD_COLUMN_CRASH_PATH="+path)
-		return command
-	}
-
-	t.Run("after commit", func(t *testing.T) {
-		path := createClosed(t)
-		err := commandFor(path).Run()
-		var exitError *exec.ExitError
-		if !errors.As(err, &exitError) || exitError.ExitCode() != 93 {
-			t.Fatalf("child exit = %v", err)
-		}
-		collection, err := Open(context.Background(), path, NewCollectionOptions())
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer collection.Close()
-		documents, err := collection.Fetch(context.Background(), []string{"one"}, Projection{})
-		if err != nil || documents[0] == nil || documents[0].Fields["crash_added"] != int64(2) {
-			t.Fatalf("recovered committed AddColumn = %#v, %v", documents, err)
-		}
-	})
-
-	t.Run("before commit", func(t *testing.T) {
-		path := createClosed(t)
-		versionLock, err := ailego.AcquireFileLock(context.Background(), filepath.Join(path, ".version.lock"), ailego.LockExclusive)
-		if err != nil {
-			t.Fatal(err)
-		}
-		command := commandFor(path)
-		if err := command.Start(); err != nil {
-			_ = versionLock.Close()
-			t.Fatal(err)
-		}
-		deadline := time.NewTimer(5 * time.Second)
-		ticker := time.NewTicker(10 * time.Millisecond)
-		artifactReady := false
-		for !artifactReady {
-			select {
-			case <-ticker.C:
-				artifacts, globErr := filepath.Glob(filepath.Join(path, "segments", "*", "*.seg"))
-				if globErr != nil {
-					_ = command.Process.Kill()
-					_ = command.Wait()
-					_ = versionLock.Close()
-					t.Fatal(globErr)
-				}
-				artifactReady = len(artifacts) > 0
-			case <-deadline.C:
-				_ = command.Process.Kill()
-				_ = command.Wait()
-				_ = versionLock.Close()
-				t.Fatal("child did not reach the pre-commit artifact boundary")
-			}
-		}
-		ticker.Stop()
-		deadline.Stop()
-		if err := command.Process.Kill(); err != nil {
-			_ = versionLock.Close()
-			t.Fatal(err)
-		}
-		_ = command.Wait()
-		if err := versionLock.Close(); err != nil {
-			t.Fatal(err)
-		}
-		collection, err := Open(context.Background(), path, NewCollectionOptions())
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer collection.Close()
-		if _, found := collection.Schema().Field("crash_added"); found {
-			t.Fatal("pre-commit crash published the added field")
-		}
-		documents, err := collection.Fetch(context.Background(), []string{"one"}, Projection{})
-		if err != nil || documents[0] == nil || documents[0].Fields["count"] != int32(1) {
-			t.Fatalf("recovered pre-commit AddColumn = %#v, %v", documents, err)
-		}
-	})
 }
 
 func addColumnSchema() CollectionSchema {

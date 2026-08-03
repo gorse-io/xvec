@@ -113,6 +113,26 @@ are synchronized. Unknown files and manifest generations are never selected
 for pruning. A crash during pruning leaves only harmless unreferenced files;
 even a no-op Optimize retries the cleanup.
 
+## DDL and Optimize crash boundary
+
+CreateIndex and DropIndex publish schema-only manifest generations after their
+full live-snapshot validation completes. AddColumn, AlterColumn, DropColumn,
+and Optimize publish a manifest only after every replacement segment,
+primary-key/delete snapshot, and WAL has been installed and synchronized. All
+six operations therefore share the same binary recovery rule: the old CURRENT
+means the old schema and files remain authoritative; the new CURRENT means the
+entire new version is authoritative. Recovery never combines a schema from one
+generation with payloads or index parameters from another.
+
+The crash suite holds the cross-process version lock while a child operation is
+inside publication, verifies CURRENT is byte-for-byte unchanged, and kills the
+child. Data-rewriting operations additionally prove their unreferenced new
+segments are ignored. A complementary child is killed after CURRENT advances
+but before its collection handle closes; reopen verifies the new schema,
+payloads, document IDs, query results, and next write. Optimize also injects a
+post-commit pruning failure and verifies that a no-op retry reclaims the
+remaining obsolete artifacts without publishing another manifest.
+
 `.collection.lock` controls handle ownership across processes. A writable
 collection holds it exclusively for its lifetime. Read-only collections hold
 shared locks, allowing multiple readers while preventing a concurrent writer.
