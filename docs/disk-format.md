@@ -56,3 +56,12 @@ global document IDs. Both use a common versioned header with item count,
 payload length, payload CRC32C, and header CRC32C. Snapshots and segments are
 written as immutable files and atomically installed without replacing an
 existing generation.
+
+## WAL operations
+
+Collection mutations inside WAL records use a separate `ZOP1` frame. It stores
+the operation kind, target segment ID, assigned global document ID, primary-key
+and document-payload lengths, and a CRC32C covering the header, key, and
+payload. Insert reserves the next contiguous document ID, synchronizes this WAL
+operation, and only then applies the document to the write segment and
+primary-key map.

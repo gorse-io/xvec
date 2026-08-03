@@ -102,6 +102,32 @@ func (s *WriteSegment) ReservedRange() (uint64, uint64) {
 
 // Append stores a cloned payload and assigns the next contiguous document ID.
 func (s *WriteSegment) Append(ctx context.Context, primaryKey string, payload []byte) (StoredDocument, error) {
+	return s.append(ctx, nil, primaryKey, payload)
+}
+
+// NextDocumentID returns the ID that the next append will receive.
+func (s *WriteSegment) NextDocumentID() (uint64, error) {
+	if s == nil {
+		return 0, errors.New("db: nil write segment")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.sealed {
+		return 0, ErrSegmentSealed
+	}
+	if uint64(len(s.docs)) >= s.maxDocs {
+		return 0, ErrSegmentFull
+	}
+	return s.minDocID + uint64(len(s.docs)), nil
+}
+
+// AppendExpected appends only if expectedDocID is still next. It lets the WAL
+// record and in-memory application agree on the assigned global ID.
+func (s *WriteSegment) AppendExpected(ctx context.Context, expectedDocID uint64, primaryKey string, payload []byte) (StoredDocument, error) {
+	return s.append(ctx, &expectedDocID, primaryKey, payload)
+}
+
+func (s *WriteSegment) append(ctx context.Context, expectedDocID *uint64, primaryKey string, payload []byte) (StoredDocument, error) {
 	if s == nil {
 		return StoredDocument{}, errors.New("db: nil write segment")
 	}
@@ -125,8 +151,12 @@ func (s *WriteSegment) Append(ctx context.Context, primaryKey string, payload []
 	if uint64(len(s.docs)) >= s.maxDocs {
 		return StoredDocument{}, ErrSegmentFull
 	}
+	nextDocID := s.minDocID + uint64(len(s.docs))
+	if expectedDocID != nil && *expectedDocID != nextDocID {
+		return StoredDocument{}, fmt.Errorf("db: next document ID is %d, expected %d", nextDocID, *expectedDocID)
+	}
 	doc := StoredDocument{
-		DocID: s.minDocID + uint64(len(s.docs)), PrimaryKey: primaryKey,
+		DocID: nextDocID, PrimaryKey: primaryKey,
 		Payload: slices.Clone(payload),
 	}
 	s.docs = append(s.docs, doc)
