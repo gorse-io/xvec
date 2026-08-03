@@ -23,7 +23,28 @@ github.com/gorse-io/zvec
 
 ## Status
 
-The repository currently contains the initial project scaffold. Public APIs and on-disk formats are not stable before v1.0.
+Development is staged in independently tested changes. The public error model,
+baseline-compatible enums, and internal package boundaries are in place; storage
+and collection operations are not implemented yet. Public APIs and on-disk
+formats are not stable before v1.0.
+
+## Architecture
+
+The implementation keeps three internal layers:
+
+- `internal/ailego`: portable I/O, storage, concurrency, and math primitives.
+- `internal/core`: index builders, searchers, streamers, providers, refiners,
+  reformers, and index algorithms.
+- `internal/db`: collection lifecycle, schemas, segments, manifests, and query
+  orchestration.
+
+The root `zvec` package is the only public API. Public enum values are locked to
+the C++ public headers at commit `58375ff`; they are not copied blindly from the
+legacy protobuf, whose DiskANN and Vamana values differ. The Go implementation
+uses a separate, versioned disk format and does not read C++ collection files.
+
+Compatibility fixtures derived from the pinned baseline live in `testdata` and
+are exercised by `go test ./...`.
 
 ## License
 

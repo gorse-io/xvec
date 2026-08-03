@@ -1,0 +1,123 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "source": "src/include/zvec/db/type.h and src/include/zvec/db/status.h",
+  "enums": {
+    "IndexType": {
+      "UNDEFINED": 0,
+      "HNSW": 1,
+      "IVF": 2,
+      "FLAT": 3,
+      "HNSW_RABITQ": 4,
+      "DISKANN": 5,
+      "VAMANA": 6,
+      "INVERT": 10,
+      "FTS": 11
+    },
+    "DataType": {
+      "UNDEFINED": 0,
+      "BINARY": 1,
+      "STRING": 2,
+      "BOOL": 3,
+      "INT32": 4,
+      "INT64": 5,
+      "UINT32": 6,
+      "UINT64": 7,
+      "FLOAT": 8,
+      "DOUBLE": 9,
+      "VECTOR_BINARY32": 20,
+      "VECTOR_BINARY64": 21,
+      "VECTOR_FP16": 22,
+      "VECTOR_FP32": 23,
+      "VECTOR_FP64": 24,
+      "VECTOR_INT4": 25,
+      "VECTOR_INT8": 26,
+      "VECTOR_INT16": 27,
+      "SPARSE_VECTOR_FP16": 30,
+      "SPARSE_VECTOR_FP32": 31,
+      "ARRAY_BINARY": 40,
+      "ARRAY_STRING": 41,
+      "ARRAY_BOOL": 42,
+      "ARRAY_INT32": 43,
+      "ARRAY_INT64": 44,
+      "ARRAY_UINT32": 45,
+      "ARRAY_UINT64": 46,
+      "ARRAY_FLOAT": 47,
+      "ARRAY_DOUBLE": 48
+    },
+    "QuantizeType": {
+      "UNDEFINED": 0,
+      "FP16": 1,
+      "INT8": 2,
+      "INT4": 3,
+      "RABITQ": 4
+    },
+    "MetricType": {
+      "UNDEFINED": 0,
+      "L2": 1,
+      "IP": 2,
+      "COSINE": 3,
+      "MIPSL2": 4
+    },
+    "Operator": {
+      "INSERT": 0,
+      "UPSERT": 1,
+      "UPDATE": 2,
+      "DELETE": 3
+    },
+    "CompareOp": {
+      "NONE": 0,
+      "EQ": 1,
+      "NE": 2,
+      "LT": 3,
+      "LE": 4,
+      "GT": 5,
+      "GE": 6,
+      "LIKE": 7,
+      "CONTAIN_ALL": 8,
+      "CONTAIN_ANY": 9,
+      "NOT_CONTAIN_ALL": 10,
+      "NOT_CONTAIN_ANY": 11,
+      "IS_NULL": 12,
+      "IS_NOT_NULL": 13,
+      "HAS_PREFIX": 14,
+      "HAS_SUFFIX": 15
+    },
+    "RelationOp": {
+      "NONE": 0,
+      "AND": 1,
+      "OR": 2
+    },
+    "BlockType": {
+      "UNDEFINED": 0,
+      "SCALAR": 1,
+      "SCALAR_INDEX": 2,
+      "VECTOR_INDEX": 3,
+      "VECTOR_INDEX_QUANTIZE": 4,
+      "FTS_INDEX": 5
+    },
+    "FileFormat": {
+      "UNKNOWN": 0,
+      "IPC": 1,
+      "PARQUET": 2
+    },
+    "ColumnOp": {
+      "UNDEFINED": 0,
+      "ADD": 1,
+      "ALTER": 2,
+      "DROP": 3
+    },
+    "ErrorCode": {
+      "OK": 0,
+      "NOT_FOUND": 1,
+      "ALREADY_EXISTS": 2,
+      "INVALID_ARGUMENT": 3,
+      "PERMISSION_DENIED": 4,
+      "FAILED_PRECONDITION": 5,
+      "RESOURCE_EXHAUSTED": 6,
+      "UNAVAILABLE": 7,
+      "INTERNAL_ERROR": 8,
+      "NOT_SUPPORTED": 9,
+      "UNKNOWN": 10
+    }
+  }
+}
