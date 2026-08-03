@@ -26,8 +26,9 @@ github.com/gorse-io/zvec
 Development is staged in independently tested changes. The public error model,
 baseline-compatible enums, explicit vector types, validated schemas and index
 parameters, internal package boundaries, and portable low-level storage
-primitives are in place; collection operations are not implemented yet. Public
-APIs and on-disk formats are not stable before v1.0.
+primitives are in place. Exact L2, inner-product, cosine, and MIPS-L2 scoring
+plus deterministic batch top-k are also implemented; collection operations are
+not implemented yet. Public APIs and on-disk formats are not stable before v1.0.
 
 ## Schema example
 
