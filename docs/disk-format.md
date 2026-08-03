@@ -24,3 +24,19 @@ Manifest writers are serialized by `.version.lock`. A manager also verifies
 that `CURRENT` still names the generation it opened, so stale writers fail with
 a version conflict instead of losing a newer update. Published files are never
 rewritten in place.
+
+## Write-ahead log
+
+A WAL begins with a 32-byte `ZVECWAL` header containing its codec version,
+header size, maximum record size, reserved fields, and a CRC32C header checksum.
+Each record has its own `ZREC` magic, codec version, header size, monotonically
+increasing LSN, payload length, payload CRC32C, header CRC32C, and reserved
+field. Payloads are non-empty and limited to 4 MiB.
+
+Recovery validates the complete log before it can be appended. An incomplete
+final record header or a header-valid but incomplete final payload is treated as
+a crashed append and truncated back to the preceding record. Invalid magic,
+versions, LSNs, lengths, reserved fields, header checksums, or the checksum of a
+complete payload are reported as corruption and are never silently truncated.
+Writers hold a sidecar advisory lock, and readers replay a stable valid-prefix
+snapshot through an independent file handle.

@@ -28,8 +28,9 @@ baseline-compatible enums, explicit vector types, validated schemas and index
 parameters, internal package boundaries, and portable low-level storage
 primitives are in place. Exact L2, inner-product, cosine, and MIPS-L2 scoring
 plus deterministic batch top-k are also implemented. Versioned, checksummed
-manifests have an atomic commit point; collection operations are not implemented
-yet. Public APIs and on-disk formats are not stable before v1.0.
+manifests have an atomic commit point, and the checksummed WAL repairs only
+incomplete crash tails while rejecting corruption. Collection operations are
+not implemented yet. Public APIs and on-disk formats are not stable before v1.0.
 
 ## Schema example
 
