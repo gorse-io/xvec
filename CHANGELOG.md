@@ -18,6 +18,10 @@ subject to compatible migration work throughout the 0.x series.
   k-means++ initialization, metric-aware parallel assignment, FP64 ordered
   centroid accumulation, explicit empty-cluster policies, spherical updates,
   immutable models, classification, fuzz coverage, and a training benchmark.
+- Added one-shot unquantized IVF construction with public-aligned defaults,
+  deterministic centroid training and list assignment, empty-index support,
+  retryable cancellation, contiguous original-vector ownership, immutable list
+  inspection, and the `DenseProvider` contract for later exact refinement.
 
 ## v0.2.0 - 2026-08-04
 

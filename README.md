@@ -69,9 +69,10 @@ Public APIs and on-disk formats are not stable before v1.0.
 The current development branch also contains internal scalar-quantization
 kernels, reversible FHT/Kac rotation, exact original-vector candidate
 refinement, and deterministic k-means training for the forthcoming v0.3
-indexes. They are intentionally not exposed as a quantized collection
-execution path before those indexes can build, persist, reopen, and search
-without fallback.
+indexes. Deterministic unquantized IVF construction and list assignment are
+also present internally. These pieces are intentionally not exposed as a
+collection execution path before the indexes can search, persist, reopen, and
+stream writes without fallback.
 
 The current library version is `v0.2.0`; its exact support boundary is recorded
 in the [v0.2 capability matrix](docs/v0.2.md) and [changelog](CHANGELOG.md).
@@ -141,6 +142,7 @@ are exercised by `go test ./...`.
 - [Scalar vector quantization](docs/scalar-quantization.md)
 - [Rotation preprocessing and refinement](docs/rotation-refinement.md)
 - [K-means training framework](docs/kmeans.md)
+- [IVF construction](docs/ivf-build.md)
 
 ## License
 
