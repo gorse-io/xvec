@@ -27,8 +27,9 @@ Development is staged in independently tested changes. The public error model,
 baseline-compatible enums, explicit vector types, validated schemas and index
 parameters, internal package boundaries, and portable low-level storage
 primitives are in place. Exact L2, inner-product, cosine, and MIPS-L2 scoring
-plus deterministic batch top-k are also implemented; collection operations are
-not implemented yet. Public APIs and on-disk formats are not stable before v1.0.
+plus deterministic batch top-k are also implemented. Versioned, checksummed
+manifests have an atomic commit point; collection operations are not implemented
+yet. Public APIs and on-disk formats are not stable before v1.0.
 
 ## Schema example
 
@@ -66,6 +67,8 @@ The root `zvec` package is the only public API. Public enum values are locked to
 the C++ public headers at commit `58375ff`; they are not copied blindly from the
 legacy protobuf, whose DiskANN and Vamana values differ. The Go implementation
 uses a separate, versioned disk format and does not read C++ collection files.
+The native format and its atomic manifest protocol are documented in
+[`docs/disk-format.md`](docs/disk-format.md).
 
 Compatibility fixtures derived from the pinned baseline live in `testdata` and
 are exercised by `go test ./...`.
