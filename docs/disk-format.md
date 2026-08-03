@@ -12,6 +12,10 @@ Each metadata snapshot is stored in an immutable file named
 disk-format version, header size, generation, JSON payload length, and CRC32C of
 the payload. The JSON contains schema bytes, persisted segment capacity,
 segment metadata, snapshot generations, and the next segment ID.
+Newer format-1 manifests also persist the first document ID reserved by the
+current writing segment. Readers still derive that value for older manifests;
+the explicit field prevents ID reuse when a rewrite reclaims the highest
+deleted or superseded versions.
 
 `CURRENT` is the commit point. It is itself framed and checksummed and names one
 manifest. Publication writes and synchronizes the immutable manifest first,
@@ -88,6 +92,16 @@ synchronizes the WAL and does not create a new manifest generation.
 Artifact names include their segment or snapshot generation. A failed retry
 never overwrites an immutable file. Unreferenced artifacts and higher-numbered
 orphan manifests are ignored during recovery.
+
+Schema-changing data rewrites use the same commit protocol. The writer builds
+new immutable segments from the complete live snapshot, writes fresh
+primary-key and empty deletion snapshots, creates a fresh WAL, and publishes a
+manifest that names all of them together with the new schema. Live document IDs
+are preserved, including gaps, while the next writable ID remains monotonic.
+Contiguous ID runs become independent segments. Before `CURRENT` changes, a
+failure removes the new artifacts and the old schema, WAL, and segments remain
+authoritative; after it changes, recovery sees only the complete rewritten
+version. Superseded and deleted record versions are no longer referenced.
 
 `.collection.lock` controls handle ownership across processes. A writable
 collection holds it exclusively for its lifetime. Read-only collections hold

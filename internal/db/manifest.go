@@ -67,6 +67,7 @@ type Manifest struct {
 	SegmentMaxDocuments      uint64            `json:"segment_max_documents"`
 	PersistedSegments        []SegmentMetadata `json:"persisted_segments,omitempty"`
 	WritingSegment           *SegmentMetadata  `json:"writing_segment,omitempty"`
+	WritingSegmentStartDocID uint64            `json:"writing_segment_start_doc_id,omitempty"`
 	IDMapGeneration          uint64            `json:"id_map_generation"`
 	DeleteSnapshotGeneration uint64            `json:"delete_snapshot_generation"`
 	NextSegmentID            uint64            `json:"next_segment_id"`

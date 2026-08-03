@@ -4,6 +4,12 @@ All notable changes to the native Go implementation are documented here. The
 project follows semantic versioning; public APIs and the disk format remain
 subject to compatible migration work throughout the 0.x series.
 
+## Unreleased
+
+- Added atomic `AddColumn` for basic numeric fields, including concurrent
+  arithmetic-expression or nullable-NULL backfill, DocID-preserving live data
+  rewrite, failure rollback, and reopen recovery.
+
 ## v0.1.0 - 2026-08-04
 
 - Added a pure-Go, no-CGO collection lifecycle with atomic versioned manifests,

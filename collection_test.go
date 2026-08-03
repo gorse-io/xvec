@@ -256,9 +256,6 @@ func TestCollectionFutureMutationsReturnNotSupported(t *testing.T) {
 	}
 	defer collection.Close()
 	operations := []func() error{
-		func() error {
-			return collection.AddColumn(ctx, NewField("extra", DataTypeString), "", AddColumnOptions{})
-		},
 		func() error { return collection.AlterColumn(ctx, "title", "name", nil, AlterColumnOptions{}) },
 		func() error { return collection.DropColumn(ctx, "rating") },
 		func() error { return collection.Optimize(ctx, OptimizeOptions{}) },

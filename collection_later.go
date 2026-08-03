@@ -29,11 +29,6 @@ type AlterColumnOptions struct{ Concurrency int }
 // OptimizeOptions controls segment-optimization concurrency.
 type OptimizeOptions struct{ Concurrency int }
 
-// AddColumn will atomically add and backfill a field in v0.2.
-func (c *Collection) AddColumn(ctx context.Context, field FieldSchema, expression string, options AddColumnOptions) error {
-	return c.unsupportedMutation(ctx, "add column", "AddColumn requires the v0.2 DDL executor")
-}
-
 // AlterColumn will atomically rename or replace a field in v0.2.
 func (c *Collection) AlterColumn(ctx context.Context, column, rename string, field *FieldSchema, options AlterColumnOptions) error {
 	return c.unsupportedMutation(ctx, "alter column", "AlterColumn requires the v0.2 DDL executor")

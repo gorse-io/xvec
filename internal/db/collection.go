@@ -226,6 +226,12 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 			nextDocID = max(nextDocID, metadata.MaxDocID+1)
 		}
 	}
+	if manifest.WritingSegmentStartDocID != 0 {
+		if manifest.WritingSegmentStartDocID < nextDocID {
+			return fail(fmt.Errorf("%w: writing segment starts at document %d before persisted document %d", ErrCollectionCorrupt, manifest.WritingSegmentStartDocID, nextDocID), nil)
+		}
+		nextDocID = manifest.WritingSegmentStartDocID
+	}
 	writing, err := NewWriteSegment(manifest.WritingSegment.ID, nextDocID, manifest.SegmentMaxDocuments)
 	if err != nil {
 		return fail(fmt.Errorf("%w: create writing segment: %v", ErrCollectionCorrupt, err), nil)
@@ -462,6 +468,7 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 	nextManifest := current.Clone()
 	nextManifest.PersistedSegments = append(nextManifest.PersistedSegments, immutable.Metadata())
 	nextManifest.WritingSegment = &SegmentMetadata{ID: current.NextSegmentID, Files: []string{walRelative}}
+	nextManifest.WritingSegmentStartDocID = lastDocID + 1
 	nextManifest.IDMapGeneration = snapshotGeneration
 	nextManifest.DeleteSnapshotGeneration = snapshotGeneration
 	nextManifest.NextSegmentID++
@@ -526,6 +533,263 @@ func (c *CollectionStore) PublishSchema(ctx context.Context, schema json.RawMess
 	_, publishErr := c.versions.Publish(ctx, next)
 	committed = c.versions.Current().Generation != current.Generation
 	return committed, publishErr
+}
+
+// RewriteDocuments atomically replaces every live document payload together
+// with the collection schema. Document IDs and primary keys must exactly match
+// the current live snapshot in ascending document-ID order. Superseded and
+// deleted versions are reclaimed by the rewrite, while the next document ID
+// remains monotonic. committed reports whether CURRENT reached the new
+// generation even if a post-commit sync or old-WAL close reports an error.
+func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawMessage, documents []StoredDocument) (committed bool, err error) {
+	if c == nil {
+		return false, errors.New("db: nil collection")
+	}
+	if ctx == nil {
+		return false, errors.New("db: nil rewrite context")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := validateSchemaJSON(schema); err != nil {
+		return false, err
+	}
+	documents = cloneDocuments(documents)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.requireWritableLocked(); err != nil {
+		return false, err
+	}
+	currentLive, err := c.manager.LiveDocuments(ctx)
+	if err != nil {
+		return false, err
+	}
+	if len(documents) != len(currentLive) {
+		return false, fmt.Errorf("db: rewrite has %d documents, current snapshot has %d", len(documents), len(currentLive))
+	}
+	keys := make(map[string]struct{}, len(documents))
+	for index := range documents {
+		document := &documents[index]
+		current := &currentLive[index]
+		if document.DocID != current.DocID || document.PrimaryKey != current.PrimaryKey {
+			return false, fmt.Errorf("db: rewrite document %d does not match current snapshot", index)
+		}
+		if err := validatePrimaryKey(document.PrimaryKey); err != nil {
+			return false, err
+		}
+		if len(document.Payload) > MaxDocumentPayloadSize {
+			return false, fmt.Errorf("db: rewrite document %d payload is too large", document.DocID)
+		}
+		if _, exists := keys[document.PrimaryKey]; exists {
+			return false, fmt.Errorf("db: rewrite contains duplicate primary key %q", document.PrimaryKey)
+		}
+		keys[document.PrimaryKey] = struct{}{}
+	}
+	if err := c.wal.Sync(ctx); err != nil {
+		return false, err
+	}
+
+	nextDocID, err := c.rewriteNextDocumentID()
+	if err != nil {
+		return false, err
+	}
+	if len(documents) > 0 && documents[len(documents)-1].DocID >= nextDocID {
+		return false, fmt.Errorf("%w: rewrite document IDs reach or exceed the next writable ID", ErrCollectionCorrupt)
+	}
+	current := c.versions.Current()
+	runs := rewriteDocumentRuns(documents, current.SegmentMaxDocuments)
+	if uint64(len(runs)) > math.MaxUint64-current.NextSegmentID {
+		return false, errors.New("db: segment ID space is exhausted")
+	}
+	writingID := current.NextSegmentID + uint64(len(runs))
+	if writingID == math.MaxUint64 {
+		return false, errors.New("db: segment ID space is exhausted")
+	}
+	if current.Generation == math.MaxUint64 {
+		return false, errors.New("db: manifest generation space is exhausted")
+	}
+
+	created := make([]string, 0, len(runs)+3)
+	cleanup := func() {
+		for _, name := range created {
+			_ = os.Remove(name)
+		}
+	}
+	artifactGeneration := current.Generation + 1
+	primary := NewPrimaryKeyMap()
+	deletes := NewDeleteStore()
+	nextManager := NewSegmentManager(primary, deletes)
+	segmentMetadata := make([]SegmentMetadata, 0, len(runs))
+	for runIndex, run := range runs {
+		segmentID := current.NextSegmentID + uint64(runIndex)
+		writing, createErr := NewWriteSegment(segmentID, run[0].DocID, uint64(len(run)))
+		if createErr != nil {
+			cleanup()
+			return false, createErr
+		}
+		for index := range run {
+			document := &run[index]
+			if _, appendErr := writing.AppendExpected(ctx, document.DocID, document.PrimaryKey, document.Payload); appendErr != nil {
+				cleanup()
+				return false, appendErr
+			}
+		}
+		segmentRelative, nameErr := c.availableArtifact(func(generation uint64) string {
+			return segmentFileName(segmentID, generation)
+		}, artifactGeneration)
+		if nameErr != nil {
+			cleanup()
+			return false, nameErr
+		}
+		segmentPath := collectionPath(c.dir, segmentRelative)
+		created = append(created, segmentPath)
+		immutable, snapshotErr := writing.Snapshot(ctx, c.dir, segmentRelative)
+		if snapshotErr != nil {
+			cleanup()
+			return false, fmt.Errorf("db: snapshot rewritten segment: %w", snapshotErr)
+		}
+		if addErr := nextManager.AddImmutable(immutable); addErr != nil {
+			cleanup()
+			return false, addErr
+		}
+		for index := range run {
+			document := &run[index]
+			// primary is private to the candidate manager until publication.
+			// Identity and key uniqueness were checked above, so direct bulk
+			// construction avoids PrimaryKeyMap.Put's defensive O(n) location
+			// scan for every document.
+			primary.entries[document.PrimaryKey] = DocumentLocation{SegmentID: segmentID, DocID: document.DocID}
+		}
+		segmentMetadata = append(segmentMetadata, immutable.Metadata())
+	}
+
+	nextWriting, err := NewWriteSegment(writingID, nextDocID, current.SegmentMaxDocuments)
+	if err != nil {
+		cleanup()
+		return false, err
+	}
+	if err := nextManager.SetWriting(nextWriting); err != nil {
+		cleanup()
+		return false, err
+	}
+	if err := validateCollectionState(nextManager); err != nil {
+		cleanup()
+		return false, err
+	}
+
+	snapshotGeneration, err := c.nextSnapshotGeneration(current)
+	if err != nil {
+		cleanup()
+		return false, err
+	}
+	primaryPath := collectionPath(c.dir, primarySnapshotName(snapshotGeneration))
+	created = append(created, primaryPath)
+	if err := primary.WriteSnapshot(ctx, primaryPath); err != nil {
+		cleanup()
+		return false, fmt.Errorf("db: write rewritten primary-key snapshot: %w", err)
+	}
+	deletesPath := collectionPath(c.dir, deleteSnapshotName(snapshotGeneration))
+	created = append(created, deletesPath)
+	if err := deletes.WriteSnapshot(ctx, deletesPath); err != nil {
+		cleanup()
+		return false, fmt.Errorf("db: write rewritten delete snapshot: %w", err)
+	}
+
+	walRelative, err := c.availableArtifact(func(generation uint64) string {
+		return walFileName(writingID, generation)
+	}, artifactGeneration)
+	if err != nil {
+		cleanup()
+		return false, err
+	}
+	walPath := collectionPath(c.dir, walRelative)
+	if err := ensureDirectorySynced(filepath.Dir(walPath)); err != nil {
+		cleanup()
+		return false, fmt.Errorf("db: create rewritten WAL directory: %w", err)
+	}
+	created = append(created, walPath, walPath+".lock")
+	nextWAL, err := CreateWAL(ctx, walPath, c.wal.options)
+	if err != nil {
+		cleanup()
+		return false, fmt.Errorf("db: create rewritten WAL: %w", err)
+	}
+	nextEngine, err := NewWriteEngine(nextManager, nextWAL)
+	if err != nil {
+		_ = nextWAL.Close()
+		cleanup()
+		return false, err
+	}
+
+	nextManifest := current.Clone()
+	nextManifest.Schema = slices.Clone(schema)
+	nextManifest.PersistedSegments = segmentMetadata
+	nextManifest.WritingSegment = &SegmentMetadata{ID: writingID, Files: []string{walRelative}}
+	nextManifest.WritingSegmentStartDocID = nextDocID
+	nextManifest.IDMapGeneration = snapshotGeneration
+	nextManifest.DeleteSnapshotGeneration = snapshotGeneration
+	nextManifest.NextSegmentID = writingID + 1
+	_, publishErr := c.versions.Publish(ctx, nextManifest)
+	committed = c.versions.Current().Generation != current.Generation
+	if !committed {
+		_ = nextWAL.Close()
+		cleanup()
+		return false, publishErr
+	}
+
+	oldWAL := c.wal
+	c.manager = nextManager
+	c.wal = nextWAL
+	c.engine = nextEngine
+	return true, errors.Join(publishErr, oldWAL.Close())
+}
+
+func (c *CollectionStore) rewriteNextDocumentID() (uint64, error) {
+	writing := c.manager.Writing()
+	if writing == nil {
+		return 0, fmt.Errorf("%w: collection has no writing segment", ErrCollectionCorrupt)
+	}
+	next, err := writing.NextDocumentID()
+	if err == nil {
+		return next, nil
+	}
+	if !errors.Is(err, ErrSegmentFull) {
+		return 0, err
+	}
+	_, maximum := writing.ReservedRange()
+	if maximum == math.MaxUint64 {
+		return 0, errors.New("db: document ID space is exhausted")
+	}
+	return maximum + 1, nil
+}
+
+func (c *CollectionStore) nextSnapshotGeneration(current Manifest) (uint64, error) {
+	generation := max(current.IDMapGeneration, current.DeleteSnapshotGeneration)
+	for {
+		if generation == math.MaxUint64 {
+			return 0, errors.New("db: snapshot generation space is exhausted")
+		}
+		generation++
+		if !c.snapshotGenerationExists(generation) {
+			return generation, nil
+		}
+	}
+}
+
+func rewriteDocumentRuns(documents []StoredDocument, maximum uint64) [][]StoredDocument {
+	if len(documents) == 0 {
+		return nil
+	}
+	runs := make([][]StoredDocument, 0, 1)
+	for start := 0; start < len(documents); {
+		end := start + 1
+		for end < len(documents) && uint64(end-start) < maximum && documents[end].DocID == documents[end-1].DocID+1 {
+			end++
+		}
+		runs = append(runs, documents[start:end])
+		start = end
+	}
+	return runs
 }
 
 // ReadOnly reports whether this handle rejects mutations.

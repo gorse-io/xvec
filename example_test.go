@@ -171,3 +171,41 @@ func ExampleCollection_DropIndex() {
 	// Output:
 	// UNDEFINED
 }
+
+func ExampleCollection_AddColumn() {
+	ctx := context.Background()
+	directory, err := os.MkdirTemp("", "zvec-add-column-example-")
+	if err != nil {
+		panic(err)
+	}
+	path := filepath.Join(directory, "books")
+	schema := zvec.NewCollectionSchema("books",
+		zvec.FieldSchema{Name: "rating", DataType: zvec.DataTypeInt32},
+	)
+	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	if err != nil {
+		panic(err)
+	}
+	_, err = collection.Insert(ctx, []zvec.Document{{
+		PrimaryKey: "book", Fields: map[string]any{"rating": int32(4)},
+	}})
+	if err != nil {
+		panic(err)
+	}
+	field := zvec.FieldSchema{Name: "adjusted", DataType: zvec.DataTypeInt64}
+	if err := collection.AddColumn(ctx, field, "rating * 2 + 1", zvec.AddColumnOptions{Concurrency: 2}); err != nil {
+		panic(err)
+	}
+	documents, err := collection.Fetch(ctx, []string{"book"}, zvec.Projection{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(documents[0].Fields["adjusted"])
+	if err := collection.Destroy(ctx); err != nil {
+		panic(err)
+	}
+	_ = os.Remove(directory)
+
+	// Output:
+	// 9
+}

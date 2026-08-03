@@ -51,7 +51,9 @@ now selects only current live versions under the collection write lock and is
 durable across reopen. CreateIndex now performs concurrent full-snapshot
 backfill validation and atomically publishes implemented Flat/INVERT
 parameters. DropIndex atomically clears scalar indexes or restores vectors to
-the default Flat/IP definition. Atomic AddColumn is the next staged unit.
+the default Flat/IP definition. AddColumn now atomically rewrites every live
+document with a nullable NULL or a numeric arithmetic-expression backfill while
+preserving its internal document ID.
 Public APIs and on-disk formats are not stable before v1.0.
 
 The current library version is `v0.1.0`; its exact support boundary is recorded
@@ -113,6 +115,7 @@ are exercised by `go test ./...`.
 - [Delete by filter](docs/delete-by-filter.md)
 - [CreateIndex](docs/create-index.md)
 - [DropIndex](docs/drop-index.md)
+- [AddColumn](docs/add-column.md)
 
 ## License
 

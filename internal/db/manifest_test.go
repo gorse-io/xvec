@@ -207,6 +207,7 @@ func sampleManifest(generation uint64) Manifest {
 			ID: 4, MinDocID: 20, MaxDocID: 21, DocCount: 2,
 			Files: []string{"segments/4/data.wal"},
 		},
+		WritingSegmentStartDocID: 20,
 		IDMapGeneration:          5,
 		DeleteSnapshotGeneration: 6,
 		NextSegmentID:            5,

@@ -187,6 +187,142 @@ func TestCollectionFailedFlushLeavesPublishedStateAndWriterUsable(t *testing.T) 
 	}
 }
 
+func TestCollectionRewriteDocumentsIsAtomicAndRecoverable(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{SegmentMaxDocuments: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inserted, err := store.Insert(ctx, []WriteInput{
+		{PrimaryKey: "a", Payload: []byte("a1")},
+		{PrimaryKey: "b", Payload: []byte("b1")},
+		{PrimaryKey: "c", Payload: []byte("c1")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.Upsert(ctx, []WriteInput{{PrimaryKey: "b", Payload: []byte("b2")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Delete(ctx, []string{"c"}); err != nil {
+		t.Fatal(err)
+	}
+	ephemeral, err := store.Insert(ctx, []WriteInput{{PrimaryKey: "ephemeral", Payload: []byte("gone")}})
+	if err != nil || ephemeral[0].DocID != 4 {
+		t.Fatalf("ephemeral insert = %#v, %v", ephemeral, err)
+	}
+	if _, err := store.Delete(ctx, []string{"ephemeral"}); err != nil {
+		t.Fatal(err)
+	}
+	live, err := store.LiveDocuments(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 2 || live[0].DocID != inserted[0].DocID || live[1].DocID != updated[0].DocID {
+		t.Fatalf("live documents = %#v", live)
+	}
+	rewritten := cloneDocuments(live)
+	for index := range rewritten {
+		rewritten[index].Payload = append([]byte("rewritten-"), rewritten[index].Payload...)
+	}
+	nextSchema := json.RawMessage(`{"name":"books-v2","fields":[]}`)
+
+	versionLock, err := ailego.AcquireFileLock(ctx, filepath.Join(dir, versionLockName), ailego.LockExclusive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline, cancel := context.WithTimeout(ctx, 75*time.Millisecond)
+	committed, err := store.RewriteDocuments(deadline, nextSchema, rewritten)
+	cancel()
+	if committed || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked rewrite = committed %v, error %v", committed, err)
+	}
+	if err := versionLock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if manifest := store.Manifest(); manifest.Generation != 1 || string(manifest.Schema) != string(testCollectionSchema) {
+		t.Fatalf("manifest after failed rewrite = %#v", manifest)
+	}
+	for pattern, want := range map[string]int{
+		filepath.Join(dir, "segments", "*", "*.seg"): 0,
+		filepath.Join(dir, "snapshots", "*.snap"):    2,
+		filepath.Join(dir, "wal", "*.wal"):           1,
+	} {
+		files, globErr := filepath.Glob(pattern)
+		if globErr != nil || len(files) != want {
+			t.Fatalf("artifacts %q = %v, %v; want %d files", pattern, files, globErr, want)
+		}
+	}
+	results, err := store.Fetch(ctx, []string{"a", "b", "c"})
+	if err != nil || string(results[0].Document.Payload) != "a1" || string(results[1].Document.Payload) != "b2" || results[2].Document != nil {
+		t.Fatalf("fetch after failed rewrite = %#v, %v", results, err)
+	}
+
+	committed, err = store.RewriteDocuments(ctx, nextSchema, rewritten)
+	if err != nil || !committed {
+		t.Fatalf("rewrite = committed %v, error %v", committed, err)
+	}
+	manifest := store.Manifest()
+	if manifest.Generation != 2 || string(manifest.Schema) != string(nextSchema) || len(manifest.PersistedSegments) != 2 {
+		t.Fatalf("rewritten manifest = %#v", manifest)
+	}
+	if manifest.PersistedSegments[0].MinDocID != inserted[0].DocID || manifest.PersistedSegments[1].MinDocID != updated[0].DocID {
+		t.Fatalf("rewritten ranges = %#v", manifest.PersistedSegments)
+	}
+	results, err = store.Fetch(ctx, []string{"a", "b", "c"})
+	if err != nil || results[0].Document.DocID != inserted[0].DocID || results[1].Document.DocID != updated[0].DocID ||
+		string(results[0].Document.Payload) != "rewritten-a1" || string(results[1].Document.Payload) != "rewritten-b2" || results[2].Document != nil {
+		t.Fatalf("rewritten fetch = %#v, %v", results, err)
+	}
+	continued, err := store.Insert(ctx, []WriteInput{{PrimaryKey: "d", Payload: []byte("d1")}})
+	if err != nil || continued[0].DocID != 5 {
+		t.Fatalf("continued insert = %#v, %v", continued, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = OpenCollection(ctx, dir, CollectionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if string(store.Manifest().Schema) != string(nextSchema) {
+		t.Fatalf("reopened schema = %s", store.Manifest().Schema)
+	}
+	results, err = store.Fetch(ctx, []string{"a", "b", "c", "d"})
+	if err != nil || results[0].Document.DocID != inserted[0].DocID || results[1].Document.DocID != updated[0].DocID ||
+		results[2].Document != nil || results[3].Document == nil || results[3].Document.DocID != 5 {
+		t.Fatalf("reopened fetch = %#v, %v", results, err)
+	}
+}
+
+func TestCollectionRewriteRejectsStaleSnapshot(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Insert(ctx, []WriteInput{{PrimaryKey: "a", Payload: []byte("a1")}}); err != nil {
+		t.Fatal(err)
+	}
+	live, err := store.LiveDocuments(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live[0].PrimaryKey = "different"
+	if committed, err := store.RewriteDocuments(ctx, testCollectionSchema, live); committed || err == nil {
+		t.Fatalf("stale rewrite = committed %v, error %v", committed, err)
+	}
+	if got := store.Manifest().Generation; got != 1 {
+		t.Fatalf("failed stale rewrite published generation %d", got)
+	}
+}
+
 func TestCollectionReadOnlyRecoveryDoesNotRepairWAL(t *testing.T) {
 	dir := t.TempDir()
 	store, err := CreateCollection(context.Background(), dir, testCollectionSchema, CollectionOptions{})
