@@ -204,7 +204,6 @@ func TestBuildPlanRejectsSemanticErrorsWithPosition(t *testing.T) {
 		{"array_length(i32) > 1", "requires an array"},
 		{"array_length(numbers, i32) > 1", "exactly one"},
 		{"array_length(numbers) > '1'", "integer literal"},
-		{"array_length(numbers) IN (1)", "only comparison"},
 		{"ARRAY_LENGTH(numbers) > 1", "not supported"},
 	}
 	for _, testCase := range tests {

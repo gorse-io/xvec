@@ -190,7 +190,9 @@ func TestParseFilterRejectsInvalidForms(t *testing.T) {
 		"a BETWEEN 1", "a == 1", "a IN (1,)", "a IN ([1])",
 		"a LIKE", "a IS", "a CONTAIN_ANY (func(x))", "a = bare",
 		"a = []", "a = [[1],]", "NOT a=1", "a=1;",
-		"_=1", "-=1",
+		"_=1", "-=1", "array_length(tags) LIKE '2%'",
+		"array_length(tags) IN (2)", "array_length(tags) CONTAIN_ANY (2)",
+		"array_length(tags) IS NULL",
 	}
 	for _, input := range inputs {
 		if _, err := ParseFilter(input); err == nil {

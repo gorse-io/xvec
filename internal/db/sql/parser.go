@@ -105,6 +105,13 @@ func (p *filterParser) parsePredicate() (Expr, error) {
 	}
 	start := left.NodeSpan().Start
 	predicate := &PredicateExpr{Left: left}
+	if _, functionCall := left.(*CallExpr); functionCall {
+		switch p.current().Kind {
+		case TokenEqual, TokenNotEqual, TokenLessEqual, TokenGreaterEqual, TokenLess, TokenGreater:
+		default:
+			return nil, p.unexpected("comparison after function call")
+		}
+	}
 	switch p.current().Kind {
 	case TokenEqual, TokenNotEqual, TokenLessEqual, TokenGreaterEqual:
 		token := p.advance()

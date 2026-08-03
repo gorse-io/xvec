@@ -9,13 +9,13 @@ expression  = or-expression
 or          = and { OR and }
 and         = primary { AND primary }
 primary     = predicate | "(" expression ")"
-predicate   = operand comparison value
-            | operand LIKE value
-            | operand [NOT] IN "(" literal { "," literal } ")"
-            | operand [NOT] (CONTAIN_ALL | CONTAIN_ANY)
+predicate   = identifier comparison value
+            | function-call comparison value
+            | identifier LIKE value
+            | identifier [NOT] IN "(" literal { "," literal } ")"
+            | identifier [NOT] (CONTAIN_ALL | CONTAIN_ANY)
                 "(" [ literal { "," literal } ] ")"
-            | operand IS [NOT] NULL
-operand     = identifier | function-call
+            | identifier IS [NOT] NULL
 ```
 
 Keywords are case-insensitive; identifiers and string content preserve source
