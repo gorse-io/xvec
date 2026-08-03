@@ -191,6 +191,61 @@ func TestWriteEngineConcurrentUpsertSameKey(t *testing.T) {
 	}
 }
 
+func TestWriteEngineUpdateReplacesExistingOnly(t *testing.T) {
+	engine, manager, wal := newTestWriteEngine(t, 10, 10)
+	defer wal.Close()
+	if _, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "key", Payload: []byte("v1")}}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := engine.Update(context.Background(), []WriteInput{
+		{PrimaryKey: "missing", Payload: []byte("none")},
+		{PrimaryKey: "key", Payload: []byte("v2")},
+	})
+	if !errors.Is(err, ErrPrimaryKeyNotFound) || !errors.Is(results[0].Err, ErrPrimaryKeyNotFound) || results[1].Err != nil || results[1].DocID != 11 {
+		t.Fatalf("update results = %#v, %v", results, err)
+	}
+	if !manager.Deletes().IsDeleted(10) {
+		t.Fatal("prior update version is not deleted")
+	}
+	if doc, found := manager.DocumentByPrimaryKey("key"); !found || doc.DocID != 11 || string(doc.Payload) != "v2" {
+		t.Fatalf("updated document = %#v, %v", doc, found)
+	}
+
+	var types []writeOperationType
+	if err := wal.Replay(context.Background(), func(record WALRecord) error {
+		operation, err := decodeWriteOperation(record.Payload)
+		if err == nil {
+			types = append(types, operation.Type)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(types, []writeOperationType{writeOperationInsert, writeOperationUpdate}) {
+		t.Fatalf("operation types = %#v", types)
+	}
+}
+
+func TestWriteEngineUpdateValidationAndCapacity(t *testing.T) {
+	engine, _, wal := newTestWriteEngine(t, 0, 2)
+	defer wal.Close()
+	if _, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "key"}}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := engine.Update(context.Background(), []WriteInput{{PrimaryKey: ""}, {PrimaryKey: "key", Payload: []byte("v2")}})
+	var batchError *BatchWriteError
+	if !errors.As(err, &batchError) || batchError.Failed != 1 || results[0].Err == nil || results[1].Err != nil {
+		t.Fatalf("update validation = %#v, %#v, %v", results, batchError, err)
+	}
+	results, err = engine.Update(context.Background(), []WriteInput{{PrimaryKey: "key", Payload: []byte("v3")}})
+	if !errors.Is(err, ErrSegmentFull) || !errors.Is(results[0].Err, ErrSegmentFull) {
+		t.Fatalf("update full = %#v, %v", results, err)
+	}
+	if _, err := engine.Update(context.Background(), nil); err == nil {
+		t.Fatal("empty update succeeded")
+	}
+}
+
 func TestWriteEngineConcurrentInsert(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 100, 200)
 	defer wal.Close()
