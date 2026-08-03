@@ -15,11 +15,20 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
 	"sync"
 )
+
+// FetchResult preserves request order. A nil Document with nil Err means the
+// primary key is absent or logically deleted, matching the pinned baseline.
+type FetchResult struct {
+	PrimaryKey string
+	Document   *StoredDocument
+	Err        error
+}
 
 // SegmentManager owns sorted immutable segments, one optional write segment,
 // the primary-key map, and the logical deletion snapshot.
@@ -229,6 +238,34 @@ func (m *SegmentManager) DocumentByPrimaryKey(key string) (StoredDocument, bool)
 		return StoredDocument{}, false
 	}
 	return document, found && document.PrimaryKey == key
+}
+
+// Fetch resolves primary keys in input order. Missing keys are successful nil
+// results; context cancellation is returned at batch level and attached to all
+// unprocessed entries.
+func (m *SegmentManager) Fetch(ctx context.Context, primaryKeys []string) ([]FetchResult, error) {
+	if m == nil {
+		return nil, errors.New("db: nil segment manager")
+	}
+	if ctx == nil {
+		return nil, errors.New("db: nil fetch context")
+	}
+	results := make([]FetchResult, len(primaryKeys))
+	for index, key := range primaryKeys {
+		results[index].PrimaryKey = key
+		if err := ctx.Err(); err != nil {
+			results[index].Err = err
+			for remaining := index + 1; remaining < len(primaryKeys); remaining++ {
+				results[remaining] = FetchResult{PrimaryKey: primaryKeys[remaining], Err: err}
+			}
+			return results, err
+		}
+		if document, found := m.DocumentByPrimaryKey(key); found {
+			copy := document.Clone()
+			results[index].Document = &copy
+		}
+	}
+	return results, nil
 }
 
 func (m *SegmentManager) checkRangeLocked(candidate SegmentMetadata, candidateID uint64) error {

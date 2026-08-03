@@ -118,6 +118,53 @@ func TestSegmentManagerValidatesStalePrimaryLocation(t *testing.T) {
 	}
 }
 
+func TestSegmentManagerFetch(t *testing.T) {
+	manager := NewSegmentManager(nil, nil)
+	segment := testImmutableSegment(1, 5, "five", "six")
+	if err := manager.AddImmutable(segment); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "five", DocumentLocation{SegmentID: 1, DocID: 5})
+	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "six", DocumentLocation{SegmentID: 1, DocID: 6})
+	_, _ = manager.Deletes().MarkDeleted(context.Background(), 6)
+	results, err := manager.Fetch(context.Background(), []string{"missing", "five", "six", "five"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 4 || results[0].Document != nil || results[1].Document == nil || results[2].Document != nil || results[3].Document == nil {
+		t.Fatalf("fetch results = %#v", results)
+	}
+	if results[1].Document.DocID != 5 || string(results[1].Document.Payload) != "five" {
+		t.Fatalf("fetched document = %#v", results[1].Document)
+	}
+	results[1].Document.Payload[0] = 'X'
+	again, err := manager.Fetch(context.Background(), []string{"five"})
+	if err != nil || string(again[0].Document.Payload) != "five" {
+		t.Fatalf("fetch shares payload: %#v, %v", again, err)
+	}
+	empty, err := manager.Fetch(context.Background(), nil)
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("empty fetch = %#v, %v", empty, err)
+	}
+}
+
+func TestSegmentManagerFetchCancellation(t *testing.T) {
+	manager := NewSegmentManager(nil, nil)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	results, err := manager.Fetch(canceled, []string{"one", "two"})
+	if !errors.Is(err, context.Canceled) || len(results) != 2 || !errors.Is(results[0].Err, context.Canceled) || !errors.Is(results[1].Err, context.Canceled) {
+		t.Fatalf("canceled fetch = %#v, %v", results, err)
+	}
+	if _, err := manager.Fetch(nil, []string{"one"}); err == nil {
+		t.Fatal("nil fetch context succeeded")
+	}
+	var nilManager *SegmentManager
+	if _, err := nilManager.Fetch(context.Background(), nil); err == nil {
+		t.Fatal("nil manager fetch succeeded")
+	}
+}
+
 func TestNewSegmentManagerCreatesStores(t *testing.T) {
 	manager := NewSegmentManager(nil, nil)
 	if manager.PrimaryKeys() == nil || manager.Deletes() == nil {
