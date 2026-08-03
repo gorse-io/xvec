@@ -43,6 +43,9 @@ Those queries support metric-aware radius limits, deterministic projection,
 and group-by ranking across every live document version.
 Public APIs and on-disk formats are not stable before v1.0.
 
+The current library version is `v0.1.0`; its exact support boundary is recorded
+in the [v0.1 capability matrix](docs/v0.1.md) and [changelog](CHANGELOG.md).
+
 ## Schema example
 
 ```go
@@ -84,6 +87,14 @@ The native format and its atomic manifest protocol are documented in
 
 Compatibility fixtures derived from the pinned baseline live in `testdata` and
 are exercised by `go test ./...`.
+
+## Documentation
+
+- [Collection API](docs/collection-api.md)
+- [Native Go disk format](docs/disk-format.md)
+- [Documents and projection](docs/document-projection.md)
+- [Exact vector query semantics](docs/vector-query.md)
+- [Group-by vector query](docs/group-by-query.md)
 
 ## License
 

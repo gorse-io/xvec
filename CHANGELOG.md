@@ -1,0 +1,23 @@
+# Changelog
+
+All notable changes to the native Go implementation are documented here. The
+project follows semantic versioning; public APIs and the disk format remain
+subject to compatible migration work throughout the 0.x series.
+
+## v0.1.0 - 2026-08-04
+
+- Added a pure-Go, no-CGO collection lifecycle with atomic versioned manifests,
+  checksummed WAL recovery, immutable segments, deletion snapshots, and
+  single-writer/multi-reader process locking.
+- Added baseline-compatible public enums, validated schemas and index/query
+  parameters, explicit document/vector types, deterministic document payloads,
+  projections, and structured errors.
+- Added WAL-first Insert, partial Upsert and Update, Delete, ordered Fetch,
+  Flush, reopen recovery, read-only handles, statistics, and guarded Destroy.
+- Added exact dense Flat search for L2, IP, cosine distance, and MIPS-L2, plus
+  exact sparse Flat inner-product search, radius limits, stable top-k merging,
+  and scalar group-by.
+- Added Linux behavior tests, race tests, codec fuzz targets, crash/corruption
+  recovery tests, and Windows/macOS no-CGO cross-compilation checks.
+
+See [the v0.1 capability matrix](docs/v0.1.md) for exact support boundaries.

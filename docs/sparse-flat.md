@@ -16,5 +16,7 @@ linear time, retains O(k) ranking state, and returns highest scores first with
 ascending document key as the deterministic tie-breaker. Empty sparse vectors
 are valid and score zero.
 
-Deletion masks, scalar filters, radius, and collection-level result shaping are
-applied by the query executor rather than this storage-agnostic index.
+The extended sparse query contract applies candidate filters and inclusive IP
+radius thresholds during the scan. The collection facade supplies live-version
+selection and projected document materialization, while group-by independently
+retains a bounded top-k for each scalar group.
