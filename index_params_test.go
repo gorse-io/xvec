@@ -62,6 +62,17 @@ func TestIndexParamsRejectInvalidValues(t *testing.T) {
 	}
 }
 
+func TestRotationAcceptsIntegerQuantization(t *testing.T) {
+	for _, quantize := range []QuantizeType{QuantizeTypeInt8, QuantizeTypeInt4} {
+		params := NewFlatIndexParams(MetricTypeL2)
+		params.Quantize = quantize
+		params.Quantizer.EnableRotate = true
+		if err := params.Validate(); err != nil {
+			t.Errorf("rotated %s params: %v", quantize, err)
+		}
+	}
+}
+
 func TestFTSIndexParamsValidation(t *testing.T) {
 	valid := []FTSIndexParams{
 		NewFTSIndexParams(),

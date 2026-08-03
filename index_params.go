@@ -57,7 +57,7 @@ type IndexParams interface {
 
 // QuantizerParams configures preprocessing shared by quantized vector indexes.
 type QuantizerParams struct {
-	// EnableRotate rotates vectors before INT8 quantization.
+	// EnableRotate rotates vectors before INT8 or INT4 quantization.
 	EnableRotate bool
 }
 
@@ -364,8 +364,8 @@ func validateVectorIndexParams(indexType IndexType, config vectorIndexConfig) er
 	if config.quantize == QuantizeTypeRaBitQ && indexType != IndexTypeHNSWRaBitQ {
 		return invalidArgument("validate vector index params", "RaBitQ quantization requires an HNSW_RABITQ index")
 	}
-	if config.quantizer.EnableRotate && config.quantize != QuantizeTypeInt8 {
-		return invalidArgument("validate vector index params", "rotation is only valid with INT8 quantization")
+	if config.quantizer.EnableRotate && config.quantize != QuantizeTypeInt8 && config.quantize != QuantizeTypeInt4 {
+		return invalidArgument("validate vector index params", "rotation is only valid with INT8 or INT4 quantization")
 	}
 	return nil
 }

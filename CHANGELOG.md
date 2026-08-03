@@ -10,6 +10,10 @@ subject to compatible migration work throughout the 0.x series.
   quantization primitives, including batch conversion, decoded-equivalent L2,
   IP, cosine, and MIPS-L2 kernels, strict finite/range validation, and even
   dimension enforcement for INT4 schemas.
+- Added reversible arbitrary-dimension four-round FHT/Kac rotation with
+  restorable random-sign state, concurrent batch transforms, INT8/INT4
+  parameter validation, and an exact original-vector candidate refiner with
+  scale-factor expansion, filtering, radius, and deterministic ranking.
 
 ## v0.2.0 - 2026-08-04
 
