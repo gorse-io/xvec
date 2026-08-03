@@ -57,6 +57,7 @@ type GroupResult struct {
 }
 
 // Query executes exact Flat search over the current live document versions.
+// Filter is parsed and schema-bound before its candidate mask is applied.
 func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, error) {
 	const op = "query"
 	if c == nil {
@@ -67,9 +68,6 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	}
 	if query.TopK <= 0 {
 		return nil, invalidArgument(op, "TopK must be positive")
-	}
-	if query.Filter != "" {
-		return nil, notSupported(op, c.Path(), "SQL filters are not available before v0.2")
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -91,9 +89,17 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err != nil {
 		return nil, err
 	}
+	filterPlan, err := buildFilterPlan(query.Filter, c.schema)
+	if err != nil {
+		return nil, invalidArgument(op, "invalid filter: %v", err)
+	}
 	documents, err := c.liveDocumentsLocked(ctx)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
+	}
+	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents)
+	if err != nil {
+		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}
 	metric, err := toCoreMetric(flatIndex.Metric)
 	if err != nil {
@@ -113,7 +119,7 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 			return nil, wrapCollectionError(op, c.path, err)
 		}
 		results, err = index.SearchWithOptions(ctx, queryVector, core.SearchOptions{
-			TopK: query.TopK, Radius: params.Radius,
+			TopK: query.TopK, Radius: params.Radius, Filter: candidateFilter,
 		})
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
@@ -131,7 +137,7 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 			return nil, wrapCollectionError(op, c.path, err)
 		}
 		results, err = index.SearchSparseWithOptions(ctx, queryVector, core.SearchOptions{
-			TopK: query.TopK, Radius: params.Radius,
+			TopK: query.TopK, Radius: params.Radius, Filter: candidateFilter,
 		})
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
@@ -141,7 +147,7 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 }
 
 // GroupByQuery executes exact Flat group-by search. Groups are selected only
-// after every live candidate has passed radius filtering.
+// after every live candidate has passed scalar and radius filtering.
 func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery) ([]GroupResult, error) {
 	const op = "group-by query"
 	if c == nil {
@@ -155,9 +161,6 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	}
 	if query.TopKPerGroup <= 0 {
 		return nil, invalidArgument(op, "TopKPerGroup must be positive")
-	}
-	if query.Filter != "" {
-		return nil, notSupported(op, c.Path(), "SQL filters are not available before v0.2")
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -183,9 +186,17 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	if err != nil {
 		return nil, err
 	}
+	filterPlan, err := buildFilterPlan(query.Filter, c.schema)
+	if err != nil {
+		return nil, invalidArgument(op, "invalid filter: %v", err)
+	}
 	documents, err := c.liveDocumentsLocked(ctx)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
+	}
+	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents)
+	if err != nil {
+		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}
 	groupValues := make(map[uint64]string, len(documents))
 	for _, document := range documents {
@@ -201,7 +212,7 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	}
 	options := core.GroupByOptions{
 		GroupCount: query.GroupCount, TopKPerGroup: query.TopKPerGroup,
-		Radius: params.Radius, Resolve: resolve,
+		Radius: params.Radius, Filter: candidateFilter, Resolve: resolve,
 	}
 	metric, err := toCoreMetric(flatIndex.Metric)
 	if err != nil {

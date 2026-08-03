@@ -29,12 +29,12 @@ fields select all scalar fields, an empty non-nil slice selects none, and
 `IncludeVectors` controls all vector fields.
 
 `Query` accepts either an explicit dense or sparse vector matching the target
-field. v0.1 executes unquantized Flat search exactly, including metric-aware
-radius limits and deterministic document-ID tie breaking. `GroupByQuery`
-retains a top-k per scalar group and ranks groups by their best document. SQL
-filters, ANN and quantized indexes return `ErrNotSupported` until their stated
-milestones; the library never silently substitutes a different algorithm. The
-DDL, DeleteByFilter, and Optimize entry points likewise return
+field. Flat search is exact, including metric-aware radius limits,
+schema-analyzed SQL scalar filters, and deterministic document-ID tie breaking.
+`GroupByQuery` retains a top-k per filtered scalar group and ranks groups by
+their best document. ANN and quantized indexes return `ErrNotSupported` until
+their stated milestones; the library never silently substitutes a different
+algorithm. The DDL, DeleteByFilter, and Optimize entry points likewise return
 `ErrNotSupported` until the v0.2 atomic metadata executor is installed.
 
 WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically

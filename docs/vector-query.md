@@ -7,7 +7,7 @@ radius, while inner product retains similarities greater than or equal to it.
 The boundary is inclusive, matching the pinned engine's threshold behavior.
 
 A candidate filter runs before scoring. Collection code uses this hook for
-deleted-document masks and, after the SQL milestone, scalar predicates. Filtering
+deleted-document masks and schema-analyzed SQL scalar predicates. Filtering
 before ranking ensures the executor can still return up to `TopK` accepted
 documents instead of losing slots occupied by rejected nearest neighbors.
 

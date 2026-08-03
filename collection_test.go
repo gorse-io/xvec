@@ -204,8 +204,9 @@ func TestCollectionDenseSparseRadiusProjectionAndGroupBy(t *testing.T) {
 		t.Fatalf("low group = %#v", got)
 	}
 
-	if _, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 1, Filter: "rating > 1"}); !errors.Is(err, ErrNotSupported) {
-		t.Fatalf("pre-v0.2 filter = %v", err)
+	filtered, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 1, Filter: "rating > 1"})
+	if err != nil || !reflect.DeepEqual(documentKeys(filtered), []string{"e"}) {
+		t.Fatalf("filtered query = %#v, %v", filtered, err)
 	}
 	if _, err := collection.Query(ctx, VectorQuery{Field: "embedding", SparseVector: SparseVectorFP32{}, TopK: 1}); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("wrong query vector kind = %v", err)

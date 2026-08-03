@@ -42,6 +42,6 @@ lexer failures, unexpected tokens, incomplete expressions, and a guarded
 nesting-depth limit. SQL line and block comments are skipped.
 
 The typed predicate runtime is documented in
-[Scalar filter evaluation](filter-evaluation.md). Collection filtering remains
-`ErrNotSupported` until the following schema analyzer and execution-planner
-unit connects the syntax tree and predicate kernels to live documents.
+[Scalar filter evaluation](filter-evaluation.md), and its schema binding,
+rewrites, and live-query integration are documented in
+[Schema analysis and filter plans](filter-plans.md).

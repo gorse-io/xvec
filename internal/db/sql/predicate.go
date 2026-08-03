@@ -137,6 +137,7 @@ func NewNullPredicate(negated bool) BoundPredicate {
 
 func (p BoundPredicate) Operator() PredicateOperator { return p.operator }
 func (p BoundPredicate) Negated() bool               { return p.negated }
+func (p BoundPredicate) SetSize() int                { return len(p.set) }
 
 func (p BoundPredicate) LikePattern() *LikePattern {
 	return p.like
