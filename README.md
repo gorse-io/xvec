@@ -16,7 +16,9 @@ A pure Go, embedded vector database.
 The implementation is being developed from the storage primitives upward. The
 v0.2 milestone covers versioned storage, WAL recovery, CRUD, exact Flat vector
 search, SQL filtering, scalar inverted candidates, atomic DDL, and compaction.
-Quantization and approximate indexes such as IVF and HNSW are the next layer.
+The v0.3 work has started with baseline-layout FP16, per-vector INT8, and
+packed INT4 scalar quantization primitives. Approximate indexes such as IVF and
+HNSW are the next integration layer.
 
 ## Module
 
@@ -63,6 +65,11 @@ Optimize now atomically compacts the complete live snapshot into bounded
 contiguous-DocID segments, reclaims deleted and superseded versions, rotates
 the WAL and snapshots, and conservatively prunes obsolete native artifacts.
 Public APIs and on-disk formats are not stable before v1.0.
+
+The current development branch also contains internal scalar-quantization
+kernels for the forthcoming v0.3 indexes. They are intentionally not exposed
+as a quantized collection execution path before those indexes can build,
+persist, reopen, and search without fallback.
 
 The current library version is `v0.2.0`; its exact support boundary is recorded
 in the [v0.2 capability matrix](docs/v0.2.md) and [changelog](CHANGELOG.md).
@@ -129,6 +136,7 @@ are exercised by `go test ./...`.
 - [DropColumn](docs/drop-column.md)
 - [Optimize](docs/optimize.md)
 - [Atomic DDL and Optimize recovery](docs/atomic-recovery.md)
+- [Scalar vector quantization](docs/scalar-quantization.md)
 
 ## License
 

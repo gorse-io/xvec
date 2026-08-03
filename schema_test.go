@@ -70,6 +70,7 @@ func TestVectorFieldSchemaValidation(t *testing.T) {
 		{Name: "rabitq_dim", DataType: DataTypeVectorFP32, Dimension: 32, Index: NewHNSWRaBitQIndexParams(MetricTypeL2)},
 		{Name: "rabitq_metric", DataType: DataTypeVectorFP32, Dimension: 128, Index: rabitq},
 		{Name: "quant_fp16", DataType: DataTypeVectorFP16, Dimension: 128, Index: FlatIndexParams{Metric: MetricTypeL2, Quantize: QuantizeTypeFP16}},
+		{Name: "quant_int4_odd", DataType: DataTypeVectorFP32, Dimension: 127, Index: FlatIndexParams{Metric: MetricTypeL2, Quantize: QuantizeTypeInt4}},
 		{Name: "disk_chunks", DataType: DataTypeVectorFP32, Dimension: 128, Index: diskANN},
 	}
 	for _, field := range tests {
@@ -80,6 +81,7 @@ func TestVectorFieldSchemaValidation(t *testing.T) {
 
 	valid := []FieldSchema{
 		{Name: "dense", DataType: DataTypeVectorFP32, Dimension: 128, Index: hnswL2},
+		{Name: "quant_int4_even", DataType: DataTypeVectorFP32, Dimension: 128, Index: FlatIndexParams{Metric: MetricTypeL2, Quantize: QuantizeTypeInt4}},
 		{Name: "sparse", DataType: DataTypeSparseVectorFP32, Index: flatIP},
 		{Name: "rabitq", DataType: DataTypeVectorFP32, Dimension: 128, Index: NewHNSWRaBitQIndexParams(MetricTypeCosine)},
 	}

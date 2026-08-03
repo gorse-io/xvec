@@ -175,6 +175,9 @@ func (f FieldSchema) validateVectorField() error {
 			vectorConfig.quantize,
 		)
 	}
+	if !isSparse && vectorConfig.quantize == QuantizeTypeInt4 && f.Dimension%2 != 0 {
+		return invalidArgument("validate field schema", "INT4 quantization requires an even vector dimension")
+	}
 	if indexType == IndexTypeIVF && vectorConfig.metric == MetricTypeIP &&
 		f.DataType != DataTypeVectorFP16 && f.DataType != DataTypeVectorFP32 {
 		return invalidArgument("validate field schema", "IVF with IP requires VECTOR_FP16 or VECTOR_FP32")

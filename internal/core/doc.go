@@ -13,6 +13,7 @@
 // limitations under the License.
 
 // Package core contains vector-index algorithms and their Builder, Searcher,
-// Streamer, Provider, Refiner, and Reformer contracts. It may depend on ailego
-// but remains independent from collection lifecycle policy in db.
+// Streamer, Provider, Refiner, and Reformer contracts. It also owns scalar
+// quantization and vector-index distance kernels. It may depend on ailego but
+// remains independent from collection lifecycle policy in db.
 package core

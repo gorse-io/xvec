@@ -6,6 +6,11 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added baseline-layout FP16, per-vector INT8, and packed INT4 scalar
+  quantization primitives, including batch conversion, decoded-equivalent L2,
+  IP, cosine, and MIPS-L2 kernels, strict finite/range validation, and even
+  dimension enforcement for INT4 schemas.
+
 ## v0.2.0 - 2026-08-04
 
 - Added a positioned SQL filter lexer/parser, typed three-valued predicate
