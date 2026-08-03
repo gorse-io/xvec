@@ -41,6 +41,7 @@ zero-based UTF-8 byte offset plus one-based line and Unicode column, including
 lexer failures, unexpected tokens, incomplete expressions, and a guarded
 nesting-depth limit. SQL line and block comments are skipped.
 
-This unit only establishes syntax. Collection filtering remains
-`ErrNotSupported` until the following scalar type analyzer and predicate
-evaluator unit connects this AST to live documents.
+The typed predicate runtime is documented in
+[Scalar filter evaluation](filter-evaluation.md). Collection filtering remains
+`ErrNotSupported` until the following schema analyzer and execution-planner
+unit connects the syntax tree and predicate kernels to live documents.
