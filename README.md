@@ -41,6 +41,8 @@ ordered Fetch, partial Update/Upsert, per-document batch results, and exact
 dense/sparse Flat queries.
 Those queries support metric-aware radius limits, deterministic projection,
 and group-by ranking across every live document version.
+The v0.2 branch now includes its SQL-style filter lexer, positioned parser, and
+typed AST; predicate analysis/execution is the next staged unit.
 Public APIs and on-disk formats are not stable before v1.0.
 
 The current library version is `v0.1.0`; its exact support boundary is recorded
@@ -95,6 +97,7 @@ are exercised by `go test ./...`.
 - [Documents and projection](docs/document-projection.md)
 - [Exact vector query semantics](docs/vector-query.md)
 - [Group-by vector query](docs/group-by-query.md)
+- [SQL filter parser](docs/sql-filter.md)
 
 ## License
 
