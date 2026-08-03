@@ -21,9 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"slices"
-	"strings"
 
 	"github.com/gorse-io/zvec/internal/ailego"
 )
@@ -219,8 +217,8 @@ func validateSegment(segment SegmentMetadata) error {
 	}
 	files := make(map[string]struct{}, len(segment.Files))
 	for _, name := range segment.Files {
-		if name == "" || path.IsAbs(name) || path.Clean(name) != name || name == "." || strings.HasPrefix(name, "../") || strings.ContainsRune(name, '\\') {
-			return fmt.Errorf("file %q is not a clean portable relative path", name)
+		if err := validatePortableRelativePath(name); err != nil {
+			return err
 		}
 		if _, exists := files[name]; exists {
 			return fmt.Errorf("duplicate file %q", name)

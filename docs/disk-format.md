@@ -40,3 +40,19 @@ versions, LSNs, lengths, reserved fields, header checksums, or the checksum of a
 complete payload are reported as corruption and are never silently truncated.
 Writers hold a sidecar advisory lock, and readers replay a stable valid-prefix
 snapshot through an independent file handle.
+
+## Segments and collection snapshots
+
+An immutable segment starts with a 64-byte `ZVECSEG` header containing the
+codec version, segment and document-ID range, document count, payload length,
+payload CRC32C, and header CRC32C. Records are stored in contiguous document-ID
+order and contain the primary key plus an opaque schema-coded document payload.
+Each record also checksums its key and payload. The first file listed for a
+segment in the manifest is its data file; later index files can follow it.
+
+Primary-key snapshots (`ZVECPK`) sort keys bytewise and map each key to a
+segment/document location. Delete snapshots (`ZVECDEL`) store strictly sorted
+global document IDs. Both use a common versioned header with item count,
+payload length, payload CRC32C, and header CRC32C. Snapshots and segments are
+written as immutable files and atomically installed without replacing an
+existing generation.
