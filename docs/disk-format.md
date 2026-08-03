@@ -52,6 +52,14 @@ order and contain the primary key plus an opaque schema-coded document payload.
 Each record also checksums its key and payload. The first file listed for a
 segment in the manifest is its data file; later index files can follow it.
 
+The opaque document payload inside a segment is itself a versioned `ZVECDOC`
+frame. Its header stores codec version, field count, payload length, payload
+CRC32C, and header CRC32C. Fields are sorted by name and each entry records an
+explicit public `DataType`, element count, and byte length. Scalar, array,
+dense-vector, sparse-vector, and NULL encodings therefore round-trip without
+JSON number coercion or ambiguous Go slices. Sparse coordinates are canonical
+and corruption that changes their ordering is rejected.
+
 Primary-key snapshots (`ZVECPK`) sort keys bytewise and map each key to a
 segment/document location. Delete snapshots (`ZVECDEL`) store strictly sorted
 global document IDs. Both use a common versioned header with item count,
