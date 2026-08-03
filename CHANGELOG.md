@@ -22,6 +22,10 @@ subject to compatible migration work throughout the 0.x series.
   deterministic centroid training and list assignment, empty-index support,
   retryable cancellation, contiguous original-vector ownership, immutable list
   inspection, and the `DenseProvider` contract for later exact refinement.
+- Added metric-aware IVF search with explicit/default NProbe, stable centroid
+  probing, exact original-vector list scans, filters, metric-specific radius,
+  deterministic top-k, empty-index behavior, and full-probe equivalence to
+  Flat across all four dense metrics.
 
 ## v0.2.0 - 2026-08-04
 
