@@ -79,6 +79,19 @@ func TopK(
 	candidates []Candidate,
 	k int,
 ) ([]Result, error) {
+	return topKCandidates(ctx, metric, query, k, len(candidates), func(index int) Candidate {
+		return candidates[index]
+	})
+}
+
+func topKCandidates(
+	ctx context.Context,
+	metric Metric,
+	query []float32,
+	k int,
+	count int,
+	candidateAt func(int) Candidate,
+) ([]Result, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil top-k context")
 	}
@@ -91,11 +104,11 @@ func TopK(
 	if k < 0 {
 		return nil, errors.New("core: negative top-k")
 	}
-	if k == 0 || len(candidates) == 0 {
+	if k == 0 || count == 0 {
 		return []Result{}, nil
 	}
-	if k > len(candidates) {
-		k = len(candidates)
+	if k > count {
+		k = count
 	}
 
 	worstFirst := func(left, right Result) bool {
@@ -105,10 +118,11 @@ func TopK(
 		return metric.Better(right.Score, left.Score)
 	}
 	heap := ailego.NewHeap(worstFirst)
-	for index, candidate := range candidates {
+	for index := 0; index < count; index++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		candidate := candidateAt(index)
 		score, err := metric.Compute(candidate.Vector, query)
 		if err != nil {
 			return nil, fmt.Errorf("core: score candidate %d (key %d): %w", index, candidate.Key, err)
