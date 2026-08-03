@@ -199,6 +199,18 @@ func (s *WriteSegment) Metadata() SegmentMetadata {
 // Seal writes one immutable segment file relative to collectionDir and makes
 // this write segment reject further appends.
 func (s *WriteSegment) Seal(ctx context.Context, collectionDir, relativeName string) (*ImmutableSegment, error) {
+	return s.writeImmutable(ctx, collectionDir, relativeName, true)
+}
+
+// Snapshot writes the current non-empty contents as an immutable segment
+// without sealing the write segment. Collection flush uses this before the
+// manifest commit point so a failed publication can safely keep accepting WAL
+// backed writes and retry with fresh immutable artifacts.
+func (s *WriteSegment) Snapshot(ctx context.Context, collectionDir, relativeName string) (*ImmutableSegment, error) {
+	return s.writeImmutable(ctx, collectionDir, relativeName, false)
+}
+
+func (s *WriteSegment) writeImmutable(ctx context.Context, collectionDir, relativeName string, seal bool) (*ImmutableSegment, error) {
 	if s == nil {
 		return nil, errors.New("db: nil write segment")
 	}
@@ -230,7 +242,9 @@ func (s *WriteSegment) Seal(ctx context.Context, collectionDir, relativeName str
 	if err := writeImmutableSnapshot(ctx, filepath.Join(collectionDir, filepath.FromSlash(relativeName)), encoded); err != nil {
 		return nil, err
 	}
-	s.sealed = true
+	if seal {
+		s.sealed = true
+	}
 	return newImmutableSegment(metadata, s.docs), nil
 }
 

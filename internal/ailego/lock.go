@@ -112,7 +112,17 @@ func openFileLock(path string, mode LockMode) (*FileLock, error) {
 	if mode != LockShared && mode != LockExclusive {
 		return nil, errors.New("ailego: invalid file lock mode")
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	flags := os.O_CREATE | os.O_RDWR
+	if mode == LockShared {
+		// Existing lock files can be opened on a read-only collection. Fall
+		// back to creation for the first shared lock on a new lock domain.
+		if file, err := os.Open(path); err == nil {
+			return &FileLock{file: file}, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	file, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
 		return nil, err
 	}

@@ -121,6 +121,52 @@ func (m *SegmentManager) ClearWriting() *WriteSegment {
 	return segment
 }
 
+// RotateWriting atomically replaces the current write segment with its
+// immutable snapshot and installs the next empty write segment. The caller
+// must have already durably published matching manifest metadata.
+func (m *SegmentManager) RotateWriting(currentID uint64, immutable *ImmutableSegment, next *WriteSegment) error {
+	if m == nil {
+		return errors.New("db: nil segment manager")
+	}
+	if immutable == nil || next == nil {
+		return errors.New("db: nil segment rotation input")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.writing == nil || m.writing.ID() != currentID {
+		return fmt.Errorf("db: writing segment changed during rotation")
+	}
+	if immutable.ID() != currentID {
+		return fmt.Errorf("db: immutable segment ID %d does not match writing segment %d", immutable.ID(), currentID)
+	}
+	if next.ID() == currentID {
+		return fmt.Errorf("db: next writing segment reuses ID %d", currentID)
+	}
+	if _, exists := m.immutable[currentID]; exists {
+		return fmt.Errorf("db: segment ID %d already exists", currentID)
+	}
+	if _, exists := m.immutable[next.ID()]; exists {
+		return fmt.Errorf("db: next segment ID %d already exists", next.ID())
+	}
+	metadata := immutable.Metadata()
+	if err := m.checkRangeAgainstImmutableLocked(metadata, currentID); err != nil {
+		return err
+	}
+	nextMin, nextMax := next.ReservedRange()
+	if metadata.DocCount > 0 && nextMin <= metadata.MaxDocID && metadata.MinDocID <= nextMax {
+		return fmt.Errorf("db: next writing segment %d overlaps flushed segment %d", next.ID(), currentID)
+	}
+	for id, segment := range m.immutable {
+		other := segment.Metadata()
+		if other.DocCount > 0 && nextMin <= other.MaxDocID && other.MinDocID <= nextMax {
+			return fmt.Errorf("db: next writing segment %d overlaps segment %d", next.ID(), id)
+		}
+	}
+	m.immutable[currentID] = immutable
+	m.writing = next
+	return nil
+}
+
 // AddImmutable adds a verified immutable segment.
 func (m *SegmentManager) AddImmutable(segment *ImmutableSegment) error {
 	if m == nil {
@@ -284,6 +330,18 @@ func (m *SegmentManager) checkRangeLocked(candidate SegmentMetadata, candidateID
 		reservedMin, reservedMax := m.writing.ReservedRange()
 		if candidate.MinDocID <= reservedMax && reservedMin <= candidate.MaxDocID {
 			return fmt.Errorf("db: segment %d document range overlaps writing segment %d reserved range", candidateID, m.writing.ID())
+		}
+	}
+	return nil
+}
+
+func (m *SegmentManager) checkRangeAgainstImmutableLocked(candidate SegmentMetadata, candidateID uint64) error {
+	if candidate.DocCount == 0 {
+		return nil
+	}
+	for id, segment := range m.immutable {
+		if id != candidateID && rangesOverlap(candidate, segment.Metadata()) {
+			return fmt.Errorf("db: segment %d document range overlaps segment %d", candidateID, id)
 		}
 	}
 	return nil

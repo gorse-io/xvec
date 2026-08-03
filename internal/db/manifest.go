@@ -64,6 +64,7 @@ type Manifest struct {
 	Generation               uint64            `json:"generation"`
 	Schema                   json.RawMessage   `json:"schema"`
 	EnableMmap               bool              `json:"enable_mmap"`
+	SegmentMaxDocuments      uint64            `json:"segment_max_documents"`
 	PersistedSegments        []SegmentMetadata `json:"persisted_segments,omitempty"`
 	WritingSegment           *SegmentMetadata  `json:"writing_segment,omitempty"`
 	IDMapGeneration          uint64            `json:"id_map_generation"`
@@ -94,6 +95,9 @@ func (m Manifest) Validate() error {
 	}
 	if !json.Valid(m.Schema) {
 		return fmt.Errorf("%w: schema is not valid JSON", ErrManifestCorrupt)
+	}
+	if m.SegmentMaxDocuments == 0 {
+		return fmt.Errorf("%w: segment capacity must be positive", ErrManifestCorrupt)
 	}
 	var schemaObject map[string]json.RawMessage
 	if err := json.Unmarshal(m.Schema, &schemaObject); err != nil || schemaObject == nil {

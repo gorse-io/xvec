@@ -74,6 +74,7 @@ func TestManifestValidation(t *testing.T) {
 		{name: "invalid schema", mutate: func(m *Manifest) { m.Schema = json.RawMessage(`{`) }, expected: ErrManifestCorrupt},
 		{name: "null schema", mutate: func(m *Manifest) { m.Schema = json.RawMessage(`null`) }, expected: ErrManifestCorrupt},
 		{name: "array schema", mutate: func(m *Manifest) { m.Schema = json.RawMessage(`[]`) }, expected: ErrManifestCorrupt},
+		{name: "zero segment capacity", mutate: func(m *Manifest) { m.SegmentMaxDocuments = 0 }, expected: ErrManifestCorrupt},
 		{name: "duplicate segment", mutate: func(m *Manifest) { m.PersistedSegments = append(m.PersistedSegments, m.PersistedSegments[0]) }, expected: ErrManifestCorrupt},
 		{name: "writing already persisted", mutate: func(m *Manifest) { m.WritingSegment.ID = m.PersistedSegments[0].ID }, expected: ErrManifestCorrupt},
 		{name: "next ID not advanced", mutate: func(m *Manifest) { m.NextSegmentID = m.WritingSegment.ID }, expected: ErrManifestCorrupt},
@@ -98,9 +99,10 @@ func TestManifestValidation(t *testing.T) {
 	}
 
 	fullRange := Manifest{
-		FormatVersion: DiskFormatVersion,
-		Generation:    1,
-		Schema:        json.RawMessage(`{}`),
+		FormatVersion:       DiskFormatVersion,
+		Generation:          1,
+		Schema:              json.RawMessage(`{}`),
+		SegmentMaxDocuments: 1,
 		PersistedSegments: []SegmentMetadata{{
 			ID: 1, MinDocID: 0, MaxDocID: math.MaxUint64, DocCount: math.MaxUint64,
 		}},
@@ -192,10 +194,11 @@ func FuzzUnmarshalManifest(f *testing.F) {
 
 func sampleManifest(generation uint64) Manifest {
 	return Manifest{
-		FormatVersion: DiskFormatVersion,
-		Generation:    generation,
-		Schema:        json.RawMessage(`{"name":"books","version":1}`),
-		EnableMmap:    true,
+		FormatVersion:       DiskFormatVersion,
+		Generation:          generation,
+		Schema:              json.RawMessage(`{"name":"books","version":1}`),
+		EnableMmap:          true,
+		SegmentMaxDocuments: 100,
 		PersistedSegments: []SegmentMetadata{{
 			ID: 3, MinDocID: 10, MaxDocID: 19, DocCount: 8,
 			Files: []string{"segments/3/data.seg", "segments/3/delete.snapshot"},

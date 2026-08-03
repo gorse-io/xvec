@@ -46,6 +46,7 @@ var (
 	ErrWALExists         = errors.New("db: WAL already exists")
 	ErrWALCorrupt        = errors.New("db: corrupt WAL")
 	ErrWALClosed         = errors.New("db: WAL is closed")
+	ErrWALReadOnly       = errors.New("db: WAL is read-only")
 	ErrWALPoisoned       = errors.New("db: WAL append state is poisoned")
 	ErrWALRecordTooLarge = errors.New("db: WAL record is too large")
 )
@@ -84,6 +85,7 @@ type WAL struct {
 	lastLSN      uint64
 	dirtyRecords uint64
 	poisoned     error
+	readOnly     bool
 	closed       bool
 }
 
@@ -145,6 +147,17 @@ func CreateWAL(ctx context.Context, name string, options WALOptions) (*WAL, erro
 // OpenWAL validates an existing log. A partial final header or payload is
 // truncated and reported; all other structural or checksum damage is fatal.
 func OpenWAL(ctx context.Context, name string, options WALOptions) (*WAL, error) {
+	return openWAL(ctx, name, options, false)
+}
+
+// OpenWALReadOnly validates an existing log under a shared lock. An incomplete
+// crash tail is excluded from replay but is not modified; a later writer will
+// repair it while holding the exclusive lock.
+func OpenWALReadOnly(ctx context.Context, name string) (*WAL, error) {
+	return openWAL(ctx, name, WALOptions{}, true)
+}
+
+func openWAL(ctx context.Context, name string, options WALOptions, readOnly bool) (*WAL, error) {
 	if ctx == nil {
 		return nil, errors.New("db: nil open WAL context")
 	}
@@ -154,11 +167,17 @@ func OpenWAL(ctx context.Context, name string, options WALOptions) (*WAL, error)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	lock, err := ailego.AcquireFileLock(ctx, name+".lock", ailego.LockExclusive)
+	lockMode := ailego.LockExclusive
+	openFlags := os.O_RDWR
+	if readOnly {
+		lockMode = ailego.LockShared
+		openFlags = os.O_RDONLY
+	}
+	lock, err := ailego.AcquireFileLock(ctx, name+".lock", lockMode)
 	if err != nil {
 		return nil, fmt.Errorf("db: lock WAL open: %w", err)
 	}
-	file, err := os.OpenFile(name, os.O_RDWR, 0)
+	file, err := os.OpenFile(name, openFlags, 0)
 	if err != nil {
 		_ = lock.Close()
 		if errors.Is(err, os.ErrNotExist) {
@@ -179,7 +198,7 @@ func OpenWAL(ctx context.Context, name string, options WALOptions) (*WAL, error)
 	if err != nil {
 		return fail(err)
 	}
-	if recovery.TruncatedBytes > 0 {
+	if recovery.TruncatedBytes > 0 && !readOnly {
 		if err := file.Truncate(recovery.ValidBytes); err != nil {
 			return fail(fmt.Errorf("db: truncate partial WAL tail: %w", err))
 		}
@@ -190,6 +209,7 @@ func OpenWAL(ctx context.Context, name string, options WALOptions) (*WAL, error)
 	return &WAL{
 		path: name, file: file, lock: lock, options: options,
 		recovery: recovery, size: recovery.ValidBytes, lastLSN: recovery.LastLSN,
+		readOnly: readOnly,
 	}, nil
 }
 
@@ -238,6 +258,9 @@ func (w *WAL) Append(ctx context.Context, payload []byte) (uint64, error) {
 	if w.closed {
 		return 0, ErrWALClosed
 	}
+	if w.readOnly {
+		return 0, ErrWALReadOnly
+	}
 	if w.poisoned != nil {
 		return 0, w.poisoned
 	}
@@ -277,6 +300,9 @@ func (w *WAL) Sync(ctx context.Context) error {
 	defer w.mu.Unlock()
 	if w.closed {
 		return ErrWALClosed
+	}
+	if w.readOnly {
+		return ErrWALReadOnly
 	}
 	if w.poisoned != nil {
 		return w.poisoned
@@ -358,7 +384,7 @@ func (w *WAL) Close() error {
 	}
 	w.closed = true
 	var syncErr error
-	if w.poisoned == nil && w.dirtyRecords > 0 {
+	if !w.readOnly && w.poisoned == nil && w.dirtyRecords > 0 {
 		if err := w.file.Sync(); err != nil {
 			syncErr = fmt.Errorf("db: sync WAL on close: %w", err)
 		}

@@ -33,8 +33,11 @@ incomplete crash tails while rejecting corruption. Collection operations are
 being built on versioned immutable segments, deterministic primary-key maps,
 and deletion snapshots. WAL-first batch insert, upsert, immutable-version
 update, and logical delete are implemented internally with per-document
-results. Ordered fetch now resolves live primary keys across mutable and
-immutable segments; the public collection lifecycle is still in progress.
+results. Ordered fetch resolves live primary keys across mutable and immutable
+segments. The internal collection lifecycle now performs WAL recovery, atomic
+segment flush and rotation, read-only opens, and cross-process single-writer or
+multi-reader locking; the root-package collection facade is the next public API
+layer.
 Public APIs and on-disk formats are not stable before v1.0.
 
 ## Schema example

@@ -478,6 +478,45 @@ func TestWALReaderDetectsPostOpenCorruption(t *testing.T) {
 	}
 }
 
+func TestOpenWALReadOnlyPreservesPartialTail(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "data.wal")
+	complete := makeWALBytes(t, []byte("one"))
+	partial := encodeWALRecord(2, []byte("two"))[:walRecordHeaderSize+1]
+	contents := append(append([]byte(nil), complete...), partial...)
+	if err := os.WriteFile(name, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := OpenWALReadOnly(context.Background(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovery := readOnly.Recovery(); recovery.Records != 1 || recovery.TruncatedBytes != int64(len(partial)) {
+		t.Fatalf("recovery = %#v", recovery)
+	}
+	if _, err := readOnly.Append(context.Background(), []byte("x")); !errors.Is(err, ErrWALReadOnly) {
+		t.Fatalf("append error = %v", err)
+	}
+	if err := readOnly.Sync(context.Background()); !errors.Is(err, ErrWALReadOnly) {
+		t.Fatalf("sync error = %v", err)
+	}
+	if err := readOnly.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileSize(t, name); got != int64(len(contents)) {
+		t.Fatalf("read-only open changed size to %d, want %d", got, len(contents))
+	}
+	writable, err := OpenWAL(context.Background(), name, WALOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writable.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileSize(t, name); got != int64(len(complete)) {
+		t.Fatalf("writable repair size = %d, want %d", got, len(complete))
+	}
+}
+
 func FuzzScanWAL(f *testing.F) {
 	valid := append(encodeWALFileHeader(), encodeWALRecord(1, []byte("one"))...)
 	f.Add(valid)
