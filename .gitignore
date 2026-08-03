@@ -1,0 +1,21 @@
+# Build and test outputs
+/bin/
+/dist/
+/coverage.out
+*.test
+*.prof
+
+# Local databases and benchmarks
+/data/
+/benchdata/
+*.zvec/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*~
+
+# Environment files
+.env
+.env.*

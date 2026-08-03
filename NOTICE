@@ -1,0 +1,9 @@
+zvec
+Copyright 2025-present the zvec project
+
+This project is a pure Go reimplementation based on the architecture, public
+concepts, and behavior of the Alibaba Zvec project:
+https://github.com/alibaba/zvec
+
+The original project and this reimplementation are licensed under the Apache
+License, Version 2.0. See the LICENSE file.
