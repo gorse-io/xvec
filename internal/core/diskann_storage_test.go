@@ -18,107 +18,99 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"io"
-	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDiskANNPackedLayoutReadCacheAndOwnership(t *testing.T) {
 	layout, nodes, encoded := diskANNFixture(t, 10, 4, 3)
-	if layout.RecordSize() != 36 || layout.NodesPerSector() != DiskANNSectorSize/36 ||
-		layout.SectorsPerNode() != 1 || layout.DataOffset() != 4096 || layout.DataLength() != 4096 {
-		t.Fatalf("packed layout = %#v", layout)
-	}
+	require.True(t, layout.RecordSize() == 36)
+	require.Equal(t, DiskANNSectorSize/36, layout.NodesPerSector())
+	require.True(t, layout.SectorsPerNode() == 1)
+	require.True(t, layout.DataOffset() == 4096)
+	require.True(t, layout.DataLength() == 4096)
+
 	counter := &countingReaderAt{reader: bytes.NewReader(encoded)}
 	reader, err := OpenDiskANNNodeReader(context.Background(), counter, int64(len(encoded)), 10, 4)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		got := reader.Layout()
+		require.True(t, got.Count() == 10)
+		require.True(t, got.Dimension() == 4)
+		require.True(t, got.MaxDegree() == 3)
+		require.Equal(t, MetricL2, got.Metric())
+		require.Equal(t, int64(len(encoded)), got.TotalLength())
 	}
-	if got := reader.Layout(); got.Count() != 10 || got.Dimension() != 4 || got.MaxDegree() != 3 ||
-		got.Metric() != MetricL2 || got.TotalLength() != int64(len(encoded)) {
-		t.Fatalf("opened layout = %#v", got)
-	}
+
 	counter.calls.Store(0)
 	got, err := reader.ReadNodes(context.Background(), []uint32{5, 1, 5})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if counter.calls.Load() != 1 {
-		t.Fatalf("packed batch issued %d reads, want 1", counter.calls.Load())
-	}
-	if !reflect.DeepEqual(got, []DiskANNNode{nodes[5], nodes[1], nodes[5]}) {
-		t.Fatalf("nodes = %#v", got)
-	}
+	require.NoError(t, err)
+	require.True(t, counter.calls.Load() == 1)
+	require.Equal(t, []DiskANNNode{nodes[5], nodes[1], nodes[5]}, got)
+
 	got[0].Vector[0] = 999
 	got[0].Neighbors[0] = 9
 	again, err := reader.ReadNodes(context.Background(), []uint32{5, 1, 5})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if counter.calls.Load() != 1 || !reflect.DeepEqual(again, []DiskANNNode{nodes[5], nodes[1], nodes[5]}) {
-		t.Fatal("cache miss or aliased cached node")
-	}
+	require.NoError(t, err)
+	require.True(t, counter.calls.Load() == 1,
+		"cache miss or aliased cached node")
+	require.Equal(t, []DiskANNNode{nodes[5], nodes[1], nodes[5]}, again,
+		"cache miss or aliased cached node")
+
 	stats := reader.CacheStats()
-	if stats.Hits != 3 || stats.Misses != 3 || stats.Evictions != 0 {
-		t.Fatalf("cache stats = %#v", stats)
-	}
+	require.True(t, stats.Hits == 3)
+	require.True(t, stats.Misses == 3)
+	require.True(t, stats.Evictions == 0)
 }
 
 func TestDiskANNMultiSectorLayoutAndPartialReaderAt(t *testing.T) {
 	layout, nodes, encoded := diskANNFixture(t, 3, 1024, 10)
-	if layout.NodesPerSector() != 0 || layout.SectorsPerNode() != 2 ||
-		layout.RecordSize() != 4144 || layout.DataLength() != 6*DiskANNSectorSize {
-		t.Fatalf("multi-sector layout = %#v", layout)
-	}
+	require.True(t, layout.NodesPerSector() == 0)
+	require.True(t, layout.SectorsPerNode() == 2)
+	require.True(t, layout.RecordSize() == 4144)
+	require.Equal(t, int64(6*DiskANNSectorSize), layout.DataLength())
+
 	partial := &partialReaderAt{data: encoded, maximum: 127}
 	reader, err := OpenDiskANNNodeReader(context.Background(), partial, int64(len(encoded)), 0, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	got, err := reader.ReadNodes(context.Background(), []uint32{2, 0, 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, []DiskANNNode{nodes[2], nodes[0], nodes[1]}) {
-		t.Fatal("multi-sector nodes differ")
-	}
+	require.NoError(t, err)
+	require.Equal(t, []DiskANNNode{nodes[2], nodes[0], nodes[1]}, got,
+		"multi-sector nodes differ")
+
 	for id := range nodes {
 		spec, err := layout.readSpec(uint32(id))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if spec.length != 2*DiskANNSectorSize || spec.recordOffset != 0 ||
-			spec.offset != int64(diskANNNodeHeaderSize+id*2*DiskANNSectorSize) {
-			t.Fatalf("node %d read spec = %#v", id, spec)
-		}
+		require.NoError(t, err)
+		require.Equal(t, 2*DiskANNSectorSize, spec.length)
+		require.True(t, spec.recordOffset == 0)
+		require.Equal(t, int64(diskANNNodeHeaderSize+id*2*DiskANNSectorSize), spec.offset)
 	}
 }
 
 func TestDiskANNLayoutEmptyAndValidation(t *testing.T) {
 	empty, err := NewDiskANNLayout(MetricIP, 0, 2, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	encoded, err := encodeDiskANNNodeFile(context.Background(), empty, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	reader, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(encoded), int64(len(encoded)), 0, 0)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.True(t, reader.Layout().DataLength() == 0,
+		"empty layout has data")
+	{
+		got, err := reader.ReadNodes(context.Background(), nil)
+		require.NoError(t, err)
+		require.Len(t, got, 0)
 	}
-	if reader.Layout().DataLength() != 0 {
-		t.Fatal("empty layout has data")
-	}
-	if got, err := reader.ReadNodes(context.Background(), nil); err != nil || len(got) != 0 {
-		t.Fatalf("empty batch = %#v, %v", got, err)
-	}
+
 	invalid := []struct {
 		metric                 Metric
 		count, dimension, maxD int
@@ -127,12 +119,14 @@ func TestDiskANNLayoutEmptyAndValidation(t *testing.T) {
 		{MetricL2, 1, MaxRotationDimension + 1, 1}, {MetricL2, 1, 2, 0},
 	}
 	for _, value := range invalid {
-		if _, err := NewDiskANNLayout(value.metric, value.count, value.dimension, value.maxD); !errors.Is(err, ErrInvalidDiskANNLayout) {
-			t.Fatalf("layout %#v error = %v", value, err)
+		{
+			_, err := NewDiskANNLayout(value.metric, value.count, value.dimension, value.maxD)
+			require.ErrorIs(t, err, ErrInvalidDiskANNLayout)
 		}
 	}
-	if _, err := reader.ReadNode(context.Background(), 0); !errors.Is(err, ErrInvalidDiskANNNode) {
-		t.Fatalf("empty node error = %v", err)
+	{
+		_, err := reader.ReadNode(context.Background(), 0)
+		require.ErrorIs(t, err, ErrInvalidDiskANNNode)
 	}
 }
 
@@ -146,32 +140,37 @@ func TestDiskANNNodeEncodingValidationAndCorruption(t *testing.T) {
 		{ID: 0, Vector: []float32{1, 2, 3}, Neighbors: []uint32{1, 2, 3, 4}},
 	}
 	for _, node := range badNodes {
-		if _, err := layout.encodeNode(node); !errors.Is(err, ErrInvalidDiskANNNode) {
-			t.Fatalf("node %#v error = %v", node, err)
+		{
+			_, err := layout.encodeNode(node)
+			require.ErrorIs(t, err, ErrInvalidDiskANNNode)
 		}
 	}
-	if _, err := encodeDiskANNNodeFile(context.Background(), layout, nodes[:5]); !errors.Is(err, ErrInvalidDiskANNLayout) {
-		t.Fatalf("short node set error = %v", err)
+	{
+		_, err := encodeDiskANNNodeFile(context.Background(), layout, nodes[:5])
+		require.ErrorIs(t, err, ErrInvalidDiskANNLayout)
 	}
+
 	outOfOrder := slices.Clone(nodes)
 	outOfOrder[0], outOfOrder[1] = outOfOrder[1], outOfOrder[0]
-	if _, err := encodeDiskANNNodeFile(context.Background(), layout, outOfOrder); !errors.Is(err, ErrInvalidDiskANNNode) {
-		t.Fatalf("out-of-order error = %v", err)
+	{
+		_, err := encodeDiskANNNodeFile(context.Background(), layout, outOfOrder)
+		require.ErrorIs(t, err, ErrInvalidDiskANNNode)
 	}
 
 	corruptPayload := slices.Clone(encoded)
 	corruptPayload[diskANNNodeHeaderSize+4] ^= 1
-	if _, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(corruptPayload), int64(len(corruptPayload)), 0, 1); !errors.Is(err, ErrDiskANNChecksumMismatch) {
-		t.Fatalf("payload checksum error = %v", err)
+	{
+		_, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(corruptPayload), int64(len(corruptPayload)), 0, 1)
+		require.ErrorIs(t, err, ErrDiskANNChecksumMismatch)
 	}
+
 	corruptRecord := slices.Clone(corruptPayload)
 	refreshDiskANNDataChecksum(corruptRecord)
 	reader, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(corruptRecord), int64(len(corruptRecord)), 0, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reader.ReadNode(context.Background(), 0); !errors.Is(err, ErrDiskANNChecksumMismatch) {
-		t.Fatalf("record checksum error = %v", err)
+	require.NoError(t, err)
+	{
+		_, err := reader.ReadNode(context.Background(), 0)
+		require.ErrorIs(t, err, ErrDiskANNChecksumMismatch)
 	}
 
 	semantic := slices.Clone(encoded)
@@ -182,59 +181,71 @@ func TestDiskANNNodeEncodingValidationAndCorruption(t *testing.T) {
 	refreshDiskANNRecordChecksum(semantic[recordStart : recordStart+layout.recordSize])
 	refreshDiskANNDataChecksum(semantic)
 	reader, err = OpenDiskANNNodeReader(context.Background(), bytes.NewReader(semantic), int64(len(semantic)), 0, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reader.ReadNode(context.Background(), 0); !errors.Is(err, ErrInvalidDiskANNNode) {
-		t.Fatalf("semantic corruption error = %v", err)
+	require.NoError(t, err)
+	{
+		_, err := reader.ReadNode(context.Background(), 0)
+		require.ErrorIs(t, err, ErrInvalidDiskANNNode)
 	}
 }
 
 func TestDiskANNHeaderCorruptionTruncationAndCancellation(t *testing.T) {
 	layout, nodes, valid := diskANNFixture(t, 6, 3, 3)
 	for _, size := range []int{0, 1, diskANNNodeHeaderSize - 1, len(valid) - 1} {
-		if _, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(valid[:size]), int64(size), 0, 1); err == nil {
-			t.Fatalf("truncation %d succeeded", size)
+		{
+			_, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(valid[:size]), int64(size), 0, 1)
+			require.Error(t, err)
 		}
 	}
 	trailing := append(slices.Clone(valid), 0)
-	if _, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(trailing), int64(len(trailing)), 0, 1); !errors.Is(err, ErrInvalidDiskANNLayout) {
-		t.Fatalf("trailing error = %v", err)
+	{
+		_, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(trailing), int64(len(trailing)), 0, 1)
+		require.ErrorIs(t, err, ErrInvalidDiskANNLayout)
 	}
+
 	badMagic := slices.Clone(valid)
 	badMagic[0] ^= 1
-	if _, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(badMagic), int64(len(badMagic)), 0, 1); !errors.Is(err, ErrInvalidDiskANNLayout) {
-		t.Fatalf("magic error = %v", err)
+	{
+		_, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(badMagic), int64(len(badMagic)), 0, 1)
+		require.ErrorIs(t, err, ErrInvalidDiskANNLayout)
 	}
+
 	badVersion := slices.Clone(valid)
 	binary.LittleEndian.PutUint16(badVersion[8:10], diskANNNodeFileVersion+1)
-	if _, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(badVersion), int64(len(badVersion)), 0, 1); !errors.Is(err, ErrUnsupportedDiskANNVersion) {
-		t.Fatalf("version error = %v", err)
+	{
+		_, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(badVersion), int64(len(badVersion)), 0, 1)
+		require.ErrorIs(t, err, ErrUnsupportedDiskANNVersion)
 	}
+
 	badHeader := slices.Clone(valid)
 	badHeader[48] ^= 1
-	if _, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(badHeader), int64(len(badHeader)), 0, 1); !errors.Is(err, ErrDiskANNChecksumMismatch) {
-		t.Fatalf("header checksum error = %v", err)
+	{
+		_, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(badHeader), int64(len(badHeader)), 0, 1)
+		require.ErrorIs(t, err, ErrDiskANNChecksumMismatch)
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := encodeDiskANNNodeFile(canceled, layout, nodes); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled encode error = %v", err)
+	{
+		_, err := encodeDiskANNNodeFile(canceled, layout, nodes)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	largeLayout, largeNodes, _ := diskANNFixture(t, 300, 3, 3)
 	midEncode := newCancelAfterChecks(3)
-	if _, err := encodeDiskANNNodeFile(midEncode, largeLayout, largeNodes); !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-encode cancellation error = %v", err)
+	{
+		_, err := encodeDiskANNNodeFile(midEncode, largeLayout, largeNodes)
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := OpenDiskANNNodeReader(canceled, bytes.NewReader(valid), int64(len(valid)), 0, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled open error = %v", err)
+	{
+		_, err := OpenDiskANNNodeReader(canceled, bytes.NewReader(valid), int64(len(valid)), 0, 1)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	reader, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(valid), int64(len(valid)), 0, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reader.ReadNodes(canceled, []uint32{0}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled read error = %v", err)
+	require.NoError(t, err)
+	{
+		_, err := reader.ReadNodes(canceled, []uint32{0})
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
@@ -242,50 +253,58 @@ func TestParallelReadAtOrderingPartialShortAndValidation(t *testing.T) {
 	data := []byte("abcdefghijklmnopqrstuvwxyz")
 	requests := []DiskANNReadRequest{{Offset: 10, Length: 4}, {Offset: 0, Length: 3}, {Offset: 20, Length: 6}}
 	got, err := ParallelReadAt(context.Background(), &partialReaderAt{data: data, maximum: 2}, requests, 3)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{[]byte("klmn"), []byte("abc"), []byte("uvwxyz")}, got)
+	{
+		_, err := ParallelReadAt(context.Background(), bytes.NewReader(data), []DiskANNReadRequest{{Offset: 24, Length: 4}}, 1)
+		require.ErrorIs(t, err, ErrDiskANNShortRead)
 	}
-	if !reflect.DeepEqual(got, [][]byte{[]byte("klmn"), []byte("abc"), []byte("uvwxyz")}) {
-		t.Fatalf("parallel reads = %q", got)
+	{
+		_, err := ParallelReadAt(nil, bytes.NewReader(data), requests, 1)
+		require.Error(t, err,
+			"nil context succeeded")
 	}
-	if _, err := ParallelReadAt(context.Background(), bytes.NewReader(data), []DiskANNReadRequest{{Offset: 24, Length: 4}}, 1); !errors.Is(err, ErrDiskANNShortRead) {
-		t.Fatalf("short read error = %v", err)
+	{
+		_, err := ParallelReadAt(context.Background(), nil, requests, 1)
+		require.Error(t, err,
+			"nil reader succeeded")
 	}
-	if _, err := ParallelReadAt(nil, bytes.NewReader(data), requests, 1); err == nil {
-		t.Fatal("nil context succeeded")
-	}
-	if _, err := ParallelReadAt(context.Background(), nil, requests, 1); err == nil {
-		t.Fatal("nil reader succeeded")
-	}
-	if _, err := ParallelReadAt(context.Background(), bytes.NewReader(data), []DiskANNReadRequest{{Offset: -1, Length: 1}}, 1); err == nil {
-		t.Fatal("negative offset succeeded")
+	{
+		_, err := ParallelReadAt(context.Background(), bytes.NewReader(data), []DiskANNReadRequest{{Offset: -1, Length: 1}}, 1)
+		require.Error(t, err,
+			"negative offset succeeded")
 	}
 }
 
 func TestDiskANNNodeCacheEvictionConcurrencyAndOwnership(t *testing.T) {
 	cache, err := NewDiskANNNodeCache(2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	nodes := diskANNNodes(4, 2)
 	cache.Put(nodes[0])
 	cache.Put(nodes[1])
-	if _, found := cache.Get(0); !found {
-		t.Fatal("missing cached node")
+	{
+		_, found := cache.Get(0)
+		require.True(t, found,
+			"missing cached node")
 	}
+
 	cache.Put(nodes[2])
-	if _, found := cache.Get(1); found {
-		t.Fatal("least-recently-used node was not evicted")
+	{
+		_, found := cache.Get(1)
+		require.False(t, found,
+			"least-recently-used node was not evicted")
 	}
+
 	got, found := cache.Get(0)
-	if !found {
-		t.Fatal("recent node evicted")
-	}
+	require.True(t, found,
+		"recent node evicted")
+
 	got.Vector[0] = 999
 	again, _ := cache.Get(0)
-	if again.Vector[0] == 999 {
-		t.Fatal("cache returned aliased node")
-	}
+	require.False(t, again.Vector[0] == 999,
+		"cache returned aliased node")
+
 	var wait sync.WaitGroup
 	for worker := 0; worker < 8; worker++ {
 		wait.Add(1)
@@ -298,15 +317,16 @@ func TestDiskANNNodeCacheEvictionConcurrencyAndOwnership(t *testing.T) {
 		}(worker)
 	}
 	wait.Wait()
-	if cache.Len() > cache.Capacity() || cache.Stats().Evictions == 0 {
-		t.Fatalf("cache state = len %d capacity %d stats %#v", cache.Len(), cache.Capacity(), cache.Stats())
-	}
+	require.True(t, cache.Len() <= cache.Capacity())
+	require.False(t, cache.Stats().Evictions == 0)
+
 	cache.Clear()
-	if cache.Len() != 0 {
-		t.Fatal("cache clear failed")
-	}
-	if _, err := NewDiskANNNodeCache(-1); err == nil {
-		t.Fatal("negative cache capacity succeeded")
+	require.True(t, cache.Len() == 0,
+		"cache clear failed")
+	{
+		_, err := NewDiskANNNodeCache(-1)
+		require.Error(t, err,
+			"negative cache capacity succeeded")
 	}
 }
 
@@ -337,16 +357,23 @@ func BenchmarkDiskANNWarmNodeRead(b *testing.B) {
 	_, _, encoded := diskANNFixture(b, 100, 16, 8)
 	reader, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(encoded), int64(len(encoded)), 100, 4)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
-	if _, err := reader.ReadNode(context.Background(), 50); err != nil {
-		b.Fatal(err)
+	{
+		_, err := reader.ReadNode(context.Background(), 50)
+		if err != nil {
+			require.NoError(b, err)
+		}
 	}
+
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := reader.ReadNode(context.Background(), 50); err != nil {
-			b.Fatal(err)
+		{
+			_, err := reader.ReadNode(context.Background(), 50)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }
@@ -354,9 +381,8 @@ func BenchmarkDiskANNWarmNodeRead(b *testing.B) {
 func diskANNFixture(t testing.TB, count, dimension, maxDegree int) (DiskANNLayout, []DiskANNNode, []byte) {
 	t.Helper()
 	layout, err := NewDiskANNLayout(MetricL2, count, dimension, maxDegree)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	nodes := diskANNNodes(count, dimension)
 	for index := range nodes {
 		if count > 1 {
@@ -364,9 +390,8 @@ func diskANNFixture(t testing.TB, count, dimension, maxDegree int) (DiskANNLayou
 		}
 	}
 	encoded, err := encodeDiskANNNodeFile(context.Background(), layout, nodes)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return layout, nodes, encoded
 }
 

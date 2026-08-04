@@ -17,8 +17,9 @@ package zvec
 import (
 	"context"
 	"path/filepath"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestCreateFTSIndexBackfillQueryAndReopen(t *testing.T) {
@@ -32,23 +33,26 @@ func TestCreateFTSIndexBackfillQueryAndReopen(t *testing.T) {
 		},
 	)
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := collection.Insert(ctx, []Document{
+			{PrimaryKey: "go", Fields: map[string]any{"title": "Go vector search", "embedding": VectorFP32{1, 0}}},
+			{PrimaryKey: "db", Fields: map[string]any{"title": "Database internals", "embedding": VectorFP32{0.5, 0}}},
+		})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, []Document{
-		{PrimaryKey: "go", Fields: map[string]any{"title": "Go vector search", "embedding": VectorFP32{1, 0}}},
-		{PrimaryKey: "db", Fields: map[string]any{"title": "Database internals", "embedding": VectorFP32{0.5, 0}}},
-	}); err != nil {
-		t.Fatal(err)
-	}
+
 	params := FTSIndexParams{Tokenizer: "whitespace", Filters: []string{"lowercase", "stemmer"}, ExtraParams: `{"stemmer_lang":"english"}`}
-	if err := collection.CreateIndex(ctx, "title", params, CreateIndexOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.CreateIndex(ctx, "title", params, CreateIndexOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
+
 	field, found := collection.Schema().Field("title")
-	if !found || !equalIndexParams(field.Index, params) || collection.Stats().IndexCompleteness["title"] != 1 {
-		t.Fatalf("FTS schema/stats = %#v / %#v", field, collection.Stats())
-	}
+	require.True(t, found)
+	require.True(t, equalIndexParams(field.Index, params))
+	require.True(t, collection.Stats().IndexCompleteness["title"] == 1)
+
 	query := MultiQuery{
 		Queries: []SubQuery{
 			{Field: "title", FTS: &FTSClause{Match: "searching"}, NumCandidates: 2},
@@ -57,24 +61,23 @@ func TestCreateFTSIndexBackfillQueryAndReopen(t *testing.T) {
 		TopK: 1, Projection: Projection{OutputFields: []string{"title"}},
 	}
 	want, err := collection.MultiQuery(ctx, query)
-	if err != nil || len(want) != 1 || want[0].PrimaryKey != "go" {
-		t.Fatalf("backfilled FTS query = %#v, %v", want, err)
-	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.Len(t, want, 1)
+	require.True(t, want[0].PrimaryKey == "go")
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
 
 	options := NewCollectionOptions()
 	options.ReadOnly = true
 	reopened, err := Open(ctx, path, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer reopened.Close()
 	got, err := reopened.MultiQuery(ctx, query)
-	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("reopened FTS query = %#v, %v; want %#v", got, err, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 }
 
 func TestCreateFTSIndexBackfillFailureRollsBack(t *testing.T) {
@@ -82,20 +85,24 @@ func TestCreateFTSIndexBackfillFailureRollsBack(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fts-rollback")
 	schema := NewCollectionSchema("fts_rollback", FieldSchema{Name: "title", DataType: DataTypeString})
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.Insert(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{"title": "中文"}}}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{"title": "中文"}}})
+		require.NoError(t, err)
 	}
+
 	beforeSchema := collection.Schema()
 	beforeGeneration := collection.store.Manifest().Generation
 	params := FTSIndexParams{Tokenizer: "jieba", ExtraParams: `{"jieba_dict_dir":"missing-jieba-resources"}`}
-	if err := collection.CreateIndex(ctx, "title", params, CreateIndexOptions{}); err == nil {
-		t.Fatal("missing Jieba resources unexpectedly succeeded")
+	{
+		err := collection.CreateIndex(ctx, "title", params, CreateIndexOptions{})
+		require.Error(t, err,
+			"missing Jieba resources unexpectedly succeeded")
 	}
-	if !reflect.DeepEqual(collection.Schema(), beforeSchema) || collection.store.Manifest().Generation != beforeGeneration {
-		t.Fatal("failed FTS backfill changed schema or manifest")
-	}
+	require.Equal(t, beforeSchema, collection.Schema(),
+		"failed FTS backfill changed schema or manifest")
+	require.Equal(t, beforeGeneration, collection.store.Manifest().Generation,
+		"failed FTS backfill changed schema or manifest")
 }

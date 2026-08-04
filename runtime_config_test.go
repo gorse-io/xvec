@@ -23,32 +23,36 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestRuntimeConfigDefaultsAndValidation(t *testing.T) {
 	config := NewRuntimeConfig()
-	if err := config.Validate(); err != nil {
-		t.Fatal(err)
+	{
+		err := config.Validate()
+		require.NoError(t, err)
 	}
+
 	defaultWorkers := min(runtime.GOMAXPROCS(0), MaxRuntimeConcurrency)
-	if config.QueryConcurrency != defaultWorkers || config.OptimizeConcurrency != defaultWorkers ||
-		config.LogLevel != LogLevelWarn || config.MemoryLimitBytes != 0 ||
-		config.InvertToForwardScanRatio != 0.9 || config.BruteForceByKeysRatio != 0.1 ||
-		config.FTSBruteForceByKeysRatio != 0.05 {
-		t.Fatalf("runtime defaults = %#v", config)
-	}
+	require.Equal(t, defaultWorkers, config.QueryConcurrency)
+	require.Equal(t, defaultWorkers, config.OptimizeConcurrency)
+	require.Equal(t, LogLevelWarn, config.LogLevel)
+	require.True(t, config.MemoryLimitBytes == 0)
+	require.True(t, config.InvertToForwardScanRatio == 0.9)
+	require.True(t, config.BruteForceByKeysRatio == 0.1)
+	require.True(t, config.FTSBruteForceByKeysRatio == 0.05)
+
 	for level, name := range map[LogLevel]string{
 		LogLevelDebug: "DEBUG", LogLevelInfo: "INFO", LogLevelWarn: "WARN",
 		LogLevelError: "ERROR", LogLevelFatal: "FATAL",
 	} {
-		if !level.Valid() || level.String() != name {
-			t.Fatalf("log level %d = %q, valid %v", level, level, level.Valid())
-		}
+		require.True(t, level.Valid())
+		require.Equal(t, name, level.String())
 	}
 
 	tests := []struct {
@@ -72,24 +76,25 @@ func TestRuntimeConfigDefaultsAndValidation(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			value := NewRuntimeConfig()
 			testCase.mutate(&value)
-			if err := value.Validate(); !errors.Is(err, testCase.want) {
-				t.Fatalf("validation error = %v, want %v", err, testCase.want)
+			{
+				err := value.Validate()
+				require.ErrorIs(t, err, testCase.want)
 			}
 		})
 	}
 	config.MemoryLimitBytes = MinRuntimeMemoryLimit
 	config.Logger = nil
-	if err := config.Validate(); err != nil {
-		t.Fatalf("minimum memory config = %v", err)
+	{
+		err := config.Validate()
+		require.NoError(t, err)
 	}
 }
 
 func TestMemoryBudgetLimitsWaitsCancellationAndStats(t *testing.T) {
 	budget := newMemoryBudget(10)
 	release, err := budget.acquire(context.Background(), 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	waitContext, cancel := context.WithCancel(context.Background())
 	waitResult := make(chan error, 1)
 	go func() {
@@ -101,44 +106,48 @@ func TestMemoryBudgetLimitsWaitsCancellationAndStats(t *testing.T) {
 		return waiters
 	}, 1)
 	cancel()
-	if err := <-waitResult; !errors.Is(err, context.Canceled) {
-		t.Fatalf("wait error = %v", err)
+	{
+		err := <-waitResult
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := budget.acquire(context.Background(), 11); !errors.Is(err, errRuntimeMemoryLimit) {
-		t.Fatalf("oversized reservation = %v", err)
+	{
+		_, err := budget.acquire(context.Background(), 11)
+		require.ErrorIs(t, err, errRuntimeMemoryLimit)
 	}
+
 	release()
 	releaseAll, err := budget.acquire(context.Background(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	limit, used, peak, waiters := budget.stats()
-	if limit != 10 || used != 10 || peak != 10 || waiters != 0 {
-		t.Fatalf("memory stats = %d/%d/%d/%d", limit, used, peak, waiters)
-	}
+	require.True(t, limit == 10)
+	require.True(t, used == 10)
+	require.True(t, peak == 10)
+	require.True(t, waiters == 0)
+
 	releaseAll()
 	_, used, peak, _ = budget.stats()
-	if used != 0 || peak != 10 {
-		t.Fatalf("released memory stats = %d/%d", used, peak)
-	}
+	require.True(t, used == 0)
+	require.True(t, peak == 10)
 
 	unlimited := newMemoryBudget(0)
 	releaseUnlimited, err := unlimited.acquire(context.Background(), math.MaxUint32)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		limit, used, peak, _ := unlimited.stats()
+		require.True(t, limit == 0)
+		require.Equal(t, uint64(math.MaxUint32), used)
+		require.Equal(t, uint64(math.MaxUint32), peak)
 	}
-	if limit, used, peak, _ := unlimited.stats(); limit != 0 || used != math.MaxUint32 || peak != math.MaxUint32 {
-		t.Fatalf("unlimited stats = %d/%d/%d", limit, used, peak)
-	}
+
 	releaseUnlimited()
 }
 
 func TestTaskLimiterBoundsQueuesAndCounts(t *testing.T) {
 	limiter := newTaskLimiter(1)
 	releaseFirst, err := limiter.acquire(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	acquired := make(chan func(), 1)
 	go func() {
 		release, acquireErr := limiter.acquire(context.Background())
@@ -161,9 +170,11 @@ func TestTaskLimiterBoundsQueuesAndCounts(t *testing.T) {
 		return queued
 	}, 2)
 	cancel()
-	if err := <-canceled; !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled acquire = %v", err)
+	{
+		err := <-canceled
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	waitForRuntimeCounter(t, func() uint64 {
 		_, _, queued, _ := limiter.stats()
 		return queued
@@ -172,13 +183,16 @@ func TestTaskLimiterBoundsQueuesAndCounts(t *testing.T) {
 	releaseSecond := <-acquired
 	releaseSecond()
 	active, peak, queued, completed := limiter.stats()
-	if active != 0 || peak != 1 || queued != 0 || completed != 2 {
-		t.Fatalf("task stats = %d/%d/%d/%d", active, peak, queued, completed)
-	}
+	require.True(t, active == 0)
+	require.True(t, peak == 1)
+	require.True(t, queued == 0)
+	require.True(t, completed == 2)
+
 	alreadyCanceled, cancelAlready := context.WithCancel(context.Background())
 	cancelAlready()
-	if _, err := limiter.acquire(alreadyCanceled); !errors.Is(err, context.Canceled) {
-		t.Fatalf("already-canceled acquire = %v", err)
+	{
+		_, err := limiter.acquire(alreadyCanceled)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
@@ -197,130 +211,146 @@ func TestRuntimeResourcesLoggingAdmissionAndCollectionStats(t *testing.T) {
 		Index: NewFlatIndexParams(MetricTypeIP),
 	})
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "runtime"), schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	collection.runtime = resources
-	if _, err := collection.Insert(ctx, []Document{
-		{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{1, 0}}},
-		{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{0.8, 0}}},
-		{PrimaryKey: "c", Fields: map[string]any{"embedding": VectorFP32{0.6, 0}}},
-		{PrimaryKey: "d", Fields: map[string]any{"embedding": VectorFP32{0.4, 0}}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	stats := collection.Stats()
-	if stats.DocumentCount != 4 || stats.MutableDocuments != 4 || stats.ImmutableSegments != 0 || stats.StorageMemoryBytes == 0 {
-		t.Fatalf("mutable collection stats = %#v", stats)
-	}
-	if _, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2}); err != nil {
-		t.Fatal(err)
-	}
-	runtimeStats := resources.stats()
-	if runtimeStats.CompletedQueries != 1 || runtimeStats.PeakQueries != 1 || runtimeStats.MemoryInUseBytes != 0 || runtimeStats.PeakMemoryBytes == 0 {
-		t.Fatalf("query runtime stats = %#v", runtimeStats)
-	}
-	if messages := handler.messages(); !reflect.DeepEqual(messages, []string{"operation started", "operation completed"}) {
-		t.Fatalf("runtime log messages = %#v", messages)
-	}
-	if collection.queryWorkers() != 1 || collection.optimizeWorkers(0) != 2 || collection.optimizeWorkers(9) != 2 || collection.optimizeWorkers(1) != 1 {
-		t.Fatalf("runtime worker routing = query %d optimize %d/%d/%d", collection.queryWorkers(), collection.optimizeWorkers(0), collection.optimizeWorkers(9), collection.optimizeWorkers(1))
+	{
+		_, err := collection.Insert(ctx, []Document{
+			{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{1, 0}}},
+			{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{0.8, 0}}},
+			{PrimaryKey: "c", Fields: map[string]any{"embedding": VectorFP32{0.6, 0}}},
+			{PrimaryKey: "d", Fields: map[string]any{"embedding": VectorFP32{0.4, 0}}},
+		})
+		require.NoError(t, err)
 	}
 
-	if err := collection.Flush(ctx); err != nil {
-		t.Fatal(err)
+	stats := collection.Stats()
+	require.True(t, stats.DocumentCount == 4)
+	require.True(t, stats.MutableDocuments == 4)
+	require.True(t, stats.ImmutableSegments == 0)
+	require.False(t, stats.StorageMemoryBytes == 0)
+	{
+		_, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2})
+		require.NoError(t, err)
 	}
+
+	runtimeStats := resources.stats()
+	require.True(t, runtimeStats.CompletedQueries == 1)
+	require.True(t, runtimeStats.PeakQueries == 1)
+	require.True(t, runtimeStats.MemoryInUseBytes == 0)
+	require.False(t, runtimeStats.PeakMemoryBytes == 0)
+	{
+		messages := handler.messages()
+		require.Equal(t, []string{"operation started", "operation completed"}, messages)
+	}
+	require.True(t, collection.queryWorkers() == 1)
+	require.True(t, collection.optimizeWorkers(0) == 2)
+	require.True(t, collection.optimizeWorkers(9) == 2)
+	require.True(t, collection.optimizeWorkers(1) == 1)
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
+	}
+
 	stats = collection.Stats()
-	if stats.ImmutableSegments != 1 || stats.MutableDocuments != 0 || stats.StorageMemoryBytes == 0 {
-		t.Fatalf("flushed collection stats = %#v", stats)
-	}
+	require.True(t, stats.ImmutableSegments == 1)
+	require.True(t, stats.MutableDocuments == 0)
+	require.False(t, stats.StorageMemoryBytes == 0)
+
 	beforeDeleteMemory := stats.StorageMemoryBytes
-	if _, err := collection.Delete(ctx, []string{"a"}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Delete(ctx, []string{"a"})
+		require.NoError(t, err)
 	}
+
 	stats = collection.Stats()
-	if stats.DocumentCount != 3 || stats.DeletedDocuments != 1 || stats.StorageMemoryBytes != beforeDeleteMemory+8 {
-		t.Fatalf("deleted collection stats = %#v", stats)
+	require.True(t, stats.DocumentCount == 3)
+	require.True(t, stats.DeletedDocuments == 1)
+	require.Equal(t, beforeDeleteMemory+8, stats.StorageMemoryBytes)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{})
+		require.NoError(t, err)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{}); err != nil {
-		t.Fatal(err)
-	}
+
 	runtimeStats = resources.stats()
-	if runtimeStats.CompletedOptimizeTasks != 1 || runtimeStats.PeakOptimizeTasks != 1 || runtimeStats.MemoryInUseBytes != 0 {
-		t.Fatalf("optimize runtime stats = %#v", runtimeStats)
-	}
-	if messages := handler.messages(); !reflect.DeepEqual(messages, []string{
-		"operation started", "operation completed", "operation started", "operation completed",
-	}) {
-		t.Fatalf("runtime log messages after optimize = %#v", messages)
+	require.True(t, runtimeStats.CompletedOptimizeTasks == 1)
+	require.True(t, runtimeStats.PeakOptimizeTasks == 1)
+	require.True(t, runtimeStats.MemoryInUseBytes == 0)
+	{
+		messages := handler.messages()
+		require.Equal(t, []string{
+			"operation started", "operation completed", "operation started", "operation completed",
+		}, messages)
 	}
 
 	tiny := NewRuntimeConfig()
 	tiny.Logger = nil
 	tiny.MemoryLimitBytes = 1
 	collection.runtime = newRuntimeResources(tiny)
-	if _, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 1}); !errors.Is(err, ErrResourceExhausted) {
-		t.Fatalf("memory admission = %v", err)
+	{
+		_, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 1})
+		require.ErrorIs(t, err, ErrResourceExhausted)
 	}
 }
 
 func TestRuntimePlannerRatiosAndFTSCandidateSeek(t *testing.T) {
-	if got := collectionDiskANNCacheCapacity(2*4096, 100); got != 2 {
-		t.Fatalf("DiskANN cache capacity = %d", got)
+	{
+		got := collectionDiskANNCacheCapacity(2*4096, 100)
+		require.True(t, got == 2)
 	}
-	if got := collectionDiskANNCacheCapacity(4095, 100); got != 0 {
-		t.Fatalf("sub-sector DiskANN cache capacity = %d", got)
+	{
+		got := collectionDiskANNCacheCapacity(4095, 100)
+		require.True(t, got == 0)
 	}
-	if got := collectionDiskANNCacheCapacity(DefaultMaxBufferSize, 1); got != 1 {
-		t.Fatalf("bounded DiskANN cache capacity = %d", got)
+	{
+		got := collectionDiskANNCacheCapacity(DefaultMaxBufferSize, 1)
+		require.True(t, got == 1)
 	}
+
 	documents := testMultiQueryDocuments()
 	for index := range documents {
 		documents[index].DocID = uint64(index + 1)
 	}
 	plan, err := buildFilterPlan("category = 'keep'", testMultiQuerySchema())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	indexed, err := evaluateFilterDocuments(context.Background(), plan, documents, 0.9)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	forward, err := evaluateFilterDocuments(context.Background(), plan, documents, 0.5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !indexed.usedIndex || forward.usedIndex || indexed.matched != 3 || indexed.total != 4 ||
-		!indexed.useBruteForce(0.75) || indexed.useBruteForce(0.74) {
-		t.Fatalf("planner routes = indexed %#v, forward %#v", indexed, forward)
-	}
+	require.NoError(t, err)
+	require.True(t, indexed.usedIndex)
+	require.False(t, forward.usedIndex)
+	require.True(t, indexed.matched == 3)
+	require.True(t, indexed.total == 4)
+	require.True(t, indexed.useBruteForce(0.75))
+	require.False(t, indexed.useBruteForce(0.74))
 
 	field, found := testMultiQuerySchema().Field("title")
-	if !found {
-		t.Fatal("missing title field")
-	}
+	require.True(t, found,
+		"missing title field")
+
 	runtime, err := buildCollectionFTSRuntime(context.Background(), field, documents, indexed.predicate)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	posting, err := searchCollectionFTS(context.Background(), runtime, &FTSClause{Match: "go"}, nil, 10, indexed.ordinals, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	candidate, err := searchCollectionFTS(context.Background(), runtime, &FTSClause{Match: "go"}, nil, 10, indexed.ordinals, true)
-	if err != nil || !reflect.DeepEqual(candidate, posting) {
-		t.Fatalf("FTS candidate seek = %#v, %v; posting %#v", candidate, err, posting)
-	}
+	require.NoError(t, err)
+	require.Equal(t, posting, candidate)
 }
 
 func TestConfigureRuntimeOneShotSubprocess(t *testing.T) {
 	if os.Getenv("ZVEC_RUNTIME_CONFIG_HELPER") == "1" {
 		bad := NewRuntimeConfig()
 		bad.QueryConcurrency = 0
-		if err := ConfigureRuntime(bad); !errors.Is(err, ErrInvalidArgument) {
-			t.Fatalf("invalid initial config = %v", err)
+		{
+			err := ConfigureRuntime(bad)
+			require.ErrorIs(t, err, ErrInvalidArgument)
 		}
+
 		SetDefaultJiebaDictDir("before-config")
 		first := NewRuntimeConfig()
 		first.Logger = nil
@@ -329,41 +359,43 @@ func TestConfigureRuntimeOneShotSubprocess(t *testing.T) {
 		first.OptimizeConcurrency = 2
 		first.LogLevel = LogLevelInfo
 		first.JiebaDictionaryDir = "configured"
-		if err := ConfigureRuntime(first); err != nil {
-			t.Fatal(err)
+		{
+			err := ConfigureRuntime(first)
+			require.NoError(t, err)
 		}
+
 		second := NewRuntimeConfig()
 		second.Logger = nil
 		second.QueryConcurrency = 7
 		second.JiebaDictionaryDir = "ignored"
-		if err := ConfigureRuntime(second); err != nil {
-			t.Fatal(err)
+		{
+			err := ConfigureRuntime(second)
+			require.NoError(t, err)
 		}
+
 		got := CurrentRuntimeConfig()
-		if got.QueryConcurrency != 1 || got.OptimizeConcurrency != 2 || got.MemoryLimitBytes != MinRuntimeMemoryLimit || got.LogLevel != LogLevelInfo {
-			t.Fatalf("configured runtime = %#v", got)
+		require.True(t, got.QueryConcurrency == 1)
+		require.True(t, got.OptimizeConcurrency == 2)
+		require.Equal(t, MinRuntimeMemoryLimit, got.MemoryLimitBytes)
+		require.Equal(t, LogLevelInfo, got.LogLevel)
+		require.True(t, DefaultJiebaDictDir() == "configured")
+		{
+			stats := CurrentRuntimeStats()
+			require.Equal(t, MinRuntimeMemoryLimit, stats.MemoryLimitBytes)
 		}
-		if DefaultJiebaDictDir() != "configured" {
-			t.Fatalf("Jieba fallback = %q", DefaultJiebaDictDir())
-		}
-		if stats := CurrentRuntimeStats(); stats.MemoryLimitBytes != MinRuntimeMemoryLimit {
-			t.Fatalf("runtime stats = %#v", stats)
-		}
+
 		return
 	}
 	command := exec.Command(os.Args[0], "-test.run=^TestConfigureRuntimeOneShotSubprocess$")
 	command.Env = append(os.Environ(), "ZVEC_RUNTIME_CONFIG_HELPER=1")
 	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("runtime config subprocess: %v\n%s", err, output)
-	}
+	require.NoError(t, err, "runtime config subprocess output:\n%s", output)
 }
 
 func TestRuntimeConfigCompatibilityFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/runtime_config_58375ff.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var fixture struct {
 		BaselineCommit string             `json:"baseline_commit"`
 		ConfigHeader   string             `json:"config_header_sha256"`
@@ -373,18 +405,17 @@ func TestRuntimeConfigCompatibilityFixture(t *testing.T) {
 		Defaults       map[string]float64 `json:"planner_ratio_defaults"`
 		LogLevels      map[string]int     `json:"log_levels"`
 	}
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(data, &fixture)
+		require.NoError(t, err)
 	}
-	if fixture.BaselineCommit != "58375ff7b8fdd0d6fc7d234e47567b179777883b" ||
-		fixture.ConfigHeader != "e2fdabad1fca4b3ffd647081962c2869b4c376379fc1e5506f1e465c985b1758" ||
-		fixture.ConfigSource != "04c9ea1d60b74dd3c5a1fb78bd61251bd11ab54acf2ada944e780f5800f3d929" ||
-		fixture.OptionsHeader != "865c50a022754ad5101f9f40a03401e2832c5b008713c92d487ebf125334670d" ||
-		fixture.StatsHeader != "791bb777751cb3f76ed79ec8c068a3575068361a717d246fb02f43027fc685af" ||
-		!reflect.DeepEqual(fixture.Defaults, map[string]float64{"invert_to_forward": 0.9, "vector_brute_force": 0.1, "fts_brute_force": 0.05}) ||
-		!reflect.DeepEqual(fixture.LogLevels, map[string]int{"debug": 0, "info": 1, "warn": 2, "error": 3, "fatal": 4}) {
-		t.Fatalf("runtime compatibility fixture mismatch: %#v", fixture)
-	}
+	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
+	require.True(t, fixture.ConfigHeader == "e2fdabad1fca4b3ffd647081962c2869b4c376379fc1e5506f1e465c985b1758")
+	require.True(t, fixture.ConfigSource == "04c9ea1d60b74dd3c5a1fb78bd61251bd11ab54acf2ada944e780f5800f3d929")
+	require.True(t, fixture.OptionsHeader == "865c50a022754ad5101f9f40a03401e2832c5b008713c92d487ebf125334670d")
+	require.True(t, fixture.StatsHeader == "791bb777751cb3f76ed79ec8c068a3575068361a717d246fb02f43027fc685af")
+	require.Equal(t, map[string]float64{"invert_to_forward": 0.9, "vector_brute_force": 0.1, "fts_brute_force": 0.05}, fixture.Defaults)
+	require.Equal(t, map[string]int{"debug": 0, "info": 1, "warn": 2, "error": 3, "fatal": 4}, fixture.LogLevels)
 }
 
 func FuzzRuntimeConfigValidation(f *testing.F) {
@@ -400,16 +431,15 @@ func FuzzRuntimeConfigValidation(f *testing.F) {
 		config.BruteForceByKeysRatio = math.Float32frombits(bruteBits)
 		err := config.Validate()
 		if err == nil {
-			if config.QueryConcurrency <= 0 || config.QueryConcurrency > MaxRuntimeConcurrency ||
-				config.OptimizeConcurrency <= 0 || config.OptimizeConcurrency > MaxRuntimeConcurrency ||
-				config.MemoryLimitBytes != 0 && config.MemoryLimitBytes < MinRuntimeMemoryLimit {
-				t.Fatalf("invalid config accepted: %#v", config)
-			}
+			require.True(t, config.QueryConcurrency > 0)
+			require.True(t, config.QueryConcurrency <= MaxRuntimeConcurrency)
+			require.True(t, config.OptimizeConcurrency > 0)
+			require.True(t, config.OptimizeConcurrency <= MaxRuntimeConcurrency)
+			require.False(t, config.MemoryLimitBytes != 0 && config.MemoryLimitBytes < MinRuntimeMemoryLimit)
+
 			return
 		}
-		if !errors.Is(err, ErrInvalidArgument) && !errors.Is(err, ErrNotSupported) {
-			t.Fatalf("unstructured validation error = %v", err)
-		}
+		require.False(t, !errors.Is(err, ErrInvalidArgument) && !errors.Is(err, ErrNotSupported))
 	})
 }
 
@@ -422,8 +452,9 @@ func BenchmarkRuntimeAdmission(b *testing.B) {
 	for iteration := 0; iteration < b.N; iteration++ {
 		release, err := resources.begin(context.Background(), runtimeQueryTask, "benchmark", "", 1024)
 		if err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
+
 		release()
 	}
 }
@@ -465,5 +496,5 @@ func waitForRuntimeCounter(t *testing.T, read func() uint64, want uint64) {
 		}
 		runtime.Gosched()
 	}
-	t.Fatalf("runtime counter = %d, want %d", read(), want)
+	require.Equal(t, want, read())
 }

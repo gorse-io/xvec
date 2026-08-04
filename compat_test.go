@@ -18,6 +18,8 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 type publicAPIFixture struct {
@@ -28,16 +30,15 @@ type publicAPIFixture struct {
 func loadPublicAPIFixture(t *testing.T) publicAPIFixture {
 	t.Helper()
 	data, err := os.ReadFile("testdata/cpp_public_api_58375ff.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var fixture publicAPIFixture
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(data, &fixture)
+		require.NoError(t, err)
 	}
-	if fixture.BaselineCommit != "58375ff7b8fdd0d6fc7d234e47567b179777883b" {
-		t.Fatalf("fixture baseline = %q", fixture.BaselineCommit)
-	}
+	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
+
 	return fixture
 }
 
@@ -56,8 +57,9 @@ func TestPublicEnumCompatibility(t *testing.T) {
 		"ColumnOp":     enumValues(columnOpNames),
 		"ErrorCode":    enumValues(errorCodeNames),
 	}
-	if diff := diffEnums(fixture.Enums, got); diff != "" {
-		t.Fatal(diff)
+	{
+		diff := diffEnums(fixture.Enums, got)
+		require.True(t, diff == "")
 	}
 }
 

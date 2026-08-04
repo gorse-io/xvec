@@ -18,102 +18,127 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPrimaryKeyMapLifecycleAndSnapshot(t *testing.T) {
 	ctx := context.Background()
 	primary := NewPrimaryKeyMap()
-	if previous, replaced, err := primary.Put(ctx, "beta", DocumentLocation{SegmentID: 2, DocID: 20}); err != nil || replaced || previous != (DocumentLocation{}) {
-		t.Fatalf("first put = %#v, %v, %v", previous, replaced, err)
+	{
+		previous, replaced, err := primary.Put(ctx, "beta", DocumentLocation{SegmentID: 2, DocID: 20})
+		require.NoError(t, err)
+		require.False(t, replaced)
+		require.Equal(t, DocumentLocation{}, previous)
 	}
-	if _, _, err := primary.Put(ctx, "alpha", DocumentLocation{SegmentID: 1, DocID: 10}); err != nil {
-		t.Fatal(err)
+	{
+		_, _, err := primary.Put(ctx, "alpha", DocumentLocation{SegmentID: 1, DocID: 10})
+		require.NoError(t, err)
 	}
+
 	previous, replaced, err := primary.Put(ctx, "beta", DocumentLocation{SegmentID: 3, DocID: 30})
-	if err != nil || !replaced || previous != (DocumentLocation{SegmentID: 2, DocID: 20}) {
-		t.Fatalf("replacement = %#v, %v, %v", previous, replaced, err)
-	}
+	require.NoError(t, err)
+	require.True(t, replaced)
+	require.Equal(t, DocumentLocation{SegmentID: 2, DocID: 20}, previous)
+
 	locations, found := primary.MultiGet([]string{"beta", "missing", "alpha"})
-	if !reflect.DeepEqual(found, []bool{true, false, true}) || locations[0].DocID != 30 || locations[2].DocID != 10 {
-		t.Fatalf("multi-get = %#v, %#v", locations, found)
-	}
+	require.Equal(t, []bool{true, false, true}, found)
+	require.True(t, locations[0].DocID == 30)
+	require.True(t, locations[2].DocID == 10)
+
 	clone := primary.Clone()
-	if _, _, err := clone.Put(ctx, "clone", DocumentLocation{DocID: 99}); err != nil {
-		t.Fatal(err)
+	{
+		_, _, err := clone.Put(ctx, "clone", DocumentLocation{DocID: 99})
+		require.NoError(t, err)
 	}
-	if _, found := primary.Get("clone"); found {
-		t.Fatal("clone shares entries")
+	{
+		_, found := primary.Get("clone")
+		require.False(t, found,
+			"clone shares entries")
 	}
 
 	dir := t.TempDir()
 	firstName := filepath.Join(dir, "idmap.1")
-	if err := primary.WriteSnapshot(ctx, firstName); err != nil {
-		t.Fatal(err)
+	{
+		err := primary.WriteSnapshot(ctx, firstName)
+		require.NoError(t, err)
 	}
+
 	loaded, err := LoadPrimaryKeyMap(ctx, firstName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Count() != 2 {
-		t.Fatalf("loaded count = %d", loaded.Count())
-	}
-	if location, found := loaded.Get("beta"); !found || location.DocID != 30 {
-		t.Fatalf("loaded beta = %#v, %v", location, found)
+	require.NoError(t, err)
+	require.True(t, loaded.Count() == 2)
+	{
+		location, found := loaded.Get("beta")
+		require.True(t, found)
+		require.True(t, location.DocID == 30)
 	}
 
 	deterministic := NewPrimaryKeyMap()
 	_, _, _ = deterministic.Put(ctx, "alpha", DocumentLocation{SegmentID: 1, DocID: 10})
 	_, _, _ = deterministic.Put(ctx, "beta", DocumentLocation{SegmentID: 3, DocID: 30})
 	secondName := filepath.Join(dir, "idmap.2")
-	if err := deterministic.WriteSnapshot(ctx, secondName); err != nil {
-		t.Fatal(err)
+	{
+		err := deterministic.WriteSnapshot(ctx, secondName)
+		require.NoError(t, err)
 	}
+
 	firstBytes, _ := os.ReadFile(firstName)
 	secondBytes, _ := os.ReadFile(secondName)
-	if !reflect.DeepEqual(firstBytes, secondBytes) {
-		t.Fatal("primary-key snapshot depends on insertion order")
-	}
-	if err := primary.WriteSnapshot(ctx, firstName); !errors.Is(err, os.ErrExist) {
-		t.Fatalf("overwrite error = %v", err)
+	require.Equal(t, secondBytes, firstBytes,
+		"primary-key snapshot depends on insertion order")
+	{
+		err := primary.WriteSnapshot(ctx, firstName)
+		require.ErrorIs(t, err, os.ErrExist)
 	}
 
 	deleted, deletedFound, err := primary.Delete(ctx, "beta")
-	if err != nil || !deletedFound || deleted.DocID != 30 || primary.Count() != 1 {
-		t.Fatalf("delete = %#v, %v, %v", deleted, deletedFound, err)
-	}
+	require.NoError(t, err)
+	require.True(t, deletedFound)
+	require.True(t, deleted.DocID == 30)
+	require.True(t, primary.Count() == 1)
 }
 
 func TestPrimaryKeyValidation(t *testing.T) {
 	primary := NewPrimaryKeyMap()
-	if _, _, err := primary.Put(context.Background(), "", DocumentLocation{}); err == nil {
-		t.Fatal("empty key succeeded")
+	{
+		_, _, err := primary.Put(context.Background(), "", DocumentLocation{})
+		require.Error(t, err,
+			"empty key succeeded")
 	}
-	if _, _, err := primary.Put(context.Background(), string([]byte{0xff}), DocumentLocation{}); err == nil {
-		t.Fatal("invalid UTF-8 key succeeded")
+	{
+		_, _, err := primary.Put(context.Background(), string([]byte{0xff}), DocumentLocation{})
+		require.Error(t, err,
+			"invalid UTF-8 key succeeded")
 	}
-	if _, _, err := primary.Put(context.Background(), string(make([]byte, maxPrimaryKeyBytes+1)), DocumentLocation{}); err == nil {
-		t.Fatal("large key succeeded")
+	{
+		_, _, err := primary.Put(context.Background(), string(make([]byte, maxPrimaryKeyBytes+1)), DocumentLocation{})
+		require.Error(t, err,
+			"large key succeeded")
 	}
-	if _, _, err := primary.Put(context.Background(), "one", DocumentLocation{DocID: 1}); err != nil {
-		t.Fatal(err)
+	{
+		_, _, err := primary.Put(context.Background(), "one", DocumentLocation{DocID: 1})
+		require.NoError(t, err)
 	}
-	if _, _, err := primary.Put(context.Background(), "two", DocumentLocation{DocID: 1}); err == nil {
-		t.Fatal("duplicate document location succeeded")
+	{
+		_, _, err := primary.Put(context.Background(), "two", DocumentLocation{DocID: 1})
+		require.Error(t, err,
+			"duplicate document location succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := primary.Put(canceled, "key", DocumentLocation{}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled put = %v", err)
+	{
+		_, _, err := primary.Put(canceled, "key", DocumentLocation{})
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, _, err := primary.Delete(nil, "key"); err == nil {
-		t.Fatal("nil delete context succeeded")
+	{
+		_, _, err := primary.Delete(nil, "key")
+		require.Error(t, err,
+			"nil delete context succeeded")
 	}
 }
 
@@ -122,42 +147,49 @@ func TestPrimaryKeySnapshotDetectsCorruption(t *testing.T) {
 	_, _, _ = primary.Put(context.Background(), "alpha", DocumentLocation{SegmentID: 1, DocID: 10})
 	_, _, _ = primary.Put(context.Background(), "beta", DocumentLocation{SegmentID: 2, DocID: 20})
 	name := filepath.Join(t.TempDir(), "idmap")
-	if err := primary.WriteSnapshot(context.Background(), name); err != nil {
-		t.Fatal(err)
+	{
+		err := primary.WriteSnapshot(context.Background(), name)
+		require.NoError(t, err)
 	}
+
 	valid, err := os.ReadFile(name)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for cut := 0; cut < len(valid); cut++ {
 		path := filepath.Join(t.TempDir(), "truncated")
-		if err := os.WriteFile(path, valid[:cut], 0o600); err != nil {
-			t.Fatal(err)
+		{
+			err := os.WriteFile(path, valid[:cut], 0o600)
+			require.NoError(t, err)
 		}
-		if _, err := LoadPrimaryKeyMap(context.Background(), path); !errors.Is(err, ErrSnapshotCorrupt) {
-			t.Fatalf("cut %d error = %v", cut, err)
+		{
+			_, err := LoadPrimaryKeyMap(context.Background(), path)
+			require.ErrorIs(t, err, ErrSnapshotCorrupt)
 		}
 	}
 
 	corrupted := append([]byte(nil), valid...)
 	corrupted[len(corrupted)-1] ^= 1
 	corruptName := filepath.Join(t.TempDir(), "corrupt")
-	if err := os.WriteFile(corruptName, corrupted, 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(corruptName, corrupted, 0o600)
+		require.NoError(t, err)
 	}
-	if _, err := LoadPrimaryKeyMap(context.Background(), corruptName); !errors.Is(err, ErrSnapshotCorrupt) {
-		t.Fatalf("payload corruption = %v", err)
+	{
+		_, err := LoadPrimaryKeyMap(context.Background(), corruptName)
+		require.ErrorIs(t, err, ErrSnapshotCorrupt)
 	}
 
 	badCount := append([]byte(nil), valid...)
 	binary.LittleEndian.PutUint64(badCount[16:24], 99)
 	binary.LittleEndian.PutUint32(badCount[36:40], ailego.CRC32C(badCount[:36]))
 	badCountName := filepath.Join(t.TempDir(), "bad-count")
-	if err := os.WriteFile(badCountName, badCount, 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(badCountName, badCount, 0o600)
+		require.NoError(t, err)
 	}
-	if _, err := LoadPrimaryKeyMap(context.Background(), badCountName); !errors.Is(err, ErrSnapshotCorrupt) {
-		t.Fatalf("count corruption = %v", err)
+	{
+		_, err := LoadPrimaryKeyMap(context.Background(), badCountName)
+		require.ErrorIs(t, err, ErrSnapshotCorrupt)
 	}
 }
 
@@ -166,36 +198,43 @@ func TestDeleteStoreLifecycleAndSnapshot(t *testing.T) {
 	store := NewDeleteStore()
 	for _, docID := range []uint64{100, 2, 64} {
 		changed, err := store.MarkDeleted(ctx, docID)
-		if err != nil || !changed {
-			t.Fatalf("mark %d = %v, %v", docID, changed, err)
-		}
+		require.NoError(t, err)
+		require.True(t, changed)
 	}
-	if changed, _ := store.MarkDeleted(ctx, 64); changed {
-		t.Fatal("duplicate delete changed store")
+	{
+		changed, _ := store.MarkDeleted(ctx, 64)
+		require.False(t, changed,
+			"duplicate delete changed store")
 	}
-	if store.Count() != 3 || store.RangeCount(3, 100) != 2 || !store.IsDeleted(2) {
-		t.Fatalf("delete state count=%d range=%d", store.Count(), store.RangeCount(3, 100))
-	}
+	require.True(t, store.Count() == 3)
+	require.True(t, store.RangeCount(3, 100) == 2)
+	require.True(t, store.IsDeleted(2))
+
 	clone := store.Clone()
 	_, _ = clone.MarkDeleted(ctx, 9)
-	if store.IsDeleted(9) {
-		t.Fatal("delete clone shares state")
-	}
-	if changed, err := store.Restore(ctx, 64); err != nil || !changed || store.IsDeleted(64) {
-		t.Fatalf("restore = %v, %v", changed, err)
+	require.False(t, store.IsDeleted(9),
+		"delete clone shares state")
+	{
+		changed, err := store.Restore(ctx, 64)
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.False(t, store.IsDeleted(64))
 	}
 
 	name := filepath.Join(t.TempDir(), "delete.1")
-	if err := store.WriteSnapshot(ctx, name); err != nil {
-		t.Fatal(err)
+	{
+		err := store.WriteSnapshot(ctx, name)
+		require.NoError(t, err)
 	}
+
 	loaded, err := LoadDeleteStore(ctx, name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Count() != 2 || !loaded.IsDeleted(2) || !loaded.IsDeleted(100) {
-		t.Fatalf("loaded delete store is wrong")
-	}
+	require.NoError(t, err)
+	require.True(t, loaded.Count() == 2,
+		"loaded delete store is wrong")
+	require.True(t, loaded.IsDeleted(2),
+		"loaded delete store is wrong")
+	require.True(t, loaded.IsDeleted(100),
+		"loaded delete store is wrong")
 
 	encoded, _ := os.ReadFile(name)
 	payload := encoded[snapshotHeaderSize:]
@@ -206,31 +245,29 @@ func TestDeleteStoreLifecycleAndSnapshot(t *testing.T) {
 	binary.LittleEndian.PutUint32(encoded[32:36], ailego.CRC32C(payload))
 	binary.LittleEndian.PutUint32(encoded[36:40], ailego.CRC32C(encoded[:36]))
 	badName := filepath.Join(t.TempDir(), "delete-bad")
-	if err := os.WriteFile(badName, encoded, 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(badName, encoded, 0o600)
+		require.NoError(t, err)
 	}
-	if _, err := LoadDeleteStore(ctx, badName); !errors.Is(err, ErrSnapshotCorrupt) {
-		t.Fatalf("unsorted delete snapshot = %v", err)
+	{
+		_, err := LoadDeleteStore(ctx, badName)
+		require.ErrorIs(t, err, ErrSnapshotCorrupt)
 	}
 }
 
 func FuzzDecodeSnapshot(f *testing.F) {
 	encoded, err := encodeSnapshot(primaryMapMagic, 1, []byte("payload"))
-	if err != nil {
-		f.Fatal(err)
-	}
+	require.NoError(f, err)
+
 	f.Add(encoded)
 	f.Add(encoded[:snapshotHeaderSize])
 	f.Add([]byte("not a snapshot"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		count, payload, err := decodeSnapshot(data, primaryMapMagic)
 		if err == nil {
-			if count != binary.LittleEndian.Uint64(data[16:24]) {
-				t.Fatalf("decoded count = %d", count)
-			}
-			if !bytes.Equal(payload, data[snapshotHeaderSize:]) {
-				t.Fatal("decoded payload differs")
-			}
+			require.Equal(t, binary.LittleEndian.Uint64(data[16:24]), count)
+			require.True(t, bytes.Equal(payload, data[snapshotHeaderSize:]),
+				"decoded payload differs")
 		}
 	})
 }

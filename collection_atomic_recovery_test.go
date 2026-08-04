@@ -22,11 +22,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -59,9 +59,8 @@ func TestAtomicDDLAndOptimizeCrashRecovery(t *testing.T) {
 			t.Run("before_current", func(t *testing.T) {
 				path, generation, current, initialSegments := createAtomicRecoveryFixture(t)
 				versionLock, err := ailego.AcquireFileLock(context.Background(), filepath.Join(path, ".version.lock"), ailego.LockExclusive)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				lockClosed := false
 				defer func() {
 					if !lockClosed {
@@ -75,26 +74,27 @@ func TestAtomicDDLAndOptimizeCrashRecovery(t *testing.T) {
 					waitForAdditionalSegment(t, command, path, initialSegments)
 				}
 				after, err := os.ReadFile(filepath.Join(path, "CURRENT"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !bytes.Equal(after, current) {
-					t.Fatal("CURRENT changed before the held publication boundary")
-				}
+				require.NoError(t, err)
+				require.True(t, bytes.Equal(after, current),
+					"CURRENT changed before the held publication boundary")
+
 				killAtomicRecoveryChild(t, command)
-				if err := versionLock.Close(); err != nil {
-					t.Fatal(err)
+				{
+					err := versionLock.Close()
+					require.NoError(t, err)
 				}
+
 				lockClosed = true
 
 				collection, err := Open(context.Background(), path, NewCollectionOptions())
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				defer collection.Close()
-				if got := collection.store.Manifest().Generation; got != generation {
-					t.Fatalf("pre-commit recovery generation = %d, want %d", got, generation)
+				{
+					got := collection.store.Manifest().Generation
+					require.Equal(t, generation, got)
 				}
+
 				assertAtomicInitialState(t, collection)
 				assertAtomicContinuedWrite(t, collection, testCase.name, false)
 			})
@@ -107,8 +107,9 @@ func TestAtomicDDLAndOptimizeCrashRecovery(t *testing.T) {
 					// observes a newer CURRENT and waits to be killed with an open
 					// collection handle, leaving cleanup for recovery to retry.
 					blocker = filepath.Join(path, "wal", "99999999999999999999-99999999999999999999.wal")
-					if err := os.Mkdir(blocker, 0o755); err != nil {
-						t.Fatal(err)
+					{
+						err := os.Mkdir(blocker, 0o755)
+						require.NoError(t, err)
 					}
 				}
 				command := startAtomicRecoveryChild(t, path, testCase.name, "after_current")
@@ -116,25 +117,31 @@ func TestAtomicDDLAndOptimizeCrashRecovery(t *testing.T) {
 				killAtomicRecoveryChild(t, command)
 
 				collection, err := Open(context.Background(), path, NewCollectionOptions())
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				defer collection.Close()
-				if got := collection.store.Manifest().Generation; got <= generation {
-					t.Fatalf("post-commit recovery generation = %d, initial %d", got, generation)
+				{
+					got := collection.store.Manifest().Generation
+					require.True(t, got > generation)
 				}
+
 				assertAtomicCommittedState(t, collection, testCase.name)
 				if blocker != "" {
-					if err := os.Remove(blocker); err != nil {
-						t.Fatal(err)
+					{
+						err := os.Remove(blocker)
+						require.NoError(t, err)
 					}
+
 					committedGeneration := collection.store.Manifest().Generation
-					if err := collection.Optimize(context.Background(), OptimizeOptions{}); err != nil {
-						t.Fatal(err)
+					{
+						err := collection.Optimize(context.Background(), OptimizeOptions{})
+						require.NoError(t, err)
 					}
-					if got := collection.store.Manifest().Generation; got != committedGeneration {
-						t.Fatalf("cleanup retry advanced generation to %d", got)
+					{
+						got := collection.store.Manifest().Generation
+						require.Equal(t, committedGeneration, got)
 					}
+
 					assertOptimizeArtifacts(t, path, 1)
 				}
 				assertAtomicContinuedWrite(t, collection, testCase.name, true)
@@ -215,48 +222,54 @@ func createAtomicRecoveryFixture(t *testing.T) (path string, generation uint64, 
 	options := NewCollectionOptions()
 	options.WALSyncEvery = 1
 	collection, err := CreateAndOpen(ctx, path, atomicRecoverySchema(), options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	documents := []Document{
 		atomicRecoveryDocument("a", "alpha", 1, 1, 11, 21, 4),
 		atomicRecoveryDocument("b", "bravo", 2, 2, 12, 22, 2),
 		atomicRecoveryDocument("c", "charlie", 3, 3, 13, 23, 3),
 	}
-	if _, err := collection.Insert(ctx, documents[:1]); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents[:1])
+		require.NoError(t, err)
 	}
-	if err := collection.Flush(ctx); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, documents[1:2]); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents[1:2])
+		require.NoError(t, err)
 	}
-	if err := collection.Flush(ctx); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, documents[2:]); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents[2:])
+		require.NoError(t, err)
 	}
+
 	updated, err := collection.Update(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{"rating": int32(10)}}})
-	if err != nil || updated[0].DocID != 3 {
-		t.Fatalf("fixture update = %#v, %v", updated, err)
+	require.NoError(t, err)
+	require.True(t, updated[0].DocID == 3)
+	{
+		_, err := collection.Delete(ctx, []string{"b"})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Delete(ctx, []string{"b"}); err != nil {
-		t.Fatal(err)
-	}
+
 	generation = collection.store.Manifest().Generation
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
+
 	current, err = os.ReadFile(filepath.Join(path, "CURRENT"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	segments = countAtomicSegments(t, path)
-	if segments != 2 {
-		t.Fatalf("fixture segments = %d", segments)
-	}
+	require.True(t, segments == 2)
+
 	return path, generation, current, segments
 }
 
@@ -283,9 +296,8 @@ func atomicRecoveryDocument(primaryKey, title string, rating, indexed, alter, dr
 
 func assertAtomicInitialState(t *testing.T, collection *Collection) {
 	t.Helper()
-	if !reflect.DeepEqual(collection.Schema(), atomicRecoverySchema()) {
-		t.Fatalf("initial schema = %#v", collection.Schema())
-	}
+	require.Equal(t, atomicRecoverySchema(), collection.Schema())
+
 	assertAtomicLiveDocuments(t, collection)
 }
 
@@ -295,57 +307,59 @@ func assertAtomicCommittedState(t *testing.T, collection *Collection, mutation s
 	switch mutation {
 	case "create_index":
 		field, _ := schema.Field("rating")
-		if field.IndexType() != IndexTypeInvert {
-			t.Fatalf("committed rating index = %#v", field.Index)
-		}
+		require.Equal(t, IndexTypeInvert, field.IndexType())
+
 	case "drop_index":
 		field, _ := schema.Field("indexed")
-		if field.IndexType() != IndexTypeUndefined {
-			t.Fatalf("committed indexed index = %#v", field.Index)
-		}
+		require.Equal(t, IndexTypeUndefined, field.IndexType())
+
 	case "add_column":
 		field, found := schema.Field("added")
-		if !found || field.DataType != DataTypeInt64 {
-			t.Fatalf("committed added field = %#v, %v", field, found)
-		}
+		require.True(t, found)
+		require.Equal(t, DataTypeInt64, field.DataType)
+
 	case "alter_column":
 		_, oldFound := schema.Field("alter_me")
 		field, newFound := schema.Field("renamed")
-		if oldFound || !newFound || field.DataType != DataTypeInt64 {
-			t.Fatalf("committed alter schema = %#v", schema)
-		}
+		require.False(t, oldFound)
+		require.True(t, newFound)
+		require.Equal(t, DataTypeInt64, field.DataType)
+
 	case "drop_column":
-		if _, found := schema.Field("drop_me"); found {
-			t.Fatalf("committed drop schema = %#v", schema)
+		{
+			_, found := schema.Field("drop_me")
+			require.False(t, found)
 		}
+
 	case "optimize":
 		manifest := collection.store.Manifest()
-		if len(manifest.PersistedSegments) != 1 || manifest.PersistedSegments[0].MinDocID != 2 ||
-			manifest.PersistedSegments[0].MaxDocID != 3 || manifest.PersistedSegments[0].DocCount != 2 ||
-			manifest.WritingSegmentStartDocID != 4 {
-			t.Fatalf("committed optimize manifest = %#v", manifest)
-		}
+		require.Len(t, manifest.PersistedSegments, 1)
+		require.True(t, manifest.PersistedSegments[0].MinDocID == 2)
+		require.True(t, manifest.PersistedSegments[0].MaxDocID == 3)
+		require.True(t, manifest.PersistedSegments[0].DocCount == 2)
+		require.True(t, manifest.WritingSegmentStartDocID == 4)
 	}
 	assertAtomicLiveDocuments(t, collection)
 	fetched, err := collection.Fetch(context.Background(), []string{"a", "c"}, Projection{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	switch mutation {
 	case "add_column":
-		if fetched[0].Fields["added"] != int64(11) || fetched[1].Fields["added"] != int64(4) {
-			t.Fatalf("committed add payloads = %#v", fetched)
-		}
+		require.Equal(t, int64(11), fetched[0].Fields["added"])
+		require.Equal(t, int64(4), fetched[1].Fields["added"])
+
 	case "alter_column":
-		if fetched[0].Fields["renamed"] != int64(11) || fetched[1].Fields["renamed"] != int64(13) {
-			t.Fatalf("committed alter payloads = %#v", fetched)
+		require.Equal(t, int64(11), fetched[0].Fields["renamed"])
+		require.Equal(t, int64(13), fetched[1].Fields["renamed"])
+		{
+			_, found := fetched[0].Fields["alter_me"]
+			require.False(t, found)
 		}
-		if _, found := fetched[0].Fields["alter_me"]; found {
-			t.Fatalf("committed alter retained old payload = %#v", fetched[0])
-		}
+
 	case "drop_column":
-		if _, found := fetched[0].Fields["drop_me"]; found {
-			t.Fatalf("committed drop retained payload = %#v", fetched[0])
+		{
+			_, found := fetched[0].Fields["drop_me"]
+			require.False(t, found)
 		}
 	}
 }
@@ -353,18 +367,20 @@ func assertAtomicCommittedState(t *testing.T, collection *Collection, mutation s
 func assertAtomicLiveDocuments(t *testing.T, collection *Collection) {
 	t.Helper()
 	fetched, err := collection.Fetch(context.Background(), []string{"a", "b", "c"}, Projection{IncludeVectors: true})
-	if err != nil || fetched[0] == nil || fetched[0].DocID != 3 || fetched[1] != nil || fetched[2] == nil || fetched[2].DocID != 2 {
-		t.Fatalf("recovered live documents = %#v, %v", fetched, err)
-	}
-	if fetched[0].Fields["rating"] != int32(10) || fetched[2].Fields["rating"] != int32(3) {
-		t.Fatalf("recovered ratings = %#v", fetched)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, fetched[0])
+	require.True(t, fetched[0].DocID == 3)
+	require.Nil(t, fetched[1])
+	require.NotNil(t, fetched[2])
+	require.True(t, fetched[2].DocID == 2)
+	require.Equal(t, int32(10), fetched[0].Fields["rating"])
+	require.Equal(t, int32(3), fetched[2].Fields["rating"])
+
 	results, err := collection.Query(context.Background(), VectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 10, Filter: "indexed >= 1",
 	})
-	if err != nil || !reflect.DeepEqual(documentKeys(results), []string{"a", "c"}) {
-		t.Fatalf("recovered query = %v, %v", documentKeys(results), err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "c"}, documentKeys(results))
 }
 
 func assertAtomicContinuedWrite(t *testing.T, collection *Collection, mutation string, committed bool) {
@@ -382,9 +398,8 @@ func assertAtomicContinuedWrite(t *testing.T, collection *Collection, mutation s
 		}
 	}
 	inserted, err := collection.Insert(context.Background(), []Document{document})
-	if err != nil || inserted[0].DocID != 4 {
-		t.Fatalf("continued write = %#v, %v", inserted, err)
-	}
+	require.NoError(t, err)
+	require.True(t, inserted[0].DocID == 4)
 }
 
 func startAtomicRecoveryChild(t *testing.T, path, mutation, phase string) *exec.Cmd {
@@ -395,9 +410,11 @@ func startAtomicRecoveryChild(t *testing.T, path, mutation, phase string) *exec.
 		atomicRecoveryMutationEnv+"="+mutation,
 		atomicRecoveryPhaseEnv+"="+phase,
 	)
-	if err := command.Start(); err != nil {
-		t.Fatal(err)
+	{
+		err := command.Start()
+		require.NoError(t, err)
 	}
+
 	t.Cleanup(func() {
 		if command.ProcessState == nil {
 			_ = command.Process.Kill()
@@ -419,10 +436,10 @@ func waitForAtomicMarker(t *testing.T, command *exec.Cmd, marker string) {
 			if _, err := os.Stat(marker); err == nil {
 				return
 			} else if !errors.Is(err, os.ErrNotExist) {
-				t.Fatal(err)
+				require.NoError(t, err)
 			}
 		case <-deadline.C:
-			t.Fatalf("child %d did not create marker %q", command.Process.Pid, marker)
+			require.FailNowf(t, "atomic marker timeout", "child %d did not create marker %q", command.Process.Pid, marker)
 		}
 	}
 }
@@ -440,7 +457,7 @@ func waitForAdditionalSegment(t *testing.T, command *exec.Cmd, path string, init
 				return
 			}
 		case <-deadline.C:
-			t.Fatalf("child %d did not create pre-commit segment artifacts", command.Process.Pid)
+			require.FailNowf(t, "segment artifact timeout", "child %d did not create pre-commit segment artifacts", command.Process.Pid)
 		}
 	}
 }
@@ -448,18 +465,20 @@ func waitForAdditionalSegment(t *testing.T, command *exec.Cmd, path string, init
 func countAtomicSegments(t *testing.T, path string) int {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join(path, "segments", "*", "data-*.seg"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return len(files)
 }
 
 func killAtomicRecoveryChild(t *testing.T, command *exec.Cmd) {
 	t.Helper()
-	if err := command.Process.Kill(); err != nil {
-		t.Fatal(err)
+	{
+		err := command.Process.Kill()
+		require.NoError(t, err)
 	}
-	if err := command.Wait(); err == nil {
-		t.Fatal("killed atomic recovery child exited successfully")
+	{
+		err := command.Wait()
+		require.Error(t, err,
+			"killed atomic recovery child exited successfully")
 	}
 }

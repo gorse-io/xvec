@@ -16,11 +16,9 @@ package core
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -28,6 +26,7 @@ import (
 	"time"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHNSWIncrementalMatchesOneShotBuild(t *testing.T) {
@@ -40,27 +39,31 @@ func TestHNSWIncrementalMatchesOneShotBuild(t *testing.T) {
 
 	streamed := buildHNSWPrefix(t, options, inputs[:120])
 	for _, input := range inputs[120:] {
-		if err := streamed.Add(context.Background(), input.Key, input.Vector); err != nil {
-			t.Fatal(err)
+		{
+			err := streamed.Add(context.Background(), input.Key, input.Vector)
+			require.NoError(t, err)
 		}
 	}
 	oneShot := buildHNSWPrefix(t, options, inputs)
 	assertSameHNSWIndex(t, streamed, oneShot)
 
 	path := filepath.Join(t.TempDir(), "streamed.hnsw")
-	if err := streamed.Save(context.Background(), path); err != nil {
-		t.Fatal(err)
+	{
+		err := streamed.Save(context.Background(), path)
+		require.NoError(t, err)
 	}
+
 	reopened, err := OpenHNSWIndex(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertSameHNSWIndex(t, reopened, oneShot)
 
 	next := Candidate{Key: 999999, Vector: []float32{3.25, 7.5, 1.125}}
-	if err := reopened.Add(context.Background(), next.Key, next.Vector); err != nil {
-		t.Fatal(err)
+	{
+		err := reopened.Add(context.Background(), next.Key, next.Vector)
+		require.NoError(t, err)
 	}
+
 	all := append(slices.Clone(inputs), next)
 	want := buildHNSWPrefix(t, options, all)
 	assertSameHNSWIndex(t, reopened, want)
@@ -73,89 +76,96 @@ func TestHNSWIncrementalEmptyAndOwnership(t *testing.T) {
 	options.EFConstruction = 16
 	options.Seed = 7
 	builder, err := NewHNSWBuilder(2, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	vector := []float32{1, 2}
-	if err := index.Add(context.Background(), 17, vector); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Add(context.Background(), 17, vector)
+		require.NoError(t, err)
 	}
+
 	vector[0] = -100
 	stored, found := index.Vector(17)
-	if !found || !slices.Equal(stored, []float32{1, 2}) {
-		t.Fatalf("stored incremental vector = %v, %v", stored, found)
-	}
+	require.True(t, found)
+	require.True(t, slices.Equal(stored, []float32{1, 2}))
+
 	entry, found := index.EntryPoint()
-	if !found || entry != 17 || index.Len() != 1 {
-		t.Fatalf("single streamed graph = entry %d/%v, len %d", entry, found, index.Len())
-	}
+	require.True(t, found)
+	require.True(t, entry == 17)
+	require.True(t, index.Len() == 1)
+
 	results, err := index.Search(context.Background(), []float32{1, 2}, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(results, []Result{{Key: 17, Score: 0}}) {
-		t.Fatalf("single streamed search = %#v", results)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 17, Score: 0}}, results)
 }
 
 func TestHNSWIncrementalFailuresAreAtomic(t *testing.T) {
 	t.Parallel()
 	index := persistedHNSWIndex(t, MetricL2, 300)
 	before, err := encodeHNSWIndex(context.Background(), index)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := index.Add(nil, 100000, []float32{1, 2, 3})
+		require.Error(t, err,
+			"nil context succeeded")
 	}
 
-	if err := index.Add(nil, 100000, []float32{1, 2, 3}); err == nil {
-		t.Fatal("nil context succeeded")
-	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := index.Add(canceled, 100000, []float32{1, 2, 3}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pre-canceled error = %v", err)
+	{
+		err := index.Add(canceled, 100000, []float32{1, 2, 3})
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if err := index.Add(context.Background(), 100000, []float32{1, 2}); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("dimension error = %v", err)
+	{
+		err := index.Add(context.Background(), 100000, []float32{1, 2})
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
-	if err := index.Add(context.Background(), 100000, []float32{1, float32(math.NaN()), 3}); !errors.Is(err, ailego.ErrNonFiniteVector) {
-		t.Fatalf("finite error = %v", err)
+	{
+		err := index.Add(context.Background(), 100000, []float32{1, float32(math.NaN()), 3})
+		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
 	}
-	if err := index.Add(context.Background(), index.keys[0], []float32{1, 2, 3}); !errors.Is(err, ErrDuplicateKey) {
-		t.Fatalf("duplicate error = %v", err)
+	{
+		err := index.Add(context.Background(), index.keys[0], []float32{1, 2, 3})
+		require.ErrorIs(t, err, ErrDuplicateKey)
 	}
 
 	// This context cancels after cloning has begun, exercising rollback after
 	// private topology state has already been allocated and copied.
 	midClone := newCancelAfterChecks(5)
-	if err := index.Add(midClone, 100000, []float32{1, 2, 3}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-clone cancellation error = %v", err)
+	{
+		err := index.Add(midClone, 100000, []float32{1, 2, 3})
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	midTraversal := newCancelAfterChecks(7)
-	if err := index.Add(midTraversal, 100000, []float32{1, 2, 3}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-traversal cancellation error = %v", err)
+	{
+		err := index.Add(midTraversal, 100000, []float32{1, 2, 3})
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	after, err := encodeHNSWIndex(context.Background(), index)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(after, before) {
-		t.Fatal("failed incremental add changed graph generation")
-	}
+	require.NoError(t, err)
+	require.True(t, slices.Equal(after, before),
+		"failed incremental add changed graph generation")
+
 	var nilIndex *HNSWIndex
-	if err := nilIndex.Add(context.Background(), 1, []float32{1}); err == nil {
-		t.Fatal("nil index add succeeded")
+	{
+		err := nilIndex.Add(context.Background(), 1, []float32{1})
+		require.Error(t, err,
+			"nil index add succeeded")
 	}
 
 	// A failed add must not consume a sampled level. The next successful add
 	// therefore still matches a one-shot build of the same sequence.
 	next := Candidate{Key: 100000, Vector: []float32{1, 2, 3}}
-	if err := index.Add(context.Background(), next.Key, next.Vector); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Add(context.Background(), next.Key, next.Vector)
+		require.NoError(t, err)
 	}
+
 	inputs := append(hnswBuildInputs(300), next)
 	want := buildHNSWPrefix(t, index.options, inputs)
 	assertSameHNSWIndex(t, index, want)
@@ -167,13 +177,10 @@ func TestHNSWConcurrentStreamingSearchAndSave(t *testing.T) {
 	options.EFConstruction = 30
 	options.Seed = 123
 	builder, err := NewHNSWBuilder(3, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	dir := t.TempDir()
 	errCh := make(chan error, 32)
@@ -243,19 +250,19 @@ func TestHNSWConcurrentStreamingSearchAndSave(t *testing.T) {
 	readers.Wait()
 	close(errCh)
 	for err := range errCh {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
-	if index.Len() != 200 {
-		t.Fatalf("final length = %d, want 200", index.Len())
-	}
+	require.True(t, index.Len() == 200)
+
 	path := filepath.Join(dir, "final.hnsw")
-	if err := index.Save(context.Background(), path); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Save(context.Background(), path)
+		require.NoError(t, err)
 	}
+
 	reopened, err := OpenHNSWIndex(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertSameHNSWIndex(t, reopened, index)
 }
 
@@ -266,18 +273,17 @@ func buildHNSWPrefix(t testing.TB, options HNSWBuildOptions, inputs []Candidate)
 		dimension = len(inputs[0].Vector)
 	}
 	builder, err := NewHNSWBuilder(dimension, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, input := range inputs {
-		if err := builder.Add(context.Background(), input.Key, input.Vector); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.Add(context.Background(), input.Key, input.Vector)
+			require.NoError(t, err)
 		}
 	}
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return index
 }
 

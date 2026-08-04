@@ -15,18 +15,17 @@
 package sql
 
 import (
-	"errors"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestLexFilterKeywordsLiteralsCommentsAndPositions(t *testing.T) {
 	input := "Name >= -1.5e+2 and tag='A\\'b'\nOR score < = 3 -- ignored\n/* block */ active = TRUE"
 	tokens, err := Lex(input)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	wantKinds := []TokenKind{
 		TokenIdentifier, TokenGreaterEqual, TokenFloat, TokenAnd,
 		TokenIdentifier, TokenEqual, TokenString, TokenOr,
@@ -37,25 +36,27 @@ func TestLexFilterKeywordsLiteralsCommentsAndPositions(t *testing.T) {
 	for index := range tokens {
 		gotKinds[index] = tokens[index].Kind
 	}
-	if !reflect.DeepEqual(gotKinds, wantKinds) {
-		t.Fatalf("token kinds = %#v, want %#v", gotKinds, wantKinds)
+	require.Equal(t, wantKinds, gotKinds)
+	require.True(t, tokens[0].Text == "Name")
+	require.True(t, tokens[3].Text == "and")
+	require.True(t, tokens[6].Text == `'A\'b'`)
+	{
+		position := tokens[7].Span.Start
+		require.True(t, position.Line == 2)
+		require.True(t, position.Column == 1)
+		require.True(t, position.Offset == 31)
 	}
-	if tokens[0].Text != "Name" || tokens[3].Text != "and" || tokens[6].Text != `'A\'b'` {
-		t.Fatalf("original token text was not preserved: %#v", tokens)
-	}
-	if position := tokens[7].Span.Start; position.Line != 2 || position.Column != 1 || position.Offset != 31 {
-		t.Fatalf("OR position = %#v", position)
-	}
-	if position := tokens[12].Span.Start; position.Line != 3 || position.Column != 13 {
-		t.Fatalf("active position = %#v", position)
+	{
+		position := tokens[12].Span.Start
+		require.True(t, position.Line == 3)
+		require.True(t, position.Column == 13)
 	}
 }
 
 func TestLexFilterLongestTokenRules(t *testing.T) {
 	tokens, err := Lex("1-dash_score_field=1 123abc=2 -name=3 n=1F e=1E+3 f=.5")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := []struct {
 		kind TokenKind
 		text string
@@ -68,13 +69,11 @@ func TestLexFilterLongestTokenRules(t *testing.T) {
 		{TokenIdentifier, "f"}, {TokenEqual, "="}, {TokenFloat, ".5"},
 		{TokenEOF, ""},
 	}
-	if len(tokens) != len(want) {
-		t.Fatalf("tokens = %#v", tokens)
-	}
+	require.Len(t, tokens, len(want))
+
 	for index := range want {
-		if tokens[index].Kind != want[index].kind || tokens[index].Text != want[index].text {
-			t.Fatalf("token %d = %#v, want %#v", index, tokens[index], want[index])
-		}
+		require.Equal(t, want[index].kind, tokens[index].Kind)
+		require.Equal(t, want[index].text, tokens[index].Text)
 	}
 }
 
@@ -95,16 +94,17 @@ func TestLexFilterErrorsCarryExactPosition(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			_, err := Lex(testCase.input)
 			var parseErr *ParseError
-			if !errors.As(err, &parseErr) {
-				t.Fatalf("error = %T %v", err, err)
-			}
+			require.ErrorAs(t, err, &parseErr)
+
 			position := parseErr.Position
-			if position.Line != testCase.line || position.Column != testCase.column || position.Offset != testCase.offset {
-				t.Fatalf("position = %#v", position)
-			}
+			require.Equal(t, testCase.line, position.Line)
+			require.Equal(t, testCase.column, position.Column)
+			require.Equal(t, testCase.offset, position.Offset)
 		})
 	}
-	if _, err := Lex(strings.Repeat("a", MaxFilterBytes+1)); err == nil {
-		t.Fatal("oversized filter succeeded")
+	{
+		_, err := Lex(strings.Repeat("a", MaxFilterBytes+1))
+		require.Error(t, err,
+			"oversized filter succeeded")
 	}
 }

@@ -16,9 +16,9 @@ package core
 
 import (
 	"context"
-	"errors"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestDenseHNSWSearchGroupsExpandsForDistinctGroups(t *testing.T) {
@@ -37,23 +37,19 @@ func TestDenseHNSWSearchGroupsExpandsForDistinctGroups(t *testing.T) {
 		EF: 2, PrefetchOffset: 1, PrefetchLines: 2,
 	}
 	got, err := index.SearchHNSWGroups(context.Background(), []float32{0}, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := []GroupResult{
 		{Value: "near", Results: []Result{{Key: 10, Score: 0}, {Key: 11, Score: float32(.1) * float32(.1)}}},
 		{Value: "far", Results: []Result{{Key: 21, Score: 121}}},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("SearchHNSWGroups() = %#v, want %#v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 func TestScalarQuantizedHNSWSearchGroupsExpandsForDistinctGroups(t *testing.T) {
 	index, err := NewScalarQuantizedHNSWIndex(context.Background(), denseGroupHNSWFixture(), QuantizationInt8, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	got, err := index.SearchHNSWGroups(context.Background(), []float32{0}, HNSWGroupSearchOptions{
 		GroupByOptions: GroupByOptions{
 			GroupCount: 2, TopKPerGroup: 1,
@@ -66,12 +62,12 @@ func TestScalarQuantizedHNSWSearchGroupsExpandsForDistinctGroups(t *testing.T) {
 		},
 		EF: 1,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0].Value != "near" || got[1].Value != "far" || len(got[0].Results) != 1 || len(got[1].Results) != 1 {
-		t.Fatalf("quantized SearchHNSWGroups() = %#v", got)
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.True(t, got[0].Value == "near")
+	require.True(t, got[1].Value == "far")
+	require.Len(t, got[0].Results, 1)
+	require.Len(t, got[1].Results, 1)
 }
 
 func TestSparseHNSWSearchGroupsExpandsForDistinctGroups(t *testing.T) {
@@ -98,16 +94,13 @@ func TestSparseHNSWSearchGroupsExpandsForDistinctGroups(t *testing.T) {
 		},
 		EF: 2, PrefetchOffset: 1, PrefetchLines: 2,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := []GroupResult{
 		{Value: "hot", Results: []Result{{Key: 10, Score: 10}, {Key: 11, Score: 9}}},
 		{Value: "cold", Results: []Result{{Key: 20, Score: 1}}},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("SearchSparseHNSWGroups() = %#v, want %#v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 func TestHNSWRaBitQSearchGroupsUsesGraphTraversal(t *testing.T) {
@@ -120,9 +113,8 @@ func TestHNSWRaBitQSearchGroupsUsesGraphTraversal(t *testing.T) {
 	buildOptions.M = 2
 	buildOptions.EFConstruction = 8
 	builder, err := NewHNSWRaBitQBuilder(MinRaBitQDimension, buildOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for position := 0; position < 8; position++ {
 		vector := make([]float32, MinRaBitQDimension)
 		value := float32(position) / 10
@@ -132,14 +124,14 @@ func TestHNSWRaBitQSearchGroupsUsesGraphTraversal(t *testing.T) {
 		for dimension := range vector {
 			vector[dimension] = value + float32(dimension%3)/1000
 		}
-		if err := builder.Add(ctx, uint64(position+1), vector); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.Add(ctx, uint64(position+1), vector)
+			require.NoError(t, err)
 		}
 	}
 	index, err := builder.Build(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	groups, err := index.SearchHNSWRaBitQGroups(ctx, make([]float32, MinRaBitQDimension), HNSWGroupSearchOptions{
 		GroupByOptions: GroupByOptions{
 			GroupCount: 2, TopKPerGroup: 2,
@@ -152,27 +144,28 @@ func TestHNSWRaBitQSearchGroupsUsesGraphTraversal(t *testing.T) {
 		},
 		EF: 4,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(groups) != 2 || groups[0].Value != "near" || groups[1].Value != "far" {
-		t.Fatalf("SearchHNSWRaBitQGroups() = %#v", groups)
-	}
+	require.NoError(t, err)
+	require.Len(t, groups, 2)
+	require.True(t, groups[0].Value == "near")
+	require.True(t, groups[1].Value == "far")
 }
 
 func TestHNSWGroupSearchValidationAndCancellation(t *testing.T) {
 	resolver := func(uint64) (string, bool) { return "group", true }
-	if err := (HNSWGroupSearchOptions{
-		GroupByOptions: GroupByOptions{GroupCount: maxPlatformInt(), TopKPerGroup: 2, Resolve: resolver}, EF: 1,
-	}).Validate(); !errors.Is(err, ErrGroupSizeOverflow) {
-		t.Fatalf("overflow validation = %v", err)
+	{
+		err := (HNSWGroupSearchOptions{
+			GroupByOptions: GroupByOptions{GroupCount: maxPlatformInt(), TopKPerGroup: 2, Resolve: resolver}, EF: 1,
+		}).Validate()
+		require.ErrorIs(t, err, ErrGroupSizeOverflow)
 	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := denseGroupHNSWFixture().SearchHNSWGroups(ctx, []float32{0}, HNSWGroupSearchOptions{
-		GroupByOptions: GroupByOptions{GroupCount: 1, TopKPerGroup: 1, Resolve: resolver}, EF: 1,
-	}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled SearchHNSWGroups() = %v", err)
+	{
+		_, err := denseGroupHNSWFixture().SearchHNSWGroups(ctx, []float32{0}, HNSWGroupSearchOptions{
+			GroupByOptions: GroupByOptions{GroupCount: 1, TopKPerGroup: 1, Resolve: resolver}, EF: 1,
+		})
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 

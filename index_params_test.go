@@ -15,8 +15,9 @@
 package zvec
 
 import (
-	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestIndexParamsDefaultsValidate(t *testing.T) {
@@ -31,8 +32,9 @@ func TestIndexParamsDefaultsValidate(t *testing.T) {
 		NewFTSIndexParams(),
 	}
 	for _, params := range params {
-		if err := params.Validate(); err != nil {
-			t.Errorf("%T defaults: %v", params, err)
+		{
+			err := params.Validate()
+			assert.NoError(t, err)
 		}
 	}
 }
@@ -66,8 +68,9 @@ func TestIndexParamsRejectInvalidValues(t *testing.T) {
 		HNSWRaBitQIndexParams{Metric: MetricTypeL2, TotalBits: 7, NumClusters: 16, M: 10, EFConstruction: 9},
 	}
 	for _, params := range params {
-		if err := params.Validate(); !errors.Is(err, ErrInvalidArgument) {
-			t.Errorf("%T invalid error = %v", params, err)
+		{
+			err := params.Validate()
+			assert.ErrorIs(t, err, ErrInvalidArgument)
 		}
 	}
 }
@@ -77,8 +80,9 @@ func TestRotationAcceptsIntegerQuantization(t *testing.T) {
 		params := NewFlatIndexParams(MetricTypeL2)
 		params.Quantize = quantize
 		params.Quantizer.EnableRotate = true
-		if err := params.Validate(); err != nil {
-			t.Errorf("rotated %s params: %v", quantize, err)
+		{
+			err := params.Validate()
+			assert.NoError(t, err)
 		}
 	}
 }
@@ -93,8 +97,9 @@ func TestFTSIndexParamsValidation(t *testing.T) {
 		{Tokenizer: "standard", Filters: []string{"stemmer"}, ExtraParams: "{\"stemmer_lang\":\"porter\"}"},
 	}
 	for _, params := range valid {
-		if err := params.Validate(); err != nil {
-			t.Errorf("valid FTS params %#v: %v", params, err)
+		{
+			err := params.Validate()
+			assert.NoError(t, err)
 		}
 	}
 
@@ -109,8 +114,9 @@ func TestFTSIndexParamsValidation(t *testing.T) {
 		{Tokenizer: "standard", Filters: []string{"stemmer"}, ExtraParams: "{\"stemmer_lang\":\"nonexistent_lang\"}"},
 	}
 	for _, params := range invalid {
-		if err := params.Validate(); !errors.Is(err, ErrInvalidArgument) {
-			t.Errorf("invalid FTS params %#v error = %v", params, err)
+		{
+			err := params.Validate()
+			assert.ErrorIs(t, err, ErrInvalidArgument)
 		}
 	}
 }

@@ -16,29 +16,30 @@ package core
 
 import (
 	"context"
-	"errors"
 	"math"
-	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSparseHNSWBuildOptionsAndValidation(t *testing.T) {
 	t.Parallel()
 	defaults := DefaultSparseHNSWBuildOptions()
-	if defaults.Metric != MetricIP || defaults.M != DefaultHNSWM || defaults.EFConstruction != DefaultHNSWEFConstruction {
-		t.Fatalf("defaults = %#v", defaults)
-	}
+	require.Equal(t, MetricIP, defaults.Metric)
+	require.Equal(t, DefaultHNSWM, defaults.M)
+	require.Equal(t, DefaultHNSWEFConstruction, defaults.EFConstruction)
+
 	for _, options := range []HNSWBuildOptions{
 		{},
 		DefaultHNSWBuildOptions(MetricL2),
 		func() HNSWBuildOptions { value := defaults; value.M = 0; return value }(),
 		func() HNSWBuildOptions { value := defaults; value.EFConstruction = value.M - 1; return value }(),
 	} {
-		if _, err := NewSparseHNSWBuilder(options); !errors.Is(err, ErrInvalidHNSWOptions) {
-			t.Fatalf("options %#v error = %v", options, err)
+		{
+			_, err := NewSparseHNSWBuilder(options)
+			require.ErrorIs(t, err, ErrInvalidHNSWOptions)
 		}
 	}
 }
@@ -51,17 +52,17 @@ func TestSparseHNSWBuildGraphInvariants(t *testing.T) {
 	options.Seed = 0x5eed
 	inputs := sparseHNSWBuildInputs(120)
 	index := buildSparseHNSW(t, options, inputs)
-	if index.Metric() != MetricIP || index.Len() != len(inputs) || index.BuildOptions() != options {
-		t.Fatalf("metadata = metric %d, len %d, options %#v", index.Metric(), index.Len(), index.BuildOptions())
-	}
+	require.Equal(t, MetricIP, index.Metric())
+	require.Len(t, inputs, index.Len())
+	require.Equal(t, options, index.BuildOptions())
+
 	entryKey, found := index.EntryPoint()
-	if !found {
-		t.Fatal("graph has no entry point")
-	}
+	require.True(t, found,
+		"graph has no entry point")
+
 	entryLevel, _ := index.Level(entryKey)
-	if entryLevel != index.MaxLevel() {
-		t.Fatalf("entry level = %d, max = %d", entryLevel, index.MaxLevel())
-	}
+	require.Equal(t, index.MaxLevel(), entryLevel)
+
 	assertSparseHNSWGraphInvariants(t, index)
 }
 
@@ -74,38 +75,51 @@ func TestSparseHNSWBuildDeterministicAndOwned(t *testing.T) {
 	options.Seed = 42
 	first := buildSparseHNSW(t, options, inputs)
 	second := buildSparseHNSW(t, options, inputs)
-	if first.entryPoint != second.entryPoint || first.maxLevel != second.maxLevel || first.levelRNGState != second.levelRNGState ||
-		!slices.Equal(first.levels, second.levels) || !reflect.DeepEqual(first.neighbors, second.neighbors) {
-		t.Fatal("fixed seed and insertion order produced different sparse HNSW graphs")
-	}
+	require.Equal(t, second.entryPoint, first.entryPoint,
+
+		"fixed seed and insertion order produced different sparse HNSW graphs")
+	require.Equal(t, second.maxLevel, first.maxLevel,
+
+		"fixed seed and insertion order produced different sparse HNSW graphs")
+	require.Equal(t, second.levelRNGState, first.levelRNGState,
+
+		"fixed seed and insertion order produced different sparse HNSW graphs")
+	require.True(t, slices.Equal(first.levels, second.levels),
+		"fixed seed and insertion order produced different sparse HNSW graphs")
+	require.Equal(t, second.neighbors, first.neighbors,
+		"fixed seed and insertion order produced different sparse HNSW graphs")
 
 	original, found := first.SparseVector(inputs[0].key)
-	if !found {
-		t.Fatal("first input missing")
-	}
+	require.True(t, found,
+		"first input missing")
+
 	inputs[0].vector.Indices[0] = math.MaxUint32
 	inputs[0].vector.Values[0] = -999
-	if got, _ := first.SparseVector(inputs[0].key); !reflect.DeepEqual(got, original) {
-		t.Fatal("builder did not own sparse input")
+	{
+		got, _ := first.SparseVector(inputs[0].key)
+		require.Equal(t, original, got,
+			"builder did not own sparse input")
 	}
+
 	original.Indices[0] = math.MaxUint32
 	original.Values[0] = -888
-	if got, _ := first.SparseVector(inputs[0].key); got.Indices[0] == math.MaxUint32 || got.Values[0] == -888 {
-		t.Fatal("SparseVector exposed mutable storage")
+	{
+		got, _ := first.SparseVector(inputs[0].key)
+		require.NotEqual(t, uint32(math.MaxUint32), got.Indices[0],
+			"SparseVector exposed mutable storage")
+		require.NotEqual(t, float32(-888), got.Values[0],
+			"SparseVector exposed mutable storage")
 	}
+
 	neighbors, err := first.Neighbors(first.keys[1], 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	if len(neighbors) != 0 {
 		neighbors[0] = math.MaxUint64
 		again, err := first.Neighbors(first.keys[1], 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if slices.Equal(neighbors, again) {
-			t.Fatal("Neighbors exposed mutable storage")
-		}
+		require.NoError(t, err)
+		require.False(t, slices.Equal(neighbors, again),
+			"Neighbors exposed mutable storage")
 	}
 }
 
@@ -117,44 +131,46 @@ func TestSparseHNSWBuildEmptySingleAndLevels(t *testing.T) {
 	options.Seed = 9
 	builder, _ := NewSparseHNSWBuilder(options)
 	empty, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.True(t, empty.Len() == 0)
+	require.Equal(t, -1, empty.MaxLevel())
+	{
+		_, found := empty.EntryPoint()
+		require.False(t, found,
+			"empty graph has entry point")
 	}
-	if empty.Len() != 0 || empty.MaxLevel() != -1 {
-		t.Fatalf("empty metadata = len %d, level %d", empty.Len(), empty.MaxLevel())
-	}
-	if _, found := empty.EntryPoint(); found {
-		t.Fatal("empty graph has entry point")
-	}
-	if _, err := empty.Neighbors(1, 0); !errors.Is(err, ErrHNSWKeyNotFound) {
-		t.Fatalf("unknown key error = %v", err)
+	{
+		_, err := empty.Neighbors(1, 0)
+		require.ErrorIs(t, err, ErrHNSWKeyNotFound)
 	}
 
 	builder, _ = NewSparseHNSWBuilder(options)
-	if err := builder.AddSparse(context.Background(), 17, SparseVector{}); err != nil {
-		t.Fatal(err)
+	{
+		err := builder.AddSparse(context.Background(), 17, SparseVector{})
+		require.NoError(t, err)
 	}
+
 	single, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	entry, found := single.EntryPoint()
-	if !found || entry != 17 {
-		t.Fatalf("single entry = %d, %v", entry, found)
-	}
+	require.True(t, found)
+	require.True(t, entry == 17)
+
 	vector, found := single.SparseVector(17)
-	if !found || len(vector.Indices) != 0 || len(vector.Values) != 0 {
-		t.Fatalf("empty sparse vector = %#v, %v", vector, found)
-	}
+	require.True(t, found)
+	require.Len(t, vector.Indices, 0)
+	require.Len(t, vector.Values, 0)
+
 	level, _ := single.Level(17)
 	for current := 0; current <= level; current++ {
 		neighbors, err := single.Neighbors(17, current)
-		if err != nil || len(neighbors) != 0 {
-			t.Fatalf("single level %d neighbors = %v, %v", current, neighbors, err)
-		}
+		require.NoError(t, err)
+		require.Len(t, neighbors, 0)
 	}
-	if _, err := single.Neighbors(17, level+1); !errors.Is(err, ErrInvalidHNSWLevel) {
-		t.Fatalf("invalid level error = %v", err)
+	{
+		_, err := single.Neighbors(17, level+1)
+		require.ErrorIs(t, err, ErrInvalidHNSWLevel)
 	}
 }
 
@@ -165,14 +181,19 @@ func TestSparseHNSWBuilderLifecycleAndErrors(t *testing.T) {
 	options.EFConstruction = 12
 	builder, _ := NewSparseHNSWBuilder(options)
 	valid := SparseVector{Indices: []uint32{1, 9}, Values: []float32{2, 3}}
-	if err := builder.AddSparse(nil, 1, valid); err == nil {
-		t.Fatal("nil add context succeeded")
+	{
+		err := builder.AddSparse(nil, 1, valid)
+		require.Error(t, err,
+			"nil add context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := builder.AddSparse(canceled, 1, valid); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled add error = %v", err)
+	{
+		err := builder.AddSparse(canceled, 1, valid)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	invalid := []struct {
 		vector SparseVector
 		want   error
@@ -183,35 +204,46 @@ func TestSparseHNSWBuilderLifecycleAndErrors(t *testing.T) {
 		{SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.NaN())}}, ailego.ErrNonFiniteVector},
 	}
 	for _, test := range invalid {
-		if err := builder.AddSparse(context.Background(), 1, test.vector); !errors.Is(err, test.want) {
-			t.Fatalf("vector %#v error = %v", test.vector, err)
+		{
+			err := builder.AddSparse(context.Background(), 1, test.vector)
+			require.ErrorIs(t, err, test.want)
 		}
 	}
-	if err := builder.AddSparse(context.Background(), 1, valid); err != nil {
-		t.Fatal(err)
+	{
+		err := builder.AddSparse(context.Background(), 1, valid)
+		require.NoError(t, err)
 	}
-	if err := builder.AddSparse(context.Background(), 1, valid); !errors.Is(err, ErrDuplicateKey) {
-		t.Fatalf("duplicate error = %v", err)
+	{
+		err := builder.AddSparse(context.Background(), 1, valid)
+		require.ErrorIs(t, err, ErrDuplicateKey)
 	}
-	if _, err := builder.Build(canceled); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled build error = %v", err)
+	{
+		_, err := builder.Build(canceled)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	index, err := builder.Build(context.Background())
-	if err != nil || index.Len() != 1 {
-		t.Fatalf("retry build = %#v, %v", index, err)
+	require.NoError(t, err)
+	require.True(t, index.Len() == 1)
+	{
+		err := builder.AddSparse(context.Background(), 2, SparseVector{})
+		require.ErrorIs(t, err, ErrBuilderClosed)
 	}
-	if err := builder.AddSparse(context.Background(), 2, SparseVector{}); !errors.Is(err, ErrBuilderClosed) {
-		t.Fatalf("closed add error = %v", err)
+	{
+		_, err := builder.Build(context.Background())
+		require.ErrorIs(t, err, ErrBuilderClosed)
 	}
-	if _, err := builder.Build(context.Background()); !errors.Is(err, ErrBuilderClosed) {
-		t.Fatalf("closed build error = %v", err)
-	}
+
 	var nilBuilder *SparseHNSWBuilder
-	if err := nilBuilder.AddSparse(context.Background(), 1, SparseVector{}); err == nil {
-		t.Fatal("nil builder add succeeded")
+	{
+		err := nilBuilder.AddSparse(context.Background(), 1, SparseVector{})
+		require.Error(t, err,
+			"nil builder add succeeded")
 	}
-	if _, err := nilBuilder.Build(context.Background()); err == nil {
-		t.Fatal("nil builder build succeeded")
+	{
+		_, err := nilBuilder.Build(context.Background())
+		require.Error(t, err,
+			"nil builder build succeeded")
 	}
 }
 
@@ -223,15 +255,22 @@ func BenchmarkSparseHNSWBuild(b *testing.B) {
 	for b.Loop() {
 		builder, err := NewSparseHNSWBuilder(options)
 		if err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
+
 		for _, input := range inputs {
-			if err := builder.AddSparse(context.Background(), input.key, input.vector); err != nil {
-				b.Fatal(err)
+			{
+				err := builder.AddSparse(context.Background(), input.key, input.vector)
+				if err != nil {
+					require.NoError(b, err)
+				}
 			}
 		}
-		if _, err := builder.Build(context.Background()); err != nil {
-			b.Fatal(err)
+		{
+			_, err := builder.Build(context.Background())
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }
@@ -262,69 +301,82 @@ func sparseHNSWBuildInputs(count int) []sparseHNSWInput {
 func buildSparseHNSW(t testing.TB, options HNSWBuildOptions, inputs []sparseHNSWInput) *SparseHNSWIndex {
 	t.Helper()
 	builder, err := NewSparseHNSWBuilder(options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, input := range inputs {
-		if err := builder.AddSparse(context.Background(), input.key, input.vector); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.AddSparse(context.Background(), input.key, input.vector)
+			require.NoError(t, err)
 		}
 	}
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return index
 }
 
 func assertSparseHNSWGraphInvariants(t testing.TB, index *SparseHNSWIndex) {
 	t.Helper()
 	count := len(index.keys)
-	if len(index.offsets) != count+1 || len(index.indices) != len(index.values) ||
-		len(index.positions) != count || len(index.levels) != count || len(index.neighbors) != count {
-		t.Fatal("inconsistent sparse HNSW top-level storage")
-	}
-	if index.offsets[0] != 0 || index.offsets[count] != len(index.indices) {
-		t.Fatal("inconsistent sparse HNSW offsets")
-	}
+	require.Len(t, index.offsets, count+1,
+
+		"inconsistent sparse HNSW top-level storage")
+	require.Len(t, index.indices, len(index.values),
+
+		"inconsistent sparse HNSW top-level storage")
+	require.Len(t, index.positions, count,
+		"inconsistent sparse HNSW top-level storage")
+	require.Len(t, index.levels, count,
+		"inconsistent sparse HNSW top-level storage")
+	require.Len(t, index.neighbors, count,
+		"inconsistent sparse HNSW top-level storage")
+	require.True(t, index.offsets[0] == 0,
+		"inconsistent sparse HNSW offsets")
+	require.Len(t, index.indices, index.offsets[count],
+		"inconsistent sparse HNSW offsets")
+
 	derivedMax := -1
 	for position, key := range index.keys {
-		if mapped := index.positions[key]; mapped != position {
-			t.Fatalf("key %d maps to %d, want %d", key, mapped, position)
+		{
+			mapped := index.positions[key]
+			require.Equal(t, position, mapped)
 		}
-		if index.offsets[position] > index.offsets[position+1] {
-			t.Fatalf("node %d has descending CSR offsets", position)
-		}
+		require.True(t, index.offsets[position] <= index.offsets[position+1])
+
 		vector := index.sparseVectorAt(position)
-		if _, err := ailego.SparseInnerProduct(vector.Indices, vector.Values, nil, nil); err != nil {
-			t.Fatalf("node %d vector is invalid: %v", position, err)
+		{
+			_, err := ailego.SparseInnerProduct(vector.Indices, vector.Values, nil, nil)
+			require.NoError(t, err)
 		}
+
 		level := index.levels[position]
 		derivedMax = max(derivedMax, level)
-		if level < 0 || level > MaxHNSWLevel || len(index.neighbors[position]) != level+1 {
-			t.Fatalf("node %d level storage is invalid", position)
-		}
+		require.True(t, level >= 0)
+		require.True(t, level <= MaxHNSWLevel)
+		require.Len(t, index.neighbors[position], level+1)
+
 		for currentLevel, neighbors := range index.neighbors[position] {
 			limit := index.options.M
 			if currentLevel == 0 {
 				limit *= 2
 			}
-			if len(neighbors) > limit {
-				t.Fatalf("node %d level %d degree = %d, limit %d", position, currentLevel, len(neighbors), limit)
-			}
+			require.True(t, len(neighbors) <= limit)
+
 			seen := make(map[int]struct{}, len(neighbors))
 			for _, neighbor := range neighbors {
-				if neighbor < 0 || neighbor >= count || neighbor == position || index.levels[neighbor] < currentLevel {
-					t.Fatalf("node %d level %d has invalid neighbor %d", position, currentLevel, neighbor)
+				require.True(t, neighbor >= 0)
+				require.True(t, neighbor < count)
+				require.NotEqual(t, position, neighbor)
+				require.True(t, index.levels[neighbor] >= currentLevel)
+				{
+					_, duplicate := seen[neighbor]
+					require.False(t, duplicate)
 				}
-				if _, duplicate := seen[neighbor]; duplicate {
-					t.Fatalf("node %d level %d repeats neighbor %d", position, currentLevel, neighbor)
-				}
+
 				seen[neighbor] = struct{}{}
 			}
 		}
 	}
-	if derivedMax != index.maxLevel || (count != 0 && index.levels[index.entryPoint] != derivedMax) {
-		t.Fatalf("entry/max level mismatch: entry %d max %d, derived %d", index.entryPoint, index.maxLevel, derivedMax)
-	}
+	require.Equal(t, index.maxLevel, derivedMax)
+	require.False(t, count != 0 && index.levels[index.entryPoint] != derivedMax)
 }

@@ -17,102 +17,91 @@ package core
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"math"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSparseHNSWPersistenceRoundTripAndReplace(t *testing.T) {
 	t.Parallel()
 	index := persistedSparseHNSWIndex(t, 160)
 	path := filepath.Join(t.TempDir(), "vectors.shnsw")
-	if err := index.Save(context.Background(), path); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Save(context.Background(), path)
+		require.NoError(t, err)
 	}
+
 	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	assertPrivateFileMode(t, info.Mode())
 	opened, err := OpenSparseHNSWIndex(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertSameSparseHNSWIndex(t, opened, index)
 	query := SparseVector{Indices: []uint32{3, 107, 211}, Values: []float32{1, 2, 3}}
 	options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 25}, EF: 80}
 	want, err := index.SearchSparseHNSW(context.Background(), query, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	got, err := opened.SearchSparseHNSW(context.Background(), query, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("reopened search = %#v, want %#v", got, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 
 	replacement := persistedSparseHNSWIndex(t, 40)
-	if err := replacement.Save(context.Background(), path); err != nil {
-		t.Fatal(err)
+	{
+		err := replacement.Save(context.Background(), path)
+		require.NoError(t, err)
 	}
+
 	opened, err = OpenSparseHNSWIndex(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertSameSparseHNSWIndex(t, opened, replacement)
 }
 
 func TestSparseHNSWPersistenceLargeGraphSearch(t *testing.T) {
 	index := persistedSparseHNSWIndex(t, DefaultHNSWBruteForceThreshold+100)
 	path := filepath.Join(t.TempDir(), "large.shnsw")
-	if err := index.Save(context.Background(), path); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Save(context.Background(), path)
+		require.NoError(t, err)
 	}
+
 	opened, err := OpenSparseHNSWIndex(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	query := sparseHNSWBuildInputs(index.Len())[713].vector
 	options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 20}, EF: 120}
 	want, err := index.SearchSparseHNSW(context.Background(), query, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	got, err := opened.SearchSparseHNSW(context.Background(), query, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("large reopened search = %#v, want %#v", got, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 }
 
 func TestSparseHNSWPersistenceEmpty(t *testing.T) {
 	t.Parallel()
 	builder, err := NewSparseHNSWBuilder(DefaultSparseHNSWBuildOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	path := filepath.Join(t.TempDir(), "empty.shnsw")
-	if err := index.Save(context.Background(), path); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Save(context.Background(), path)
+		require.NoError(t, err)
 	}
+
 	opened, err := OpenSparseHNSWIndex(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertSameSparseHNSWIndex(t, opened, index)
 }
 
@@ -121,101 +110,126 @@ func TestSparseHNSWPersistenceCancellationAndErrors(t *testing.T) {
 	index := persistedSparseHNSWIndex(t, 32)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "index.shnsw")
-	if err := index.Save(context.Background(), path); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Save(context.Background(), path)
+		require.NoError(t, err)
 	}
+
 	original, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := index.Save(canceled, path); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled Save error = %v", err)
+	{
+		err := index.Save(canceled, path)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	after, _ := os.ReadFile(path)
-	if !slices.Equal(after, original) {
-		t.Fatal("canceled replacement changed published file")
+	require.True(t, slices.Equal(after, original),
+		"canceled replacement changed published file")
+	{
+		_, err := OpenSparseHNSWIndex(canceled, path)
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := OpenSparseHNSWIndex(canceled, path); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled Open error = %v", err)
+	{
+		err := index.Save(nil, path)
+		require.Error(t, err,
+			"nil Save context succeeded")
 	}
-	if err := index.Save(nil, path); err == nil {
-		t.Fatal("nil Save context succeeded")
+	{
+		_, err := OpenSparseHNSWIndex(nil, path)
+		require.Error(t, err,
+			"nil Open context succeeded")
 	}
-	if _, err := OpenSparseHNSWIndex(nil, path); err == nil {
-		t.Fatal("nil Open context succeeded")
+	{
+		err := index.Save(context.Background(), "")
+		require.ErrorIs(t, err, ErrInvalidSparseHNSWFile)
 	}
-	if err := index.Save(context.Background(), ""); !errors.Is(err, ErrInvalidSparseHNSWFile) {
-		t.Fatalf("empty Save path error = %v", err)
+	{
+		_, err := OpenSparseHNSWIndex(context.Background(), "")
+		require.ErrorIs(t, err, ErrInvalidSparseHNSWFile)
 	}
-	if _, err := OpenSparseHNSWIndex(context.Background(), ""); !errors.Is(err, ErrInvalidSparseHNSWFile) {
-		t.Fatalf("empty Open path error = %v", err)
+	{
+		_, err := OpenSparseHNSWIndex(context.Background(), filepath.Join(dir, "missing"))
+		require.ErrorIs(t, err, os.ErrNotExist)
 	}
-	if _, err := OpenSparseHNSWIndex(context.Background(), filepath.Join(dir, "missing")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("missing Open error = %v", err)
-	}
+
 	var nilIndex *SparseHNSWIndex
-	if err := nilIndex.Save(context.Background(), filepath.Join(dir, "nil.shnsw")); !errors.Is(err, ErrInvalidSparseHNSWFile) {
-		t.Fatalf("nil index Save error = %v", err)
+	{
+		err := nilIndex.Save(context.Background(), filepath.Join(dir, "nil.shnsw"))
+		require.ErrorIs(t, err, ErrInvalidSparseHNSWFile)
 	}
+
 	invalid, err := cloneSparseHNSWIndex(context.Background(), index)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	invalid.offsets[1] = len(invalid.indices) + 1
-	if err := invalid.Save(context.Background(), filepath.Join(dir, "invalid.shnsw")); !errors.Is(err, ErrInvalidSparseHNSWFile) {
-		t.Fatalf("invalid offsets Save error = %v", err)
+	{
+		err := invalid.Save(context.Background(), filepath.Join(dir, "invalid.shnsw"))
+		require.ErrorIs(t, err, ErrInvalidSparseHNSWFile)
 	}
 }
 
 func TestSparseHNSWPersistenceDetectsCorruption(t *testing.T) {
 	t.Parallel()
 	valid, err := encodeSparseHNSWIndex(context.Background(), persistedSparseHNSWIndex(t, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, cut := range []int{0, 1, sparseHNSWHeaderSize - 1, sparseHNSWHeaderSize, len(valid) - 1} {
-		if _, err := decodeSparseHNSWIndex(context.Background(), valid[:cut]); !errors.Is(err, ErrInvalidSparseHNSWFile) {
-			t.Fatalf("cut %d error = %v", cut, err)
+		{
+			_, err := decodeSparseHNSWIndex(context.Background(), valid[:cut])
+			require.ErrorIs(t, err, ErrInvalidSparseHNSWFile)
 		}
 	}
 	trailing := append(slices.Clone(valid), 0)
-	if _, err := decodeSparseHNSWIndex(context.Background(), trailing); !errors.Is(err, ErrInvalidSparseHNSWFile) {
-		t.Fatalf("trailing error = %v", err)
+	{
+		_, err := decodeSparseHNSWIndex(context.Background(), trailing)
+		require.ErrorIs(t, err, ErrInvalidSparseHNSWFile)
 	}
+
 	badMagic := slices.Clone(valid)
 	badMagic[0] ^= 1
-	if _, err := decodeSparseHNSWIndex(context.Background(), badMagic); !errors.Is(err, ErrInvalidSparseHNSWFile) {
-		t.Fatalf("magic error = %v", err)
+	{
+		_, err := decodeSparseHNSWIndex(context.Background(), badMagic)
+		require.ErrorIs(t, err, ErrInvalidSparseHNSWFile)
 	}
+
 	badVersion := slices.Clone(valid)
 	binary.LittleEndian.PutUint16(badVersion[8:10], sparseHNSWFileVersion+1)
-	if _, err := decodeSparseHNSWIndex(context.Background(), badVersion); !errors.Is(err, ErrUnsupportedSparseHNSWVersion) {
-		t.Fatalf("version error = %v", err)
+	{
+		_, err := decodeSparseHNSWIndex(context.Background(), badVersion)
+		require.ErrorIs(t, err, ErrUnsupportedSparseHNSWVersion)
 	}
+
 	badHeader := slices.Clone(valid)
 	badHeader[48] ^= 1
-	if _, err := decodeSparseHNSWIndex(context.Background(), badHeader); !errors.Is(err, ErrSparseHNSWChecksumMismatch) {
-		t.Fatalf("header checksum error = %v", err)
+	{
+		_, err := decodeSparseHNSWIndex(context.Background(), badHeader)
+		require.ErrorIs(t, err, ErrSparseHNSWChecksumMismatch)
 	}
+
 	badPayload := slices.Clone(valid)
 	badPayload[len(badPayload)-1] ^= 1
-	if _, err := decodeSparseHNSWIndex(context.Background(), badPayload); !errors.Is(err, ErrSparseHNSWChecksumMismatch) {
-		t.Fatalf("payload checksum error = %v", err)
+	{
+		_, err := decodeSparseHNSWIndex(context.Background(), badPayload)
+		require.ErrorIs(t, err, ErrSparseHNSWChecksumMismatch)
 	}
 }
 
 func TestSparseHNSWPersistenceRejectsSemanticCorruption(t *testing.T) {
 	t.Parallel()
 	valid, err := encodeSparseHNSWIndex(context.Background(), persistedSparseHNSWIndex(t, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	records := parseSparseHNSWRecordOffsets(t, valid)
-	if len(records) < 2 || len(records[0].coordinates) < 2 || records[0].neighbor < 0 {
-		t.Fatal("fixture lacks sparse elements or graph edges")
-	}
+	require.True(t, len(records) >= 2,
+		"fixture lacks sparse elements or graph edges")
+	require.True(t, len(records[0].coordinates) >= 2,
+		"fixture lacks sparse elements or graph edges")
+	require.True(t, records[0].neighbor >= 0,
+		"fixture lacks sparse elements or graph edges")
+
 	tests := []struct {
 		name   string
 		mutate func([]byte)
@@ -239,8 +253,9 @@ func TestSparseHNSWPersistenceRejectsSemanticCorruption(t *testing.T) {
 			encoded := slices.Clone(valid)
 			test.mutate(encoded)
 			rechecksumSparseHNSW(encoded)
-			if _, err := decodeSparseHNSWIndex(context.Background(), encoded); !errors.Is(err, ErrInvalidSparseHNSWFile) {
-				t.Fatalf("error = %v", err)
+			{
+				_, err := decodeSparseHNSWIndex(context.Background(), encoded)
+				require.ErrorIs(t, err, ErrInvalidSparseHNSWFile)
 			}
 		})
 	}
@@ -250,21 +265,21 @@ func TestSparseHNSWPersistenceRejectsSemanticCorruption(t *testing.T) {
 		func(data []byte) { data[92] = 1 },
 		func(data []byte) { binary.LittleEndian.PutUint64(data[16:24], uint64(len(data)+1)) },
 	}
-	for index, mutate := range headerTests {
+	for _, mutate := range headerTests {
 		encoded := slices.Clone(valid)
 		mutate(encoded)
 		binary.LittleEndian.PutUint32(encoded[108:112], ailego.CRC32C(encoded[:108]))
-		if _, err := decodeSparseHNSWIndex(context.Background(), encoded); !errors.Is(err, ErrInvalidSparseHNSWFile) {
-			t.Fatalf("header mutation %d error = %v", index, err)
+		{
+			_, err := decodeSparseHNSWIndex(context.Background(), encoded)
+			require.ErrorIs(t, err, ErrInvalidSparseHNSWFile)
 		}
 	}
 }
 
 func FuzzDecodeSparseHNSWIndex(f *testing.F) {
 	valid, err := encodeSparseHNSWIndex(context.Background(), persistedSparseHNSWIndex(f, 12))
-	if err != nil {
-		f.Fatal(err)
-	}
+	require.NoError(f, err)
+
 	f.Add(valid)
 	f.Add([]byte("ZVSPHNSW"))
 	f.Fuzz(func(t *testing.T, encoded []byte) {
@@ -272,8 +287,9 @@ func FuzzDecodeSparseHNSWIndex(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if err := validateSparseHNSWIndex(context.Background(), index); err != nil {
-			t.Fatalf("decoded invalid index: %v", err)
+		{
+			err := validateSparseHNSWIndex(context.Background(), index)
+			require.NoError(t, err)
 		}
 	})
 }
@@ -289,13 +305,40 @@ func persistedSparseHNSWIndex(t testing.TB, count int) *SparseHNSWIndex {
 
 func assertSameSparseHNSWIndex(t testing.TB, got, want *SparseHNSWIndex) {
 	t.Helper()
-	if got.Metric() != want.Metric() || got.Len() != want.Len() || got.BuildOptions() != want.BuildOptions() ||
-		got.entryPoint != want.entryPoint || got.MaxLevel() != want.MaxLevel() || got.levelRNGState != want.levelRNGState ||
-		!slices.Equal(got.keys, want.keys) || !slices.Equal(got.offsets, want.offsets) ||
-		!slices.Equal(got.indices, want.indices) || !slices.Equal(got.values, want.values) ||
-		!slices.Equal(got.levels, want.levels) || !reflect.DeepEqual(got.neighbors, want.neighbors) {
-		t.Fatalf("reopened sparse HNSW metadata differs")
-	}
+	require.Equal(t, want.Metric(), got.Metric(),
+
+		"reopened sparse HNSW metadata differs")
+	require.Equal(t, want.Len(), got.Len(),
+
+		"reopened sparse HNSW metadata differs")
+	require.Equal(t, want.BuildOptions(), got.BuildOptions(),
+
+		"reopened sparse HNSW metadata differs")
+	require.Equal(t, want.entryPoint, got.entryPoint,
+
+		"reopened sparse HNSW metadata differs")
+	require.Equal(t, want.MaxLevel(), got.MaxLevel(),
+
+		"reopened sparse HNSW metadata differs")
+	require.Equal(t, want.levelRNGState, got.levelRNGState,
+
+		"reopened sparse HNSW metadata differs")
+	require.True(t, slices.Equal(got.keys, want.keys),
+
+		"reopened sparse HNSW metadata differs")
+	require.True(t, slices.Equal(got.offsets, want.offsets),
+
+		"reopened sparse HNSW metadata differs")
+	require.True(t, slices.Equal(got.indices, want.indices),
+
+		"reopened sparse HNSW metadata differs")
+	require.True(t, slices.Equal(got.values, want.values),
+
+		"reopened sparse HNSW metadata differs")
+	require.True(t, slices.Equal(got.levels, want.levels),
+		"reopened sparse HNSW metadata differs")
+	require.Equal(t, want.neighbors, got.neighbors,
+		"reopened sparse HNSW metadata differs")
 }
 
 type sparseHNSWRecordOffset struct {
@@ -332,9 +375,8 @@ func parseSparseHNSWRecordOffsets(t testing.TB, encoded []byte) []sparseHNSWReco
 			offset += degree * 4
 		}
 	}
-	if offset != len(encoded) {
-		t.Fatalf("fixture parse ended at %d, want %d", offset, len(encoded))
-	}
+	require.Len(t, encoded, offset)
+
 	return records
 }
 

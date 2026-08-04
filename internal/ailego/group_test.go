@@ -19,20 +19,25 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestParallelFor(t *testing.T) {
 	const count = 200
 	seen := make([]atomic.Int32, count)
-	if err := ParallelFor(context.Background(), count, 8, func(_ context.Context, index int) error {
-		seen[index].Add(1)
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	{
+		err := ParallelFor(context.Background(), count, 8, func(_ context.Context, index int) error {
+			seen[index].Add(1)
+			return nil
+		})
+		require.NoError(t, err)
 	}
+
 	for index := range count {
-		if got := seen[index].Load(); got != 1 {
-			t.Fatalf("index %d called %d times", index, got)
+		{
+			got := seen[index].Load()
+			require.True(t, got == 1)
 		}
 	}
 }
@@ -45,9 +50,7 @@ func TestParallelForCancelsOnError(t *testing.T) {
 		}
 		return nil
 	})
-	if !errors.Is(err, want) {
-		t.Fatalf("ParallelFor error = %v", err)
-	}
+	require.ErrorIs(t, err, want)
 }
 
 func TestGroupCancelsPeers(t *testing.T) {
@@ -58,7 +61,8 @@ func TestGroupCancelsPeers(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	if err := group.Wait(); !errors.Is(err, want) {
-		t.Fatalf("Wait error = %v", err)
+	{
+		err := group.Wait()
+		require.ErrorIs(t, err, want)
 	}
 }

@@ -16,18 +16,20 @@ package core
 
 import (
 	"context"
-	"errors"
 	"math"
-	"reflect"
 	"strconv"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestGroupByOptionsValidation(t *testing.T) {
 	resolver := func(uint64) (string, bool) { return "group", true }
-	if err := (GroupByOptions{GroupCount: 1, TopKPerGroup: 1, Resolve: resolver}).Validate(); err != nil {
-		t.Fatal(err)
+	{
+		err := (GroupByOptions{GroupCount: 1, TopKPerGroup: 1, Resolve: resolver}).Validate()
+		require.NoError(t, err)
 	}
+
 	tests := []struct {
 		name    string
 		options GroupByOptions
@@ -42,8 +44,9 @@ func TestGroupByOptionsValidation(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			if err := testCase.options.Validate(); !errors.Is(err, testCase.want) {
-				t.Fatalf("Validate() = %v, want %v", err, testCase.want)
+			{
+				err := testCase.options.Validate()
+				require.ErrorIs(t, err, testCase.want)
 			}
 		})
 	}
@@ -51,12 +54,12 @@ func TestGroupByOptionsValidation(t *testing.T) {
 
 func TestDenseFlatSearchGroups(t *testing.T) {
 	index, err := NewDenseFlatIndex(2, MetricIP)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for key := uint64(0); key < 12; key++ {
-		if err := index.Add(context.Background(), key, []float32{float32(key), 1}); err != nil {
-			t.Fatal(err)
+		{
+			err := index.Add(context.Background(), key, []float32{float32(key), 1})
+			require.NoError(t, err)
 		}
 	}
 	options := GroupByOptions{
@@ -67,27 +70,24 @@ func TestDenseFlatSearchGroups(t *testing.T) {
 		},
 	}
 	got, err := index.SearchGroups(context.Background(), []float32{1, 0}, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := []GroupResult{
 		{Value: "2", Results: []Result{{Key: 11, Score: 11}, {Key: 8, Score: 8}}},
 		{Value: "1", Results: []Result{{Key: 10, Score: 10}, {Key: 7, Score: 7}}},
 		{Value: "0", Results: []Result{{Key: 9, Score: 9}, {Key: 6, Score: 6}}},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("SearchGroups() = %#v, want %#v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 func TestDenseFlatSearchGroupsFilterRadiusAndMissingValue(t *testing.T) {
 	index, err := NewDenseFlatIndex(1, MetricIP)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for key := uint64(0); key < 12; key++ {
-		if err := index.Add(context.Background(), key, []float32{float32(key)}); err != nil {
-			t.Fatal(err)
+		{
+			err := index.Add(context.Background(), key, []float32{float32(key)})
+			require.NoError(t, err)
 		}
 	}
 	got, err := index.SearchGroups(context.Background(), []float32{1}, GroupByOptions{
@@ -105,23 +105,20 @@ func TestDenseFlatSearchGroupsFilterRadiusAndMissingValue(t *testing.T) {
 			return strconv.FormatUint(key%3, 10), true
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := []GroupResult{{Value: "", Results: []Result{{Key: 11, Score: 11}, {Key: 8, Score: 8}}}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("filtered SearchGroups() = %#v, want %#v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 func TestDenseFlatSearchGroupsUsesMetricOrdering(t *testing.T) {
 	index, err := NewDenseFlatIndex(1, MetricL2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for key, value := range []float32{0, 1, 2, 3} {
-		if err := index.Add(context.Background(), uint64(key), []float32{value}); err != nil {
-			t.Fatal(err)
+		{
+			err := index.Add(context.Background(), uint64(key), []float32{value})
+			require.NoError(t, err)
 		}
 	}
 	got, err := index.SearchGroups(context.Background(), []float32{0}, GroupByOptions{
@@ -134,16 +131,13 @@ func TestDenseFlatSearchGroupsUsesMetricOrdering(t *testing.T) {
 			return "odd", true
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := []GroupResult{
 		{Value: "even", Results: []Result{{Key: 0, Score: 0}, {Key: 2, Score: 4}}},
 		{Value: "odd", Results: []Result{{Key: 1, Score: 1}, {Key: 3, Score: 9}}},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("L2 groups = %#v, want %#v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 func TestScalarQuantizedFlatSearchGroupsMatchesScalarScan(t *testing.T) {
@@ -161,18 +155,14 @@ func TestScalarQuantizedFlatSearchGroupsMatchesScalarScan(t *testing.T) {
 			var reformer DenseReformer
 			if kind != QuantizationFP16 {
 				rotator, err := NewFHTRotatorFromSigns(4, []byte{0x13, 0x57, 0x9b, 0xdf})
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				reformer, err = NewRotationReformer(rotator)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 			}
 			index, err := NewScalarQuantizedFlatIndex(context.Background(), 4, MetricL2, kind, reformer, candidates)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			resolve := func(key uint64) (string, bool) {
 				return strconv.FormatUint(key%3, 10), key != 5
 			}
@@ -181,15 +171,13 @@ func TestScalarQuantizedFlatSearchGroupsMatchesScalarScan(t *testing.T) {
 				Radius: 10, Filter: func(key uint64) bool { return key != 4 }, Resolve: resolve,
 			}
 			got, err := index.SearchGroups(context.Background(), query, options)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			scanned, err := index.SearchWithOptions(context.Background(), query, SearchOptions{
 				TopK: len(candidates), Radius: options.Radius, Filter: options.Filter,
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			accumulator := newGroupAccumulator(MetricL2, options.TopKPerGroup)
 			for _, result := range scanned {
 				if value, found := resolve(result.Key); found {
@@ -197,9 +185,7 @@ func TestScalarQuantizedFlatSearchGroupsMatchesScalarScan(t *testing.T) {
 				}
 			}
 			want := accumulator.finish(options.GroupCount)
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("groups = %#v, scalar scan %#v", got, want)
-			}
+			require.Equal(t, want, got)
 		})
 	}
 }
@@ -210,18 +196,17 @@ func TestHNSWRaBitQSearchGroupsMatchesLinearCodeScan(t *testing.T) {
 	options.TotalBits, options.Clusters = 5, 4
 	options.M, options.EFConstruction = 6, 24
 	builder, err := NewHNSWRaBitQBuilder(64, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, candidate := range candidates {
-		if err := builder.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.Add(context.Background(), candidate.Key, candidate.Vector)
+			require.NoError(t, err)
 		}
 	}
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	query := candidates[11].Vector
 	resolve := func(key uint64) (string, bool) {
 		return strconv.FormatUint(key%4, 10), key != candidates[3].Key
@@ -231,16 +216,14 @@ func TestHNSWRaBitQSearchGroupsMatchesLinearCodeScan(t *testing.T) {
 		Filter: func(key uint64) bool { return key%5 != 0 }, Resolve: resolve,
 	}
 	got, err := index.SearchGroups(context.Background(), query, groupOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	scanned, err := index.SearchHNSWRaBitQ(context.Background(), query, HNSWRaBitQSearchOptions{
 		SearchOptions: SearchOptions{TopK: len(candidates), Filter: groupOptions.Filter},
 		EF:            len(candidates), Linear: true,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	accumulator := newGroupAccumulator(MetricL2, groupOptions.TopKPerGroup)
 	for _, result := range scanned {
 		if value, found := resolve(result.Key); found {
@@ -248,20 +231,18 @@ func TestHNSWRaBitQSearchGroupsMatchesLinearCodeScan(t *testing.T) {
 		}
 	}
 	want := accumulator.finish(groupOptions.GroupCount)
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("groups = %#v, code scan %#v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 func TestSparseFlatSearchGroups(t *testing.T) {
 	index, err := NewSparseFlatIndex(MetricIP)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for key := uint64(0); key < 6; key++ {
 		vector := SparseVector{Indices: []uint32{1}, Values: []float32{float32(key)}}
-		if err := index.AddSparse(context.Background(), key, vector); err != nil {
-			t.Fatal(err)
+		{
+			err := index.AddSparse(context.Background(), key, vector)
+			require.NoError(t, err)
 		}
 	}
 	got, err := index.SearchSparseGroups(context.Background(), SparseVector{Indices: []uint32{1}, Values: []float32{1}}, GroupByOptions{
@@ -271,23 +252,19 @@ func TestSparseFlatSearchGroups(t *testing.T) {
 			return strconv.FormatUint(key%2, 10), true
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := []GroupResult{
 		{Value: "1", Results: []Result{{Key: 5, Score: 5}, {Key: 3, Score: 3}}},
 		{Value: "0", Results: []Result{{Key: 4, Score: 4}, {Key: 2, Score: 2}}},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("sparse groups = %#v, want %#v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 func TestQueryDenseGroupsMergesBeforeTruncating(t *testing.T) {
 	first, err := NewDenseFlatIndex(1, MetricIP)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	second, _ := NewDenseFlatIndex(1, MetricIP)
 	for key, value := range []float32{0, 1} {
 		_ = first.Add(context.Background(), uint64(key), []float32{value})
@@ -304,16 +281,12 @@ func TestQueryDenseGroupsMergesBeforeTruncating(t *testing.T) {
 	options := GroupByOptions{GroupCount: 1, TopKPerGroup: 1, Resolve: resolver}
 	want := []GroupResult{{Value: "high", Results: []Result{{Key: 3, Score: 11}}}}
 	got, err := QueryDenseGroups(context.Background(), MetricIP, []DenseGroupSearcher{first, second}, []float32{1}, options, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("merged groups = %#v, want %#v", got, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+
 	reversed, err := QueryDenseGroups(context.Background(), MetricIP, []DenseGroupSearcher{second, first}, []float32{1}, options, 1)
-	if err != nil || !reflect.DeepEqual(reversed, want) {
-		t.Fatalf("reversed groups = %#v, %v", reversed, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, reversed)
 }
 
 func TestQuerySparseGroupsAndEmptySegments(t *testing.T) {
@@ -324,49 +297,57 @@ func TestQuerySparseGroupsAndEmptySegments(t *testing.T) {
 	resolver := func(key uint64) (string, bool) { return strconv.FormatUint(key, 10), true }
 	options := GroupByOptions{GroupCount: 2, TopKPerGroup: 1, Resolve: resolver}
 	got, err := QuerySparseGroups(context.Background(), []SparseGroupSearcher{first, second}, SparseVector{Indices: []uint32{1}, Values: []float32{1}}, options, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := []GroupResult{
 		{Value: "2", Results: []Result{{Key: 2, Score: 2}}},
 		{Value: "1", Results: []Result{{Key: 1, Score: 1}}},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("merged sparse groups = %#v, want %#v", got, want)
-	}
+	require.Equal(t, want, got)
+
 	empty, err := QuerySparseGroups(context.Background(), nil, SparseVector{}, options, 0)
-	if err != nil || empty == nil || len(empty) != 0 {
-		t.Fatalf("empty sparse groups = %#v, %v", empty, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, empty)
+	require.Len(t, empty, 0)
 }
 
 func TestGroupByQueryValidationAndCancellation(t *testing.T) {
 	index, err := NewDenseFlatIndex(1, MetricL2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	_ = index.Add(context.Background(), 1, []float32{1})
 	resolver := func(uint64) (string, bool) { return "group", true }
 	options := GroupByOptions{GroupCount: 1, TopKPerGroup: 1, Resolve: resolver}
-	if _, err := QueryDenseGroups(context.Background(), MetricIP, []DenseGroupSearcher{index}, []float32{1}, options, 1); err == nil {
-		t.Fatal("mismatched dense group metric succeeded")
+	{
+		_, err := QueryDenseGroups(context.Background(), MetricIP, []DenseGroupSearcher{index}, []float32{1}, options, 1)
+		require.Error(t, err,
+			"mismatched dense group metric succeeded")
 	}
-	if _, err := QueryDenseGroups(context.Background(), Metric(99), nil, []float32{1}, options, 1); err == nil {
-		t.Fatal("invalid dense group metric succeeded")
+	{
+		_, err := QueryDenseGroups(context.Background(), Metric(99), nil, []float32{1}, options, 1)
+		require.Error(t, err,
+			"invalid dense group metric succeeded")
 	}
-	if _, err := QueryDenseGroups(context.Background(), MetricL2, []DenseGroupSearcher{nil}, []float32{1}, options, 1); err == nil {
-		t.Fatal("nil dense group searcher succeeded")
+	{
+		_, err := QueryDenseGroups(context.Background(), MetricL2, []DenseGroupSearcher{nil}, []float32{1}, options, 1)
+		require.Error(t, err,
+			"nil dense group searcher succeeded")
 	}
-	if _, err := QuerySparseGroups(context.Background(), []SparseGroupSearcher{nil}, SparseVector{}, options, 1); err == nil {
-		t.Fatal("nil sparse group searcher succeeded")
+	{
+		_, err := QuerySparseGroups(context.Background(), []SparseGroupSearcher{nil}, SparseVector{}, options, 1)
+		require.Error(t, err,
+			"nil sparse group searcher succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := index.SearchGroups(canceled, []float32{1}, options); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled local dense group query = %v", err)
+	{
+		_, err := index.SearchGroups(canceled, []float32{1}, options)
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := QueryDenseGroups(canceled, MetricL2, []DenseGroupSearcher{index}, []float32{1}, options, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled dense group query = %v", err)
+	{
+		_, err := QueryDenseGroups(canceled, MetricL2, []DenseGroupSearcher{index}, []float32{1}, options, 1)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
@@ -379,10 +360,13 @@ func TestMergeGroupResultsRebuildsPerGroupTopK(t *testing.T) {
 		{Value: "a", Results: []Result{{Key: 5, Score: 5}, {Key: 3, Score: 3}}},
 		{Value: "b", Results: []Result{{Key: 4, Score: 4}}},
 	}
-	if got := MergeGroupResults(MetricIP, 2, 2, batches...); !reflect.DeepEqual(got, want) {
-		t.Fatalf("MergeGroupResults() = %#v, want %#v", got, want)
+	{
+		got := MergeGroupResults(MetricIP, 2, 2, batches...)
+		require.Equal(t, want, got)
 	}
-	if got := MergeGroupResults(MetricIP, 0, 2, batches...); got == nil || len(got) != 0 {
-		t.Fatalf("zero group count merge = %#v", got)
+	{
+		got := MergeGroupResults(MetricIP, 0, 2, batches...)
+		require.NotNil(t, got)
+		require.Len(t, got, 0)
 	}
 }

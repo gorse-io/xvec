@@ -16,55 +16,56 @@ package ailego
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestFileLockCompatibility(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "collection.lock")
 	sharedOne, err := TryFileLock(path, LockShared)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer sharedOne.Close()
 	sharedTwo, err := TryFileLock(path, LockShared)
-	if err != nil {
-		t.Fatalf("second shared lock: %v", err)
+	require.NoError(t, err)
+	{
+		err := sharedTwo.Close()
+		require.NoError(t, err)
 	}
-	if err := sharedTwo.Close(); err != nil {
-		t.Fatal(err)
+	{
+		_, err := TryFileLock(path, LockExclusive)
+		require.ErrorIs(t, err, ErrLockUnavailable)
 	}
-	if _, err := TryFileLock(path, LockExclusive); !errors.Is(err, ErrLockUnavailable) {
-		t.Fatalf("exclusive lock error = %v", err)
+	{
+		err := sharedOne.Close()
+		require.NoError(t, err)
 	}
 
-	if err := sharedOne.Close(); err != nil {
-		t.Fatal(err)
-	}
 	exclusive, err := TryFileLock(path, LockExclusive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer exclusive.Close()
-	if _, err := TryFileLock(path, LockShared); !errors.Is(err, ErrLockUnavailable) {
-		t.Fatalf("shared lock error = %v", err)
+	{
+		_, err := TryFileLock(path, LockShared)
+		require.ErrorIs(t, err, ErrLockUnavailable)
 	}
 }
 
 func TestAcquireFileLockHonorsContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "collection.lock")
 	first, err := TryFileLock(path, LockExclusive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer first.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
-	if _, err := AcquireFileLock(ctx, path, LockExclusive); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("AcquireFileLock error = %v", err)
+	{
+		_, err := AcquireFileLock(ctx, path, LockExclusive)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
 }
 
@@ -72,7 +73,8 @@ func TestAcquireFileLockWithCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	path := filepath.Join(t.TempDir(), "collection.lock")
-	if _, err := AcquireFileLock(ctx, path, LockExclusive); !errors.Is(err, context.Canceled) {
-		t.Fatalf("AcquireFileLock error = %v", err)
+	{
+		_, err := AcquireFileLock(ctx, path, LockExclusive)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }

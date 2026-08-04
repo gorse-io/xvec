@@ -16,24 +16,25 @@ package core
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"sync"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHNSWRaBitQBuildOptionsAndDeterminism(t *testing.T) {
 	defaults := DefaultHNSWRaBitQBuildOptions(MetricCosine)
-	if defaults.Metric != MetricCosine || defaults.TotalBits != 7 || defaults.Clusters != 16 ||
-		defaults.M != 50 || defaults.EFConstruction != 500 {
-		t.Fatalf("defaults = %#v", defaults)
-	}
+	require.Equal(t, MetricCosine, defaults.Metric)
+	require.True(t, defaults.TotalBits == 7)
+	require.True(t, defaults.Clusters == 16)
+	require.True(t, defaults.M == 50)
+	require.True(t, defaults.EFConstruction == 500)
+
 	invalid := []HNSWRaBitQBuildOptions{
 		{},
 		func() HNSWRaBitQBuildOptions { value := defaults; value.Metric = MetricMIPSL2; return value }(),
@@ -42,12 +43,14 @@ func TestHNSWRaBitQBuildOptionsAndDeterminism(t *testing.T) {
 		func() HNSWRaBitQBuildOptions { value := defaults; value.EFConstruction = 1; return value }(),
 	}
 	for _, options := range invalid {
-		if _, err := NewHNSWRaBitQBuilder(64, options); !errors.Is(err, ErrInvalidHNSWRaBitQOptions) {
-			t.Fatalf("invalid options %#v: %v", options, err)
+		{
+			_, err := NewHNSWRaBitQBuilder(64, options)
+			require.ErrorIs(t, err, ErrInvalidHNSWRaBitQOptions)
 		}
 	}
-	if _, err := NewHNSWRaBitQBuilder(63, defaults); !errors.Is(err, ErrInvalidHNSWRaBitQOptions) {
-		t.Fatalf("small dimension error = %v", err)
+	{
+		_, err := NewHNSWRaBitQBuilder(63, defaults)
+		require.ErrorIs(t, err, ErrInvalidHNSWRaBitQOptions)
 	}
 
 	candidates := hnswRaBitQCandidates(120, 70)
@@ -56,33 +59,50 @@ func TestHNSWRaBitQBuildOptionsAndDeterminism(t *testing.T) {
 	first := buildHNSWRaBitQ(t, candidates, options)
 	options.Workers = 4
 	second := buildHNSWRaBitQ(t, candidates, options)
-	if !reflect.DeepEqual(first.ModelState(), second.ModelState()) ||
-		!reflect.DeepEqual(first.base.levels, second.base.levels) ||
-		!reflect.DeepEqual(first.base.neighbors, second.base.neighbors) ||
-		!reflect.DeepEqual(first.codes, second.codes) {
-		t.Fatal("HNSW-RaBitQ changed across worker counts")
-	}
-	if first.Dimension() != 70 || first.Metric() != MetricL2 || first.Len() != len(candidates) || first.MaxLevel() != first.base.maxLevel {
-		t.Fatal("HNSW-RaBitQ metadata differs")
-	}
+	require.Equal(t, second.ModelState(), first.ModelState(),
+
+		"HNSW-RaBitQ changed across worker counts")
+	require.Equal(t, second.base.levels, first.base.levels,
+
+		"HNSW-RaBitQ changed across worker counts")
+	require.Equal(t, second.base.neighbors, first.base.neighbors,
+
+		"HNSW-RaBitQ changed across worker counts")
+	require.Equal(t, second.codes, first.codes,
+		"HNSW-RaBitQ changed across worker counts")
+	require.True(t, first.Dimension() == 70,
+		"HNSW-RaBitQ metadata differs")
+	require.Equal(t, MetricL2, first.Metric(),
+		"HNSW-RaBitQ metadata differs")
+	require.Len(t, candidates, first.Len(),
+		"HNSW-RaBitQ metadata differs")
+	require.Equal(t, first.base.maxLevel, first.MaxLevel(),
+		"HNSW-RaBitQ metadata differs")
+
 	entry, found := first.EntryPoint()
-	if !found {
-		t.Fatal("built graph has no entry point")
+	require.True(t, found,
+		"built graph has no entry point")
+	{
+		level, _ := first.Level(entry)
+		require.Equal(t, first.MaxLevel(), level)
 	}
-	if level, _ := first.Level(entry); level != first.MaxLevel() {
-		t.Fatalf("entry level %d differs from max %d", level, first.MaxLevel())
-	}
+
 	vector, found := first.Vector(candidates[0].Key)
-	if !found {
-		t.Fatal("first vector missing")
-	}
+	require.True(t, found,
+		"first vector missing")
+
 	candidates[0].Vector[0]++
-	if again, _ := first.Vector(candidates[0].Key); again[0] != vector[0] {
-		t.Fatal("builder did not own originals")
+	{
+		again, _ := first.Vector(candidates[0].Key)
+		require.Equal(t, vector[0], again[0],
+			"builder did not own originals")
 	}
+
 	vector[0]++
-	if again, _ := first.Vector(candidates[0].Key); again[0] == vector[0] {
-		t.Fatal("Vector exposed mutable storage")
+	{
+		again, _ := first.Vector(candidates[0].Key)
+		require.NotEqual(t, vector[0], again[0],
+			"Vector exposed mutable storage")
 	}
 }
 
@@ -96,35 +116,23 @@ func TestHNSWRaBitQSearchMetricsFilterRadiusAndRefine(t *testing.T) {
 			EF:            180,
 		}
 		got, err := index.SearchHNSWRaBitQ(context.Background(), query, options)
-		if err != nil {
-			t.Fatalf("metric %d approximate: %v", metric, err)
-		}
-		if len(got) != options.TopK {
-			t.Fatalf("metric %d returned %d results", metric, len(got))
-		}
+		require.NoError(t, err)
+		require.Len(t, got, options.TopK)
+
 		for position, result := range got {
-			if result.Key%3 == 0 {
-				t.Fatalf("metric %d returned filtered key %d", metric, result.Key)
-			}
-			if position > 0 && resultBetter(metric, result, got[position-1]) {
-				t.Fatalf("metric %d results are not ordered", metric)
-			}
+			require.False(t, result.Key%3 == 0)
+			require.False(t, position > 0 && resultBetter(metric, result, got[position-1]))
 		}
 
 		options.Refine = true
 		refined, err := index.SearchHNSWRaBitQ(context.Background(), query, options)
-		if err != nil {
-			t.Fatalf("metric %d refine: %v", metric, err)
-		}
+		require.NoError(t, err)
+
 		want, err := topKCandidatesWithOptions(context.Background(), metric, query, options.SearchOptions, len(candidates), func(position int) Candidate {
 			return candidates[position]
 		}, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(refined, want) {
-			t.Fatalf("metric %d refined = %#v, want %#v", metric, refined, want)
-		}
+		require.NoError(t, err)
+		require.Equal(t, want, refined)
 	}
 
 	candidates := hnswRaBitQCandidates(80, 64)
@@ -134,12 +142,8 @@ func TestHNSWRaBitQSearchMetricsFilterRadiusAndRefine(t *testing.T) {
 		SearchOptions: SearchOptions{TopK: 5, Radius: .2, Filter: func(key uint64) bool { return key == target.Key }},
 		EF:            80, Refine: true,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(results, []Result{{Key: target.Key, Score: 0}}) {
-		t.Fatalf("filtered radius result = %#v", results)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: target.Key, Score: 0}}, results)
 }
 
 func TestHNSWRaBitQLargeGraphRecall(t *testing.T) {
@@ -153,30 +157,29 @@ func TestHNSWRaBitQLargeGraphRecall(t *testing.T) {
 		for queryIndex := 0; queryIndex < 12; queryIndex++ {
 			query := candidates[(queryIndex*73+19)%len(candidates)].Vector
 			truth, err := TopK(context.Background(), metric, query, candidates, 10)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			approximate, err := index.SearchHNSWRaBitQ(context.Background(), query, HNSWRaBitQSearchOptions{
 				SearchOptions: SearchOptions{TopK: 10}, EF: 100,
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			refined, err := index.SearchHNSWRaBitQ(context.Background(), query, HNSWRaBitQSearchOptions{
 				SearchOptions: SearchOptions{TopK: 10}, EF: 100, Refine: true,
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			approximateMatches += resultOverlap(approximate, truth)
 			refinedMatches += resultOverlap(refined, truth)
 			total += len(truth)
 		}
-		if recall := float64(approximateMatches) / float64(total); recall < .75 {
-			t.Fatalf("metric %d approximate recall@10 = %.3f", metric, recall)
+		{
+			recall := float64(approximateMatches) / float64(total)
+			require.True(t, recall >= .75)
 		}
-		if recall := float64(refinedMatches) / float64(total); recall < .85 {
-			t.Fatalf("metric %d refined recall@10 = %.3f", metric, recall)
+		{
+			recall := float64(refinedMatches) / float64(total)
+			require.True(t, recall >= .85)
 		}
 	}
 }
@@ -184,107 +187,119 @@ func TestHNSWRaBitQLargeGraphRecall(t *testing.T) {
 func TestHNSWRaBitQEmptyIncrementalAndValidation(t *testing.T) {
 	options := hnswRaBitQTestOptions(MetricL2)
 	builder, err := NewHNSWRaBitQBuilder(64, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	empty, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.True(t, empty.Len() == 0)
+	require.Equal(t, -1, empty.MaxLevel())
+	{
+		results, err := empty.SearchHNSWRaBitQ(context.Background(), make([]float32, 64), HNSWRaBitQSearchOptions{SearchOptions: SearchOptions{TopK: 1}, EF: 1})
+		require.NoError(t, err)
+		require.Len(t, results, 0)
 	}
-	if empty.Len() != 0 || empty.MaxLevel() != -1 {
-		t.Fatalf("empty metadata = %d/%d", empty.Len(), empty.MaxLevel())
-	}
-	if results, err := empty.SearchHNSWRaBitQ(context.Background(), make([]float32, 64), HNSWRaBitQSearchOptions{SearchOptions: SearchOptions{TopK: 1}, EF: 1}); err != nil || len(results) != 0 {
-		t.Fatalf("empty search = %#v, %v", results, err)
-	}
+
 	vector := hnswRaBitQCandidates(1, 64)[0].Vector
-	if err := empty.Add(context.Background(), 99, vector); err != nil {
-		t.Fatal(err)
+	{
+		err := empty.Add(context.Background(), 99, vector)
+		require.NoError(t, err)
 	}
-	if empty.Len() != 1 {
-		t.Fatalf("incremental length = %d", empty.Len())
+	require.True(t, empty.Len() == 1)
+	{
+		err := empty.Add(context.Background(), 99, vector)
+		require.ErrorIs(t, err, ErrDuplicateKey)
 	}
-	if err := empty.Add(context.Background(), 99, vector); !errors.Is(err, ErrDuplicateKey) {
-		t.Fatalf("duplicate error = %v", err)
-	}
-	if err := empty.Add(context.Background(), 100, vector[:63]); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("dimension error = %v", err)
+	{
+		err := empty.Add(context.Background(), 100, vector[:63])
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
 
 	valid := HNSWRaBitQSearchOptions{SearchOptions: SearchOptions{TopK: 1}, EF: 1}
-	if _, err := empty.SearchHNSWRaBitQ(nil, vector, valid); err == nil {
-		t.Fatal("nil search context succeeded")
+	{
+		_, err := empty.SearchHNSWRaBitQ(nil, vector, valid)
+		require.Error(t, err,
+			"nil search context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := empty.SearchHNSWRaBitQ(canceled, vector, valid); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled search error = %v", err)
+	{
+		_, err := empty.SearchHNSWRaBitQ(canceled, vector, valid)
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := empty.SearchHNSWRaBitQ(context.Background(), vector[:63], valid); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("query dimension error = %v", err)
+	{
+		_, err := empty.SearchHNSWRaBitQ(context.Background(), vector[:63], valid)
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
+
 	nonFinite := slices.Clone(vector)
 	nonFinite[1] = float32(math.NaN())
-	if _, err := empty.SearchHNSWRaBitQ(context.Background(), nonFinite, valid); !errors.Is(err, ailego.ErrNonFiniteVector) {
-		t.Fatalf("non-finite error = %v", err)
+	{
+		_, err := empty.SearchHNSWRaBitQ(context.Background(), nonFinite, valid)
+		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
 	}
+
 	valid.EF = 0
-	if _, err := empty.SearchHNSWRaBitQ(context.Background(), vector, valid); !errors.Is(err, ErrInvalidHNSWEF) {
-		t.Fatalf("EF error = %v", err)
+	{
+		_, err := empty.SearchHNSWRaBitQ(context.Background(), vector, valid)
+		require.ErrorIs(t, err, ErrInvalidHNSWEF)
 	}
 }
 
 func TestHNSWRaBitQIncrementalFailuresAreAtomic(t *testing.T) {
 	index := buildHNSWRaBitQ(t, hnswRaBitQCandidates(120, 64), hnswRaBitQTestOptions(MetricL2))
 	before, err := encodeHNSWRaBitQIndex(context.Background(), index)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	vector := hnswRaBitQCandidates(1, 64)[0].Vector
-	if err := index.Add(nil, 999999, vector); err == nil {
-		t.Fatal("nil Add context succeeded")
+	{
+		err := index.Add(nil, 999999, vector)
+		require.Error(t, err,
+			"nil Add context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := index.Add(canceled, 999999, vector); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pre-canceled Add error = %v", err)
+	{
+		err := index.Add(canceled, 999999, vector)
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if err := index.Add(context.Background(), 999999, vector[:63]); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("dimension Add error = %v", err)
+	{
+		err := index.Add(context.Background(), 999999, vector[:63])
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
+
 	nonFinite := slices.Clone(vector)
 	nonFinite[0] = float32(math.Inf(1))
-	if err := index.Add(context.Background(), 999999, nonFinite); !errors.Is(err, ailego.ErrNonFiniteVector) {
-		t.Fatalf("non-finite Add error = %v", err)
+	{
+		err := index.Add(context.Background(), 999999, nonFinite)
+		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
 	}
+
 	midClone := newCancelAfterChecks(4)
-	if err := index.Add(midClone, 999999, vector); !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-generation Add error = %v", err)
+	{
+		err := index.Add(midClone, 999999, vector)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	after, err := encodeHNSWRaBitQIndex(context.Background(), index)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.True(t, slices.Equal(after, before),
+		"failed Add changed HNSW-RaBitQ generation")
+	{
+		err := index.Add(context.Background(), 999999, vector)
+		require.NoError(t, err)
 	}
-	if !slices.Equal(after, before) {
-		t.Fatal("failed Add changed HNSW-RaBitQ generation")
-	}
-	if err := index.Add(context.Background(), 999999, vector); err != nil {
-		t.Fatal(err)
-	}
-	if index.Len() != 121 {
-		t.Fatalf("successful Add length = %d", index.Len())
-	}
+	require.True(t, index.Len() == 121)
 }
 
 func TestHNSWRaBitQConcurrentAddSearchSaveAndOpen(t *testing.T) {
 	builder, err := NewHNSWRaBitQBuilder(64, hnswRaBitQTestOptions(MetricCosine))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	dir := t.TempDir()
 	errCh := make(chan error, 32)
 	var writers sync.WaitGroup
@@ -343,11 +358,9 @@ func TestHNSWRaBitQConcurrentAddSearchSaveAndOpen(t *testing.T) {
 	readers.Wait()
 	close(errCh)
 	for err := range errCh {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
-	if index.Len() != 36 {
-		t.Fatalf("concurrent final length = %d", index.Len())
-	}
+	require.True(t, index.Len() == 36)
 }
 
 func BenchmarkHNSWRaBitQSearch(b *testing.B) {
@@ -366,8 +379,11 @@ func BenchmarkHNSWRaBitQSearch(b *testing.B) {
 			search := HNSWRaBitQSearchOptions{SearchOptions: SearchOptions{TopK: 10}, EF: 100, Refine: refine}
 			b.ReportAllocs()
 			for b.Loop() {
-				if _, err := index.SearchHNSWRaBitQ(context.Background(), query, search); err != nil {
-					b.Fatal(err)
+				{
+					_, err := index.SearchHNSWRaBitQ(context.Background(), query, search)
+					if err != nil {
+						require.NoError(b, err)
+					}
 				}
 			}
 		})
@@ -401,17 +417,16 @@ func buildHNSWRaBitQ(t testing.TB, candidates []Candidate, options HNSWRaBitQBui
 		dimension = len(candidates[0].Vector)
 	}
 	builder, err := NewHNSWRaBitQBuilder(dimension, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, candidate := range candidates {
-		if err := builder.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.Add(context.Background(), candidate.Key, candidate.Vector)
+			require.NoError(t, err)
 		}
 	}
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return index
 }

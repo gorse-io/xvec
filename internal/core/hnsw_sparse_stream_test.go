@@ -16,16 +16,15 @@ package core
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"sync"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSparseHNSWIncrementalMatchesOneShotBuild(t *testing.T) {
@@ -38,30 +37,34 @@ func TestSparseHNSWIncrementalMatchesOneShotBuild(t *testing.T) {
 
 	streamed := buildSparseHNSW(t, options, inputs[:120])
 	for _, input := range inputs[120:] {
-		if err := streamed.AddSparse(context.Background(), input.key, input.vector); err != nil {
-			t.Fatal(err)
+		{
+			err := streamed.AddSparse(context.Background(), input.key, input.vector)
+			require.NoError(t, err)
 		}
 	}
 	oneShot := buildSparseHNSW(t, options, inputs)
 	assertSameSparseHNSWIndex(t, streamed, oneShot)
 
 	path := filepath.Join(t.TempDir(), "streamed.shnsw")
-	if err := streamed.Save(context.Background(), path); err != nil {
-		t.Fatal(err)
+	{
+		err := streamed.Save(context.Background(), path)
+		require.NoError(t, err)
 	}
+
 	reopened, err := OpenSparseHNSWIndex(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertSameSparseHNSWIndex(t, reopened, oneShot)
 
 	next := sparseHNSWInput{key: 999999, vector: SparseVector{
 		Indices: []uint32{7, 111, 307},
 		Values:  []float32{3.25, 7.5, 1.125},
 	}}
-	if err := reopened.AddSparse(context.Background(), next.key, next.vector); err != nil {
-		t.Fatal(err)
+	{
+		err := reopened.AddSparse(context.Background(), next.key, next.vector)
+		require.NoError(t, err)
 	}
+
 	all := append(slices.Clone(inputs), next)
 	want := buildSparseHNSW(t, options, all)
 	assertSameSparseHNSWIndex(t, reopened, want)
@@ -74,91 +77,101 @@ func TestSparseHNSWIncrementalEmptyAndOwnership(t *testing.T) {
 	options.EFConstruction = 16
 	options.Seed = 7
 	builder, err := NewSparseHNSWBuilder(options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	vector := SparseVector{Indices: []uint32{1, 9}, Values: []float32{1, 2}}
-	if err := index.AddSparse(context.Background(), 17, vector); err != nil {
-		t.Fatal(err)
+	{
+		err := index.AddSparse(context.Background(), 17, vector)
+		require.NoError(t, err)
 	}
+
 	vector.Indices[0] = 8
 	vector.Values[0] = -100
 	stored, found := index.SparseVector(17)
-	if !found || !reflect.DeepEqual(stored, SparseVector{Indices: []uint32{1, 9}, Values: []float32{1, 2}}) {
-		t.Fatalf("stored incremental sparse vector = %#v, %v", stored, found)
-	}
+	require.True(t, found)
+	require.Equal(t, SparseVector{Indices: []uint32{1, 9}, Values: []float32{1, 2}}, stored)
+
 	entry, found := index.EntryPoint()
-	if !found || entry != 17 || index.Len() != 1 {
-		t.Fatalf("single streamed graph = entry %d/%v, len %d", entry, found, index.Len())
-	}
+	require.True(t, found)
+	require.True(t, entry == 17)
+	require.True(t, index.Len() == 1)
+
 	results, err := index.SearchSparse(context.Background(), stored, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(results, []Result{{Key: 17, Score: 5}}) {
-		t.Fatalf("single streamed sparse search = %#v", results)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 17, Score: 5}}, results)
 }
 
 func TestSparseHNSWIncrementalFailuresAreAtomic(t *testing.T) {
 	t.Parallel()
 	index := persistedSparseHNSWIndex(t, 300)
 	before, err := encodeSparseHNSWIndex(context.Background(), index)
-	if err != nil {
-		t.Fatal(err)
-	}
-	valid := SparseVector{Indices: []uint32{1, 101, 201}, Values: []float32{1, 2, 3}}
+	require.NoError(t, err)
 
-	if err := index.AddSparse(nil, 100000, valid); err == nil {
-		t.Fatal("nil context succeeded")
+	valid := SparseVector{Indices: []uint32{1, 101, 201}, Values: []float32{1, 2, 3}}
+	{
+		err := index.AddSparse(nil, 100000, valid)
+		require.Error(t, err,
+			"nil context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := index.AddSparse(canceled, 100000, valid); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pre-canceled error = %v", err)
+	{
+		err := index.AddSparse(canceled, 100000, valid)
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if err := index.AddSparse(context.Background(), 100000, SparseVector{Indices: []uint32{1}, Values: nil}); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("dimension error = %v", err)
+	{
+		err := index.AddSparse(context.Background(), 100000, SparseVector{Indices: []uint32{1}, Values: nil})
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
-	if err := index.AddSparse(context.Background(), 100000, SparseVector{Indices: []uint32{2, 1}, Values: []float32{1, 2}}); !errors.Is(err, ailego.ErrInvalidSparseOrder) {
-		t.Fatalf("order error = %v", err)
+	{
+		err := index.AddSparse(context.Background(), 100000, SparseVector{Indices: []uint32{2, 1}, Values: []float32{1, 2}})
+		require.ErrorIs(t, err, ailego.ErrInvalidSparseOrder)
 	}
-	if err := index.AddSparse(context.Background(), 100000, SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.NaN())}}); !errors.Is(err, ailego.ErrNonFiniteVector) {
-		t.Fatalf("finite error = %v", err)
+	{
+		err := index.AddSparse(context.Background(), 100000, SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.NaN())}})
+		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
 	}
+
 	firstKey := sparseHNSWBuildInputs(1)[0].key
-	if err := index.AddSparse(context.Background(), firstKey, valid); !errors.Is(err, ErrDuplicateKey) {
-		t.Fatalf("duplicate error = %v", err)
+	{
+		err := index.AddSparse(context.Background(), firstKey, valid)
+		require.ErrorIs(t, err, ErrDuplicateKey)
 	}
 
 	midClone := newCancelAfterChecks(5)
-	if err := index.AddSparse(midClone, 100000, valid); !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-clone cancellation error = %v", err)
+	{
+		err := index.AddSparse(midClone, 100000, valid)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	midTraversal := newCancelAfterChecks(7)
-	if err := index.AddSparse(midTraversal, 100000, valid); !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-traversal cancellation error = %v", err)
+	{
+		err := index.AddSparse(midTraversal, 100000, valid)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	after, err := encodeSparseHNSWIndex(context.Background(), index)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(after, before) {
-		t.Fatal("failed incremental sparse add changed graph generation")
-	}
+	require.NoError(t, err)
+	require.True(t, slices.Equal(after, before),
+		"failed incremental sparse add changed graph generation")
+
 	var nilIndex *SparseHNSWIndex
-	if err := nilIndex.AddSparse(context.Background(), 1, SparseVector{}); err == nil {
-		t.Fatal("nil index add succeeded")
+	{
+		err := nilIndex.AddSparse(context.Background(), 1, SparseVector{})
+		require.Error(t, err,
+			"nil index add succeeded")
 	}
 
 	next := sparseHNSWInput{key: 100000, vector: valid}
-	if err := index.AddSparse(context.Background(), next.key, next.vector); err != nil {
-		t.Fatal(err)
+	{
+		err := index.AddSparse(context.Background(), next.key, next.vector)
+		require.NoError(t, err)
 	}
+
 	inputs := append(sparseHNSWBuildInputs(300), next)
 	want := buildSparseHNSW(t, index.options, inputs)
 	assertSameSparseHNSWIndex(t, index, want)
@@ -170,13 +183,10 @@ func TestSparseHNSWConcurrentStreamingSearchAndSave(t *testing.T) {
 	options.EFConstruction = 30
 	options.Seed = 123
 	builder, err := NewSparseHNSWBuilder(options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	dir := t.TempDir()
 	errCh := make(chan error, 32)
@@ -250,18 +260,18 @@ func TestSparseHNSWConcurrentStreamingSearchAndSave(t *testing.T) {
 	readers.Wait()
 	close(errCh)
 	for err := range errCh {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
-	if index.Len() != 200 {
-		t.Fatalf("final length = %d, want 200", index.Len())
-	}
+	require.True(t, index.Len() == 200)
+
 	path := filepath.Join(dir, "final.shnsw")
-	if err := index.Save(context.Background(), path); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Save(context.Background(), path)
+		require.NoError(t, err)
 	}
+
 	reopened, err := OpenSparseHNSWIndex(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertSameSparseHNSWIndex(t, reopened, index)
 }

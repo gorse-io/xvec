@@ -22,10 +22,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type stemmerFilterFixture struct {
@@ -49,109 +51,99 @@ type stemmerFilterFixture struct {
 func loadStemmerFilterFixture(t testing.TB) stemmerFilterFixture {
 	t.Helper()
 	data, err := os.ReadFile("testdata/stemmer_filter_58375ff.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var fixture stemmerFilterFixture
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(data, &fixture)
+		require.NoError(t, err)
 	}
+
 	return fixture
 }
 
 func TestStemmerTokenFilterBaselineFixture(t *testing.T) {
 	fixture := loadStemmerFilterFixture(t)
-	if fixture.BaselineCommit != "58375ff7b8fdd0d6fc7d234e47567b179777883b" ||
-		fixture.SourceSHA256 != "8958f54f93148d162b4c4a2efbe36c5e6e5a22bd3bb24ec15a7568397ac498ec" ||
-		fixture.HeaderSHA256 != "db25ee73a8c6b92a5367edde11ce9667b398486e58b12a0e7719c73b186765e7" ||
-		fixture.SnowballVersion != "3.1.1" ||
-		fixture.SnowballCommit != "cd195b51e948a902a4312f023f4a14392516a543" ||
-		fixture.ModulesSHA256 != "a4f1a2fde0231ca137b2926de4da1a5c4e532c5a6e51248699e6e97af8170ad7" ||
-		fixture.AlgorithmsSHA256 != "282b20fb1b8b31743af035ac1e13c24ebf5f42954a46b09686044ca547c6ae1f" ||
-		fixture.AliasesSHA256 != "f682fb56f2f7c4a6b7952967057c07c0d63a4ac0f57fcdbb414c59a6acefe7b1" ||
-		fixture.AlgorithmCount != 36 || fixture.AliasCount != 115 {
-		t.Fatalf("unexpected fixture identity: %#v", fixture)
-	}
+	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
+	require.True(t, fixture.SourceSHA256 == "8958f54f93148d162b4c4a2efbe36c5e6e5a22bd3bb24ec15a7568397ac498ec")
+	require.True(t, fixture.HeaderSHA256 == "db25ee73a8c6b92a5367edde11ce9667b398486e58b12a0e7719c73b186765e7")
+	require.True(t, fixture.SnowballVersion == "3.1.1")
+	require.True(t, fixture.SnowballCommit == "cd195b51e948a902a4312f023f4a14392516a543")
+	require.True(t, fixture.ModulesSHA256 == "a4f1a2fde0231ca137b2926de4da1a5c4e532c5a6e51248699e6e97af8170ad7")
+	require.True(t, fixture.AlgorithmsSHA256 == "282b20fb1b8b31743af035ac1e13c24ebf5f42954a46b09686044ca547c6ae1f")
+	require.True(t, fixture.AliasesSHA256 == "f682fb56f2f7c4a6b7952967057c07c0d63a4ac0f57fcdbb414c59a6acefe7b1")
+	require.True(t, fixture.AlgorithmCount == 36)
+	require.True(t, fixture.AliasCount == 115)
+
 	for index, test := range fixture.Cases {
 		t.Run(fmt.Sprintf("%s/%d", test.Language, index), func(t *testing.T) {
 			input, err := hex.DecodeString(test.InputHex)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			want, err := hex.DecodeString(test.OutputHex)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			filter, err := NewStemmerTokenFilter(StemmerTokenFilterOptions{Language: test.Language})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			tokens := []Token{{Text: string(input), Offset: uint32(index + 7), Position: uint32(index + 11)}}
 			got, err := filter.Filter(context.Background(), tokens)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			expected := []Token{{Text: string(want), Offset: tokens[0].Offset, Position: tokens[0].Position}}
-			if !reflect.DeepEqual(got, expected) {
-				t.Fatalf("Filter(%x) = %#v, want %#v", input, got, expected)
-			}
-			if tokens[0].Text != string(input) {
-				t.Fatal("filter modified its input")
-			}
+			require.Equal(t, expected, got)
+			require.Equal(t, string(input), tokens[0].Text,
+				"filter modified its input")
 		})
 	}
 }
 
 func TestStemmerTokenFilterOptions(t *testing.T) {
 	defaults := DefaultStemmerTokenFilterOptions()
-	if defaults.Language != "english" || defaults.Validate() != nil {
-		t.Fatalf("defaults = %#v", defaults)
-	}
+	require.True(t, defaults.Language == "english")
+	require.NoError(t, defaults.Validate())
+
 	for _, options := range []StemmerTokenFilterOptions{{}, {Language: "english"}, {Language: "en"}, {Language: "porter"}} {
 		filter, err := NewStemmerTokenFilter(options)
-		if err != nil {
-			t.Fatalf("NewStemmerTokenFilter(%#v): %v", options, err)
-		}
-		if filter.Name() != "stemmer" {
-			t.Fatalf("Name() = %q", filter.Name())
-		}
+		require.NoError(t, err)
+		require.True(t, filter.Name() == "stemmer")
+
 		wantLanguage := options.Language
 		if wantLanguage == "" {
 			wantLanguage = "english"
 		}
-		if filter.Language() != wantLanguage {
-			t.Fatalf("Language() = %q, want %q", filter.Language(), wantLanguage)
-		}
+		require.Equal(t, wantLanguage, filter.Language())
 	}
 	for _, language := range []string{"English", "EN", "nonexistent_lang", " english", "english "} {
 		options := StemmerTokenFilterOptions{Language: language}
-		if err := options.Validate(); !errors.Is(err, ErrInvalidStemmerOptions) {
-			t.Fatalf("Validate(%q) = %v", language, err)
+		{
+			err := options.Validate()
+			require.ErrorIs(t, err, ErrInvalidStemmerOptions)
 		}
-		if filter, err := NewStemmerTokenFilter(options); filter != nil || !errors.Is(err, ErrInvalidStemmerOptions) {
-			t.Fatalf("NewStemmerTokenFilter(%q) = %#v, %v", language, filter, err)
+		{
+			filter, err := NewStemmerTokenFilter(options)
+			require.Nil(t, filter)
+			require.ErrorIs(t, err, ErrInvalidStemmerOptions)
 		}
 	}
 }
 
 func TestSupportedStemmerLanguages(t *testing.T) {
 	languages := SupportedStemmerLanguages()
-	if len(languages) != 115 {
-		t.Fatalf("language count = %d", len(languages))
-	}
+	require.Len(t, languages, 115)
+
 	hash := sha256.Sum256([]byte(strings.Join(languages, "\n") + "\n"))
-	if got := fmt.Sprintf("%x", hash); got != "f682fb56f2f7c4a6b7952967057c07c0d63a4ac0f57fcdbb414c59a6acefe7b1" {
-		t.Fatalf("language SHA-256 = %s", got)
+	{
+		got := fmt.Sprintf("%x", hash)
+		require.True(t, got == "f682fb56f2f7c4a6b7952967057c07c0d63a4ac0f57fcdbb414c59a6acefe7b1")
 	}
+
 	for index := 1; index < len(languages); index++ {
-		if languages[index-1] >= languages[index] {
-			t.Fatalf("languages are not strictly sorted at %d", index)
-		}
+		require.True(t, languages[index-1] < languages[index])
 	}
 	languages[0] = "modified"
-	if SupportedStemmerLanguages()[0] != "ar" {
-		t.Fatal("caller mutated language registry")
-	}
+	require.True(t, SupportedStemmerLanguages()[0] == "ar",
+		"caller mutated language registry")
 }
 
 func TestStemmerTokenFilterAliases(t *testing.T) {
@@ -159,13 +151,11 @@ func TestStemmerTokenFilterAliases(t *testing.T) {
 	caseByLanguage := make(map[string]struct{ input, output string }, fixture.AlgorithmCount)
 	for _, test := range fixture.Cases[:fixture.AlgorithmCount] {
 		input, err := hex.DecodeString(test.InputHex)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		output, err := hex.DecodeString(test.OutputHex)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		caseByLanguage[test.Language] = struct{ input, output string }{string(input), string(output)}
 	}
 	aliases := map[string][]string{
@@ -209,34 +199,27 @@ func TestStemmerTokenFilterAliases(t *testing.T) {
 	seen := make(map[string]struct{}, fixture.AliasCount)
 	for canonical, names := range aliases {
 		test, found := caseByLanguage[canonical]
-		if !found {
-			t.Fatalf("no fixture for %q", canonical)
-		}
+		require.True(t, found)
+
 		for _, name := range names {
 			seen[name] = struct{}{}
 			filter, err := NewStemmerTokenFilter(StemmerTokenFilterOptions{Language: name})
-			if err != nil {
-				t.Fatalf("alias %q: %v", name, err)
-			}
+			require.NoError(t, err)
+
 			got, err := filter.Filter(context.Background(), []Token{{Text: test.input}})
-			if err != nil {
-				t.Fatalf("alias %q: %v", name, err)
-			}
-			if len(got) != 1 || got[0].Text != test.output {
-				t.Fatalf("alias %q produced %x, want %x", name, got[0].Text, test.output)
-			}
+			require.NoError(t, err)
+			require.Len(t, got, 1)
+			require.Equal(t, test.output, got[0].Text)
 		}
 	}
-	if len(aliases) != fixture.AlgorithmCount || len(seen) != fixture.AliasCount {
-		t.Fatalf("covered %d algorithms and %d aliases", len(aliases), len(seen))
-	}
+	require.Len(t, aliases, fixture.AlgorithmCount)
+	require.Len(t, seen, fixture.AliasCount)
 }
 
 func TestStemmerTokenFilterBaselineBehavior(t *testing.T) {
 	filter, err := NewStemmerTokenFilter(StemmerTokenFilterOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	input := []Token{
 		{Text: "", Offset: 1, Position: 2},
 		{Text: "running", Offset: 3, Position: 4},
@@ -245,9 +228,8 @@ func TestStemmerTokenFilterBaselineBehavior(t *testing.T) {
 		{Text: "connection", Offset: 23, Position: 7},
 	}
 	got, err := filter.Filter(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := []Token{
 		{Text: "", Offset: 1, Position: 2},
 		{Text: "run", Offset: 3, Position: 4},
@@ -255,69 +237,66 @@ func TestStemmerTokenFilterBaselineBehavior(t *testing.T) {
 		{Text: "easili", Offset: 16, Position: 6},
 		{Text: "connect", Offset: 23, Position: 7},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("tokens = %#v, want %#v", got, want)
-	}
+	require.Equal(t, want, got)
+
 	got[1].Offset = 99
-	if input[1] != (Token{Text: "running", Offset: 3, Position: 4}) {
-		t.Fatalf("input changed through result alias: %#v", input)
-	}
+	require.Equal(t, Token{Text: "running", Offset: 3, Position: 4}, input[1])
+
 	for _, empty := range [][]Token{nil, {}} {
 		result, err := filter.Filter(context.Background(), empty)
-		if err != nil || result == nil || len(result) != 0 {
-			t.Fatalf("Filter(%#v) = %#v, %v", empty, result, err)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Len(t, result, 0)
 	}
 }
 
 func TestStemmerTokenFilterLowercaseChain(t *testing.T) {
 	lowercase := NewLowercaseTokenFilter()
 	stemmer, err := NewStemmerTokenFilter(StemmerTokenFilterOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	tokens, err := lowercase.Filter(context.Background(), []Token{{Text: "Running"}, {Text: "Cats"}, {Text: "EASILY"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	tokens, err = stemmer.Filter(context.Background(), tokens)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []Token{{Text: "run"}, {Text: "cat"}, {Text: "easili"}}; !reflect.DeepEqual(tokens, want) {
-		t.Fatalf("tokens = %#v, want %#v", tokens, want)
+	require.NoError(t, err)
+	{
+		want := []Token{{Text: "run"}, {Text: "cat"}, {Text: "easili"}}
+		require.Equal(t, want, tokens)
 	}
 }
 
 func TestStemmerTokenFilterContextCancellation(t *testing.T) {
 	filter, err := NewStemmerTokenFilter(StemmerTokenFilterOptions{})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := filter.Filter(nil, nil)
+		require.Error(t, err,
+			"nil context succeeded")
 	}
-	if _, err := filter.Filter(nil, nil); err == nil {
-		t.Fatal("nil context succeeded")
-	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := filter.Filter(canceled, []Token{{Text: "running"}}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pre-canceled error = %v", err)
+	{
+		_, err := filter.Filter(canceled, []Token{{Text: "running"}})
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	midway := newCancelAfterChecks(4)
-	if _, err := filter.Filter(midway, []Token{{Text: strings.Repeat("running", 16<<10)}}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-filter error = %v", err)
+	{
+		_, err := filter.Filter(midway, []Token{{Text: strings.Repeat("running", 16<<10)}})
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
 func TestStemmerTokenFilterConcurrentUse(t *testing.T) {
 	filter, err := NewStemmerTokenFilter(StemmerTokenFilterOptions{Language: "english"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	input := []Token{{Text: "running", Offset: 7, Position: 9}, {Text: "connections", Offset: 15, Position: 10}}
 	want, err := filter.Filter(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var wait sync.WaitGroup
 	errorsChannel := make(chan error, 32)
 	for worker := 0; worker < 32; worker++ {
@@ -330,7 +309,7 @@ func TestStemmerTokenFilterConcurrentUse(t *testing.T) {
 					errorsChannel <- err
 					return
 				}
-				if !reflect.DeepEqual(got, want) {
+				if !assert.Equal(t, want, got) {
 					errorsChannel <- errors.New("concurrent result differs")
 					return
 				}
@@ -340,7 +319,7 @@ func TestStemmerTokenFilterConcurrentUse(t *testing.T) {
 	wait.Wait()
 	close(errorsChannel)
 	for err := range errorsChannel {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 }
 
@@ -349,26 +328,25 @@ func FuzzStemmerTokenFilter(f *testing.F) {
 		f.Add(seed)
 	}
 	filter, err := NewStemmerTokenFilter(StemmerTokenFilterOptions{})
-	if err != nil {
-		f.Fatal(err)
-	}
+	require.NoError(f, err)
+
 	f.Fuzz(func(t *testing.T, input string) {
 		tokens := []Token{{Text: input, Offset: 123, Position: 456}}
 		got, err := filter.Filter(context.Background(), tokens)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(got) != 1 || got[0].Offset != 123 || got[0].Position != 456 || tokens[0].Text != input {
-			t.Fatalf("metadata or input changed: %#v, %#v", tokens, got)
-		}
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		require.True(t, got[0].Offset == 123)
+		require.True(t, got[0].Position == 456)
+		require.Equal(t, input, tokens[0].Text)
 	})
 }
 
 func BenchmarkStemmerTokenFilter(b *testing.B) {
 	filter, err := NewStemmerTokenFilter(StemmerTokenFilterOptions{})
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	tokens := make([]Token, 1024)
 	for index := range tokens {
 		tokens[index] = Token{Text: "running", Offset: uint32(index * 8), Position: uint32(index)}
@@ -376,8 +354,11 @@ func BenchmarkStemmerTokenFilter(b *testing.B) {
 	b.SetBytes(int64(len(tokens) * len("running")))
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := filter.Filter(context.Background(), tokens); err != nil {
-			b.Fatal(err)
+		{
+			_, err := filter.Filter(context.Background(), tokens)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }

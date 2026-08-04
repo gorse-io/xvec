@@ -16,21 +16,22 @@ package core
 
 import (
 	"context"
-	"errors"
 	"math"
-	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestVamanaBuildOptionsGraphDeterminismAndOwnership(t *testing.T) {
 	defaults := DefaultVamanaBuildOptions(MetricCosine)
-	if defaults.MaxDegree != 64 || defaults.SearchListSize != 100 || defaults.Alpha != 1.2 ||
-		defaults.MaxOcclusionSize != 750 || defaults.Metric != MetricCosine {
-		t.Fatalf("defaults = %#v", defaults)
-	}
+	require.True(t, defaults.MaxDegree == 64)
+	require.True(t, defaults.SearchListSize == 100)
+	require.True(t, defaults.Alpha == 1.2)
+	require.True(t, defaults.MaxOcclusionSize == 750)
+	require.Equal(t, MetricCosine, defaults.Metric)
+
 	valid := DefaultVamanaBuildOptions(MetricL2)
 	invalid := []VamanaBuildOptions{
 		{},
@@ -41,12 +42,14 @@ func TestVamanaBuildOptionsGraphDeterminismAndOwnership(t *testing.T) {
 		func() VamanaBuildOptions { value := valid; value.MaxOcclusionSize = 0; return value }(),
 	}
 	for _, options := range invalid {
-		if _, err := NewVamanaBuilder(3, options); !errors.Is(err, ErrInvalidVamanaOptions) {
-			t.Fatalf("invalid options %#v: %v", options, err)
+		{
+			_, err := NewVamanaBuilder(3, options)
+			require.ErrorIs(t, err, ErrInvalidVamanaOptions)
 		}
 	}
-	if _, err := NewVamanaBuilder(0, valid); !errors.Is(err, ErrInvalidDimension) {
-		t.Fatalf("dimension error = %v", err)
+	{
+		_, err := NewVamanaBuilder(0, valid)
+		require.ErrorIs(t, err, ErrInvalidDimension)
 	}
 
 	inputs := hnswBuildInputs(160)
@@ -59,34 +62,44 @@ func TestVamanaBuildOptionsGraphDeterminismAndOwnership(t *testing.T) {
 		return buildVamana(t, inputs, options)
 	}
 	first, second := build(false), build(false)
-	if !reflect.DeepEqual(first.neighbors, second.neighbors) || first.entryPoint != second.entryPoint ||
-		!reflect.DeepEqual(first.neighborDistances, second.neighborDistances) {
-		t.Fatal("Vamana build is not deterministic")
-	}
-	if first.Dimension() != 3 || first.Metric() != MetricL2 || first.Len() != len(inputs) || first.BuildOptions().MaxDegree != 8 {
-		t.Fatal("Vamana metadata differs")
-	}
+	require.Equal(t, second.neighbors, first.neighbors,
+
+		"Vamana build is not deterministic")
+	require.Equal(t, second.entryPoint, first.entryPoint,
+
+		"Vamana build is not deterministic")
+	require.Equal(t, second.neighborDistances, first.neighborDistances,
+		"Vamana build is not deterministic")
+	require.True(t, first.Dimension() == 3,
+		"Vamana metadata differs")
+	require.Equal(t, MetricL2, first.Metric(),
+		"Vamana metadata differs")
+	require.Len(t, inputs, first.Len(),
+		"Vamana metadata differs")
+	require.True(t, first.BuildOptions().MaxDegree == 8,
+		"Vamana metadata differs")
+
 	entry, found := first.EntryPoint()
-	if !found || entry != first.keys[first.entryPoint] {
-		t.Fatal("Vamana entry point missing")
-	}
+	require.True(t, found,
+		"Vamana entry point missing")
+	require.Equal(t, first.keys[first.entryPoint], entry,
+		"Vamana entry point missing")
+
 	assertVamanaGraphInvariants(t, first)
 	for _, adjacent := range build(true).neighbors {
-		if len(adjacent) == 0 {
-			t.Fatal("saturated graph retained an empty neighbor list")
-		}
+		require.False(t, len(adjacent) == 0,
+			"saturated graph retained an empty neighbor list")
 	}
 	original, _ := first.Vector(inputs[0].Key)
 	inputs[0].Vector[0]++
 	again, _ := first.Vector(inputs[0].Key)
-	if original[0] != again[0] {
-		t.Fatal("builder did not own input vector")
-	}
+	require.Equal(t, again[0], original[0],
+		"builder did not own input vector")
+
 	original[0]++
 	again, _ = first.Vector(inputs[0].Key)
-	if original[0] == again[0] {
-		t.Fatal("Vector exposed mutable storage")
-	}
+	require.NotEqual(t, again[0], original[0],
+		"Vector exposed mutable storage")
 }
 
 func TestVamanaSearchMetricsFilterRadiusAndRecall(t *testing.T) {
@@ -103,18 +116,13 @@ func TestVamanaSearchMetricsFilterRadiusAndRecall(t *testing.T) {
 			EFSearch:      80,
 		}
 		got, err := index.SearchVamana(context.Background(), query, search)
-		if err != nil {
-			t.Fatalf("metric %d: %v", metric, err)
-		}
+		require.NoError(t, err)
+
 		want, err := topKCandidatesWithOptions(context.Background(), metric, query, search.SearchOptions, len(inputs), func(position int) Candidate {
 			return inputs[position]
 		}, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("small metric %d search differs: %#v vs %#v", metric, got, want)
-		}
+		require.NoError(t, err)
+		require.Equal(t, want, got)
 	}
 	inputs := hnswBuildInputs(80)
 	options := DefaultVamanaBuildOptions(MetricL2)
@@ -125,12 +133,8 @@ func TestVamanaSearchMetricsFilterRadiusAndRecall(t *testing.T) {
 		SearchOptions: SearchOptions{TopK: 5, Radius: .01, Filter: func(key uint64) bool { return key == target.Key }},
 		EFSearch:      40,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(bounded, []Result{{Key: target.Key, Score: 0}}) {
-		t.Fatalf("filtered radius result = %#v", bounded)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: target.Key, Score: 0}}, bounded)
 
 	inputs = hnswRaBitQCandidates(DefaultVamanaBruteForceThreshold+120, 64)
 	for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
@@ -143,30 +147,25 @@ func TestVamanaSearchMetricsFilterRadiusAndRecall(t *testing.T) {
 		for queryIndex := 0; queryIndex < 10; queryIndex++ {
 			query := inputs[(queryIndex*79+17)%len(inputs)].Vector
 			truth, err := TopK(context.Background(), metric, query, inputs, 10)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			got, err := index.SearchVamana(context.Background(), query, VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 10}, EFSearch: 100})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			if metric == MetricL2 && queryIndex == 0 {
 				prefetched, err := index.SearchVamana(context.Background(), query, VamanaSearchOptions{
 					SearchOptions: SearchOptions{TopK: 10}, EFSearch: 100,
 					PrefetchOffset: math.MaxUint32, PrefetchLines: math.MaxUint32,
 				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !reflect.DeepEqual(prefetched, got) {
-					t.Fatalf("prefetch controls changed results: %#v vs %#v", prefetched, got)
-				}
+				require.NoError(t, err)
+				require.Equal(t, got, prefetched)
 			}
 			matches += resultOverlap(got, truth)
 			total += len(truth)
 		}
-		if recall := float64(matches) / float64(total); recall < .80 {
-			t.Fatalf("metric %d recall@10 = %.3f", metric, recall)
+		{
+			recall := float64(matches) / float64(total)
+			require.True(t, recall >= .80)
 		}
 	}
 }
@@ -180,20 +179,13 @@ func TestVamanaRobustPrunePinnedGeometry(t *testing.T) {
 	}
 	candidates := []vamanaDistanceNode{{position: 1, distance: 1}, {position: 2, distance: 1.21}, {position: 3, distance: 4}}
 	selected, err := index.robustPrune(context.Background(), 0, candidates)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(selected, []vamanaDistanceNode{{position: 1, distance: 1}, {position: 3, distance: 4}}) {
-		t.Fatalf("pruned geometry = %#v", selected)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []vamanaDistanceNode{{position: 1, distance: 1}, {position: 3, distance: 4}}, selected)
+
 	index.options.SaturateGraph = true
 	selected, err = index.robustPrune(context.Background(), 0, candidates)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(selected, []vamanaDistanceNode{{position: 1, distance: 1}, {position: 3, distance: 4}, {position: 2, distance: 1.21}}) {
-		t.Fatalf("saturated geometry = %#v", selected)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []vamanaDistanceNode{{position: 1, distance: 1}, {position: 3, distance: 4}, {position: 2, distance: 1.21}}, selected)
 }
 
 func TestVamanaEmptyIncrementalAndValidation(t *testing.T) {
@@ -201,42 +193,49 @@ func TestVamanaEmptyIncrementalAndValidation(t *testing.T) {
 	options.MaxDegree = 4
 	options.SearchListSize = 12
 	builder, err := NewVamanaBuilder(3, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.True(t, index.Len() == 0,
+		"empty Vamana index is not empty")
+	{
+		_, found := index.EntryPoint()
+		require.False(t, found,
+			"empty Vamana index has entry point")
 	}
-	if index.Len() != 0 {
-		t.Fatal("empty Vamana index is not empty")
-	}
-	if _, found := index.EntryPoint(); found {
-		t.Fatal("empty Vamana index has entry point")
-	}
+
 	validSearch := VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 1}, EFSearch: 10}
-	if got, err := index.SearchVamana(context.Background(), []float32{0, 0, 0}, validSearch); err != nil || len(got) != 0 {
-		t.Fatalf("empty search = %#v, %v", got, err)
+	{
+		got, err := index.SearchVamana(context.Background(), []float32{0, 0, 0}, validSearch)
+		require.NoError(t, err)
+		require.Len(t, got, 0)
 	}
+
 	vector := []float32{1, 2, 3}
-	if err := index.Add(context.Background(), 7, vector); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Add(context.Background(), 7, vector)
+		require.NoError(t, err)
 	}
-	if index.Len() != 1 {
-		t.Fatalf("incremental length = %d", index.Len())
+	require.True(t, index.Len() == 1)
+	{
+		err := index.Add(context.Background(), 7, vector)
+		require.ErrorIs(t, err, ErrDuplicateKey)
 	}
-	if err := index.Add(context.Background(), 7, vector); !errors.Is(err, ErrDuplicateKey) {
-		t.Fatalf("duplicate error = %v", err)
+	{
+		err := index.Add(context.Background(), 8, vector[:2])
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
-	if err := index.Add(context.Background(), 8, vector[:2]); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("dimension error = %v", err)
+	{
+		_, err := index.SearchVamana(nil, vector, validSearch)
+		require.Error(t, err,
+			"nil search context succeeded")
 	}
-	if _, err := index.SearchVamana(nil, vector, validSearch); err == nil {
-		t.Fatal("nil search context succeeded")
-	}
+
 	validSearch.EFSearch = 0
-	if _, err := index.SearchVamana(context.Background(), vector, validSearch); !errors.Is(err, ErrInvalidVamanaEF) {
-		t.Fatalf("EF error = %v", err)
+	{
+		_, err := index.SearchVamana(context.Background(), vector, validSearch)
+		require.ErrorIs(t, err, ErrInvalidVamanaEF)
 	}
 }
 
@@ -247,35 +246,36 @@ func buildVamana(t testing.TB, inputs []Candidate, options VamanaBuildOptions) *
 		dimension = len(inputs[0].Vector)
 	}
 	builder, err := NewVamanaBuilder(dimension, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, input := range inputs {
-		if err := builder.Add(context.Background(), input.Key, input.Vector); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.Add(context.Background(), input.Key, input.Vector)
+			require.NoError(t, err)
 		}
 	}
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return index
 }
 
 func assertVamanaGraphInvariants(t testing.TB, index *VamanaIndex) {
 	t.Helper()
-	if err := validateVamanaIndex(context.Background(), index); err != nil {
-		t.Fatal(err)
+	{
+		err := validateVamanaIndex(context.Background(), index)
+		require.NoError(t, err)
 	}
+
 	for position, adjacent := range index.neighbors {
 		seen := make(map[int]struct{}, len(adjacent))
 		for _, neighbor := range adjacent {
-			if neighbor == position {
-				t.Fatalf("node %d has self-loop", position)
+			require.NotEqual(t, position, neighbor)
+			{
+				_, found := seen[neighbor]
+				require.False(t, found)
 			}
-			if _, found := seen[neighbor]; found {
-				t.Fatalf("node %d has duplicate neighbor %d", position, neighbor)
-			}
+
 			seen[neighbor] = struct{}{}
 		}
 	}

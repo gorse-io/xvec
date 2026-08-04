@@ -20,10 +20,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestV04DiskANNRecallAndReopenMatrix locks approximate quality and identical
@@ -38,13 +39,14 @@ func TestV04DiskANNRecallAndReopenMatrix(t *testing.T) {
 			options.CacheCapacity = 96
 			index := buildDiskANNIndex(t, candidates, options)
 			path := filepath.Join(t.TempDir(), "quality.diskann")
-			if err := index.Save(context.Background(), path); err != nil {
-				t.Fatal(err)
+			{
+				err := index.Save(context.Background(), path)
+				require.NoError(t, err)
 			}
+
 			reopened, err := OpenDiskANNIndex(context.Background(), path, 96, 4)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			defer reopened.Close()
 
 			matched := 0
@@ -53,30 +55,23 @@ func TestV04DiskANNRecallAndReopenMatrix(t *testing.T) {
 				truth, err := index.SearchDiskANN(context.Background(), query, DiskANNSearchOptions{
 					SearchOptions: SearchOptions{TopK: topK}, ListSize: count, Linear: true,
 				})
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				search := DiskANNSearchOptions{
 					SearchOptions: SearchOptions{TopK: topK}, ListSize: 160,
 				}
 				built, err := index.SearchDiskANN(context.Background(), query, search)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				opened, err := reopened.SearchDiskANN(context.Background(), query, search)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !reflect.DeepEqual(opened, built) {
-					t.Fatalf("query %d changed across reopen: %#v != %#v", queryIndex, opened, built)
-				}
+				require.NoError(t, err)
+				require.Equal(t, built, opened)
+
 				matched += resultOverlap(built, truth)
 			}
 			recall := float64(matched) / float64(queryCount*topK)
 			t.Logf("DiskANN recall@%d = %.3f", topK, recall)
-			if recall < .80 {
-				t.Fatalf("DiskANN recall@%d = %.3f, want >= .80", topK, recall)
-			}
+			require.True(t, recall >= .80)
 		})
 	}
 }
@@ -123,41 +118,37 @@ func TestV04DiskANNReadResourceBounds(t *testing.T) {
 	candidates := diskANNIndexCandidates(128, 16)
 	index := buildDiskANNIndex(t, candidates, options)
 	encoded, err := encodeDiskANNIndex(context.Background(), index)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, workers := range []int{3, 256} {
 		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
 			reader := &diskANNReadBudget{data: encoded}
 			opened, err := openDiskANNIndexReader(context.Background(), reader, int64(len(encoded)), 0, workers, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			defer opened.Close()
 			reader.enabled.Store(true)
 			results, err := opened.SearchDiskANN(context.Background(), candidates[57].Vector, DiskANNSearchOptions{
 				SearchOptions: SearchOptions{TopK: 10}, ListSize: len(candidates),
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(results) != 10 {
-				t.Fatalf("results = %d", len(results))
-			}
+			require.NoError(t, err)
+			require.Len(t, results, 10)
+
 			sectorsPerNode := opened.nodes.layout.SectorsPerNode()
 			batchNodes := opened.diskANNReadBatchSize()
-			if batchNodes*sectorsPerNode > MaxDiskANNReadSectors ||
-				(batchNodes+1)*sectorsPerNode <= MaxDiskANNReadSectors {
-				t.Fatalf("batch geometry = %d nodes * %d sectors", batchNodes, sectorsPerNode)
+			require.True(t, batchNodes*sectorsPerNode <= MaxDiskANNReadSectors)
+			require.True(t, (batchNodes+1)*sectorsPerNode > MaxDiskANNReadSectors)
+			{
+				got := reader.maxConcurrent.Load()
+				require.True(t, got <= int64(workers))
 			}
-			if got := reader.maxConcurrent.Load(); got > int64(workers) {
-				t.Fatalf("concurrent ReaderAt calls = %d, want <= %d", got, workers)
+			{
+				got, limit := reader.maxInFlight.Load(), int64(MaxDiskANNReadSectors*DiskANNSectorSize)
+				require.True(t, got <= limit)
 			}
-			if got, limit := reader.maxInFlight.Load(), int64(MaxDiskANNReadSectors*DiskANNSectorSize); got > limit {
-				t.Fatalf("in-flight bytes = %d, want <= %d", got, limit)
-			}
-			if got, limit := reader.maxRequest.Load(), int64(sectorsPerNode*DiskANNSectorSize); got > limit {
-				t.Fatalf("single read = %d, want <= %d", got, limit)
+			{
+				got, limit := reader.maxRequest.Load(), int64(sectorsPerNode*DiskANNSectorSize)
+				require.True(t, got <= limit)
 			}
 		})
 	}
@@ -170,16 +161,20 @@ func BenchmarkV04DenseSearchQuality(b *testing.B) {
 	query := candidates[731].Vector
 	truth, err := TopK(context.Background(), MetricL2, query, candidates, 10)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
 
 	flat, err := NewDenseFlatIndex(64, MetricL2)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	for _, candidate := range candidates {
-		if err := flat.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
-			b.Fatal(err)
+		{
+			err := flat.Add(context.Background(), candidate.Key, candidate.Vector)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 
@@ -188,32 +183,40 @@ func BenchmarkV04DenseSearchQuality(b *testing.B) {
 	rabitqOptions.Clusters, rabitqOptions.SampleCount = 8, 512
 	rabitqBuilder, err := NewHNSWRaBitQBuilder(64, rabitqOptions)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	for _, candidate := range candidates {
-		if err := rabitqBuilder.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
-			b.Fatal(err)
+		{
+			err := rabitqBuilder.Add(context.Background(), candidate.Key, candidate.Vector)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 	rabitq, err := rabitqBuilder.Build(context.Background())
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
 
 	vamanaOptions := DefaultVamanaBuildOptions(MetricL2)
 	vamanaOptions.MaxDegree, vamanaOptions.SearchListSize = 12, 96
 	vamanaBuilder, err := NewVamanaBuilder(64, vamanaOptions)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	for _, candidate := range candidates {
-		if err := vamanaBuilder.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
-			b.Fatal(err)
+		{
+			err := vamanaBuilder.Add(context.Background(), candidate.Key, candidate.Vector)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 	vamana, err := vamanaBuilder.Build(context.Background())
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
 
 	diskOptions := DefaultDiskANNBuildOptions(MetricL2)
@@ -222,12 +225,16 @@ func BenchmarkV04DenseSearchQuality(b *testing.B) {
 	disk := buildDiskANNIndex(b, candidates, diskOptions)
 	defer disk.Close()
 	path := filepath.Join(b.TempDir(), "quality.diskann")
-	if err := disk.Save(context.Background(), path); err != nil {
-		b.Fatal(err)
+	{
+		err := disk.Save(context.Background(), path)
+		if err != nil {
+			require.NoError(b, err)
+		}
 	}
+
 	info, err := os.Stat(path)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
 
 	benchmarks := []struct {
@@ -256,14 +263,18 @@ func BenchmarkV04DenseSearchQuality(b *testing.B) {
 		b.Run(benchmark.name, func(b *testing.B) {
 			got, err := benchmark.search()
 			if err != nil {
-				b.Fatal(err)
+				require.NoError(b, err)
 			}
+
 			recall := float64(resultOverlap(got, truth)) / float64(len(truth))
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
-				if _, err := benchmark.search(); err != nil {
-					b.Fatal(fmt.Errorf("search: %w", err))
+				{
+					_, err := benchmark.search()
+					if err != nil {
+						require.NoError(b, err)
+					}
 				}
 			}
 			b.ReportMetric(recall, "recall@10")
@@ -282,19 +293,26 @@ func BenchmarkV04DiskANNBuild(b *testing.B) {
 	for b.Loop() {
 		builder, err := NewDiskANNBuilder(32, options)
 		if err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
+
 		for _, candidate := range candidates {
-			if err := builder.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
-				b.Fatal(err)
+			{
+				err := builder.Add(context.Background(), candidate.Key, candidate.Vector)
+				if err != nil {
+					require.NoError(b, err)
+				}
 			}
 		}
 		index, err := builder.Build(context.Background())
 		if err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
-		if err := index.Close(); err != nil {
-			b.Fatal(err)
+		{
+			err := index.Close()
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }

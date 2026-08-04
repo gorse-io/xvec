@@ -16,14 +16,14 @@ package core
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var ftsQueryTestDocuments = []string{
@@ -69,15 +69,13 @@ func TestFTSQueryIteratorTermPhraseAndBoolean(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.query, func(t *testing.T) {
 			node, err := ParseFTSQuery(context.Background(), test.query, pipeline, FTSDefaultOperatorOR)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			iterator, err := NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := collectFTSQueryDocuments(t, iterator); !reflect.DeepEqual(got, test.want) {
-				t.Fatalf("documents = %#v, want %#v", got, test.want)
+			require.NoError(t, err)
+			{
+				got := collectFTSQueryDocuments(t, iterator)
+				require.Equal(t, test.want, got)
 			}
 		})
 	}
@@ -87,60 +85,55 @@ func TestFTSQueryIteratorAdvanceAndCost(t *testing.T) {
 	dictionary := buildFTSQueryTestDictionary(t)
 	pipeline := newFTSStandardTestPipeline(t)
 	node, err := ParseFTSQuery(context.Background(), "apple OR grape", pipeline, FTSDefaultOperatorOR)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	iterator, err := NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if iterator.Cost() != 6 || iterator.Valid() || iterator.DocumentID() != 0 {
-		t.Fatalf("initial iterator = cost %d valid %t doc %d", iterator.Cost(), iterator.Valid(), iterator.DocumentID())
-	}
-	if !iterator.Advance(context.Background(), 3) || iterator.DocumentID() != 3 {
-		t.Fatalf("Advance(3) = %t doc %d err %v", iterator.Valid(), iterator.DocumentID(), iterator.Err())
-	}
-	if !iterator.Advance(context.Background(), 3) || iterator.DocumentID() != 3 {
-		t.Fatal("Advance did not retain current match")
-	}
-	if !iterator.Next(context.Background()) || iterator.DocumentID() != 4 {
-		t.Fatalf("Next = doc %d err %v", iterator.DocumentID(), iterator.Err())
-	}
-	if !iterator.Advance(context.Background(), 7) || iterator.DocumentID() != 7 {
-		t.Fatalf("Advance(7) = doc %d err %v", iterator.DocumentID(), iterator.Err())
-	}
-	if iterator.Next(context.Background()) || iterator.Valid() || iterator.Err() != nil {
-		t.Fatalf("exhausted iterator = valid %t err %v", iterator.Valid(), iterator.Err())
-	}
-	if iterator.Advance(context.Background(), 0) {
-		t.Fatal("exhausted iterator restarted")
-	}
+	require.NoError(t, err)
+	require.True(t, iterator.Cost() == 6)
+	require.False(t, iterator.Valid())
+	require.True(t, iterator.DocumentID() == 0)
+	require.True(t, iterator.Advance(context.Background(), 3))
+	require.True(t, iterator.DocumentID() == 3)
+	require.True(t, iterator.Advance(context.Background(), 3),
+		"Advance did not retain current match")
+	require.True(t, iterator.DocumentID() == 3,
+		"Advance did not retain current match")
+	require.True(t, iterator.Next(context.Background()))
+	require.True(t, iterator.DocumentID() == 4)
+	require.True(t, iterator.Advance(context.Background(), 7))
+	require.True(t, iterator.DocumentID() == 7)
+	require.False(t, iterator.Next(context.Background()))
+	require.False(t, iterator.Valid())
+	require.NoError(t, iterator.Err())
+	require.False(t, iterator.Advance(context.Background(), 0),
+		"exhausted iterator restarted")
 }
 
 func TestFTSQueryIteratorDeletionSnapshot(t *testing.T) {
 	dictionary := buildFTSQueryTestDictionary(t)
 	pipeline := newFTSStandardTestPipeline(t)
 	node, err := ParseFTSQuery(context.Background(), `"quick brown"`, pipeline, FTSDefaultOperatorOR)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	deleted := ailego.NewBitmap(uint64(len(ftsQueryTestDocuments)))
 	deleted.Set(0)
 	deleted.Set(6)
 	iterator, err := NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{DeletedDocuments: deleted})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	deleted.Clear(0)
 	deleted.Set(2)
-	if got, want := collectFTSQueryDocuments(t, iterator), []uint32{2, 3, 7}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("snapshot documents = %#v, want %#v", got, want)
+	{
+		got, want := collectFTSQueryDocuments(t, iterator), []uint32{2, 3, 7}
+		require.Equal(t, want, got)
 	}
 
 	invalid := ailego.NewBitmap(0)
 	invalid.Set(uint64(len(ftsQueryTestDocuments)))
-	if got, err := NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{DeletedDocuments: invalid}); got != nil || !errors.Is(err, ErrInvalidFTSQueryExecution) {
-		t.Fatalf("invalid deletion = %#v, %v", got, err)
+	{
+		got, err := NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{DeletedDocuments: invalid})
+		require.Nil(t, got)
+		require.ErrorIs(t, err, ErrInvalidFTSQueryExecution)
 	}
 }
 
@@ -148,82 +141,80 @@ func TestFTSQueryIteratorInvalidAndCancellation(t *testing.T) {
 	dictionary := buildFTSQueryTestDictionary(t)
 	pipeline := newFTSStandardTestPipeline(t)
 	node, err := ParseFTSQuery(context.Background(), "apple", pipeline, FTSDefaultOperatorOR)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		iterator, err := NewFTSQueryIterator(nil, dictionary, node, FTSQueryExecutionOptions{})
+		require.Nil(t, iterator)
+		require.ErrorIs(t, err, ErrInvalidFTSQueryExecution)
 	}
-	if iterator, err := NewFTSQueryIterator(nil, dictionary, node, FTSQueryExecutionOptions{}); iterator != nil || !errors.Is(err, ErrInvalidFTSQueryExecution) {
-		t.Fatalf("nil context = %#v, %v", iterator, err)
+	{
+		iterator, err := NewFTSQueryIterator(context.Background(), nil, node, FTSQueryExecutionOptions{})
+		require.Nil(t, iterator)
+		require.ErrorIs(t, err, ErrInvalidFTSQueryExecution)
 	}
-	if iterator, err := NewFTSQueryIterator(context.Background(), nil, node, FTSQueryExecutionOptions{}); iterator != nil || !errors.Is(err, ErrInvalidFTSQueryExecution) {
-		t.Fatalf("nil dictionary = %#v, %v", iterator, err)
+	{
+		iterator, err := NewFTSQueryIterator(context.Background(), dictionary, nil, FTSQueryExecutionOptions{})
+		require.Nil(t, iterator)
+		require.ErrorIs(t, err, ErrInvalidFTSQueryAST)
 	}
-	if iterator, err := NewFTSQueryIterator(context.Background(), dictionary, nil, FTSQueryExecutionOptions{}); iterator != nil || !errors.Is(err, ErrInvalidFTSQueryAST) {
-		t.Fatalf("nil AST = %#v, %v", iterator, err)
-	}
-	if (*FTSQueryIterator)(nil).Next(context.Background()) || (*FTSQueryIterator)(nil).Advance(context.Background(), 0) || !errors.Is((*FTSQueryIterator)(nil).Err(), ErrInvalidFTSQueryExecution) {
-		t.Fatal("nil iterator behavior differs")
-	}
+	require.False(t, (*FTSQueryIterator)(nil).Next(context.Background()),
+		"nil iterator behavior differs")
+	require.False(t, (*FTSQueryIterator)(nil).Advance(context.Background(), 0),
+		"nil iterator behavior differs")
+	require.ErrorIs(t, (*FTSQueryIterator)(nil).Err(), ErrInvalidFTSQueryExecution,
+		"nil iterator behavior differs")
 
 	iterator, err := NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if iterator.Next(nil) || !errors.Is(iterator.Err(), ErrInvalidFTSQueryExecution) {
-		t.Fatalf("nil iteration context = %v", iterator.Err())
-	}
+	require.NoError(t, err)
+	require.False(t, iterator.Next(nil))
+	require.ErrorIs(t, iterator.Err(), ErrInvalidFTSQueryExecution)
 
 	iterator, err = NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if iterator.Next(canceled) || !errors.Is(iterator.Err(), context.Canceled) {
-		t.Fatalf("canceled iteration = %v", iterator.Err())
-	}
+	require.False(t, iterator.Next(canceled))
+	require.ErrorIs(t, iterator.Err(), context.Canceled)
 
 	iterator, err = NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	active, stop := context.WithCancel(context.Background())
-	if !iterator.Next(active) {
-		t.Fatal(iterator.Err())
-	}
+	require.True(t, iterator.Next(active))
+
 	stop()
-	if iterator.Next(active) || !errors.Is(iterator.Err(), context.Canceled) || iterator.Valid() {
-		t.Fatalf("mid-stream cancellation = valid %t err %v", iterator.Valid(), iterator.Err())
-	}
+	require.False(t, iterator.Next(active))
+	require.ErrorIs(t, iterator.Err(), context.Canceled)
+	require.False(t, iterator.Valid())
 }
 
 func TestFTSQueryIteratorASTAndDictionaryOwnership(t *testing.T) {
 	dictionary := buildFTSQueryTestDictionary(t)
 	node := &FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: "apple"}
 	iterator, err := NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	node.Term = "missing"
-	if got, want := collectFTSQueryDocuments(t, iterator), []uint32{0, 1, 3, 6, 7}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("documents after AST mutation = %#v", got)
+	{
+		got, want := collectFTSQueryDocuments(t, iterator), []uint32{0, 1, 3, 6, 7}
+		require.Equal(t, want, got)
 	}
 
 	encoded, err := dictionary.Encode(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	reopened, err := OpenFTSTermDictionary(context.Background(), encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	query := &FTSPhraseQueryNode{Flags: defaultFTSQueryModifier(), Terms: []string{"banana", "banana"}}
 	iterator, err = NewFTSQueryIterator(context.Background(), reopened, query, FTSQueryExecutionOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	clear(encoded)
-	if got, want := collectFTSQueryDocuments(t, iterator), []uint32{3}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("reopened documents = %#v", got)
+	{
+		got, want := collectFTSQueryDocuments(t, iterator), []uint32{3}
+		require.Equal(t, want, got)
 	}
 }
 
@@ -231,9 +222,8 @@ func TestFTSQueryIteratorConcurrentReaders(t *testing.T) {
 	dictionary := buildFTSQueryTestDictionary(t)
 	pipeline := newFTSStandardTestPipeline(t)
 	node, err := ParseFTSQuery(context.Background(), `(apple OR grape) AND fox NOT banana`, pipeline, FTSDefaultOperatorOR)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := []uint32{1, 4, 6, 7}
 	var wait sync.WaitGroup
 	errorsChannel := make(chan error, 32)
@@ -248,7 +238,7 @@ func TestFTSQueryIteratorConcurrentReaders(t *testing.T) {
 					return
 				}
 				got := collectFTSQueryDocumentsError(iterator)
-				if !reflect.DeepEqual(got.documents, want) || got.err != nil {
+				if got.err != nil || !assert.Equal(t, want, got.documents) {
 					errorsChannel <- fmt.Errorf("documents %#v: %v", got.documents, got.err)
 					return
 				}
@@ -258,7 +248,7 @@ func TestFTSQueryIteratorConcurrentReaders(t *testing.T) {
 	wait.Wait()
 	close(errorsChannel)
 	for err := range errorsChannel {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 }
 
@@ -274,20 +264,20 @@ func FuzzFTSQueryIterator(f *testing.F) {
 			return
 		}
 		iterator, err := NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		var previous uint32
 		first := true
 		for iterator.Next(context.Background()) {
 			documentID := iterator.DocumentID()
-			if int(documentID) >= len(ftsQueryTestDocuments) || !first && documentID <= previous {
-				t.Fatalf("invalid document sequence: %d after %d", documentID, previous)
-			}
+			require.True(t, int(documentID) < len(ftsQueryTestDocuments))
+			require.False(t, !first && documentID <= previous)
+
 			first, previous = false, documentID
 		}
-		if err := iterator.Err(); err != nil {
-			t.Fatal(err)
+		{
+			err := iterator.Err()
+			require.NoError(t, err)
 		}
 	})
 }
@@ -301,18 +291,23 @@ func BenchmarkFTSQueryIterator(b *testing.B) {
 	pipeline := newFTSStandardTestPipeline(b)
 	node, err := ParseFTSQuery(context.Background(), `common AND "phrase match"`, pipeline, FTSDefaultOperatorOR)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	b.ReportAllocs()
 	for b.Loop() {
 		iterator, err := NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{})
 		if err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
+
 		for iterator.Next(context.Background()) {
 		}
-		if err := iterator.Err(); err != nil {
-			b.Fatal(err)
+		{
+			err := iterator.Err()
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }
@@ -331,23 +326,22 @@ func buildFTSQueryDictionaryFromDocuments(t testing.TB, documents []string) *FTS
 		for position, word := range words {
 			tokens[position] = Token{Text: word, Position: uint32(position)}
 		}
-		if err := builder.AddDocument(context.Background(), uint32(documentID), tokens); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.AddDocument(context.Background(), uint32(documentID), tokens)
+			require.NoError(t, err)
 		}
 	}
 	dictionary, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return dictionary
 }
 
 func collectFTSQueryDocuments(t testing.TB, iterator *FTSQueryIterator) []uint32 {
 	t.Helper()
 	result := collectFTSQueryDocumentsError(iterator)
-	if result.err != nil {
-		t.Fatal(result.err)
-	}
+	require.NoError(t, result.err)
+
 	return result.documents
 }
 

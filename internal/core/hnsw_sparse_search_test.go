@@ -16,12 +16,11 @@ package core
 
 import (
 	"context"
-	"errors"
 	"math"
-	"reflect"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSparseHNSWSearchSmallGraphMatchesFlat(t *testing.T) {
@@ -29,12 +28,12 @@ func TestSparseHNSWSearchSmallGraphMatchesFlat(t *testing.T) {
 	inputs := sparseHNSWBuildInputs(240)
 	index := buildSearchSparseHNSW(t, inputs, 8, 48)
 	flat, err := NewSparseFlatIndex(MetricIP)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, input := range inputs {
-		if err := flat.AddSparse(context.Background(), input.key, input.vector); err != nil {
-			t.Fatal(err)
+		{
+			err := flat.AddSparse(context.Background(), input.key, input.vector)
+			require.NoError(t, err)
 		}
 	}
 	query := SparseVector{Indices: []uint32{3, 107, 211}, Values: []float32{1, 2, 3}}
@@ -47,16 +46,11 @@ func TestSparseHNSWSearchSmallGraphMatchesFlat(t *testing.T) {
 		EF: 1,
 	}
 	got, err := index.SearchSparseHNSW(context.Background(), query, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want, err := flat.SearchSparseWithOptions(context.Background(), query, options.SearchOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("sparse HNSW = %#v, Flat = %#v", got, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 }
 
 func TestSparseHNSWSearchLargeGraphRecall(t *testing.T) {
@@ -68,13 +62,11 @@ func TestSparseHNSWSearchLargeGraphRecall(t *testing.T) {
 		got, err := index.SearchSparseHNSW(context.Background(), query, HNSWSearchOptions{
 			SearchOptions: SearchOptions{TopK: 10}, EF: 120,
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		want, err := exactSparseResults(context.Background(), query, inputs, 10)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		truth := make(map[uint64]struct{}, len(want))
 		for _, result := range want {
 			truth[result.Key] = struct{}{}
@@ -87,9 +79,7 @@ func TestSparseHNSWSearchLargeGraphRecall(t *testing.T) {
 		total += len(want)
 	}
 	recall := float64(matched) / float64(total)
-	if recall < 0.80 {
-		t.Fatalf("sparse recall@10 = %.3f, want >= 0.80", recall)
-	}
+	require.True(t, recall >= 0.80)
 }
 
 func TestSparseHNSWSearchLargeGraphFilterRadiusAndEF(t *testing.T) {
@@ -97,9 +87,8 @@ func TestSparseHNSWSearchLargeGraphFilterRadiusAndEF(t *testing.T) {
 	index := buildSearchSparseHNSW(t, inputs, 16, 100)
 	target := inputs[len(inputs)-37]
 	targetScore, err := sparseHNSWScore(target.vector, target.vector)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	results, err := index.SearchSparseHNSW(context.Background(), target.vector, HNSWSearchOptions{
 		SearchOptions: SearchOptions{
 			TopK:   5,
@@ -108,21 +97,14 @@ func TestSparseHNSWSearchLargeGraphFilterRadiusAndEF(t *testing.T) {
 		},
 		EF: 1,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(results, []Result{{Key: target.key, Score: targetScore}}) {
-		t.Fatalf("filtered radius results = %#v", results)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: target.key, Score: targetScore}}, results)
+
 	results, err = index.SearchSparseHNSW(context.Background(), target.vector, HNSWSearchOptions{
 		SearchOptions: SearchOptions{TopK: 25}, EF: 2,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 25 {
-		t.Fatalf("EF below TopK returned %d results, want 25", len(results))
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 25)
 }
 
 func TestSparseHNSWSearchStableTiesAndDefaults(t *testing.T) {
@@ -134,24 +116,22 @@ func TestSparseHNSWSearchStableTiesAndDefaults(t *testing.T) {
 	}
 	index := buildSearchSparseHNSW(t, inputs, 2, 4)
 	results, err := index.SearchSparse(context.Background(), SparseVector{}, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(results, []Result{{Key: 2}, {Key: 9}, {Key: 50}}) {
-		t.Fatalf("ties = %#v", results)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 2}, {Key: 9}, {Key: 50}}, results)
+
 	results, err = index.SearchSparse(context.Background(), SparseVector{}, 0)
-	if err != nil || results == nil || len(results) != 0 {
-		t.Fatalf("zero top-k = %#v, %v", results, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, results)
+	require.Len(t, results, 0)
+
 	builder, _ := NewSparseHNSWBuilder(DefaultSparseHNSWBuildOptions())
 	empty, _ := builder.Build(context.Background())
 	results, err = empty.SearchSparseHNSW(context.Background(), SparseVector{}, HNSWSearchOptions{
 		SearchOptions: SearchOptions{TopK: 1}, EF: 1,
 	})
-	if err != nil || results == nil || len(results) != 0 {
-		t.Fatalf("empty search = %#v, %v", results, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, results)
+	require.Len(t, results, 0)
 }
 
 func TestSparseHNSWResultTieBreaksByKey(t *testing.T) {
@@ -159,9 +139,10 @@ func TestSparseHNSWResultTieBreaksByKey(t *testing.T) {
 	index := &SparseHNSWIndex{keys: []uint64{90, 3}}
 	left := hnswScoredNode{position: 0, score: 1}
 	right := hnswScoredNode{position: 1, score: 1}
-	if index.resultNodeBetter(left, right) || !index.resultNodeBetter(right, left) {
-		t.Fatal("equal sparse HNSW result scores did not prefer the smaller key")
-	}
+	require.False(t, index.resultNodeBetter(left, right),
+		"equal sparse HNSW result scores did not prefer the smaller key")
+	require.True(t, index.resultNodeBetter(right, left),
+		"equal sparse HNSW result scores did not prefer the smaller key")
 }
 
 func TestSparseHNSWSearchValidation(t *testing.T) {
@@ -169,14 +150,19 @@ func TestSparseHNSWSearchValidation(t *testing.T) {
 	index := buildSearchSparseHNSW(t, sparseHNSWBuildInputs(4), 2, 4)
 	query := SparseVector{Indices: []uint32{1}, Values: []float32{2}}
 	valid := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 1}, EF: 2}
-	if _, err := index.SearchSparseHNSW(nil, query, valid); err == nil {
-		t.Fatal("nil context succeeded")
+	{
+		_, err := index.SearchSparseHNSW(nil, query, valid)
+		require.Error(t, err,
+			"nil context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := index.SearchSparseHNSW(canceled, query, valid); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled error = %v", err)
+	{
+		_, err := index.SearchSparseHNSW(canceled, query, valid)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	badQueries := []struct {
 		query SparseVector
 		want  error
@@ -186,41 +172,53 @@ func TestSparseHNSWSearchValidation(t *testing.T) {
 		{SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.Inf(1))}}, ailego.ErrNonFiniteVector},
 	}
 	for _, test := range badQueries {
-		if _, err := index.SearchSparseHNSW(context.Background(), test.query, valid); !errors.Is(err, test.want) {
-			t.Fatalf("query %#v error = %v", test.query, err)
+		{
+			_, err := index.SearchSparseHNSW(context.Background(), test.query, valid)
+			require.ErrorIs(t, err, test.want)
 		}
 	}
 	invalidEF := valid
 	invalidEF.EF = 0
-	if _, err := index.SearchSparseHNSW(context.Background(), query, invalidEF); !errors.Is(err, ErrInvalidHNSWEF) {
-		t.Fatalf("EF error = %v", err)
+	{
+		_, err := index.SearchSparseHNSW(context.Background(), query, invalidEF)
+		require.ErrorIs(t, err, ErrInvalidHNSWEF)
 	}
+
 	invalidEF.EF = MaxHNSWEFSearch + 1
-	if _, err := index.SearchSparseHNSW(context.Background(), query, invalidEF); !errors.Is(err, ErrInvalidHNSWEF) {
-		t.Fatalf("large EF error = %v", err)
+	{
+		_, err := index.SearchSparseHNSW(context.Background(), query, invalidEF)
+		require.ErrorIs(t, err, ErrInvalidHNSWEF)
 	}
+
 	invalidTopK := valid
 	invalidTopK.TopK = 0
-	if _, err := index.SearchSparseHNSW(context.Background(), query, invalidTopK); !errors.Is(err, ErrInvalidTopK) {
-		t.Fatalf("top-k error = %v", err)
+	{
+		_, err := index.SearchSparseHNSW(context.Background(), query, invalidTopK)
+		require.ErrorIs(t, err, ErrInvalidTopK)
 	}
+
 	invalidRadius := valid
 	invalidRadius.Radius = -1
-	if _, err := index.SearchSparseHNSW(context.Background(), query, invalidRadius); !errors.Is(err, ErrInvalidRadius) {
-		t.Fatalf("radius error = %v", err)
+	{
+		_, err := index.SearchSparseHNSW(context.Background(), query, invalidRadius)
+		require.ErrorIs(t, err, ErrInvalidRadius)
 	}
+
 	var nilIndex *SparseHNSWIndex
-	if _, err := nilIndex.SearchSparseHNSW(context.Background(), query, valid); err == nil {
-		t.Fatal("nil index search succeeded")
+	{
+		_, err := nilIndex.SearchSparseHNSW(context.Background(), query, valid)
+		require.Error(t, err,
+			"nil index search succeeded")
 	}
 
 	overflow := buildSearchSparseHNSW(t, []sparseHNSWInput{{
 		key: 1, vector: SparseVector{Indices: []uint32{1}, Values: []float32{math.MaxFloat32}},
 	}}, 2, 4)
-	if _, err := overflow.SearchSparse(context.Background(), SparseVector{
-		Indices: []uint32{1}, Values: []float32{math.MaxFloat32},
-	}, 1); !errors.Is(err, ailego.ErrNonFiniteVector) {
-		t.Fatalf("overflow score error = %v", err)
+	{
+		_, err := overflow.SearchSparse(context.Background(), SparseVector{
+			Indices: []uint32{1}, Values: []float32{math.MaxFloat32},
+		}, 1)
+		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
 	}
 }
 
@@ -231,8 +229,11 @@ func BenchmarkSparseHNSWSearch(b *testing.B) {
 	options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 10}, EF: 100}
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := index.SearchSparseHNSW(context.Background(), query, options); err != nil {
-			b.Fatal(err)
+		{
+			_, err := index.SearchSparseHNSW(context.Background(), query, options)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }

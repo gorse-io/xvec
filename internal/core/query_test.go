@@ -16,22 +16,26 @@ package core
 
 import (
 	"context"
-	"errors"
 	"math"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSearchOptionsValidation(t *testing.T) {
-	if err := (SearchOptions{TopK: 1}).Validate(); err != nil {
-		t.Fatal(err)
+	{
+		err := (SearchOptions{TopK: 1}).Validate()
+		require.NoError(t, err)
 	}
-	if err := (SearchOptions{TopK: 0}).Validate(); !errors.Is(err, ErrInvalidTopK) {
-		t.Fatalf("zero top-k error = %v", err)
+	{
+		err := (SearchOptions{TopK: 0}).Validate()
+		require.ErrorIs(t, err, ErrInvalidTopK)
 	}
+
 	for _, radius := range []float32{-1, float32(math.NaN()), float32(math.Inf(1))} {
-		if err := (SearchOptions{TopK: 1, Radius: radius}).Validate(); !errors.Is(err, ErrInvalidRadius) {
-			t.Fatalf("radius %v error = %v", radius, err)
+		{
+			err := (SearchOptions{TopK: 1, Radius: radius}).Validate()
+			require.ErrorIs(t, err, ErrInvalidRadius)
 		}
 	}
 }
@@ -60,12 +64,8 @@ func TestDenseSearchRadiusAndCandidateFilter(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			index := denseIndexFromCandidates(t, testCase.metric, exactCandidates)
 			results, err := index.SearchWithOptions(context.Background(), []float32{1, 0}, SearchOptions{TopK: 10, Radius: testCase.radius})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(results, testCase.want) {
-				t.Fatalf("results = %#v, want %#v", results, testCase.want)
-			}
+			require.NoError(t, err)
+			require.Equal(t, testCase.want, results)
 		})
 	}
 
@@ -76,43 +76,37 @@ func TestDenseSearchRadiusAndCandidateFilter(t *testing.T) {
 			return key != 5 && key != 10 && key != 30
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(results, []Result{{Key: 20, Score: 0}, {Key: 40, Score: -1}}) {
-		t.Fatalf("filtered results = %#v", results)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 20, Score: 0}, {Key: 40, Score: -1}}, results)
+
 	results, err = index.SearchWithOptions(context.Background(), []float32{1, 0}, SearchOptions{TopK: 5})
-	if err != nil || len(results) != 5 {
-		t.Fatalf("zero radius should be disabled: %#v, %v", results, err)
-	}
-	if _, err := index.SearchWithOptions(context.Background(), []float32{1, 0}, SearchOptions{}); !errors.Is(err, ErrInvalidTopK) {
-		t.Fatalf("invalid options error = %v", err)
+	require.NoError(t, err)
+	require.Len(t, results, 5)
+	{
+		_, err := index.SearchWithOptions(context.Background(), []float32{1, 0}, SearchOptions{})
+		require.ErrorIs(t, err, ErrInvalidTopK)
 	}
 }
 
 func TestSparseSearchRadiusAndCandidateFilter(t *testing.T) {
 	index, err := NewSparseFlatIndex(MetricIP)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for key, value := range []float32{1, 2, 3, 4} {
-		if err := index.AddSparse(context.Background(), uint64(key), SparseVector{Indices: []uint32{1}, Values: []float32{value}}); err != nil {
-			t.Fatal(err)
+		{
+			err := index.AddSparse(context.Background(), uint64(key), SparseVector{Indices: []uint32{1}, Values: []float32{value}})
+			require.NoError(t, err)
 		}
 	}
 	results, err := index.SearchSparseWithOptions(context.Background(), SparseVector{Indices: []uint32{1}, Values: []float32{1}}, SearchOptions{
 		TopK: 10, Radius: 2,
 		Filter: func(key uint64) bool { return key != 3 },
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(results, []Result{{Key: 2, Score: 3}, {Key: 1, Score: 2}}) {
-		t.Fatalf("sparse filtered radius results = %#v", results)
-	}
-	if _, err := index.SearchSparseWithOptions(context.Background(), SparseVector{}, SearchOptions{TopK: 1, Radius: -1}); !errors.Is(err, ErrInvalidRadius) {
-		t.Fatalf("invalid sparse radius = %v", err)
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 2, Score: 3}, {Key: 1, Score: 2}}, results)
+	{
+		_, err := index.SearchSparseWithOptions(context.Background(), SparseVector{}, SearchOptions{TopK: 1, Radius: -1})
+		require.ErrorIs(t, err, ErrInvalidRadius)
 	}
 }
 
@@ -126,21 +120,19 @@ func TestQueryDenseMergesSegmentsDeterministically(t *testing.T) {
 		{Key: 20, Vector: []float32{3, 0}},
 	})
 	results, err := QueryDense(context.Background(), MetricIP, []DenseQuerySearcher{first, second}, []float32{1, 0}, SearchOptions{TopK: 3}, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := []Result{{Key: 20, Score: 3}, {Key: 5, Score: 2}, {Key: 10, Score: 2}}
-	if !reflect.DeepEqual(results, want) {
-		t.Fatalf("merged = %#v, want %#v", results, want)
-	}
+	require.Equal(t, want, results)
+
 	reversed, err := QueryDense(context.Background(), MetricIP, []DenseQuerySearcher{second, first}, []float32{1, 0}, SearchOptions{TopK: 3}, 1)
-	if err != nil || !reflect.DeepEqual(reversed, want) {
-		t.Fatalf("reversed = %#v, %v", reversed, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, reversed)
+
 	empty, err := QueryDense(context.Background(), MetricIP, nil, []float32{1, 0}, SearchOptions{TopK: 3}, 0)
-	if err != nil || empty == nil || len(empty) != 0 {
-		t.Fatalf("empty query = %#v, %v", empty, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, empty)
+	require.Len(t, empty, 0)
 }
 
 func TestQuerySparseMergesSegments(t *testing.T) {
@@ -151,35 +143,42 @@ func TestQuerySparseMergesSegments(t *testing.T) {
 	_ = second.AddSparse(context.Background(), 2, SparseVector{Indices: []uint32{1}, Values: []float32{2}})
 	_ = second.AddSparse(context.Background(), 3, SparseVector{Indices: []uint32{1}, Values: []float32{3}})
 	results, err := QuerySparse(context.Background(), []SparseQuerySearcher{first, second}, SparseVector{Indices: []uint32{1}, Values: []float32{1}}, SearchOptions{TopK: 3}, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(results, []Result{{Key: 4, Score: 4}, {Key: 3, Score: 3}, {Key: 2, Score: 2}}) {
-		t.Fatalf("merged sparse = %#v", results)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 4, Score: 4}, {Key: 3, Score: 3}, {Key: 2, Score: 2}}, results)
 }
 
 func TestSegmentQueryValidationAndCancellation(t *testing.T) {
 	index := denseIndexFromCandidates(t, MetricL2, exactCandidates[:1])
-	if _, err := QueryDense(context.Background(), MetricIP, []DenseQuerySearcher{index}, []float32{1, 0}, SearchOptions{TopK: 1}, 1); err == nil {
-		t.Fatal("mismatched dense metric succeeded")
+	{
+		_, err := QueryDense(context.Background(), MetricIP, []DenseQuerySearcher{index}, []float32{1, 0}, SearchOptions{TopK: 1}, 1)
+		require.Error(t, err,
+			"mismatched dense metric succeeded")
 	}
-	if _, err := QueryDense(context.Background(), Metric(99), nil, []float32{1}, SearchOptions{TopK: 1}, 1); err == nil {
-		t.Fatal("invalid query metric succeeded")
+	{
+		_, err := QueryDense(context.Background(), Metric(99), nil, []float32{1}, SearchOptions{TopK: 1}, 1)
+		require.Error(t, err,
+			"invalid query metric succeeded")
 	}
-	if _, err := QueryDense(context.Background(), MetricL2, []DenseQuerySearcher{nil}, []float32{1, 0}, SearchOptions{TopK: 1}, 1); err == nil {
-		t.Fatal("nil dense searcher succeeded")
+	{
+		_, err := QueryDense(context.Background(), MetricL2, []DenseQuerySearcher{nil}, []float32{1, 0}, SearchOptions{TopK: 1}, 1)
+		require.Error(t, err,
+			"nil dense searcher succeeded")
 	}
-	if _, err := QuerySparse(context.Background(), []SparseQuerySearcher{nil}, SparseVector{}, SearchOptions{TopK: 1}, 1); err == nil {
-		t.Fatal("nil sparse searcher succeeded")
+	{
+		_, err := QuerySparse(context.Background(), []SparseQuerySearcher{nil}, SparseVector{}, SearchOptions{TopK: 1}, 1)
+		require.Error(t, err,
+			"nil sparse searcher succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := QueryDense(canceled, MetricL2, []DenseQuerySearcher{index}, []float32{1, 0}, SearchOptions{TopK: 1}, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled dense query = %v", err)
+	{
+		_, err := QueryDense(canceled, MetricL2, []DenseQuerySearcher{index}, []float32{1, 0}, SearchOptions{TopK: 1}, 1)
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := QuerySparse(canceled, nil, SparseVector{}, SearchOptions{TopK: 1}, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled sparse query = %v", err)
+	{
+		_, err := QuerySparse(canceled, nil, SparseVector{}, SearchOptions{TopK: 1}, 1)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
@@ -188,26 +187,30 @@ func TestMergeSearchResults(t *testing.T) {
 		{{Key: 3, Score: 1}, {Key: 1, Score: 2}},
 		{{Key: 2, Score: 2}, {Key: 4, Score: 0}},
 	}
-	if got := MergeSearchResults(MetricIP, 3, batches...); !reflect.DeepEqual(got, []Result{{Key: 1, Score: 2}, {Key: 2, Score: 2}, {Key: 3, Score: 1}}) {
-		t.Fatalf("IP merge = %#v", got)
+	{
+		got := MergeSearchResults(MetricIP, 3, batches...)
+		require.Equal(t, []Result{{Key: 1, Score: 2}, {Key: 2, Score: 2}, {Key: 3, Score: 1}}, got)
 	}
-	if got := MergeSearchResults(MetricL2, 2, batches...); !reflect.DeepEqual(got, []Result{{Key: 4, Score: 0}, {Key: 3, Score: 1}}) {
-		t.Fatalf("L2 merge = %#v", got)
+	{
+		got := MergeSearchResults(MetricL2, 2, batches...)
+		require.Equal(t, []Result{{Key: 4, Score: 0}, {Key: 3, Score: 1}}, got)
 	}
-	if got := MergeSearchResults(MetricL2, 0, batches...); got == nil || len(got) != 0 {
-		t.Fatalf("zero merge = %#v", got)
+	{
+		got := MergeSearchResults(MetricL2, 0, batches...)
+		require.NotNil(t, got)
+		require.Len(t, got, 0)
 	}
 }
 
 func denseIndexFromCandidates(t *testing.T, metric Metric, candidates []Candidate) *DenseFlatIndex {
 	t.Helper()
 	index, err := NewDenseFlatIndex(2, metric)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, candidate := range candidates {
-		if err := index.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
-			t.Fatal(err)
+		{
+			err := index.Add(context.Background(), candidate.Key, candidate.Vector)
+			require.NoError(t, err)
 		}
 	}
 	return index

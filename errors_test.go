@@ -15,10 +15,11 @@
 package zvec
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestErrorSupportsIsAsAndUnwrap(t *testing.T) {
@@ -30,35 +31,36 @@ func TestErrorSupportsIsAsAndUnwrap(t *testing.T) {
 		Err:     io.EOF,
 	}
 	wrapped := fmt.Errorf("request failed: %w", err)
-
-	if !errors.Is(wrapped, ErrNotFound) {
-		t.Fatal("errors.Is did not match the error code sentinel")
-	}
-	if !errors.Is(wrapped, io.EOF) {
-		t.Fatal("errors.Is did not traverse the underlying cause")
-	}
-	if errors.Is(wrapped, ErrAlreadyExists) {
-		t.Fatal("errors.Is matched the wrong error code")
-	}
+	require.ErrorIs(t, wrapped, ErrNotFound,
+		"errors.Is did not match the error code sentinel")
+	require.ErrorIs(t, wrapped, io.EOF,
+		"errors.Is did not traverse the underlying cause")
+	require.NotErrorIs(t, wrapped, ErrAlreadyExists,
+		"errors.Is matched the wrong error code")
 
 	var got *Error
-	if !errors.As(wrapped, &got) || got != err {
-		t.Fatal("errors.As did not recover the structured error")
-	}
-	if want := "zvec: fetch: /collections/books: primary key 42: EOF"; err.Error() != want {
-		t.Fatalf("Error() = %q, want %q", err.Error(), want)
+	require.ErrorAs(t, wrapped, &got,
+		"errors.As did not recover the structured error")
+	require.Same(t, err, got,
+		"errors.As did not recover the structured error")
+	{
+		want := "zvec: fetch: /collections/books: primary key 42: EOF"
+		require.Equal(t, want, err.Error())
 	}
 }
 
 func TestErrorDefaults(t *testing.T) {
 	err := &Error{Code: ErrorCodeNotSupported}
-	if got, want := err.Error(), "zvec: Not supported"; got != want {
-		t.Fatalf("Error() = %q, want %q", got, want)
+	{
+		got, want := err.Error(), "zvec: Not supported"
+		require.Equal(t, want, got)
 	}
-	if got, want := ErrorCode(99).DefaultMessage(), "Unknown error"; got != want {
-		t.Fatalf("DefaultMessage() = %q, want %q", got, want)
+	{
+		got, want := ErrorCode(99).DefaultMessage(), "Unknown error"
+		require.Equal(t, want, got)
 	}
-	if got := (*Error)(nil).Error(); got != "<nil>" {
-		t.Fatalf("nil Error() = %q", got)
+	{
+		got := (*Error)(nil).Error()
+		require.True(t, got == "<nil>")
 	}
 }

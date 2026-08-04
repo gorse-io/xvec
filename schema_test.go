@@ -15,9 +15,11 @@
 package zvec
 
 import (
-	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidCollectionSchema(t *testing.T) {
@@ -32,20 +34,23 @@ func TestValidCollectionSchema(t *testing.T) {
 		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 128, Index: hnsw},
 		FieldSchema{Name: "terms", DataType: DataTypeSparseVectorFP32, Index: sparse},
 	)
-	if err := schema.Validate(); err != nil {
-		t.Fatal(err)
+	{
+		err := schema.Validate()
+		require.NoError(t, err)
 	}
-	if got := schema.Fields[0].DataType.ElementType(); got != DataTypeString {
-		t.Fatalf("ElementType = %s", got)
+	{
+		got := schema.Fields[0].DataType.ElementType()
+		require.Equal(t, DataTypeString, got)
 	}
-	if got := DataTypeArrayInt32.ElementType(); got != DataTypeInt32 {
-		t.Fatalf("array ElementType = %s", got)
+	{
+		got := DataTypeArrayInt32.ElementType()
+		require.Equal(t, DataTypeInt32, got)
 	}
-	if schema.Fields[0].EffectiveIndex() != nil {
-		t.Fatal("scalar field unexpectedly received a default index")
-	}
-	if got := schema.Fields[2].IndexType(); got != IndexTypeHNSW {
-		t.Fatalf("index type = %s", got)
+	require.Nil(t, schema.Fields[0].EffectiveIndex(),
+		"scalar field unexpectedly received a default index")
+	{
+		got := schema.Fields[2].IndexType()
+		require.Equal(t, IndexTypeHNSW, got)
 	}
 }
 
@@ -77,8 +82,9 @@ func TestVectorFieldSchemaValidation(t *testing.T) {
 		{Name: "disk_int8", DataType: DataTypeVectorInt8, Dimension: 128, Index: NewDiskANNIndexParams(MetricTypeL2)},
 	}
 	for _, field := range tests {
-		if err := field.Validate(); !errors.Is(err, ErrInvalidArgument) {
-			t.Errorf("field %s error = %v", field.Name, err)
+		{
+			err := field.Validate()
+			assert.ErrorIs(t, err, ErrInvalidArgument)
 		}
 	}
 
@@ -90,8 +96,9 @@ func TestVectorFieldSchemaValidation(t *testing.T) {
 		{Name: "disk_fp16", DataType: DataTypeVectorFP16, Dimension: 128, Index: NewDiskANNIndexParams(MetricTypeL2)},
 	}
 	for _, field := range valid {
-		if err := field.Validate(); err != nil {
-			t.Errorf("valid field %s: %v", field.Name, err)
+		{
+			err := field.Validate()
+			assert.NoError(t, err)
 		}
 	}
 }
@@ -105,18 +112,18 @@ func TestScalarFieldSchemaValidation(t *testing.T) {
 		{Name: "scalar_hnsw", DataType: DataTypeString, Index: NewHNSWIndexParams(MetricTypeL2)},
 	}
 	for _, field := range invalid {
-		if err := field.Validate(); !errors.Is(err, ErrInvalidArgument) {
-			t.Errorf("field %s error = %v", field.Name, err)
+		{
+			err := field.Validate()
+			assert.ErrorIs(t, err, ErrInvalidArgument)
 		}
 	}
 	var typedNil *HNSWIndexParams
 	field := FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 8, Index: typedNil}
-	if err := field.Validate(); err != nil {
-		t.Fatalf("typed nil index should be treated as absent: %v", err)
+	{
+		err := field.Validate()
+		require.NoError(t, err)
 	}
-	if field.IndexType() != IndexTypeUndefined {
-		t.Fatalf("typed nil index type = %s", field.IndexType())
-	}
+	require.Equal(t, IndexTypeUndefined, field.IndexType())
 }
 
 func TestCollectionSchemaValidation(t *testing.T) {
@@ -128,8 +135,9 @@ func TestCollectionSchemaValidation(t *testing.T) {
 		NewCollectionSchema("books", field, field),
 	}
 	for _, schema := range tests {
-		if err := schema.Validate(); !errors.Is(err, ErrInvalidArgument) {
-			t.Errorf("schema %#v error = %v", schema, err)
+		{
+			err := schema.Validate()
+			assert.ErrorIs(t, err, ErrInvalidArgument)
 		}
 	}
 
@@ -137,15 +145,18 @@ func TestCollectionSchemaValidation(t *testing.T) {
 	for index := range fields {
 		fields[index] = NewVectorField(fmt.Sprintf("v%d", index), DataTypeVectorFP32, 8)
 	}
-	if err := NewCollectionSchema("vectors", fields...).Validate(); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("vector count error = %v", err)
+	{
+		err := NewCollectionSchema("vectors", fields...).Validate()
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
+
 	scalarFields := make([]FieldSchema, MaxScalarFields+1)
 	for index := range scalarFields {
 		scalarFields[index] = NewField(fmt.Sprintf("s%d", index), DataTypeInt32)
 	}
-	if err := NewCollectionSchema("scalars", scalarFields...).Validate(); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("scalar count error = %v", err)
+	{
+		err := NewCollectionSchema("scalars", scalarFields...).Validate()
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
 }
 
@@ -157,7 +168,6 @@ func TestSchemaCloneIsDeep(t *testing.T) {
 	params.Filters[0] = "stemmer"
 	clone.Fields[0].Index = params
 	original := schema.Fields[0].Index.(FTSIndexParams)
-	if original.Filters[0] != "lowercase" {
-		t.Fatal("Clone shares FTS filter storage")
-	}
+	require.True(t, original.Filters[0] == "lowercase",
+		"Clone shares FTS filter storage")
 }

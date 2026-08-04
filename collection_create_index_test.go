@@ -16,12 +16,11 @@ package zvec
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/db"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCreateScalarIndexPublishesSchemaAndSurvivesReopen(t *testing.T) {
@@ -29,86 +28,88 @@ func TestCreateScalarIndexPublishesSchemaAndSurvivesReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "create-scalar-index")
 	schema := createIndexSchema()
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := collection.Insert(ctx, []Document{
+			createIndexDocument("a", "alpha", 1, 3),
+			createIndexDocument("b", "alphabet", 2, 2),
+			createIndexDocument("c", "beta", 3, 1),
+		})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, []Document{
-		createIndexDocument("a", "alpha", 1, 3),
-		createIndexDocument("b", "alphabet", 2, 2),
-		createIndexDocument("c", "beta", 3, 1),
-	}); err != nil {
-		t.Fatal(err)
-	}
+
 	initialGeneration := collection.store.Manifest().Generation
 	params := NewInvertIndexParams()
-	if err := collection.CreateIndex(ctx, "rating", &params, CreateIndexOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.CreateIndex(ctx, "rating", &params, CreateIndexOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
+
 	createdGeneration := collection.store.Manifest().Generation
-	if createdGeneration <= initialGeneration {
-		t.Fatalf("manifest generation = %d, initial %d", createdGeneration, initialGeneration)
-	}
+	require.True(t, createdGeneration > initialGeneration)
+
 	rating, _ := collection.Schema().Field("rating")
-	if !equalIndexParams(rating.Index, NewInvertIndexParams()) {
-		t.Fatalf("rating index = %#v", rating.Index)
-	}
+	require.True(t, equalIndexParams(rating.Index, NewInvertIndexParams()))
+
 	params.EnableExtendedWildcard = true
 	rating, _ = collection.Schema().Field("rating")
 	stored := rating.Index.(InvertIndexParams)
-	if stored.EnableExtendedWildcard {
-		t.Fatal("CreateIndex retained caller-owned parameter pointer")
-	}
+	require.False(t, stored.EnableExtendedWildcard,
+		"CreateIndex retained caller-owned parameter pointer")
+
 	results, err := collection.Query(ctx, VectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 10, Filter: "rating>=2",
 	})
-	if err != nil || !reflect.DeepEqual(documentKeys(results), []string{"b", "c"}) {
-		t.Fatalf("indexed query = %v, %v", documentKeys(results), err)
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "c"}, documentKeys(results))
+	{
+		err := collection.CreateIndex(ctx, "rating", NewInvertIndexParams(), CreateIndexOptions{})
+		require.NoError(t, err)
 	}
-	if err := collection.CreateIndex(ctx, "rating", NewInvertIndexParams(), CreateIndexOptions{}); err != nil {
-		t.Fatal(err)
+	{
+		got := collection.store.Manifest().Generation
+		require.Equal(t, createdGeneration, got)
 	}
-	if got := collection.store.Manifest().Generation; got != createdGeneration {
-		t.Fatalf("idempotent CreateIndex advanced generation to %d", got)
-	}
+
 	changed := NewInvertIndexParams()
 	changed.EnableRangeOptimization = false
-	if err := collection.CreateIndex(ctx, "rating", changed, CreateIndexOptions{Concurrency: 1}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.CreateIndex(ctx, "rating", changed, CreateIndexOptions{Concurrency: 1})
+		require.NoError(t, err)
 	}
-	if collection.store.Manifest().Generation <= createdGeneration {
-		t.Fatal("changed index parameters did not publish a generation")
-	}
+	require.True(t, collection.store.Manifest().Generation > createdGeneration,
+		"changed index parameters did not publish a generation")
+
 	extended := NewInvertIndexParams()
 	extended.EnableExtendedWildcard = true
-	if err := collection.CreateIndex(ctx, "title", extended, CreateIndexOptions{Concurrency: 3}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.CreateIndex(ctx, "title", extended, CreateIndexOptions{Concurrency: 3})
+		require.NoError(t, err)
 	}
+
 	results, err = collection.Query(ctx, VectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 10, Filter: "title LIKE '%bet'",
 	})
-	if err != nil || !reflect.DeepEqual(documentKeys(results), []string{"b"}) {
-		t.Fatalf("extended wildcard query = %v, %v", documentKeys(results), err)
+	require.NoError(t, err)
+	require.Equal(t, []string{"b"}, documentKeys(results))
+	{
+		// The schema manifest and existing write WAL are independently durable;
+		// neither needs a Flush before reopening.
+		err := collection.Close()
+		require.NoError(t, err)
 	}
 
-	// The schema manifest and existing write WAL are independently durable;
-	// neither needs a Flush before reopening.
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	rating, _ = collection.Schema().Field("rating")
 	title, _ := collection.Schema().Field("title")
-	if rating.Index == nil || rating.Index.(InvertIndexParams).EnableRangeOptimization ||
-		title.Index == nil || !title.Index.(InvertIndexParams).EnableExtendedWildcard {
-		t.Fatalf("reopened indexes = rating %#v title %#v", rating.Index, title.Index)
-	}
-	if collection.Stats().DocumentCount != 3 {
-		t.Fatalf("reopened document count = %d", collection.Stats().DocumentCount)
-	}
+	require.NotNil(t, rating.Index)
+	require.False(t, rating.Index.(InvertIndexParams).EnableRangeOptimization)
+	require.NotNil(t, title.Index)
+	require.True(t, title.Index.(InvertIndexParams).EnableExtendedWildcard)
+	require.True(t, collection.Stats().DocumentCount == 3)
 }
 
 func TestCreateFlatIndexChangesMetricAtomically(t *testing.T) {
@@ -119,39 +120,39 @@ func TestCreateFlatIndexChangesMetricAtomically(t *testing.T) {
 	)
 	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := collection.Insert(ctx, []Document{
+			{PrimaryKey: "far", Fields: map[string]any{"embedding": VectorFP32{10, 0}}},
+			{PrimaryKey: "near", Fields: map[string]any{"embedding": VectorFP32{1, 0}}},
+		})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, []Document{
-		{PrimaryKey: "far", Fields: map[string]any{"embedding": VectorFP32{10, 0}}},
-		{PrimaryKey: "near", Fields: map[string]any{"embedding": VectorFP32{1, 0}}},
-	}); err != nil {
-		t.Fatal(err)
-	}
+
 	query := VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2}
 	before, err := collection.Query(ctx, query)
-	if err != nil || !reflect.DeepEqual(documentKeys(before), []string{"far", "near"}) {
-		t.Fatalf("IP results = %v, %v", documentKeys(before), err)
+	require.NoError(t, err)
+	require.Equal(t, []string{"far", "near"}, documentKeys(before))
+	{
+		err := collection.CreateIndex(ctx, "embedding", NewFlatIndexParams(MetricTypeL2), CreateIndexOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
-	if err := collection.CreateIndex(ctx, "embedding", NewFlatIndexParams(MetricTypeL2), CreateIndexOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
-	}
+
 	after, err := collection.Query(ctx, query)
-	if err != nil || !reflect.DeepEqual(documentKeys(after), []string{"near", "far"}) {
-		t.Fatalf("L2 results = %v, %v", documentKeys(after), err)
+	require.NoError(t, err)
+	require.Equal(t, []string{"near", "far"}, documentKeys(after))
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	after, err = collection.Query(ctx, query)
-	if err != nil || !reflect.DeepEqual(documentKeys(after), []string{"near", "far"}) {
-		t.Fatalf("reopened L2 results = %v, %v", documentKeys(after), err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"near", "far"}, documentKeys(after))
 }
 
 func TestCreateIndexValidationAndRollback(t *testing.T) {
@@ -165,9 +166,8 @@ func TestCreateIndexValidationAndRollback(t *testing.T) {
 	)
 	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var typedNil *InvertIndexParams
 	invalidFlat := NewFlatIndexParams(MetricTypeUndefined)
 	tests := []struct {
@@ -192,62 +192,72 @@ func TestCreateIndexValidationAndRollback(t *testing.T) {
 			beforeSchema := collection.Schema()
 			beforeGeneration := collection.store.Manifest().Generation
 			err := collection.CreateIndex(ctx, testCase.column, testCase.index, testCase.options)
-			if !errors.Is(err, testCase.want) {
-				t.Fatalf("error = %v, want %v", err, testCase.want)
-			}
-			if !reflect.DeepEqual(collection.Schema(), beforeSchema) || collection.store.Manifest().Generation != beforeGeneration {
-				t.Fatal("failed CreateIndex changed schema or manifest")
-			}
+			require.ErrorIs(t, err, testCase.want)
+			require.Equal(t, beforeSchema, collection.Schema(),
+				"failed CreateIndex changed schema or manifest")
+			require.Equal(t, beforeGeneration, collection.store.Manifest().Generation,
+				"failed CreateIndex changed schema or manifest")
 		})
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := collection.CreateIndex(canceled, "text", NewInvertIndexParams(), CreateIndexOptions{}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled CreateIndex = %v", err)
+	{
+		err := collection.CreateIndex(canceled, "text", NewInvertIndexParams(), CreateIndexOptions{})
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if err := collection.CreateIndex(nil, "text", NewInvertIndexParams(), CreateIndexOptions{}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil context = %v", err)
+	{
+		err := collection.CreateIndex(nil, "text", NewInvertIndexParams(), CreateIndexOptions{})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
+
 	var nilCollection *Collection
-	if err := nilCollection.CreateIndex(ctx, "text", NewInvertIndexParams(), CreateIndexOptions{}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil collection = %v", err)
+	{
+		err := nilCollection.CreateIndex(ctx, "text", NewInvertIndexParams(), CreateIndexOptions{})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.CreateIndex(ctx, "text", NewInvertIndexParams(), CreateIndexOptions{}); !errors.Is(err, ErrFailedPrecondition) {
-		t.Fatalf("closed CreateIndex = %v", err)
+	{
+		err := collection.CreateIndex(ctx, "text", NewInvertIndexParams(), CreateIndexOptions{})
+		require.ErrorIs(t, err, ErrFailedPrecondition)
 	}
+
 	readOnlyOptions := NewCollectionOptions()
 	readOnlyOptions.ReadOnly = true
 	readOnly, err := Open(ctx, path, readOnlyOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer readOnly.Close()
-	if err := readOnly.CreateIndex(ctx, "text", NewInvertIndexParams(), CreateIndexOptions{}); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("read-only CreateIndex = %v", err)
+	{
+		err := readOnly.CreateIndex(ctx, "text", NewInvertIndexParams(), CreateIndexOptions{})
+		require.ErrorIs(t, err, ErrPermissionDenied)
 	}
 }
 
 func TestCreateIndexBackfillFailureLeavesSchemaUnchanged(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "create-index-rollback"), createIndexSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.store.Insert(ctx, []db.WriteInput{{PrimaryKey: "corrupt", Payload: []byte("not-a-document")}}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.store.Insert(ctx, []db.WriteInput{{PrimaryKey: "corrupt", Payload: []byte("not-a-document")}})
+		require.NoError(t, err)
 	}
+
 	before := collection.Schema()
 	generation := collection.store.Manifest().Generation
-	if err := collection.CreateIndex(ctx, "rating", NewInvertIndexParams(), CreateIndexOptions{Concurrency: 2}); err == nil {
-		t.Fatal("CreateIndex unexpectedly accepted corrupt backfill data")
+	{
+		err := collection.CreateIndex(ctx, "rating", NewInvertIndexParams(), CreateIndexOptions{Concurrency: 2})
+		require.Error(t, err,
+			"CreateIndex unexpectedly accepted corrupt backfill data")
 	}
-	if !reflect.DeepEqual(collection.Schema(), before) || collection.store.Manifest().Generation != generation {
-		t.Fatal("failed backfill changed published schema")
-	}
+	require.Equal(t, before, collection.Schema(),
+		"failed backfill changed published schema")
+	require.Equal(t, generation, collection.store.Manifest().Generation,
+		"failed backfill changed published schema")
 }
 
 func createIndexSchema() CollectionSchema {

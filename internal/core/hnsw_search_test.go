@@ -16,12 +16,11 @@ package core
 
 import (
 	"context"
-	"errors"
 	"math"
-	"reflect"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHNSWSearchSmallGraphMatchesFlat(t *testing.T) {
@@ -42,18 +41,13 @@ func TestHNSWSearchSmallGraphMatchesFlat(t *testing.T) {
 			options.Radius = 10
 		}
 		got, err := index.SearchHNSW(context.Background(), query, options)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		want, err := topKCandidatesWithOptions(context.Background(), metric, query, options.SearchOptions, len(inputs), func(position int) Candidate {
 			return inputs[position]
 		}, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("metric %d HNSW = %#v, Flat = %#v", metric, got, want)
-		}
+		require.NoError(t, err)
+		require.Equal(t, want, got)
 	}
 }
 
@@ -67,13 +61,11 @@ func TestHNSWSearchLargeGraphRecall(t *testing.T) {
 			got, err := index.SearchHNSW(context.Background(), query, HNSWSearchOptions{
 				SearchOptions: SearchOptions{TopK: 10}, EF: 120,
 			})
-			if err != nil {
-				t.Fatalf("metric %d: %v", metric, err)
-			}
+			require.NoError(t, err)
+
 			want, err := TopK(context.Background(), metric, query, inputs, 10)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			truth := make(map[uint64]struct{}, len(want))
 			for _, result := range want {
 				truth[result.Key] = struct{}{}
@@ -86,9 +78,7 @@ func TestHNSWSearchLargeGraphRecall(t *testing.T) {
 			total += len(want)
 		}
 		recall := float64(matched) / float64(total)
-		if recall < 0.80 {
-			t.Fatalf("metric %d recall@10 = %.3f, want >= 0.80", metric, recall)
-		}
+		require.True(t, recall >= 0.80)
 	}
 }
 
@@ -104,21 +94,14 @@ func TestHNSWSearchLargeGraphFilterRadiusAndEF(t *testing.T) {
 		},
 		EF: 1,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(results, []Result{{Key: target.Key, Score: 0}}) {
-		t.Fatalf("filtered radius results = %#v", results)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: target.Key, Score: 0}}, results)
+
 	results, err = index.SearchHNSW(context.Background(), target.Vector, HNSWSearchOptions{
 		SearchOptions: SearchOptions{TopK: 25}, EF: 2,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 25 {
-		t.Fatalf("EF below TopK returned %d results, want 25", len(results))
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 25)
 }
 
 func TestHNSWSearchStableTiesAndDefaults(t *testing.T) {
@@ -130,25 +113,23 @@ func TestHNSWSearchStableTiesAndDefaults(t *testing.T) {
 	}
 	index := buildSearchHNSW(t, MetricL2, inputs, 2, 4)
 	results, err := index.Search(context.Background(), []float32{0}, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(results, []Result{{Key: 2, Score: 1}, {Key: 9, Score: 1}, {Key: 50, Score: 1}}) {
-		t.Fatalf("ties = %#v", results)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 2, Score: 1}, {Key: 9, Score: 1}, {Key: 50, Score: 1}}, results)
+
 	results, err = index.Search(context.Background(), []float32{0}, 0)
-	if err != nil || results == nil || len(results) != 0 {
-		t.Fatalf("zero top-k = %#v, %v", results, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, results)
+	require.Len(t, results, 0)
+
 	options := DefaultHNSWBuildOptions(MetricL2)
 	builder, _ := NewHNSWBuilder(1, options)
 	empty, _ := builder.Build(context.Background())
 	results, err = empty.SearchHNSW(context.Background(), []float32{0}, HNSWSearchOptions{
 		SearchOptions: SearchOptions{TopK: 1}, EF: 1,
 	})
-	if err != nil || results == nil || len(results) != 0 {
-		t.Fatalf("empty search = %#v, %v", results, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, results)
+	require.Len(t, results, 0)
 }
 
 func TestHNSWResultTieBreaksByKey(t *testing.T) {
@@ -159,9 +140,10 @@ func TestHNSWResultTieBreaksByKey(t *testing.T) {
 	}
 	left := hnswScoredNode{position: 0, score: 1}
 	right := hnswScoredNode{position: 1, score: 1}
-	if index.hnswResultNodeBetter(left, right) || !index.hnswResultNodeBetter(right, left) {
-		t.Fatal("equal HNSW result scores did not prefer the smaller document key")
-	}
+	require.False(t, index.hnswResultNodeBetter(left, right),
+		"equal HNSW result scores did not prefer the smaller document key")
+	require.True(t, index.hnswResultNodeBetter(right, left),
+		"equal HNSW result scores did not prefer the smaller document key")
 }
 
 func TestHNSWSearchTraversesEqualScoreCandidates(t *testing.T) {
@@ -189,67 +171,85 @@ func TestHNSWSearchTraversesEqualScoreCandidates(t *testing.T) {
 	results, err := index.SearchHNSW(context.Background(), []float32{1}, HNSWSearchOptions{
 		SearchOptions: SearchOptions{TopK: 1}, EF: 1,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(results, []Result{{Key: 1, Score: 1}}) {
-		t.Fatalf("equal-score traversal results = %#v", results)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 1, Score: 1}}, results)
 }
 
 func TestHNSWSearchValidation(t *testing.T) {
 	t.Parallel()
 	index := buildSearchHNSW(t, MetricL2, hnswBuildInputs(4), 2, 4)
 	valid := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 1}, EF: 2}
-	if _, err := index.SearchHNSW(nil, []float32{1, 2, 3}, valid); err == nil {
-		t.Fatal("nil context succeeded")
+	{
+		_, err := index.SearchHNSW(nil, []float32{1, 2, 3}, valid)
+		require.Error(t, err,
+			"nil context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := index.SearchHNSW(canceled, []float32{1, 2, 3}, valid); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled error = %v", err)
+	{
+		_, err := index.SearchHNSW(canceled, []float32{1, 2, 3}, valid)
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := index.SearchHNSW(context.Background(), []float32{1, 2}, valid); !errors.Is(err, ErrInvalidDimension) {
-		t.Fatalf("dimension error = %v", err)
+	{
+		_, err := index.SearchHNSW(context.Background(), []float32{1, 2}, valid)
+		require.ErrorIs(t, err, ErrInvalidDimension)
 	}
-	if _, err := index.SearchHNSW(context.Background(), []float32{1, float32(math.NaN()), 3}, valid); !errors.Is(err, ailego.ErrNonFiniteVector) {
-		t.Fatalf("finite error = %v", err)
+	{
+		_, err := index.SearchHNSW(context.Background(), []float32{1, float32(math.NaN()), 3}, valid)
+		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
 	}
+
 	invalidEF := valid
 	invalidEF.EF = 0
-	if _, err := index.SearchHNSW(context.Background(), []float32{1, 2, 3}, invalidEF); !errors.Is(err, ErrInvalidHNSWEF) {
-		t.Fatalf("EF error = %v", err)
+	{
+		_, err := index.SearchHNSW(context.Background(), []float32{1, 2, 3}, invalidEF)
+		require.ErrorIs(t, err, ErrInvalidHNSWEF)
 	}
+
 	invalidEF.EF = MaxHNSWEFSearch + 1
-	if _, err := index.SearchHNSW(context.Background(), []float32{1, 2, 3}, invalidEF); !errors.Is(err, ErrInvalidHNSWEF) {
-		t.Fatalf("large EF error = %v", err)
+	{
+		_, err := index.SearchHNSW(context.Background(), []float32{1, 2, 3}, invalidEF)
+		require.ErrorIs(t, err, ErrInvalidHNSWEF)
 	}
+
 	valid.EF = MaxHNSWEFSearch
-	if _, err := index.SearchHNSW(context.Background(), []float32{1, 2, 3}, valid); err != nil {
-		t.Fatalf("maximum EF error = %v", err)
+	{
+		_, err := index.SearchHNSW(context.Background(), []float32{1, 2, 3}, valid)
+		require.NoError(t, err)
 	}
+
 	invalidTopK := valid
 	invalidTopK.TopK = 0
-	if _, err := index.SearchHNSW(context.Background(), []float32{1, 2, 3}, invalidTopK); !errors.Is(err, ErrInvalidTopK) {
-		t.Fatalf("top-k error = %v", err)
+	{
+		_, err := index.SearchHNSW(context.Background(), []float32{1, 2, 3}, invalidTopK)
+		require.ErrorIs(t, err, ErrInvalidTopK)
 	}
+
 	invalidRadius := valid
 	invalidRadius.Radius = -1
-	if _, err := index.SearchHNSW(context.Background(), []float32{1, 2, 3}, invalidRadius); !errors.Is(err, ErrInvalidRadius) {
-		t.Fatalf("radius error = %v", err)
+	{
+		_, err := index.SearchHNSW(context.Background(), []float32{1, 2, 3}, invalidRadius)
+		require.ErrorIs(t, err, ErrInvalidRadius)
 	}
+
 	var nilIndex *HNSWIndex
-	if _, err := nilIndex.SearchHNSW(context.Background(), []float32{1}, valid); err == nil {
-		t.Fatal("nil index search succeeded")
+	{
+		_, err := nilIndex.SearchHNSW(context.Background(), []float32{1}, valid)
+		require.Error(t, err,
+			"nil index search succeeded")
 	}
-	if err := (HNSWSearchOptions{}).Validate(); !errors.Is(err, ErrInvalidTopK) {
-		t.Fatalf("options top-k error = %v", err)
+	{
+		err := (HNSWSearchOptions{}).Validate()
+		require.ErrorIs(t, err, ErrInvalidTopK)
 	}
-	if err := (HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 1}}).Validate(); !errors.Is(err, ErrInvalidHNSWEF) {
-		t.Fatalf("options EF error = %v", err)
+	{
+		err := (HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 1}}).Validate()
+		require.ErrorIs(t, err, ErrInvalidHNSWEF)
 	}
-	if err := (HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 1}, EF: MaxHNSWEFSearch + 1}).Validate(); !errors.Is(err, ErrInvalidHNSWEF) {
-		t.Fatalf("options large EF error = %v", err)
+	{
+		err := (HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 1}, EF: MaxHNSWEFSearch + 1}).Validate()
+		require.ErrorIs(t, err, ErrInvalidHNSWEF)
 	}
 }
 
@@ -260,8 +260,11 @@ func BenchmarkHNSWSearch(b *testing.B) {
 	options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 10}, EF: 100}
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := index.SearchHNSW(context.Background(), query, options); err != nil {
-			b.Fatal(err)
+		{
+			_, err := index.SearchHNSW(context.Background(), query, options)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }
@@ -273,17 +276,16 @@ func buildSearchHNSW(t testing.TB, metric Metric, inputs []Candidate, m, efConst
 	options.EFConstruction = efConstruction
 	options.Seed = 0x123456789abcdef
 	builder, err := NewHNSWBuilder(len(inputs[0].Vector), options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, input := range inputs {
-		if err := builder.Add(context.Background(), input.Key, input.Vector); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.Add(context.Background(), input.Key, input.Vector)
+			require.NoError(t, err)
 		}
 	}
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return index
 }

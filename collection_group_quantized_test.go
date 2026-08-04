@@ -18,10 +18,10 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/core"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCollectionDenseQuantizedLinearGroupByAndRefinement(t *testing.T) {
@@ -78,9 +78,8 @@ func TestCollectionDenseQuantizedLinearGroupByAndRefinement(t *testing.T) {
 			)
 			schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 			collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			documents := annRaBitQDocuments(24)
 			for position := range documents {
 				if position%7 == 0 {
@@ -89,9 +88,11 @@ func TestCollectionDenseQuantizedLinearGroupByAndRefinement(t *testing.T) {
 					documents[position].Fields["group"] = fmt.Sprintf("g%d", position%4)
 				}
 			}
-			if _, err := collection.Insert(ctx, documents); err != nil {
-				t.Fatal(err)
+			{
+				_, err := collection.Insert(ctx, documents)
+				require.NoError(t, err)
 			}
+
 			queryVector := append(VectorFP32(nil), documents[11].Fields["embedding"].(VectorFP32)...)
 			queryVector[3] += .137
 			filter := "rating >= 1"
@@ -102,50 +103,45 @@ func TestCollectionDenseQuantizedLinearGroupByAndRefinement(t *testing.T) {
 
 			groupQuery.Params = testCase.params(false)
 			firstStageGroups, err := collection.GroupByQuery(ctx, groupQuery)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			firstStage, err := collection.Query(ctx, VectorQuery{
 				Field: "embedding", DenseVector: queryVector, TopK: len(documents),
 				Filter: filter, Params: testCase.params(false),
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			assertCollectionGroupsMatchResults(t, firstStageGroups, firstStage, "group", core.MetricL2, 4, 2)
 
 			groupQuery.Params = testCase.params(true)
 			refinedGroups, err := collection.GroupByQuery(ctx, groupQuery)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			refined, err := collection.Query(ctx, VectorQuery{
 				Field: "embedding", DenseVector: queryVector, TopK: len(documents),
 				Filter: filter, Params: testCase.params(true),
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			assertCollectionGroupsMatchResults(t, refinedGroups, refined, "group", core.MetricL2, 4, 2)
-			if !collectionGroupScoresDiffer(firstStageGroups, refinedGroups) {
-				t.Fatal("refinement did not change any quantized group score")
+			require.True(t, collectionGroupScoresDiffer(firstStageGroups, refinedGroups),
+				"refinement did not change any quantized group score")
+			{
+				err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2})
+				require.NoError(t, err)
+			}
+			{
+				err := collection.Close()
+				require.NoError(t, err)
 			}
 
-			if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
-				t.Fatal(err)
-			}
-			if err := collection.Close(); err != nil {
-				t.Fatal(err)
-			}
 			collection, err = Open(ctx, path, NewCollectionOptions())
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			defer collection.Close()
 			reopened, err := collection.GroupByQuery(ctx, groupQuery)
-			if err != nil || !reflect.DeepEqual(reopened, refinedGroups) {
-				t.Fatalf("reopened refined groups = %#v, %v; before %#v", reopened, err, refinedGroups)
-			}
+			require.NoError(t, err)
+			require.Equal(t, refinedGroups, reopened)
 		})
 	}
 }
@@ -163,9 +159,8 @@ func TestCollectionSparseFP16LinearGroupByAndRefinement(t *testing.T) {
 	)
 	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	documents := make([]Document, 30)
 	for position := range documents {
 		group := any(fmt.Sprintf("g%d", position%4))
@@ -180,9 +175,11 @@ func TestCollectionSparseFP16LinearGroupByAndRefinement(t *testing.T) {
 			"group": group, "rating": int32(position % 3),
 		}}
 	}
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
+
 	queryVector := SparseVectorFP32{
 		Indices: []uint32{2, 24, 57},
 		Values:  []float32{2.0007, 1.0003, 3.0009},
@@ -195,49 +192,44 @@ func TestCollectionSparseFP16LinearGroupByAndRefinement(t *testing.T) {
 		GroupByField: "group", GroupCount: 4, TopKPerGroup: 2,
 	}
 	firstStageGroups, err := collection.GroupByQuery(ctx, groupQuery)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	firstStage, err := collection.Query(ctx, VectorQuery{
 		Field: "sparse", SparseVector: queryVector, TopK: len(documents), Filter: filter, Params: params,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertCollectionGroupsMatchResults(t, firstStageGroups, firstStage, "group", core.MetricIP, 4, 2)
 
 	params.UseRefiner = true
 	groupQuery.Params = params
 	refinedGroups, err := collection.GroupByQuery(ctx, groupQuery)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	refined, err := collection.Query(ctx, VectorQuery{
 		Field: "sparse", SparseVector: queryVector, TopK: len(documents), Filter: filter, Params: params,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertCollectionGroupsMatchResults(t, refinedGroups, refined, "group", core.MetricIP, 4, 2)
-	if !collectionGroupScoresDiffer(firstStageGroups, refinedGroups) {
-		t.Fatal("sparse refinement did not change any FP16 group score")
+	require.True(t, collectionGroupScoresDiffer(firstStageGroups, refinedGroups),
+		"sparse refinement did not change any FP16 group score")
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2})
+		require.NoError(t, err)
+	}
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
 
-	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
-	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	reopened, err := collection.GroupByQuery(ctx, groupQuery)
-	if err != nil || !reflect.DeepEqual(reopened, refinedGroups) {
-		t.Fatalf("reopened sparse refined groups = %#v, %v; before %#v", reopened, err, refinedGroups)
-	}
+	require.NoError(t, err)
+	require.Equal(t, refinedGroups, reopened)
 }
 
 func TestCollectionNativeDenseHNSWGroupBy(t *testing.T) {
@@ -290,9 +282,8 @@ func TestCollectionNativeDenseHNSWGroupBy(t *testing.T) {
 				FieldSchema{Name: "group", DataType: DataTypeString},
 			)
 			collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			documents := make([]Document, 8)
 			for position := range documents {
 				value, group := float32(position)/10, "near"
@@ -309,39 +300,36 @@ func TestCollectionNativeDenseHNSWGroupBy(t *testing.T) {
 					"embedding": vector, "group": group,
 				}}
 			}
-			if _, err := collection.Insert(ctx, documents); err != nil {
-				t.Fatal(err)
+			{
+				_, err := collection.Insert(ctx, documents)
+				require.NoError(t, err)
 			}
+
 			query := GroupByVectorQuery{
 				Field: "embedding", DenseVector: make(VectorFP32, 64),
 				GroupByField: "group", GroupCount: 3, TopKPerGroup: 1,
 			}
 			query.Params = testCase.params(false)
 			native, err := collection.GroupByQuery(ctx, query)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			query.Params = testCase.params(true)
 			linear, err := collection.GroupByQuery(ctx, query)
-			if err != nil {
-				t.Fatal(err)
+			require.NoError(t, err)
+			require.Equal(t, linear, native)
+			{
+				err := collection.Close()
+				require.NoError(t, err)
 			}
-			if !reflect.DeepEqual(native, linear) {
-				t.Fatalf("native groups = %#v, linear groups = %#v", native, linear)
-			}
-			if err := collection.Close(); err != nil {
-				t.Fatal(err)
-			}
+
 			collection, err = Open(ctx, path, NewCollectionOptions())
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			defer collection.Close()
 			query.Params = testCase.params(false)
 			reopened, err := collection.GroupByQuery(ctx, query)
-			if err != nil || !reflect.DeepEqual(reopened, native) {
-				t.Fatalf("reopened native groups = %#v, %v; before %#v", reopened, err, native)
-			}
+			require.NoError(t, err)
+			require.Equal(t, native, reopened)
 		})
 	}
 }
@@ -356,9 +344,8 @@ func TestCollectionNativeSparseHNSWGroupBy(t *testing.T) {
 		FieldSchema{Name: "group", DataType: DataTypeString},
 	)
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	documents := make([]Document, 8)
 	for position := range documents {
 		value, group := float32(10-position)+.1234, "hot"
@@ -372,9 +359,11 @@ func TestCollectionNativeSparseHNSWGroupBy(t *testing.T) {
 			"group":  group,
 		}}
 	}
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
+
 	query := GroupByVectorQuery{
 		Field: "sparse", SparseVector: SparseVectorFP32{Indices: []uint32{0, 3}, Values: []float32{1, .5}},
 		GroupByField: "group", GroupCount: 3, TopKPerGroup: 1,
@@ -383,32 +372,27 @@ func TestCollectionNativeSparseHNSWGroupBy(t *testing.T) {
 	params.EF = 4
 	query.Params = params
 	native, err := collection.GroupByQuery(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	params.Linear = true
 	query.Params = params
 	linear, err := collection.GroupByQuery(ctx, query)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.Equal(t, linear, native)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if !reflect.DeepEqual(native, linear) {
-		t.Fatalf("native sparse groups = %#v, linear groups = %#v", native, linear)
-	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	params.Linear = false
 	query.Params = params
 	reopened, err := collection.GroupByQuery(ctx, query)
-	if err != nil || !reflect.DeepEqual(reopened, native) {
-		t.Fatalf("reopened native sparse groups = %#v, %v; before %#v", reopened, err, native)
-	}
+	require.NoError(t, err)
+	require.Equal(t, native, reopened)
 }
 
 func assertCollectionGroupsMatchResults(
@@ -435,20 +419,18 @@ func assertCollectionGroupsMatchResults(
 		batch = append(batch, core.GroupResult{Value: value, Results: groupResults})
 	}
 	want := core.MergeGroupResults(metric, groupCount, topKPerGroup, batch)
-	if len(got) != len(want) {
-		t.Fatalf("group count = %d, want %d: %#v", len(got), len(want), got)
-	}
+	require.Len(t, got, len(want))
+
 	for groupIndex := range want {
-		if got[groupIndex].Value != want[groupIndex].Value || len(got[groupIndex].Documents) != len(want[groupIndex].Results) {
-			t.Fatalf("group %d = %#v, want %#v", groupIndex, got[groupIndex], want[groupIndex])
-		}
+		require.Equal(t, want[groupIndex].Value, got[groupIndex].Value)
+		require.Len(t, got[groupIndex].Documents, len(want[groupIndex].Results))
+
 		for documentIndex, result := range want[groupIndex].Results {
 			document := got[groupIndex].Documents[documentIndex]
 			expected := byID[result.Key]
-			if document.PrimaryKey != expected.PrimaryKey || document.DocID != result.Key || document.Score != result.Score {
-				t.Fatalf("group %d document %d = %#v, want key %q ID %d score %v",
-					groupIndex, documentIndex, document, expected.PrimaryKey, result.Key, result.Score)
-			}
+			require.Equal(t, expected.PrimaryKey, document.PrimaryKey)
+			require.Equal(t, result.Key, document.DocID)
+			require.Equal(t, result.Score, document.Score)
 		}
 	}
 }

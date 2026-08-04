@@ -16,13 +16,12 @@ package zvec
 
 import (
 	"encoding/binary"
-	"errors"
 	"math"
-	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDocumentCloneAndFieldOwnership(t *testing.T) {
@@ -35,33 +34,38 @@ func TestDocumentCloneAndFieldOwnership(t *testing.T) {
 		"sparse": sparse,
 		"title":  "Go",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	binaryValue[0], dense[0], sparse.Indices[0] = 9, 9, 99
-	if got, _ := document.Field("binary"); !reflect.DeepEqual(got, Binary{1, 2}) {
-		t.Fatalf("binary field = %#v", got)
+	{
+		got, _ := document.Field("binary")
+		require.Equal(t, Binary{1, 2}, got)
 	}
-	if got, _ := document.Field("dense"); !reflect.DeepEqual(got, VectorFP32{1, 2}) {
-		t.Fatalf("dense field = %#v", got)
+	{
+		got, _ := document.Field("dense")
+		require.Equal(t, VectorFP32{1, 2}, got)
 	}
-	if got, _ := document.Field("sparse"); !reflect.DeepEqual(got, SparseVectorFP32{Indices: []uint32{3, 9}, Values: []float32{2, 1}}) {
-		t.Fatalf("canonical sparse field = %#v", got)
+	{
+		got, _ := document.Field("sparse")
+		require.Equal(t, SparseVectorFP32{Indices: []uint32{3, 9}, Values: []float32{2, 1}}, got)
 	}
+
 	value, found := document.Field("dense")
-	if !found {
-		t.Fatal("dense field missing")
-	}
+	require.True(t, found,
+		"dense field missing")
+
 	value.(VectorFP32)[0] = 77
 	again, _ := document.Field("dense")
-	if again.(VectorFP32)[0] != 1 {
-		t.Fatal("Field returned shared storage")
+	require.True(t, again.(VectorFP32)[0] == 1,
+		"Field returned shared storage")
+	{
+		_, found := document.Field("missing")
+		require.False(t, found,
+			"missing field was found")
 	}
-	if _, found := document.Field("missing"); found {
-		t.Fatal("missing field was found")
-	}
-	if got := document.FieldNames(); !reflect.DeepEqual(got, []string{"binary", "dense", "sparse", "title"}) {
-		t.Fatalf("field names = %#v", got)
+	{
+		got := document.FieldNames()
+		require.Equal(t, []string{"binary", "dense", "sparse", "title"}, got)
 	}
 }
 
@@ -83,8 +87,9 @@ func TestDocumentRejectsAmbiguousOrInvalidValues(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			if _, err := NewDocument(testCase.key, testCase.fields); !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("error = %v", err)
+			{
+				_, err := NewDocument(testCase.key, testCase.fields)
+				require.ErrorIs(t, err, ErrInvalidArgument)
 			}
 		})
 	}
@@ -102,40 +107,32 @@ func TestProjectDocumentSemantics(t *testing.T) {
 		"dense":  VectorFP32{1, 2},
 		"sparse": SparseVectorFP32{Indices: []uint32{1}, Values: []float32{3}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	document.Score, document.DocID = 0.25, 42
 
 	allScalar, err := ProjectDocument(document, schema, Projection{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(allScalar.FieldNames(), []string{"title", "year"}) {
-		t.Fatalf("all scalar = %#v", allScalar.Fields)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"title", "year"}, allScalar.FieldNames())
+
 	empty, err := ProjectDocument(document, schema, Projection{OutputFields: []string{}})
-	if err != nil || len(empty.Fields) != 0 {
-		t.Fatalf("empty projection = %#v, %v", empty, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, empty.Fields, 0)
+
 	selected, err := ProjectDocument(document, schema, Projection{OutputFields: []string{"year"}, IncludeVectors: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(selected.FieldNames(), []string{"dense", "sparse", "year"}) {
-		t.Fatalf("selected fields = %#v", selected.FieldNames())
-	}
-	if selected.PrimaryKey != document.PrimaryKey || selected.Score != document.Score || selected.DocID != document.DocID {
-		t.Fatalf("metadata changed: %#v", selected)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"dense", "sparse", "year"}, selected.FieldNames())
+	require.Equal(t, document.PrimaryKey, selected.PrimaryKey)
+	require.Equal(t, document.Score, selected.Score)
+	require.Equal(t, document.DocID, selected.DocID)
+
 	wildcard, err := ProjectDocument(document, schema, Projection{OutputFields: []string{"*"}})
-	if err != nil || !reflect.DeepEqual(wildcard.FieldNames(), []string{"title", "year"}) {
-		t.Fatalf("wildcard = %#v, %v", wildcard, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"title", "year"}, wildcard.FieldNames())
+
 	selected.Fields["dense"].(VectorFP32)[0] = 99
-	if document.Fields["dense"].(VectorFP32)[0] != 1 {
-		t.Fatal("projection shares vector storage")
-	}
+	require.True(t, document.Fields["dense"].(VectorFP32)[0] == 1,
+		"projection shares vector storage")
 }
 
 func TestProjectionValidation(t *testing.T) {
@@ -147,20 +144,22 @@ func TestProjectionValidation(t *testing.T) {
 		{OutputFields: []string{"*", "title"}},
 	}
 	for _, projection := range tests {
-		if err := projection.Validate(schema); !errors.Is(err, ErrInvalidArgument) {
-			t.Fatalf("projection %#v error = %v", projection, err)
+		{
+			err := projection.Validate(schema)
+			require.ErrorIs(t, err, ErrInvalidArgument)
 		}
 	}
 	nilProjection := Projection{}
 	clone := nilProjection.Clone()
-	if clone.OutputFields != nil {
-		t.Fatal("clone changed nil output fields")
-	}
+	require.Nil(t, clone.OutputFields,
+		"clone changed nil output fields")
+
 	emptyProjection := Projection{OutputFields: []string{}}
 	clone = emptyProjection.Clone()
-	if clone.OutputFields == nil || len(clone.OutputFields) != 0 {
-		t.Fatal("clone changed empty output fields")
-	}
+	require.NotNil(t, clone.OutputFields,
+		"clone changed empty output fields")
+	require.Len(t, clone.OutputFields, 0,
+		"clone changed empty output fields")
 }
 
 func TestDocumentSchemaValidation(t *testing.T) {
@@ -172,9 +171,9 @@ func TestDocumentSchemaValidation(t *testing.T) {
 	valid, err := NewDocument("book-1", map[string]any{
 		"title": "Go", "year": nil, "dense": VectorFP32{1, 2},
 	})
-	if err != nil || valid.Validate(schema) != nil {
-		t.Fatalf("valid document = %#v, %v, %v", valid, err, valid.Validate(schema))
-	}
+	require.NoError(t, err)
+	require.NoError(t, valid.Validate(schema))
+
 	tests := []map[string]any{
 		{"dense": VectorFP32{1, 2}},
 		{"title": nil, "dense": VectorFP32{1, 2}},
@@ -184,11 +183,10 @@ func TestDocumentSchemaValidation(t *testing.T) {
 	}
 	for _, fields := range tests {
 		document, err := NewDocument("book-1", fields)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := document.Validate(schema); !errors.Is(err, ErrInvalidArgument) {
-			t.Fatalf("fields %#v error = %v", fields, err)
+		require.NoError(t, err)
+		{
+			err := document.Validate(schema)
+			require.ErrorIs(t, err, ErrInvalidArgument)
 		}
 	}
 }
@@ -226,37 +224,29 @@ func TestDocumentPayloadRoundTripEveryType(t *testing.T) {
 		"z_null":   nil,
 	}
 	document, err := NewDocument("key", fields)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	encoded, err := marshalDocumentPayload(document.Fields)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	decoded, err := unmarshalDocumentPayload(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(decoded, document.Fields) {
-		t.Fatalf("decoded = %#v\nwant = %#v", decoded, document.Fields)
-	}
+	require.NoError(t, err)
+	require.Equal(t, document.Fields, decoded)
+
 	reencoded, err := marshalDocumentPayload(decoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(encoded, reencoded) {
-		t.Fatal("document codec is not deterministic")
-	}
+	require.NoError(t, err)
+	require.True(t, slices.Equal(encoded, reencoded),
+		"document codec is not deterministic")
 }
 
 func TestDocumentPayloadRejectsCorruption(t *testing.T) {
 	encoded, err := marshalDocumentPayload(map[string]any{"value": VectorFP32{1, 2}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for length := 0; length < len(encoded); length++ {
-		if _, err := unmarshalDocumentPayload(encoded[:length]); !errors.Is(err, errDocumentPayloadCorrupt) {
-			t.Fatalf("truncation %d error = %v", length, err)
+		{
+			_, err := unmarshalDocumentPayload(encoded[:length])
+			require.ErrorIs(t, err, errDocumentPayloadCorrupt)
 		}
 	}
 	tests := []func([]byte) []byte{
@@ -266,10 +256,11 @@ func TestDocumentPayloadRejectsCorruption(t *testing.T) {
 		func(data []byte) []byte { data[24] ^= 1; fixDocumentHeaderCRC(data); return data },
 		func(data []byte) []byte { return append(data, 0) },
 	}
-	for index, mutate := range tests {
+	for _, mutate := range tests {
 		corrupt := mutate(slices.Clone(encoded))
-		if _, err := unmarshalDocumentPayload(corrupt); !errors.Is(err, errDocumentPayloadCorrupt) {
-			t.Fatalf("corruption %d error = %v", index, err)
+		{
+			_, err := unmarshalDocumentPayload(corrupt)
+			require.ErrorIs(t, err, errDocumentPayloadCorrupt)
 		}
 	}
 }
@@ -278,15 +269,15 @@ func TestDocumentPayloadRejectsNonCanonicalSparse(t *testing.T) {
 	encoded, err := marshalDocumentPayload(map[string]any{
 		"sparse": SparseVectorFP32{Indices: []uint32{1, 2}, Values: []float32{1, 2}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	dataStart := documentHeaderSize + documentFieldHeaderSize + len("sparse")
 	binary.LittleEndian.PutUint32(encoded[dataStart:dataStart+4], 2)
 	binary.LittleEndian.PutUint32(encoded[dataStart+4:dataStart+8], 1)
 	fixDocumentPayloadCRC(encoded)
-	if _, err := unmarshalDocumentPayload(encoded); !errors.Is(err, errDocumentPayloadCorrupt) {
-		t.Fatalf("unsorted sparse error = %v", err)
+	{
+		_, err := unmarshalDocumentPayload(encoded)
+		require.ErrorIs(t, err, errDocumentPayloadCorrupt)
 	}
 }
 
@@ -294,9 +285,8 @@ func FuzzDocumentPayload(f *testing.F) {
 	seed, err := marshalDocumentPayload(map[string]any{
 		"title": "seed", "vector": VectorFP32{1, 2},
 	})
-	if err != nil {
-		f.Fatal(err)
-	}
+	require.NoError(f, err)
+
 	f.Add(seed)
 	f.Add(seed[:documentHeaderSize])
 	f.Add([]byte("not a document"))
@@ -306,11 +296,10 @@ func FuzzDocumentPayload(f *testing.F) {
 			return
 		}
 		encoded, err := marshalDocumentPayload(fields)
-		if err != nil {
-			t.Fatalf("decoded fields cannot be encoded: %v", err)
-		}
-		if _, err := unmarshalDocumentPayload(encoded); err != nil {
-			t.Fatalf("reencoded payload cannot be decoded: %v", err)
+		require.NoError(t, err)
+		{
+			_, err := unmarshalDocumentPayload(encoded)
+			require.NoError(t, err)
 		}
 	})
 }

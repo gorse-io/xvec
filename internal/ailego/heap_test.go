@@ -14,26 +14,36 @@
 
 package ailego
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestHeap(t *testing.T) {
 	heap := NewHeap(func(a, b int) bool { return a < b })
 	for _, value := range []int{5, 1, 9, 2, 7} {
 		heap.Push(value)
 	}
-	if root, ok := heap.Peek(); !ok || root != 1 {
-		t.Fatalf("Peek = (%d, %v)", root, ok)
+	{
+		root, ok := heap.Peek()
+		require.True(t, ok)
+		require.True(t, root == 1)
 	}
-	if replaced, ok := heap.Replace(3); !ok || replaced != 1 {
-		t.Fatalf("Replace = (%d, %v)", replaced, ok)
+	{
+		replaced, ok := heap.Replace(3)
+		require.True(t, ok)
+		require.True(t, replaced == 1)
 	}
-	for index, want := range []int{2, 3, 5, 7, 9} {
+
+	for _, want := range []int{2, 3, 5, 7, 9} {
 		got, ok := heap.Pop()
-		if !ok || got != want {
-			t.Fatalf("Pop %d = (%d, %v), want %d", index, got, ok, want)
-		}
+		require.True(t, ok)
+		require.Equal(t, want, got)
 	}
-	if _, ok := heap.Pop(); ok {
-		t.Fatal("empty heap returned a value")
+	{
+		_, ok := heap.Pop()
+		require.False(t, ok,
+			"empty heap returned a value")
 	}
 }

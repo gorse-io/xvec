@@ -16,9 +16,11 @@ package zvec
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDeleteByFilterAcrossSegmentsAndWALRecovery(t *testing.T) {
@@ -26,164 +28,196 @@ func TestDeleteByFilterAcrossSegmentsAndWALRecovery(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delete-filter")
 	schema := deleteFilterSchema()
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	first := []Document{
 		deleteFilterDocument("a", "alpha", int32(1), StringArray{"red"}, 5),
 		deleteFilterDocument("b", "beta", int32(2), StringArray{"blue"}, 4),
 		deleteFilterDocument("c", "gamma", nil, StringArray{"red", "blue"}, 3),
 	}
-	if _, err := collection.Insert(ctx, first); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, first)
+		require.NoError(t, err)
 	}
-	if err := collection.Flush(ctx); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
 	}
+
 	second := []Document{
 		deleteFilterDocument("d", "delta", int32(4), StringArray{}, 2),
 		deleteFilterDocument("e", "omega", int32(5), nil, 1),
 	}
-	if _, err := collection.Insert(ctx, second); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, second)
+		require.NoError(t, err)
+	}
+	{
+		err := collection.DeleteByFilter(ctx, "rating >")
+		require.ErrorIs(t, err, ErrInvalidArgument)
+	}
+	{
+		got := collection.Stats().DocumentCount
+		require.True(t, got == 5)
+	}
+	{
+		err := collection.DeleteByFilter(ctx, "(rating>=2 AND title LIKE 'd%') OR tags CONTAIN_ALL ('red', 'blue')")
+		require.NoError(t, err)
+	}
+	{
+		got := collection.Stats().DocumentCount
+		require.True(t, got == 3)
 	}
 
-	if err := collection.DeleteByFilter(ctx, "rating >"); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("invalid filter error = %v", err)
-	}
-	if got := collection.Stats().DocumentCount; got != 5 {
-		t.Fatalf("invalid filter changed document count to %d", got)
-	}
-	if err := collection.DeleteByFilter(ctx, "(rating>=2 AND title LIKE 'd%') OR tags CONTAIN_ALL ('red', 'blue')"); err != nil {
-		t.Fatal(err)
-	}
-	if got := collection.Stats().DocumentCount; got != 3 {
-		t.Fatalf("document count after first filter = %d", got)
-	}
 	assertFetchedPresence(t, collection, []string{"a", "b", "c", "d", "e"}, []bool{true, true, false, false, true})
-	if err := collection.DeleteByFilter(ctx, "rating>100"); err != nil {
-		t.Fatalf("no-match delete = %v", err)
+	{
+		err := collection.DeleteByFilter(ctx, "rating>100")
+		require.NoError(t, err)
 	}
-	if err := collection.DeleteByFilter(ctx, "title LIKE '%ta'"); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DeleteByFilter(ctx, "title LIKE '%ta'")
+		require.NoError(t, err)
 	}
-	if got := collection.Stats().DocumentCount; got != 2 {
-		t.Fatalf("document count after wildcard filter = %d", got)
+	{
+		got := collection.Stats().DocumentCount
+		require.True(t, got == 2)
+	}
+	{
+		// Close without Flush: both immutable-segment and writing-segment deletes
+		// must be reconstructed from the WAL.
+		err := collection.Close()
+		require.NoError(t, err)
 	}
 
-	// Close without Flush: both immutable-segment and writing-segment deletes
-	// must be reconstructed from the WAL.
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertFetchedPresence(t, collection, []string{"a", "b", "c", "d", "e"}, []bool{true, false, false, false, true})
-	if got := collection.Stats().DocumentCount; got != 2 {
-		t.Fatalf("reopened document count = %d", got)
+	{
+		got := collection.Stats().DocumentCount
+		require.True(t, got == 2)
 	}
-	if err := collection.DeleteByFilter(ctx, "title LIKE '%'"); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DeleteByFilter(ctx, "title LIKE '%'")
+		require.NoError(t, err)
 	}
-	if err := collection.Flush(ctx); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
+
 	readOnlyOptions := NewCollectionOptions()
 	readOnlyOptions.ReadOnly = true
 	collection, err = Open(ctx, path, readOnlyOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if got := collection.Stats().DocumentCount; got != 0 {
-		t.Fatalf("fully deleted reopened count = %d", got)
+	{
+		got := collection.Stats().DocumentCount
+		require.True(t, got == 0)
 	}
 }
 
 func TestDeleteByFilterUsesOnlyCurrentDocumentVersions(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "delete-current"), deleteFilterSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.Insert(ctx, []Document{deleteFilterDocument("versioned", "before", int32(1), StringArray{"old"}, 1)}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, []Document{deleteFilterDocument("versioned", "before", int32(1), StringArray{"old"}, 1)})
+		require.NoError(t, err)
 	}
-	if err := collection.Flush(ctx); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
 	}
-	if _, err := collection.Update(ctx, []Document{{PrimaryKey: "versioned", Fields: map[string]any{
-		"title": "after", "rating": int32(3), "tags": StringArray{"new"},
-	}}}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Update(ctx, []Document{{PrimaryKey: "versioned", Fields: map[string]any{
+			"title": "after", "rating": int32(3), "tags": StringArray{"new"},
+		}}})
+		require.NoError(t, err)
 	}
-	if err := collection.DeleteByFilter(ctx, "rating=1 OR tags CONTAIN_ANY ('old')"); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DeleteByFilter(ctx, "rating=1 OR tags CONTAIN_ANY ('old')")
+		require.NoError(t, err)
 	}
+
 	assertFetchedPresence(t, collection, []string{"versioned"}, []bool{true})
-	if err := collection.DeleteByFilter(ctx, "rating=3 AND tags CONTAIN_ANY ('new')"); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DeleteByFilter(ctx, "rating=3 AND tags CONTAIN_ANY ('new')")
+		require.NoError(t, err)
 	}
+
 	assertFetchedPresence(t, collection, []string{"versioned"}, []bool{false})
 }
 
 func TestDeleteByFilterValidationCancellationAndLifecycle(t *testing.T) {
 	ctx := context.Background()
 	var nilCollection *Collection
-	if err := nilCollection.DeleteByFilter(ctx, "rating=1"); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil collection error = %v", err)
+	{
+		err := nilCollection.DeleteByFilter(ctx, "rating=1")
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
+
 	path := filepath.Join(t.TempDir(), "delete-filter-errors")
 	collection, err := CreateAndOpen(ctx, path, deleteFilterSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := collection.DeleteByFilter(nil, "rating=1")
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if err := collection.DeleteByFilter(nil, "rating=1"); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil context error = %v", err)
-	}
+
 	for _, filter := range []string{"", "   ", "missing=1", "embedding=1"} {
-		if err := collection.DeleteByFilter(ctx, filter); !errors.Is(err, ErrInvalidArgument) {
-			t.Errorf("filter %q error = %v", filter, err)
+		{
+			err := collection.DeleteByFilter(ctx, filter)
+			assert.ErrorIs(t, err, ErrInvalidArgument)
 		}
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := collection.DeleteByFilter(canceled, "rating=1"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled error = %v", err)
+	{
+		err := collection.DeleteByFilter(canceled, "rating=1")
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if err := collection.DeleteByFilter(ctx, "rating=1"); err != nil {
-		t.Fatalf("empty collection delete = %v", err)
+	{
+		err := collection.DeleteByFilter(ctx, "rating=1")
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, []Document{deleteFilterDocument("a", "alpha", int32(1), StringArray{}, 1)}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, []Document{deleteFilterDocument("a", "alpha", int32(1), StringArray{}, 1)})
+		require.NoError(t, err)
 	}
-	if err := collection.Flush(ctx); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.DeleteByFilter(ctx, "rating=1"); !errors.Is(err, ErrFailedPrecondition) {
-		t.Fatalf("closed collection error = %v", err)
+	{
+		err := collection.DeleteByFilter(ctx, "rating=1")
+		require.ErrorIs(t, err, ErrFailedPrecondition)
 	}
+
 	readOnlyOptions := NewCollectionOptions()
 	readOnlyOptions.ReadOnly = true
 	readOnly, err := Open(ctx, path, readOnlyOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer readOnly.Close()
-	if err := readOnly.DeleteByFilter(ctx, "rating=1"); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("read-only error = %v", err)
+	{
+		err := readOnly.DeleteByFilter(ctx, "rating=1")
+		require.ErrorIs(t, err, ErrPermissionDenied)
 	}
-	if got := readOnly.Stats().DocumentCount; got != 1 {
-		t.Fatalf("read-only mutation changed count to %d", got)
+	{
+		got := readOnly.Stats().DocumentCount
+		require.True(t, got == 1)
 	}
 }
 
@@ -209,15 +243,10 @@ func deleteFilterDocument(primaryKey, title string, rating, tags any, score floa
 func assertFetchedPresence(t *testing.T, collection *Collection, keys []string, present []bool) {
 	t.Helper()
 	fetched, err := collection.Fetch(context.Background(), keys, Projection{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fetched) != len(present) {
-		t.Fatalf("Fetch returned %d entries, want %d", len(fetched), len(present))
-	}
+	require.NoError(t, err)
+	require.Len(t, fetched, len(present))
+
 	for index := range fetched {
-		if (fetched[index] != nil) != present[index] {
-			t.Errorf("Fetch(%q) present=%t, want %t", keys[index], fetched[index] != nil, present[index])
-		}
+		assert.Equal(t, present[index], fetched[index] != nil)
 	}
 }

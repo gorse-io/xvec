@@ -16,11 +16,10 @@ package core
 
 import (
 	"context"
-	"errors"
-	"reflect"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 var exactCandidates = []Candidate{
@@ -80,12 +79,8 @@ func TestTopKMetricOrdering(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			results, err := TopK(context.Background(), testCase.metric, []float32{1, 0}, exactCandidates, 3)
-			if err != nil {
-				t.Fatalf("top-k: %v", err)
-			}
-			if !reflect.DeepEqual(results, testCase.expected) {
-				t.Fatalf("results = %#v, want %#v", results, testCase.expected)
-			}
+			require.NoError(t, err)
+			require.Equal(t, testCase.expected, results)
 		})
 	}
 }
@@ -94,61 +89,57 @@ func TestTopKStableAcrossCandidateOrder(t *testing.T) {
 	t.Parallel()
 
 	forward, err := TopK(context.Background(), MetricIP, []float32{1, 0}, exactCandidates, 4)
-	if err != nil {
-		t.Fatalf("forward top-k: %v", err)
-	}
+	require.NoError(t, err)
+
 	reversedCandidates := append([]Candidate(nil), exactCandidates...)
 	for left, right := 0, len(reversedCandidates)-1; left < right; left, right = left+1, right-1 {
 		reversedCandidates[left], reversedCandidates[right] = reversedCandidates[right], reversedCandidates[left]
 	}
 	reverse, err := TopK(context.Background(), MetricIP, []float32{1, 0}, reversedCandidates, 4)
-	if err != nil {
-		t.Fatalf("reverse top-k: %v", err)
-	}
-	if !reflect.DeepEqual(forward, reverse) {
-		t.Fatalf("forward = %#v, reverse = %#v", forward, reverse)
-	}
+	require.NoError(t, err)
+	require.Equal(t, reverse, forward)
 }
 
 func TestTopKBoundsAndValidation(t *testing.T) {
 	t.Parallel()
 
 	results, err := TopK(context.Background(), MetricL2, []float32{1, 0}, exactCandidates[:2], 8)
-	if err != nil {
-		t.Fatalf("top-k with oversized k: %v", err)
-	}
-	if len(results) != 2 {
-		t.Fatalf("result count = %d, want 2", len(results))
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 2)
 
 	results, err = TopK(context.Background(), MetricL2, []float32{1, 0}, exactCandidates, 0)
-	if err != nil {
-		t.Fatalf("top-k zero: %v", err)
+	require.NoError(t, err)
+	require.NotNil(t, results)
+	require.Len(t, results, 0)
+	{
+		_, err = TopK(context.Background(), MetricL2, []float32{1}, nil, -1)
+		require.Error(t, err,
+			"negative k succeeded")
 	}
-	if results == nil || len(results) != 0 {
-		t.Fatalf("zero results = %#v, want non-nil empty slice", results)
+	{
+		_, err = TopK(context.Background(), Metric(255), []float32{1}, nil, 1)
+		require.Error(t, err,
+			"invalid metric succeeded")
 	}
-
-	if _, err = TopK(context.Background(), MetricL2, []float32{1}, nil, -1); err == nil {
-		t.Fatal("negative k succeeded")
+	{
+		_, err = TopK(context.Background(), MetricL2, nil, nil, 1)
+		require.ErrorIs(t, err, ailego.ErrEmptyVector)
 	}
-	if _, err = TopK(context.Background(), Metric(255), []float32{1}, nil, 1); err == nil {
-		t.Fatal("invalid metric succeeded")
+	{
+		_, err = TopK(context.Background(), MetricL2, []float32{1}, []Candidate{{Key: 1, Vector: []float32{1, 2}}}, 1)
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
-	if _, err = TopK(context.Background(), MetricL2, nil, nil, 1); !errors.Is(err, ailego.ErrEmptyVector) {
-		t.Fatalf("empty query error = %v", err)
-	}
-	if _, err = TopK(context.Background(), MetricL2, []float32{1}, []Candidate{{Key: 1, Vector: []float32{1, 2}}}, 1); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("candidate dimension error = %v", err)
-	}
-	if _, err = TopK(nil, MetricL2, []float32{1}, nil, 1); err == nil {
-		t.Fatal("nil context succeeded")
+	{
+		_, err = TopK(nil, MetricL2, []float32{1}, nil, 1)
+		require.Error(t, err,
+			"nil context succeeded")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err = TopK(ctx, MetricL2, []float32{1}, nil, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled error = %v", err)
+	{
+		_, err = TopK(ctx, MetricL2, []float32{1}, nil, 1)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
@@ -157,47 +148,37 @@ func TestBatchTopK(t *testing.T) {
 
 	queries := [][]float32{{1, 0}, {0, 1}, {-1, 0}}
 	batch, err := BatchTopK(context.Background(), MetricIP, queries, exactCandidates, 2, 2)
-	if err != nil {
-		t.Fatalf("batch top-k: %v", err)
-	}
-	if len(batch) != len(queries) {
-		t.Fatalf("batch count = %d, want %d", len(batch), len(queries))
-	}
+	require.NoError(t, err)
+	require.Len(t, batch, len(queries))
+
 	for index, query := range queries {
 		expected, err := TopK(context.Background(), MetricIP, query, exactCandidates, 2)
-		if err != nil {
-			t.Fatalf("sequential query %d: %v", index, err)
-		}
-		if !reflect.DeepEqual(batch[index], expected) {
-			t.Fatalf("query %d = %#v, want %#v", index, batch[index], expected)
-		}
+		require.NoError(t, err)
+		require.Equal(t, expected, batch[index])
 	}
 
 	empty, err := BatchTopK(context.Background(), MetricL2, nil, exactCandidates, 2, 4)
-	if err != nil {
-		t.Fatalf("empty batch: %v", err)
-	}
-	if empty == nil || len(empty) != 0 {
-		t.Fatalf("empty batch = %#v, want non-nil empty slice", empty)
+	require.NoError(t, err)
+	require.NotNil(t, empty)
+	require.Len(t, empty, 0)
+	{
+		_, err = BatchTopK(context.Background(), MetricIP, [][]float32{{1, 0}, {1}}, exactCandidates, 2, 2)
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
 
-	if _, err = BatchTopK(context.Background(), MetricIP, [][]float32{{1, 0}, {1}}, exactCandidates, 2, 2); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("malformed query error = %v", err)
-	}
 	defaultWorkers, err := BatchTopK(context.Background(), MetricIP, queries, exactCandidates, 2, 0)
-	if err != nil {
-		t.Fatalf("default workers: %v", err)
-	}
-	if !reflect.DeepEqual(defaultWorkers, batch) {
-		t.Fatalf("default workers = %#v, want %#v", defaultWorkers, batch)
-	}
-	if _, err = BatchTopK(nil, MetricIP, queries, exactCandidates, 2, 1); err == nil {
-		t.Fatal("nil context succeeded")
+	require.NoError(t, err)
+	require.Equal(t, batch, defaultWorkers)
+	{
+		_, err = BatchTopK(nil, MetricIP, queries, exactCandidates, 2, 1)
+		require.Error(t, err,
+			"nil context succeeded")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err = BatchTopK(ctx, MetricIP, queries, exactCandidates, 2, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled batch error = %v", err)
+	{
+		_, err = BatchTopK(ctx, MetricIP, queries, exactCandidates, 2, 1)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }

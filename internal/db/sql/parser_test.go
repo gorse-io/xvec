@@ -15,10 +15,10 @@
 package sql
 
 import (
-	"errors"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseFilterLogicalPrecedenceAndAssociativity(t *testing.T) {
@@ -33,11 +33,10 @@ func TestParseFilterLogicalPrecedenceAndAssociativity(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		expression, err := ParseFilter(testCase.input)
-		if err != nil {
-			t.Fatalf("ParseFilter(%q): %v", testCase.input, err)
-		}
-		if got := Format(expression); got != testCase.want {
-			t.Fatalf("Format(%q) = %q, want %q", testCase.input, got, testCase.want)
+		require.NoError(t, err)
+		{
+			got := Format(expression)
+			require.Equal(t, testCase.want, got)
 		}
 	}
 }
@@ -66,15 +65,15 @@ func TestParseFilterPredicates(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.input, func(t *testing.T) {
 			expression, err := ParseFilter(testCase.input)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			predicate, ok := expression.(*PredicateExpr)
-			if !ok || predicate.Operator != testCase.operator || predicate.Negated != testCase.negated {
-				t.Fatalf("predicate = %#v", expression)
-			}
-			if got := Format(expression); got != testCase.want {
-				t.Fatalf("format = %q, want %q", got, testCase.want)
+			require.True(t, ok)
+			require.Equal(t, testCase.operator, predicate.Operator)
+			require.Equal(t, testCase.negated, predicate.Negated)
+			{
+				got := Format(expression)
+				require.Equal(t, testCase.want, got)
 			}
 		})
 	}
@@ -82,20 +81,19 @@ func TestParseFilterPredicates(t *testing.T) {
 
 func TestParseFilterPreservesIdentifierAndLiteralForms(t *testing.T) {
 	expression, err := ParseFilter(`1-dash_Field = 18446744073709551615 AND bool = FALSE AND text = "A\"b"`)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	root := expression.(*LogicalExpr)
 	left := root.Left.(*LogicalExpr).Left.(*PredicateExpr)
 	identifier := left.Left.(*IdentifierExpr)
 	literal := left.Right.(*LiteralExpr)
-	if identifier.Name != "1-dash_Field" || literal.Kind != LiteralInteger || literal.Text != "18446744073709551615" {
-		t.Fatalf("preserved nodes = %#v, %#v", identifier, literal)
-	}
+	require.True(t, identifier.Name == "1-dash_Field")
+	require.Equal(t, LiteralInteger, literal.Kind)
+	require.True(t, literal.Text == "18446744073709551615")
+
 	right := root.Right.(*PredicateExpr).Right.(*LiteralExpr)
-	if right.Kind != LiteralString || right.Text != `A"b` {
-		t.Fatalf("normalized string = %#v", right)
-	}
+	require.Equal(t, LiteralString, right.Kind)
+	require.True(t, right.Text == `A"b`)
 }
 
 func TestParseFilterFunctionCallsAndVectors(t *testing.T) {
@@ -110,30 +108,31 @@ func TestParseFilterFunctionCallsAndVectors(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		expression, err := ParseFilter(testCase.input)
-		if err != nil {
-			t.Fatalf("ParseFilter(%q): %v", testCase.input, err)
-		}
-		if got := Format(expression); got != testCase.want {
-			t.Fatalf("format = %q, want %q", got, testCase.want)
+		require.NoError(t, err)
+		{
+			got := Format(expression)
+			require.Equal(t, testCase.want, got)
 		}
 	}
 	expression, _ := ParseFilter("distance(vec, [[1, 2], [3, 4]]) = 0")
 	call := expression.(*PredicateExpr).Left.(*CallExpr)
 	vector := call.Arguments[1].(*VectorExpr)
-	if !vector.Matrix || len(vector.Rows) != 2 || len(vector.Rows[0]) != 2 {
-		t.Fatalf("matrix AST = %#v", vector)
-	}
+	require.True(t, vector.Matrix)
+	require.Len(t, vector.Rows, 2)
+	require.Len(t, vector.Rows[0], 2)
 }
 
 func TestParseFilterKeywordIdentifiersMatchBaseline(t *testing.T) {
 	for _, input := range []string{"and=1", "not=1", "where=1", "select=1", "order=1"} {
-		if _, err := ParseFilter(input); err != nil {
-			t.Fatalf("keyword identifier %q: %v", input, err)
+		{
+			_, err := ParseFilter(input)
+			require.NoError(t, err)
 		}
 	}
 	for _, input := range []string{"from=1", "true=1", "null=1", "contain_all=1"} {
-		if _, err := ParseFilter(input); err == nil {
-			t.Fatalf("reserved identifier %q succeeded", input)
+		{
+			_, err := ParseFilter(input)
+			require.Error(t, err)
 		}
 	}
 }
@@ -158,13 +157,12 @@ func TestParseFilterErrorsCarryPosition(t *testing.T) {
 		t.Run(testCase.input, func(t *testing.T) {
 			_, err := ParseFilter(testCase.input)
 			var parseErr *ParseError
-			if !errors.As(err, &parseErr) {
-				t.Fatalf("error = %T %v", err, err)
-			}
+			require.ErrorAs(t, err, &parseErr)
+
 			position := parseErr.Position
-			if position.Line != testCase.line || position.Column != testCase.column || position.Offset != testCase.offset {
-				t.Fatalf("position = %#v; error = %v", position, err)
-			}
+			require.Equal(t, testCase.line, position.Line)
+			require.Equal(t, testCase.column, position.Column)
+			require.Equal(t, testCase.offset, position.Offset)
 		})
 	}
 }
@@ -172,16 +170,16 @@ func TestParseFilterErrorsCarryPosition(t *testing.T) {
 func TestParseFilterSpanAndNestingLimit(t *testing.T) {
 	input := "alpha = 1 AND beta IS NOT NULL"
 	expression, err := ParseFilter(input)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := Span{Start: Position{Offset: 0, Line: 1, Column: 1}, End: Position{Offset: len(input), Line: 1, Column: len(input) + 1}}
-	if !reflect.DeepEqual(expression.NodeSpan(), want) {
-		t.Fatalf("span = %#v, want %#v", expression.NodeSpan(), want)
-	}
+	require.Equal(t, want, expression.NodeSpan())
+
 	deep := strings.Repeat("(", MaxParseDepth+1) + "a=1" + strings.Repeat(")", MaxParseDepth+1)
-	if _, err := ParseFilter(deep); err == nil || !strings.Contains(err.Error(), "nesting") {
-		t.Fatalf("deep parse error = %v", err)
+	{
+		_, err := ParseFilter(deep)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "nesting")
 	}
 }
 
@@ -195,8 +193,9 @@ func TestParseFilterRejectsInvalidForms(t *testing.T) {
 		"array_length(tags) IS NULL",
 	}
 	for _, input := range inputs {
-		if _, err := ParseFilter(input); err == nil {
-			t.Fatalf("invalid filter %q succeeded", input)
+		{
+			_, err := ParseFilter(input)
+			require.Error(t, err)
 		}
 	}
 }
@@ -217,11 +216,7 @@ func FuzzParseFilter(f *testing.F) {
 		}
 		formatted := Format(expression)
 		reparsed, err := ParseFilter(formatted)
-		if err != nil {
-			t.Fatalf("formatted successful AST does not parse: input=%q formatted=%q error=%v", input, formatted, err)
-		}
-		if Format(reparsed) != formatted {
-			t.Fatalf("format is not stable: %q != %q", Format(reparsed), formatted)
-		}
+		require.NoError(t, err)
+		require.Equal(t, formatted, Format(reparsed))
 	})
 }

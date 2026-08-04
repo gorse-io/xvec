@@ -20,12 +20,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestVersionManagerCreatePublishAndOpen(t *testing.T) {
@@ -33,18 +33,17 @@ func TestVersionManagerCreatePublishAndOpen(t *testing.T) {
 	initial := sampleManifest(99)
 	initial.FormatVersion = 0
 	manager, err := CreateVersionManager(context.Background(), dir, initial)
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	require.NoError(t, err)
+
 	current := manager.Current()
-	if current.FormatVersion != DiskFormatVersion || current.Generation != 1 {
-		t.Fatalf("initial version = %#v", current)
-	}
+	require.Equal(t, DiskFormatVersion, current.FormatVersion)
+	require.True(t, current.Generation == 1)
 
 	current.Schema[0] = '['
 	current.PersistedSegments[0].Files[0] = "changed"
-	if err := manager.Current().Validate(); err != nil {
-		t.Fatalf("Current returned shared state: %v", err)
+	{
+		err := manager.Current().Validate()
+		require.NoError(t, err)
 	}
 
 	published, err := manager.Update(context.Background(), func(next *Manifest) error {
@@ -52,65 +51,59 @@ func TestVersionManagerCreatePublishAndOpen(t *testing.T) {
 		next.IDMapGeneration++
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("update: %v", err)
-	}
-	if published.Generation != 2 || published.EnableMmap || published.IDMapGeneration != 6 {
-		t.Fatalf("published = %#v", published)
-	}
+	require.NoError(t, err)
+	require.True(t, published.Generation == 2)
+	require.False(t, published.EnableMmap)
+	require.True(t, published.IDMapGeneration == 6)
+
 	published.Schema[0] = '['
-	if err := manager.Current().Validate(); err != nil {
-		t.Fatalf("Publish returned shared state: %v", err)
+	{
+		err := manager.Current().Validate()
+		require.NoError(t, err)
 	}
 
 	reopened, err := OpenVersionManager(context.Background(), dir)
-	if err != nil {
-		t.Fatalf("open: %v", err)
+	require.NoError(t, err)
+	require.Equal(t, manager.Current(), reopened.Current())
+	{
+		_, err := CreateVersionManager(context.Background(), dir, initial)
+		require.ErrorIs(t, err, ErrManifestExists)
 	}
-	if !reflect.DeepEqual(reopened.Current(), manager.Current()) {
-		t.Fatalf("reopened = %#v, current = %#v", reopened.Current(), manager.Current())
-	}
-	if _, err := CreateVersionManager(context.Background(), dir, initial); !errors.Is(err, ErrManifestExists) {
-		t.Fatalf("second create error = %v", err)
-	}
-	if count := manifestCount(t, dir); count != 2 {
-		t.Fatalf("manifest count = %d, want 2", count)
+	{
+		count := manifestCount(t, dir)
+		require.True(t, count == 2)
 	}
 }
 
 func TestVersionManagerRejectsStalePublisher(t *testing.T) {
 	dir := t.TempDir()
 	first, err := CreateVersionManager(context.Background(), dir, sampleManifest(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	stale, err := OpenVersionManager(context.Background(), dir)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := first.Update(context.Background(), func(next *Manifest) error {
+			next.DeleteSnapshotGeneration++
+			return nil
+		})
+		require.NoError(t, err)
 	}
-	if _, err := first.Update(context.Background(), func(next *Manifest) error {
-		next.DeleteSnapshotGeneration++
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := stale.Publish(context.Background(), stale.Current())
+		require.ErrorIs(t, err, ErrManifestConflict)
 	}
-	if _, err := stale.Publish(context.Background(), stale.Current()); !errors.Is(err, ErrManifestConflict) {
-		t.Fatalf("stale publish error = %v", err)
-	}
-	if stale.Current().Generation != 1 {
-		t.Fatalf("stale in-memory generation = %d", stale.Current().Generation)
-	}
-	if count := manifestCount(t, dir); count != 2 {
-		t.Fatalf("stale publish created a manifest; count = %d", count)
+	require.True(t, stale.Current().Generation == 1)
+	{
+		count := manifestCount(t, dir)
+		require.True(t, count == 2)
 	}
 }
 
 func TestVersionManagerRejectsConcurrentUpdateFromSameSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	manager, err := CreateVersionManager(context.Background(), dir, sampleManifest(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	ready := sync.WaitGroup{}
 	ready.Add(2)
@@ -139,206 +132,195 @@ func TestVersionManagerRejectsConcurrentUpdateFromSameSnapshot(t *testing.T) {
 		case errors.Is(err, ErrManifestConflict):
 			conflicted++
 		default:
-			t.Fatalf("update error = %v", err)
+			require.NoError(t, err)
 		}
 	}
-	if succeeded != 1 || conflicted != 1 {
-		t.Fatalf("succeeded = %d, conflicted = %d", succeeded, conflicted)
-	}
-	if current := manager.Current(); current.Generation != 2 || current.IDMapGeneration != 6 {
-		t.Fatalf("current = %#v", current)
+	require.True(t, succeeded == 1)
+	require.True(t, conflicted == 1)
+	{
+		current := manager.Current()
+		require.True(t, current.Generation == 2)
+		require.True(t, current.IDMapGeneration == 6)
 	}
 }
 
 func TestVersionManagerIgnoresUnpublishedFiles(t *testing.T) {
 	dir := t.TempDir()
 	manager, err := CreateVersionManager(context.Background(), dir, sampleManifest(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	orphan := sampleManifest(2)
 	encoded, err := MarshalManifest(orphan)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := writeExclusiveSynced(filepath.Join(dir, manifestFileName(2)), encoded)
+		require.NoError(t, err)
 	}
-	if err := writeExclusiveSynced(filepath.Join(dir, manifestFileName(2)), encoded); err != nil {
-		t.Fatal(err)
-	}
+
 	pointer, err := marshalCurrent(manifestFileName(2))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, ".current-crash.tmp"), pointer, 0o600); err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := os.WriteFile(filepath.Join(dir, ".current-crash.tmp"), pointer, 0o600)
+		require.NoError(t, err)
 	}
 
 	reopened, err := OpenVersionManager(context.Background(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reopened.Current().Generation != 1 {
-		t.Fatalf("opened unpublished generation %d", reopened.Current().Generation)
-	}
+	require.NoError(t, err)
+	require.True(t, reopened.Current().Generation == 1)
+
 	published, err := manager.Publish(context.Background(), manager.Current())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if published.Generation != 3 {
-		t.Fatalf("generation after orphan = %d, want 3", published.Generation)
+	require.NoError(t, err)
+	require.True(t, published.Generation == 3)
+	{
+		err := os.WriteFile(filepath.Join(dir, manifestFileName(4)), []byte("partial"), 0o600)
+		require.NoError(t, err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, manifestFileName(4)), []byte("partial"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	reopened, err = OpenVersionManager(context.Background(), dir)
-	if err != nil {
-		t.Fatalf("partial orphan affected recovery: %v", err)
-	}
-	if reopened.Current().Generation != 3 {
-		t.Fatalf("opened partial orphan generation %d", reopened.Current().Generation)
-	}
+	require.NoError(t, err)
+	require.True(t, reopened.Current().Generation == 3)
+
 	published, err = manager.Publish(context.Background(), manager.Current())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if published.Generation != 5 {
-		t.Fatalf("generation after partial orphan = %d, want 5", published.Generation)
-	}
+	require.NoError(t, err)
+	require.True(t, published.Generation == 5)
 }
 
 func TestVersionManagerCreateSkipsFailedInitialManifest(t *testing.T) {
 	dir := t.TempDir()
 	orphan := sampleManifest(1)
 	encoded, err := MarshalManifest(orphan)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := writeExclusiveSynced(filepath.Join(dir, manifestFileName(1)), encoded)
+		require.NoError(t, err)
 	}
-	if err := writeExclusiveSynced(filepath.Join(dir, manifestFileName(1)), encoded); err != nil {
-		t.Fatal(err)
-	}
+
 	manager, err := CreateVersionManager(context.Background(), dir, sampleManifest(0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manager.Current().Generation != 2 {
-		t.Fatalf("created generation = %d, want 2", manager.Current().Generation)
-	}
+	require.NoError(t, err)
+	require.True(t, manager.Current().Generation == 2)
 }
 
 func TestVersionManagerMutationFailureIsAtomic(t *testing.T) {
 	dir := t.TempDir()
 	manager, err := CreateVersionManager(context.Background(), dir, sampleManifest(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	mutationError := errors.New("mutation failed")
-	if _, err := manager.Update(context.Background(), func(next *Manifest) error {
-		next.EnableMmap = !next.EnableMmap
-		return mutationError
-	}); !errors.Is(err, mutationError) {
-		t.Fatalf("mutation error = %v", err)
+	{
+		_, err := manager.Update(context.Background(), func(next *Manifest) error {
+			next.EnableMmap = !next.EnableMmap
+			return mutationError
+		})
+		require.ErrorIs(t, err, mutationError)
 	}
-	if manager.Current().Generation != 1 || manifestCount(t, dir) != 1 {
-		t.Fatal("failed mutation changed the version")
-	}
+	require.True(t, manager.Current().Generation == 1,
+		"failed mutation changed the version")
+	require.True(t, manifestCount(t, dir) == 1,
+		"failed mutation changed the version")
 
 	invalid := manager.Current()
 	invalid.FormatVersion = DiskFormatVersion + 1
-	if _, err := manager.Publish(context.Background(), invalid); !errors.Is(err, ErrUnsupportedFormatVersion) {
-		t.Fatalf("invalid publish error = %v", err)
+	{
+		_, err := manager.Publish(context.Background(), invalid)
+		require.ErrorIs(t, err, ErrUnsupportedFormatVersion)
 	}
-	if manager.Current().Generation != 1 || manifestCount(t, dir) != 1 {
-		t.Fatal("invalid publish changed the version")
-	}
+	require.True(t, manager.Current().Generation == 1,
+		"invalid publish changed the version")
+	require.True(t, manifestCount(t, dir) == 1,
+		"invalid publish changed the version")
 }
 
 func TestVersionManagerContextCancellation(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	dir := filepath.Join(t.TempDir(), "not-created")
-	if _, err := CreateVersionManager(canceled, dir, sampleManifest(1)); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled create error = %v", err)
+	{
+		_, err := CreateVersionManager(canceled, dir, sampleManifest(1))
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("canceled create made directory: %v", err)
+	{
+		_, err := os.Stat(dir)
+		require.ErrorIs(t, err, os.ErrNotExist)
 	}
 
 	dir = t.TempDir()
 	manager, err := CreateVersionManager(context.Background(), dir, sampleManifest(1))
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := manager.Publish(canceled, manager.Current())
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := manager.Publish(canceled, manager.Current()); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled publish error = %v", err)
-	}
-	if manager.Current().Generation != 1 || manifestCount(t, dir) != 1 {
-		t.Fatal("canceled publish changed the version")
-	}
+	require.True(t, manager.Current().Generation == 1,
+		"canceled publish changed the version")
+	require.True(t, manifestCount(t, dir) == 1,
+		"canceled publish changed the version")
 
 	lock, err := ailego.AcquireFileLock(context.Background(), filepath.Join(dir, versionLockName), ailego.LockExclusive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer lock.Close()
 	deadline, cancelDeadline := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancelDeadline()
-	if _, err := manager.Publish(deadline, manager.Current()); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("blocked publish error = %v", err)
+	{
+		_, err := manager.Publish(deadline, manager.Current())
+		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
 }
 
 func TestVersionManagerDetectsActiveCorruption(t *testing.T) {
 	t.Run("current", func(t *testing.T) {
 		dir := t.TempDir()
-		if _, err := CreateVersionManager(context.Background(), dir, sampleManifest(1)); err != nil {
-			t.Fatal(err)
+		{
+			_, err := CreateVersionManager(context.Background(), dir, sampleManifest(1))
+			require.NoError(t, err)
 		}
+
 		currentPath := filepath.Join(dir, currentFileName)
 		current, err := os.ReadFile(currentPath)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		current[len(current)-1] ^= 1
-		if err := os.WriteFile(currentPath, current, 0o600); err != nil {
-			t.Fatal(err)
+		{
+			err := os.WriteFile(currentPath, current, 0o600)
+			require.NoError(t, err)
 		}
-		if _, err := OpenVersionManager(context.Background(), dir); !errors.Is(err, ErrManifestCorrupt) {
-			t.Fatalf("corrupt CURRENT error = %v", err)
+		{
+			_, err := OpenVersionManager(context.Background(), dir)
+			require.ErrorIs(t, err, ErrManifestCorrupt)
 		}
 	})
 
 	t.Run("manifest", func(t *testing.T) {
 		dir := t.TempDir()
 		manager, err := CreateVersionManager(context.Background(), dir, sampleManifest(1))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		manifestPath := filepath.Join(dir, manifestFileName(manager.Current().Generation))
 		manifest, err := os.ReadFile(manifestPath)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		manifest[len(manifest)-1] ^= 1
-		if err := os.WriteFile(manifestPath, manifest, 0o600); err != nil {
-			t.Fatal(err)
+		{
+			err := os.WriteFile(manifestPath, manifest, 0o600)
+			require.NoError(t, err)
 		}
-		if _, err := OpenVersionManager(context.Background(), dir); !errors.Is(err, ErrManifestCorrupt) {
-			t.Fatalf("corrupt manifest error = %v", err)
+		{
+			_, err := OpenVersionManager(context.Background(), dir)
+			require.ErrorIs(t, err, ErrManifestCorrupt)
 		}
 	})
 
 	t.Run("missing manifest", func(t *testing.T) {
 		dir := t.TempDir()
 		manager, err := CreateVersionManager(context.Background(), dir, sampleManifest(1))
-		if err != nil {
-			t.Fatal(err)
+		require.NoError(t, err)
+		{
+			err := os.Remove(filepath.Join(dir, manifestFileName(manager.Current().Generation)))
+			require.NoError(t, err)
 		}
-		if err := os.Remove(filepath.Join(dir, manifestFileName(manager.Current().Generation))); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := OpenVersionManager(context.Background(), dir); !errors.Is(err, ErrManifestNotFound) {
-			t.Fatalf("missing manifest error = %v", err)
+		{
+			_, err := OpenVersionManager(context.Background(), dir)
+			require.ErrorIs(t, err, ErrManifestNotFound)
 		}
 	})
 }
@@ -346,9 +328,7 @@ func TestVersionManagerDetectsActiveCorruption(t *testing.T) {
 func TestVersionManagerAtomicCurrentForConcurrentReaders(t *testing.T) {
 	dir := t.TempDir()
 	manager, err := CreateVersionManager(context.Background(), dir, sampleManifest(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	done := make(chan struct{})
 	errCh := make(chan error, 1)
@@ -386,102 +366,115 @@ func TestVersionManagerAtomicCurrentForConcurrentReaders(t *testing.T) {
 		}); err != nil {
 			close(done)
 			wait.Wait()
-			t.Fatal(err)
+			require.NoError(t, err)
 		}
 	}
 	close(done)
 	wait.Wait()
 	select {
 	case err := <-errCh:
-		t.Fatalf("concurrent recovery observed partial publication: %v", err)
+		require.NoError(t, err)
 	default:
 	}
 }
 
 func TestVersionManagerArgumentValidation(t *testing.T) {
-	if _, err := CreateVersionManager(nil, t.TempDir(), sampleManifest(1)); err == nil {
-		t.Fatal("nil create context succeeded")
+	{
+		_, err := CreateVersionManager(nil, t.TempDir(), sampleManifest(1))
+		require.Error(t, err,
+			"nil create context succeeded")
 	}
-	if _, err := OpenVersionManager(nil, t.TempDir()); err == nil {
-		t.Fatal("nil open context succeeded")
+	{
+		_, err := OpenVersionManager(nil, t.TempDir())
+		require.Error(t, err,
+			"nil open context succeeded")
 	}
-	if _, err := OpenVersionManager(context.Background(), filepath.Join(t.TempDir(), "missing")); !errors.Is(err, ErrManifestNotFound) {
-		t.Fatalf("missing directory error = %v", err)
+	{
+		_, err := OpenVersionManager(context.Background(), filepath.Join(t.TempDir(), "missing"))
+		require.ErrorIs(t, err, ErrManifestNotFound)
 	}
+
 	file := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(file, nil, 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(file, nil, 0o600)
+		require.NoError(t, err)
 	}
-	if _, err := OpenVersionManager(context.Background(), file); err == nil {
-		t.Fatal("file collection path succeeded")
+	{
+		_, err := OpenVersionManager(context.Background(), file)
+		require.Error(t, err,
+			"file collection path succeeded")
 	}
+
 	var manager *VersionManager
-	if _, err := manager.Publish(context.Background(), Manifest{}); err == nil {
-		t.Fatal("nil manager publish succeeded")
+	{
+		_, err := manager.Publish(context.Background(), Manifest{})
+		require.Error(t, err,
+			"nil manager publish succeeded")
 	}
-	if _, err := manager.Update(context.Background(), func(*Manifest) error { return nil }); err == nil {
-		t.Fatal("nil manager update succeeded")
+	{
+		_, err := manager.Update(context.Background(), func(*Manifest) error { return nil })
+		require.Error(t, err,
+			"nil manager update succeeded")
 	}
+
 	dir := t.TempDir()
 	manager, err := CreateVersionManager(context.Background(), dir, sampleManifest(1))
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := manager.Publish(nil, manager.Current())
+		require.Error(t, err,
+			"nil publish context succeeded")
 	}
-	if _, err := manager.Publish(nil, manager.Current()); err == nil {
-		t.Fatal("nil publish context succeeded")
-	}
-	if _, err := manager.Update(context.Background(), nil); err == nil {
-		t.Fatal("nil mutation succeeded")
+	{
+		_, err := manager.Update(context.Background(), nil)
+		require.Error(t, err,
+			"nil mutation succeeded")
 	}
 }
 
 func TestCurrentFrameTruncation(t *testing.T) {
 	dir := t.TempDir()
 	encoded, err := marshalCurrent(manifestFileName(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for length := 0; length < len(encoded); length++ {
-		if err := os.WriteFile(filepath.Join(dir, currentFileName), encoded[:length], 0o600); err != nil {
-			t.Fatal(err)
+		{
+			err := os.WriteFile(filepath.Join(dir, currentFileName), encoded[:length], 0o600)
+			require.NoError(t, err)
 		}
-		if _, err := readCurrent(dir); !errors.Is(err, ErrManifestCorrupt) {
-			t.Fatalf("truncation at %d error = %v", length, err)
+		{
+			_, err := readCurrent(dir)
+			require.ErrorIs(t, err, ErrManifestCorrupt)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, currentFileName), encoded, 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(filepath.Join(dir, currentFileName), encoded, 0o600)
+		require.NoError(t, err)
 	}
+
 	name, err := readCurrent(dir)
-	if err != nil || name != manifestFileName(1) {
-		t.Fatalf("complete CURRENT = %q, %v", name, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, manifestFileName(1), name)
 }
 
 func TestManifestSchemaCanBeUpdated(t *testing.T) {
 	dir := t.TempDir()
 	manager, err := CreateVersionManager(context.Background(), dir, sampleManifest(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	updated, err := manager.Update(context.Background(), func(next *Manifest) error {
 		next.Schema = json.RawMessage(`{"name":"articles","version":2}`)
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(updated.Schema) != `{"name":"articles","version":2}` {
-		t.Fatalf("schema = %s", updated.Schema)
-	}
+	require.NoError(t, err)
+	require.True(t, string(updated.Schema) == `{"name":"articles","version":2}`)
 }
 
 func manifestCount(t *testing.T, dir string) int {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	count := 0
 	for _, entry := range entries {
 		if _, ok := parseManifestFileName(entry.Name()); ok {

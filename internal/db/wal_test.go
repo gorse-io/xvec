@@ -23,130 +23,127 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWALCreateAppendReplayAndReopen(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "data.wal")
 	wal, err := CreateWAL(context.Background(), name, WALOptions{SyncEvery: 2})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if wal.HasRecords() {
-		t.Fatal("new WAL has records")
-	}
-	if recovery := wal.Recovery(); recovery != (WALRecovery{ValidBytes: walFileHeaderSize}) {
-		t.Fatalf("create recovery = %#v", recovery)
+	require.NoError(t, err)
+	require.False(t, wal.HasRecords(),
+		"new WAL has records")
+	{
+		recovery := wal.Recovery()
+		require.Equal(t, WALRecovery{ValidBytes: walFileHeaderSize}, recovery)
 	}
 
 	firstPayload := []byte("insert:book-1")
 	firstLSN, err := wal.Append(context.Background(), firstPayload)
-	if err != nil || firstLSN != 1 {
-		t.Fatalf("first append = %d, %v", firstLSN, err)
-	}
+	require.NoError(t, err)
+	require.True(t, firstLSN == 1)
+
 	firstPayload[0] = 'X'
 	secondLSN, err := wal.Append(context.Background(), []byte("update:book-1"))
-	if err != nil || secondLSN != 2 {
-		t.Fatalf("second append = %d, %v", secondLSN, err)
-	}
+	require.NoError(t, err)
+	require.True(t, secondLSN == 2)
+
 	reader, err := wal.NewReader()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	thirdLSN, err := wal.Append(context.Background(), []byte("delete:book-1"))
-	if err != nil || thirdLSN != 3 {
-		t.Fatalf("third append = %d, %v", thirdLSN, err)
+	require.NoError(t, err)
+	require.True(t, thirdLSN == 3)
+	{
+		err := wal.Sync(context.Background())
+		require.NoError(t, err)
 	}
-	if err := wal.Sync(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if !wal.HasRecords() {
-		t.Fatal("appended WAL reports no records")
-	}
+	require.True(t, wal.HasRecords(),
+		"appended WAL reports no records")
 
 	snapshot, err := readAllWAL(t, reader)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := reader.Close()
+		require.NoError(t, err)
 	}
-	if err := reader.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if len(snapshot) != 2 {
-		t.Fatalf("snapshot record count = %d, want 2", len(snapshot))
-	}
-	if string(snapshot[0].Payload) != "insert:book-1" {
-		t.Fatalf("first payload = %q", snapshot[0].Payload)
-	}
+	require.Len(t, snapshot, 2)
+	require.True(t, string(snapshot[0].Payload) == "insert:book-1")
+
 	snapshot[0].Payload[0] = 'X'
 
 	var replayed []WALRecord
-	if err := wal.Replay(context.Background(), func(record WALRecord) error {
-		replayed = append(replayed, record)
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	{
+		err := wal.Replay(context.Background(), func(record WALRecord) error {
+			replayed = append(replayed, record)
+			return nil
+		})
+		require.NoError(t, err)
 	}
-	if got := recordPayloads(replayed); !reflect.DeepEqual(got, []string{"insert:book-1", "update:book-1", "delete:book-1"}) {
-		t.Fatalf("replayed = %#v", got)
+	{
+		got := recordPayloads(replayed)
+		require.Equal(t, []string{"insert:book-1", "update:book-1", "delete:book-1"}, got)
 	}
-	if err := wal.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := wal.Close()
+		require.NoError(t, err)
 	}
-	if err := wal.Close(); err != nil {
-		t.Fatalf("second close: %v", err)
+	{
+		err := wal.Close()
+		require.NoError(t, err)
 	}
 
 	reopened, err := OpenWAL(context.Background(), name, WALOptions{})
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
+	require.NoError(t, err)
+
 	defer reopened.Close()
 	recovery := reopened.Recovery()
-	if recovery.Records != 3 || recovery.LastLSN != 3 || recovery.TruncatedBytes != 0 {
-		t.Fatalf("recovery = %#v", recovery)
-	}
-	if info, err := os.Stat(name); err != nil || recovery.ValidBytes != info.Size() {
-		t.Fatalf("valid bytes = %d, stat = %#v, %v", recovery.ValidBytes, info, err)
+	require.True(t, recovery.Records == 3)
+	require.True(t, recovery.LastLSN == 3)
+	require.True(t, recovery.TruncatedBytes == 0)
+	{
+		info, err := os.Stat(name)
+		require.NoError(t, err)
+		require.Equal(t, info.Size(), recovery.ValidBytes)
 	}
 }
 
 func TestWALReplayUsesStableSnapshot(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "data.wal")
 	wal, err := CreateWAL(context.Background(), name, WALOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer wal.Close()
-	if _, err := wal.Append(context.Background(), []byte("one")); err != nil {
-		t.Fatal(err)
+	{
+		_, err := wal.Append(context.Background(), []byte("one"))
+		require.NoError(t, err)
 	}
+
 	var replayed []string
-	if err := wal.Replay(context.Background(), func(record WALRecord) error {
-		replayed = append(replayed, string(record.Payload))
-		if record.LSN == 1 {
-			_, err := wal.Append(context.Background(), []byte("two"))
-			return err
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	{
+		err := wal.Replay(context.Background(), func(record WALRecord) error {
+			replayed = append(replayed, string(record.Payload))
+			if record.LSN == 1 {
+				_, err := wal.Append(context.Background(), []byte("two"))
+				return err
+			}
+			return nil
+		})
+		require.NoError(t, err)
 	}
-	if !reflect.DeepEqual(replayed, []string{"one"}) {
-		t.Fatalf("snapshot replay = %#v", replayed)
-	}
-	if err := wal.Replay(context.Background(), func(record WALRecord) error {
-		if record.LSN == 2 && string(record.Payload) != "two" {
-			t.Fatalf("second payload = %q", record.Payload)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	require.Equal(t, []string{"one"}, replayed)
+	{
+		err := wal.Replay(context.Background(), func(record WALRecord) error {
+			require.False(t, record.LSN == 2 && string(record.Payload) != "two")
+
+			return nil
+		})
+		require.NoError(t, err)
 	}
 }
 
@@ -157,26 +154,31 @@ func TestWALTruncatesEveryPartialTailBoundary(t *testing.T) {
 		t.Run(fmt.Sprintf("bytes_%d", cut), func(t *testing.T) {
 			name := filepath.Join(t.TempDir(), "data.wal")
 			contents := append(append([]byte(nil), base...), partial[:cut]...)
-			if err := os.WriteFile(name, contents, 0o600); err != nil {
-				t.Fatal(err)
+			{
+				err := os.WriteFile(name, contents, 0o600)
+				require.NoError(t, err)
 			}
+
 			wal, err := OpenWAL(context.Background(), name, WALOptions{})
-			if err != nil {
-				t.Fatalf("open partial tail: %v", err)
-			}
+			require.NoError(t, err)
+
 			recovery := wal.Recovery()
-			if recovery.Records != 2 || recovery.LastLSN != 2 || recovery.ValidBytes != int64(len(base)) || recovery.TruncatedBytes != int64(cut) {
-				t.Fatalf("recovery = %#v", recovery)
+			require.True(t, recovery.Records == 2)
+			require.True(t, recovery.LastLSN == 2)
+			require.Equal(t, int64(len(base)), recovery.ValidBytes)
+			require.Equal(t, int64(cut), recovery.TruncatedBytes)
+			{
+				info, err := os.Stat(name)
+				require.NoError(t, err)
+				require.Equal(t, int64(len(base)), info.Size())
 			}
-			if info, err := os.Stat(name); err != nil || info.Size() != int64(len(base)) {
-				t.Fatalf("repaired size = %#v, %v", info, err)
-			}
+
 			lsn, err := wal.Append(context.Background(), []byte("replacement"))
-			if err != nil || lsn != 3 {
-				t.Fatalf("append after repair = %d, %v", lsn, err)
-			}
-			if err := wal.Close(); err != nil {
-				t.Fatal(err)
+			require.NoError(t, err)
+			require.True(t, lsn == 3)
+			{
+				err := wal.Close()
+				require.NoError(t, err)
 			}
 		})
 	}
@@ -234,15 +236,19 @@ func TestWALRejectsCorruptionWithoutTruncating(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			name := filepath.Join(t.TempDir(), "data.wal")
 			contents := testCase.mutate(append([]byte(nil), base...))
-			if err := os.WriteFile(name, contents, 0o600); err != nil {
-				t.Fatal(err)
+			{
+				err := os.WriteFile(name, contents, 0o600)
+				require.NoError(t, err)
 			}
+
 			before := fileSize(t, name)
-			if _, err := OpenWAL(context.Background(), name, WALOptions{}); !errors.Is(err, testCase.expected) {
-				t.Fatalf("open error = %v, want %v", err, testCase.expected)
+			{
+				_, err := OpenWAL(context.Background(), name, WALOptions{})
+				require.ErrorIs(t, err, testCase.expected)
 			}
-			if after := fileSize(t, name); after != before {
-				t.Fatalf("corrupt WAL size changed from %d to %d", before, after)
+			{
+				after := fileSize(t, name)
+				require.Equal(t, before, after)
 			}
 		})
 	}
@@ -252,14 +258,17 @@ func TestWALRejectsTruncatedFileHeader(t *testing.T) {
 	header := encodeWALFileHeader()
 	for cut := 0; cut < len(header); cut++ {
 		name := filepath.Join(t.TempDir(), fmt.Sprintf("data-%d.wal", cut))
-		if err := os.WriteFile(name, header[:cut], 0o600); err != nil {
-			t.Fatal(err)
+		{
+			err := os.WriteFile(name, header[:cut], 0o600)
+			require.NoError(t, err)
 		}
-		if _, err := OpenWAL(context.Background(), name, WALOptions{}); !errors.Is(err, ErrWALCorrupt) {
-			t.Fatalf("header cut %d error = %v", cut, err)
+		{
+			_, err := OpenWAL(context.Background(), name, WALOptions{})
+			require.ErrorIs(t, err, ErrWALCorrupt)
 		}
-		if size := fileSize(t, name); size != int64(cut) {
-			t.Fatalf("header cut %d changed size to %d", cut, size)
+		{
+			size := fileSize(t, name)
+			require.Equal(t, int64(cut), size)
 		}
 	}
 }
@@ -267,9 +276,8 @@ func TestWALRejectsTruncatedFileHeader(t *testing.T) {
 func TestWALConcurrentAppend(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "data.wal")
 	wal, err := CreateWAL(context.Background(), name, WALOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer wal.Close()
 
 	const goroutines = 8
@@ -296,7 +304,7 @@ func TestWALConcurrentAppend(t *testing.T) {
 	close(lsns)
 	close(errorsByAppend)
 	for err := range errorsByAppend {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 	allLSNs := make([]uint64, 0, goroutines*recordsPerGoroutine)
 	for lsn := range lsns {
@@ -304,180 +312,209 @@ func TestWALConcurrentAppend(t *testing.T) {
 	}
 	sort.Slice(allLSNs, func(left, right int) bool { return allLSNs[left] < allLSNs[right] })
 	for index, lsn := range allLSNs {
-		if lsn != uint64(index+1) {
-			t.Fatalf("LSN[%d] = %d", index, lsn)
-		}
+		require.Equal(t, uint64(index+1), lsn)
 	}
-	if err := wal.Sync(context.Background()); err != nil {
-		t.Fatal(err)
+	{
+		err := wal.Sync(context.Background())
+		require.NoError(t, err)
 	}
+
 	reader, err := wal.NewReader()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	records, err := readAllWAL(t, reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reader.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if len(records) != goroutines*recordsPerGoroutine {
-		t.Fatalf("record count = %d", len(records))
-	}
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	require.Len(t, records, goroutines*recordsPerGoroutine)
 	for index, record := range records {
-		if record.LSN != uint64(index+1) {
-			t.Fatalf("record LSN[%d] = %d", index, record.LSN)
-		}
+		require.Equal(t, uint64(index+1), record.LSN)
 	}
 }
 
 func TestWALWriterLockHonorsContext(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "data.wal")
 	first, err := CreateWAL(context.Background(), name, WALOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer first.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
-	if _, err := OpenWAL(ctx, name, WALOptions{}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("second writer error = %v", err)
+	{
+		_, err := OpenWAL(ctx, name, WALOptions{})
+		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
-	if err := first.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := first.Close()
+		require.NoError(t, err)
 	}
+
 	second, err := OpenWAL(context.Background(), name, WALOptions{})
-	if err != nil {
-		t.Fatalf("open after unlock: %v", err)
-	}
-	if err := second.Close(); err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := second.Close()
+		require.NoError(t, err)
 	}
 }
 
 func TestWALArgumentAndClosedValidation(t *testing.T) {
-	if _, err := CreateWAL(nil, "x", WALOptions{}); err == nil {
-		t.Fatal("nil create context succeeded")
+	{
+		_, err := CreateWAL(nil, "x", WALOptions{})
+		require.Error(t, err,
+			"nil create context succeeded")
 	}
-	if _, err := OpenWAL(nil, "x", WALOptions{}); err == nil {
-		t.Fatal("nil open context succeeded")
+	{
+		_, err := OpenWAL(nil, "x", WALOptions{})
+		require.Error(t, err,
+			"nil open context succeeded")
 	}
-	if _, err := CreateWAL(context.Background(), "", WALOptions{}); err == nil {
-		t.Fatal("empty create path succeeded")
+	{
+		_, err := CreateWAL(context.Background(), "", WALOptions{})
+		require.Error(t, err,
+			"empty create path succeeded")
 	}
-	if _, err := OpenWAL(context.Background(), filepath.Join(t.TempDir(), "missing.wal"), WALOptions{}); !errors.Is(err, ErrWALNotFound) {
-		t.Fatalf("missing WAL error = %v", err)
+	{
+		_, err := OpenWAL(context.Background(), filepath.Join(t.TempDir(), "missing.wal"), WALOptions{})
+		require.ErrorIs(t, err, ErrWALNotFound)
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	name := filepath.Join(t.TempDir(), "canceled.wal")
-	if _, err := CreateWAL(canceled, name, WALOptions{}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled create error = %v", err)
+	{
+		_, err := CreateWAL(canceled, name, WALOptions{})
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := os.Stat(name); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("canceled create wrote WAL: %v", err)
+	{
+		_, err := os.Stat(name)
+		require.ErrorIs(t, err, os.ErrNotExist)
 	}
 
 	name = filepath.Join(t.TempDir(), "data.wal")
 	wal, err := CreateWAL(context.Background(), name, WALOptions{})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := CreateWAL(context.Background(), name, WALOptions{})
+		require.ErrorIs(t, err, ErrWALExists)
 	}
-	if _, err := CreateWAL(context.Background(), name, WALOptions{}); !errors.Is(err, ErrWALExists) {
-		t.Fatalf("duplicate create error = %v", err)
+	{
+		_, err := wal.Append(context.Background(), nil)
+		require.Error(t, err,
+			"empty record succeeded")
 	}
-	if _, err := wal.Append(context.Background(), nil); err == nil {
-		t.Fatal("empty record succeeded")
+	{
+		_, err := wal.Append(context.Background(), make([]byte, MaxWALRecordSize+1))
+		require.ErrorIs(t, err, ErrWALRecordTooLarge)
 	}
-	if _, err := wal.Append(context.Background(), make([]byte, MaxWALRecordSize+1)); !errors.Is(err, ErrWALRecordTooLarge) {
-		t.Fatalf("large record error = %v", err)
+	{
+		_, err := wal.Append(nil, []byte("x"))
+		require.Error(t, err,
+			"nil append context succeeded")
 	}
-	if _, err := wal.Append(nil, []byte("x")); err == nil {
-		t.Fatal("nil append context succeeded")
+	{
+		err := wal.Sync(nil)
+		require.Error(t, err,
+			"nil sync context succeeded")
 	}
-	if err := wal.Sync(nil); err == nil {
-		t.Fatal("nil sync context succeeded")
+	{
+		err := wal.Replay(context.Background(), nil)
+		require.Error(t, err,
+			"nil replay function succeeded")
 	}
-	if err := wal.Replay(context.Background(), nil); err == nil {
-		t.Fatal("nil replay function succeeded")
-	}
+
 	callbackError := errors.New("stop")
-	if _, err := wal.Append(context.Background(), []byte("one")); err != nil {
-		t.Fatal(err)
+	{
+		_, err := wal.Append(context.Background(), []byte("one"))
+		require.NoError(t, err)
 	}
-	if err := wal.Replay(context.Background(), func(WALRecord) error { return callbackError }); !errors.Is(err, callbackError) {
-		t.Fatalf("callback error = %v", err)
+	{
+		err := wal.Replay(context.Background(), func(WALRecord) error { return callbackError })
+		require.ErrorIs(t, err, callbackError)
 	}
+
 	reader, err := wal.NewReader()
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := reader.Close()
+		require.NoError(t, err)
 	}
-	if err := reader.Close(); err != nil {
-		t.Fatal(err)
+	{
+		_, err := reader.Next(context.Background())
+		require.ErrorIs(t, err, ErrWALClosed)
 	}
-	if _, err := reader.Next(context.Background()); !errors.Is(err, ErrWALClosed) {
-		t.Fatalf("closed reader error = %v", err)
+	{
+		err := wal.Close()
+		require.NoError(t, err)
 	}
-	if err := wal.Close(); err != nil {
-		t.Fatal(err)
+	{
+		_, err := wal.Append(context.Background(), []byte("x"))
+		require.ErrorIs(t, err, ErrWALClosed)
 	}
-	if _, err := wal.Append(context.Background(), []byte("x")); !errors.Is(err, ErrWALClosed) {
-		t.Fatalf("closed append error = %v", err)
+	{
+		err := wal.Sync(context.Background())
+		require.ErrorIs(t, err, ErrWALClosed)
 	}
-	if err := wal.Sync(context.Background()); !errors.Is(err, ErrWALClosed) {
-		t.Fatalf("closed sync error = %v", err)
-	}
-	if _, err := wal.NewReader(); !errors.Is(err, ErrWALClosed) {
-		t.Fatalf("closed NewReader error = %v", err)
+	{
+		_, err := wal.NewReader()
+		require.ErrorIs(t, err, ErrWALClosed)
 	}
 
 	var nilWAL *WAL
-	if _, err := nilWAL.Append(context.Background(), []byte("x")); err == nil {
-		t.Fatal("nil WAL append succeeded")
+	{
+		_, err := nilWAL.Append(context.Background(), []byte("x"))
+		require.Error(t, err,
+			"nil WAL append succeeded")
 	}
-	if err := nilWAL.Sync(context.Background()); err == nil {
-		t.Fatal("nil WAL sync succeeded")
+	{
+		err := nilWAL.Sync(context.Background())
+		require.Error(t, err,
+			"nil WAL sync succeeded")
 	}
+
 	var nilReader *WALReader
-	if _, err := nilReader.Next(context.Background()); err == nil {
-		t.Fatal("nil reader succeeded")
+	{
+		_, err := nilReader.Next(context.Background())
+		require.Error(t, err,
+			"nil reader succeeded")
 	}
 }
 
 func TestWALReaderDetectsPostOpenCorruption(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "data.wal")
 	wal, err := CreateWAL(context.Background(), name, WALOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer wal.Close()
-	if _, err := wal.Append(context.Background(), []byte("one")); err != nil {
-		t.Fatal(err)
+	{
+		_, err := wal.Append(context.Background(), []byte("one"))
+		require.NoError(t, err)
 	}
+
 	reader, err := wal.NewReader()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer reader.Close()
 	file, err := os.OpenFile(name, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	byteAtPayload := []byte{0}
-	if _, err := file.ReadAt(byteAtPayload, walFileHeaderSize+walRecordHeaderSize); err != nil {
-		t.Fatal(err)
+	{
+		_, err := file.ReadAt(byteAtPayload, walFileHeaderSize+walRecordHeaderSize)
+		require.NoError(t, err)
 	}
+
 	byteAtPayload[0] ^= 1
-	if _, err := file.WriteAt(byteAtPayload, walFileHeaderSize+walRecordHeaderSize); err != nil {
-		t.Fatal(err)
+	{
+		_, err := file.WriteAt(byteAtPayload, walFileHeaderSize+walRecordHeaderSize)
+		require.NoError(t, err)
 	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := file.Close()
+		require.NoError(t, err)
 	}
-	if _, err := reader.Next(context.Background()); !errors.Is(err, ErrWALCorrupt) {
-		t.Fatalf("reader corruption error = %v", err)
+	{
+		_, err := reader.Next(context.Background())
+		require.ErrorIs(t, err, ErrWALCorrupt)
 	}
 }
 
@@ -486,37 +523,44 @@ func TestOpenWALReadOnlyPreservesPartialTail(t *testing.T) {
 	complete := makeWALBytes(t, []byte("one"))
 	partial := encodeWALRecord(2, []byte("two"))[:walRecordHeaderSize+1]
 	contents := append(append([]byte(nil), complete...), partial...)
-	if err := os.WriteFile(name, contents, 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(name, contents, 0o600)
+		require.NoError(t, err)
 	}
+
 	readOnly, err := OpenWALReadOnly(context.Background(), name)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		recovery := readOnly.Recovery()
+		require.True(t, recovery.Records == 1)
+		require.Equal(t, int64(len(partial)), recovery.TruncatedBytes)
 	}
-	if recovery := readOnly.Recovery(); recovery.Records != 1 || recovery.TruncatedBytes != int64(len(partial)) {
-		t.Fatalf("recovery = %#v", recovery)
+	{
+		_, err := readOnly.Append(context.Background(), []byte("x"))
+		require.ErrorIs(t, err, ErrWALReadOnly)
 	}
-	if _, err := readOnly.Append(context.Background(), []byte("x")); !errors.Is(err, ErrWALReadOnly) {
-		t.Fatalf("append error = %v", err)
+	{
+		err := readOnly.Sync(context.Background())
+		require.ErrorIs(t, err, ErrWALReadOnly)
 	}
-	if err := readOnly.Sync(context.Background()); !errors.Is(err, ErrWALReadOnly) {
-		t.Fatalf("sync error = %v", err)
+	{
+		err := readOnly.Close()
+		require.NoError(t, err)
 	}
-	if err := readOnly.Close(); err != nil {
-		t.Fatal(err)
+	{
+		got := fileSize(t, name)
+		require.Equal(t, int64(len(contents)), got)
 	}
-	if got := fileSize(t, name); got != int64(len(contents)) {
-		t.Fatalf("read-only open changed size to %d, want %d", got, len(contents))
-	}
+
 	writable, err := OpenWAL(context.Background(), name, WALOptions{})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := writable.Close()
+		require.NoError(t, err)
 	}
-	if err := writable.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if got := fileSize(t, name); got != int64(len(complete)) {
-		t.Fatalf("writable repair size = %d, want %d", got, len(complete))
+	{
+		got := fileSize(t, name)
+		require.Equal(t, int64(len(complete)), got)
 	}
 }
 
@@ -529,12 +573,9 @@ func FuzzScanWAL(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		recovery, err := scanWAL(context.Background(), bytes.NewReader(data), int64(len(data)))
 		if err == nil {
-			if recovery.ValidBytes < walFileHeaderSize || recovery.ValidBytes > int64(len(data)) {
-				t.Fatalf("invalid recovery = %#v for %d bytes", recovery, len(data))
-			}
-			if recovery.ValidBytes+recovery.TruncatedBytes != int64(len(data)) {
-				t.Fatalf("recovery does not partition input: %#v, size %d", recovery, len(data))
-			}
+			require.True(t, recovery.ValidBytes >= walFileHeaderSize)
+			require.True(t, recovery.ValidBytes <= int64(len(data)))
+			require.Equal(t, int64(len(data)), recovery.ValidBytes+recovery.TruncatedBytes)
 		}
 	})
 }
@@ -574,15 +615,15 @@ func recordPayloads(records []WALRecord) []string {
 func fileSize(t *testing.T, name string) int64 {
 	t.Helper()
 	info, err := os.Stat(name)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return info.Size()
 }
 
 func TestWALRecordHeaderCRCUsesCastagnoli(t *testing.T) {
 	header := encodeWALRecord(1, []byte("payload"))[:walRecordHeaderSize]
-	if actual, expected := binary.LittleEndian.Uint32(header[24:28]), ailego.CRC32C(header[:24]); actual != expected {
-		t.Fatalf("record header CRC = %08x, want %08x", actual, expected)
+	{
+		actual, expected := binary.LittleEndian.Uint32(header[24:28]), ailego.CRC32C(header[:24])
+		require.Equal(t, expected, actual)
 	}
 }

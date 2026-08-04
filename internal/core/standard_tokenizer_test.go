@@ -18,12 +18,12 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/stretchr/testify/require"
 )
 
 type standardTokenizerFixture struct {
@@ -45,94 +45,76 @@ type standardTokenizerFixture struct {
 
 func TestStandardTokenizerBaselineFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/standard_tokenizer_58375ff.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var fixture standardTokenizerFixture
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(data, &fixture)
+		require.NoError(t, err)
 	}
-	if fixture.BaselineCommit != "58375ff7b8fdd0d6fc7d234e47567b179777883b" ||
-		fixture.SourceSHA256 != "3f9a7ee811e9fac253bac363d5b208b9e7a03cc1bb51b771221e9417bc8864e9" ||
-		fixture.UnicodeTableSHA256 != "3d666796d24191c9708fb3a183d7ce0f61962da0b34dacfdc73d03061f342722" ||
-		fixture.UnicodeVersion != "17.0.0" {
-		t.Fatalf("unexpected fixture identity: %#v", fixture)
-	}
+	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
+	require.True(t, fixture.SourceSHA256 == "3f9a7ee811e9fac253bac363d5b208b9e7a03cc1bb51b771221e9417bc8864e9")
+	require.True(t, fixture.UnicodeTableSHA256 == "3d666796d24191c9708fb3a183d7ce0f61962da0b34dacfdc73d03061f342722")
+	require.True(t, fixture.UnicodeVersion == "17.0.0")
+
 	for _, test := range fixture.Cases {
 		t.Run(test.Name, func(t *testing.T) {
 			input, err := hex.DecodeString(test.InputHex)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			tokenizer := mustStandardTokenizer(t, test.MaxTokenLength)
 			got, err := tokenizer.Tokenize(context.Background(), string(input))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			want := make([]Token, len(test.Tokens))
 			for index, token := range test.Tokens {
 				text, err := hex.DecodeString(token.TextHex)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				want[index] = Token{Text: string(text), Offset: token.Offset, Position: token.Position}
 			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("tokens = %#v, want %#v", got, want)
-			}
+			require.Equal(t, want, got)
 		})
 	}
 }
 
 func TestStandardTokenizerOptions(t *testing.T) {
 	defaults := DefaultStandardTokenizerOptions()
-	if defaults.MaxTokenLength != 255 {
-		t.Fatalf("default MaxTokenLength = %d", defaults.MaxTokenLength)
-	}
+	require.True(t, defaults.MaxTokenLength == 255)
+
 	for _, length := range []uint32{1, 255, MaxStandardMaxTokenLength} {
 		tokenizer, err := NewStandardTokenizer(StandardTokenizerOptions{MaxTokenLength: length})
-		if err != nil {
-			t.Fatalf("length %d: %v", length, err)
-		}
-		if tokenizer.Name() != "standard" || tokenizer.MaxTokenLength() != length {
-			t.Fatalf("tokenizer = %#v", tokenizer)
-		}
+		require.NoError(t, err)
+		require.True(t, tokenizer.Name() == "standard")
+		require.Equal(t, length, tokenizer.MaxTokenLength())
 	}
 	for _, length := range []uint32{0, MaxStandardMaxTokenLength + 1} {
 		_, err := NewStandardTokenizer(StandardTokenizerOptions{MaxTokenLength: length})
-		if !errors.Is(err, ErrInvalidStandardTokenizerOptions) {
-			t.Fatalf("length %d error = %v", length, err)
-		}
+		require.ErrorIs(t, err, ErrInvalidStandardTokenizerOptions)
 	}
 }
 
 func TestStandardTokenizerUnicodeTablesAreOrdered(t *testing.T) {
-	for name, ranges := range map[string][]standardUnicodeClassRange{
+	for _, ranges := range map[string][]standardUnicodeClassRange{
 		"word-break": standardWordBreakRanges[:],
 		"script":     standardScriptClassRanges[:],
 	} {
 		for index, item := range ranges {
-			if item.first > item.last || item.last > utf8.MaxRune {
-				t.Fatalf("%s range %d is invalid: %#v", name, index, item)
-			}
-			if index > 0 && ranges[index-1].last >= item.first {
-				t.Fatalf("%s ranges %d and %d overlap or are unordered", name, index-1, index)
-			}
+			require.True(t, item.first <= item.last)
+			require.True(t, item.last <= utf8.MaxRune)
+			require.False(t, index > 0 && ranges[index-1].last >= item.first)
 		}
 	}
-	for name, ranges := range map[string][]standardUnicodeRange{
+	for _, ranges := range map[string][]standardUnicodeRange{
 		"extended-pictographic": standardExtendedPictographicRanges[:],
 		"emoji-modifier-base":   standardEmojiModifierBaseRanges[:],
 		"emoji-modifier":        standardEmojiModifierRanges[:],
 		"complex-context":       standardLineBreakComplexContextRanges[:],
 	} {
 		for index, item := range ranges {
-			if item.first > item.last || item.last > utf8.MaxRune {
-				t.Fatalf("%s range %d is invalid: %#v", name, index, item)
-			}
-			if index > 0 && ranges[index-1].last >= item.first {
-				t.Fatalf("%s ranges %d and %d overlap or are unordered", name, index-1, index)
-			}
+			require.True(t, item.first <= item.last)
+			require.True(t, item.last <= utf8.MaxRune)
+			require.False(t, index > 0 && ranges[index-1].last >= item.first)
 		}
 	}
 }
@@ -154,18 +136,18 @@ func TestStandardTokenizerASCIIAndPunctuation(t *testing.T) {
 	}
 	for _, test := range tests {
 		got, err := tokenizer.Tokenize(context.Background(), test.input)
-		if err != nil {
-			t.Fatal(err)
+		require.NoError(t, err)
+		{
+			texts := standardTokenTexts(got)
+			require.Equal(t, test.want, texts)
 		}
-		if texts := standardTokenTexts(got); !reflect.DeepEqual(texts, test.want) {
-			t.Fatalf("Tokenize(%q) = %#v, want %#v", test.input, texts, test.want)
-		}
+
 		assertStandardTokenRanges(t, test.input, got)
 	}
 	empty, err := tokenizer.Tokenize(context.Background(), "")
-	if err != nil || empty == nil || len(empty) != 0 {
-		t.Fatalf("empty = %#v, %v", empty, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, empty)
+	require.Len(t, empty, 0)
 }
 
 func TestStandardTokenizerUnicodeScriptsAndMarks(t *testing.T) {
@@ -191,12 +173,12 @@ func TestStandardTokenizerUnicodeScriptsAndMarks(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := tokenizer.Tokenize(context.Background(), test.input)
-			if err != nil {
-				t.Fatal(err)
+			require.NoError(t, err)
+			{
+				texts := standardTokenTexts(got)
+				require.Equal(t, test.want, texts)
 			}
-			if texts := standardTokenTexts(got); !reflect.DeepEqual(texts, test.want) {
-				t.Fatalf("tokens = %#v, want %#v", texts, test.want)
-			}
+
 			assertStandardTokenRanges(t, test.input, got)
 		})
 	}
@@ -218,12 +200,12 @@ func TestStandardTokenizerEmojiSequences(t *testing.T) {
 	}
 	for _, test := range tests {
 		got, err := tokenizer.Tokenize(context.Background(), test.input)
-		if err != nil {
-			t.Fatal(err)
+		require.NoError(t, err)
+		{
+			texts := standardTokenTexts(got)
+			require.Equal(t, test.want, texts)
 		}
-		if texts := standardTokenTexts(got); !reflect.DeepEqual(texts, test.want) {
-			t.Fatalf("Tokenize(%q) = %#v, want %#v", test.input, texts, test.want)
-		}
+
 		assertStandardTokenRanges(t, test.input, got)
 	}
 }
@@ -231,13 +213,10 @@ func TestStandardTokenizerEmojiSequences(t *testing.T) {
 func TestStandardTokenizerMalformedUTF8(t *testing.T) {
 	input := string([]byte{'a', 'b', 0xff, 0xc0, 'c', 'd'})
 	tokens, err := mustStandardTokenizer(t, 255).Tokenize(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := []Token{{Text: "ab", Offset: 0, Position: 0}, {Text: "cd", Offset: 4, Position: 1}}
-	if !reflect.DeepEqual(tokens, want) {
-		t.Fatalf("tokens = %#v, want %#v", tokens, want)
-	}
+	require.Equal(t, want, tokens)
 }
 
 func TestStandardTokenizerMaxTokenLength(t *testing.T) {
@@ -257,30 +236,36 @@ func TestStandardTokenizerMaxTokenLength(t *testing.T) {
 	}
 	for _, test := range tests {
 		tokens, err := mustStandardTokenizer(t, test.length).Tokenize(context.Background(), test.input)
-		if err != nil {
-			t.Fatal(err)
+		require.NoError(t, err)
+		{
+			texts := standardTokenTexts(tokens)
+			require.Equal(t, test.want, texts)
 		}
-		if texts := standardTokenTexts(tokens); !reflect.DeepEqual(texts, test.want) {
-			t.Fatalf("length %d Tokenize(%q) = %#v, want %#v", test.length, test.input, texts, test.want)
-		}
+
 		assertStandardTokenRanges(t, test.input, tokens)
 	}
 }
 
 func TestStandardTokenizerContextCancellation(t *testing.T) {
 	tokenizer := mustStandardTokenizer(t, 255)
-	if _, err := tokenizer.Tokenize(nil, "text"); err == nil {
-		t.Fatal("nil context succeeded")
+	{
+		_, err := tokenizer.Tokenize(nil, "text")
+		require.Error(t, err,
+			"nil context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := tokenizer.Tokenize(canceled, "text"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pre-canceled error = %v", err)
+	{
+		_, err := tokenizer.Tokenize(canceled, "text")
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	for _, input := range []string{strings.Repeat("x", 64<<10), strings.Repeat("é", 32<<10)} {
 		midway := newCancelAfterChecks(4)
-		if _, err := tokenizer.Tokenize(midway, input); !errors.Is(err, context.Canceled) {
-			t.Fatalf("mid-token cancellation for %d bytes = %v", len(input), err)
+		{
+			_, err := tokenizer.Tokenize(midway, input)
+			require.ErrorIs(t, err, context.Canceled)
 		}
 	}
 }
@@ -292,14 +277,11 @@ func FuzzStandardTokenizer(f *testing.F) {
 	f.Fuzz(func(t *testing.T, input string, length uint16) {
 		maxLength := uint32(length%64) + 1
 		tokens, err := mustStandardTokenizer(t, maxLength).Tokenize(context.Background(), input)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		assertStandardTokenRanges(t, input, tokens)
 		for _, token := range tokens {
-			if utf8.ValidString(token.Text) && uint32(utf8.RuneCountInString(token.Text)) < 1 {
-				t.Fatalf("empty valid token: %#v", token)
-			}
+			require.False(t, utf8.ValidString(token.Text) && uint32(utf8.RuneCountInString(token.Text)) < 1)
 		}
 	})
 }
@@ -310,8 +292,11 @@ func BenchmarkStandardTokenizer(b *testing.B) {
 	b.SetBytes(int64(len(text)))
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := tokenizer.Tokenize(context.Background(), text); err != nil {
-			b.Fatal(err)
+		{
+			_, err := tokenizer.Tokenize(context.Background(), text)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }
@@ -319,9 +304,8 @@ func BenchmarkStandardTokenizer(b *testing.B) {
 func mustStandardTokenizer(tb testing.TB, maxTokenLength uint32) *StandardTokenizer {
 	tb.Helper()
 	tokenizer, err := NewStandardTokenizer(StandardTokenizerOptions{MaxTokenLength: maxTokenLength})
-	if err != nil {
-		tb.Fatal(err)
-	}
+	require.NoError(tb, err)
+
 	return tokenizer
 }
 
@@ -339,12 +323,12 @@ func assertStandardTokenRanges(t testing.TB, input string, tokens []Token) {
 	for position, token := range tokens {
 		start := int(token.Offset)
 		end := start + len(token.Text)
-		if token.Position != uint32(position) || token.Text == "" {
-			t.Fatalf("token %d metadata = %#v", position, token)
-		}
-		if start < lastEnd || end > len(input) || input[start:end] != token.Text {
-			t.Fatalf("token %d source range = %#v for %x", position, token, input)
-		}
+		require.Equal(t, uint32(position), token.Position)
+		require.False(t, token.Text == "")
+		require.True(t, start >= lastEnd)
+		require.True(t, end <= len(input))
+		require.Equal(t, token.Text, input[start:end])
+
 		lastEnd = end
 	}
 }

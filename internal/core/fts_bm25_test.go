@@ -18,12 +18,13 @@ import (
 	"context"
 	"errors"
 	"math"
-	"reflect"
 	"sort"
 	"sync"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBM25ScorerBaselineFormula(t *testing.T) {
@@ -32,12 +33,12 @@ func TestBM25ScorerBaselineFormula(t *testing.T) {
 		documentFrequencies: map[string]uint64{"apple": 2, "grape": 1},
 	}
 	scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		got, want := scorer.Params(), (BM25Params{K1: 1.2, B: 0.75})
+		require.Equal(t, want, got)
 	}
-	if got, want := scorer.Params(), (BM25Params{K1: 1.2, B: 0.75}); got != want {
-		t.Fatalf("params = %#v, want %#v", got, want)
-	}
+
 	assertBM25Close(t, "idf", scorer.IDF(2), 0.470003629246, 1e-7)
 	assertBM25Close(t, "term idf", scorer.TermIDF("apple"), 0.470003629246, 1e-7)
 	assertBM25Close(t, "score", scorer.Score(2, 2, 3), 0.624306707526, 1e-6)
@@ -45,9 +46,10 @@ func TestBM25ScorerBaselineFormula(t *testing.T) {
 	assertBM25Close(t, "boosted score", scorer.ScoreWithIDFAndBoost(scorer.IDF(2), 2, 3, 2), 1.248613415052, 2e-6)
 	assertBM25Close(t, "rare short document", scorer.Score(1, 1, 1), 1.317755332291, 1e-6)
 	assertBM25Close(t, "upper bound", scorer.MaxScoreBound(2), 1.034007984341, 1e-6)
-	if scorer.Score(2, 0, 3) != 0 || scorer.ScoreWithIDF(-1, 2, 3) != 0 {
-		t.Fatal("non-occurring or non-positive-IDF terms must score zero")
-	}
+	require.True(t, scorer.Score(2, 0, 3) == 0,
+		"non-occurring or non-positive-IDF terms must score zero")
+	require.True(t, scorer.ScoreWithIDF(-1, 2, 3) == 0,
+		"non-occurring or non-positive-IDF terms must score zero")
 }
 
 func TestBM25ScorerValidationOwnershipAndEmptyCorpus(t *testing.T) {
@@ -59,8 +61,10 @@ func TestBM25ScorerValidationOwnershipAndEmptyCorpus(t *testing.T) {
 		{K1: 1.2, B: float32(math.Inf(1))},
 	}
 	for _, params := range invalid {
-		if scorer, err := NewBM25Scorer(params, FTSCorpusStats{}); scorer != nil || !errors.Is(err, ErrInvalidBM25) {
-			t.Fatalf("NewBM25Scorer(%#v) = %#v, %v", params, scorer, err)
+		{
+			scorer, err := NewBM25Scorer(params, FTSCorpusStats{})
+			require.Nil(t, scorer)
+			require.ErrorIs(t, err, ErrInvalidBM25)
 		}
 	}
 	for _, stats := range []FTSCorpusStats{
@@ -70,33 +74,38 @@ func TestBM25ScorerValidationOwnershipAndEmptyCorpus(t *testing.T) {
 		{TotalDocuments: 1, documentFrequencies: map[string]uint64{"x": 1}},
 		{TotalDocuments: 2, TotalTokens: 1, documentFrequencies: map[string]uint64{"x": 2}},
 	} {
-		if scorer, err := NewBM25Scorer(DefaultBM25Params(), stats); scorer != nil || !errors.Is(err, ErrInvalidBM25) {
-			t.Fatalf("invalid stats = %#v, %v", scorer, err)
+		{
+			scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
+			require.Nil(t, scorer)
+			require.ErrorIs(t, err, ErrInvalidBM25)
 		}
 	}
 
 	empty, err := NewBM25Scorer(DefaultBM25Params(), FTSCorpusStats{})
-	if err != nil || empty.IDF(1) != 0 || empty.Score(1, 1, 1) != 0 || empty.MaxScoreBound(1) != 0 {
-		t.Fatalf("empty scorer = %#v, %v", empty, err)
-	}
+	require.NoError(t, err)
+	require.True(t, empty.IDF(1) == 0)
+	require.True(t, empty.Score(1, 1, 1) == 0)
+	require.True(t, empty.MaxScoreBound(1) == 0)
+
 	emptyDocuments, err := NewBM25Scorer(DefaultBM25Params(), FTSCorpusStats{TotalDocuments: 2})
-	if err != nil || emptyDocuments.Score(1, 1, 1) != 0 {
-		t.Fatalf("token-empty scorer = %#v, %v", emptyDocuments, err)
-	}
+	require.NoError(t, err)
+	require.True(t, emptyDocuments.Score(1, 1, 1) == 0)
+
 	stats := FTSCorpusStats{TotalDocuments: 2, TotalTokens: 3, documentFrequencies: map[string]uint64{"x": 1}}
 	scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	stats.documentFrequencies["x"] = 2
 	copyStats := scorer.Stats()
 	copyStats.documentFrequencies["x"] = 2
-	if scorer.DocumentFrequency("x") != 1 || scorer.Stats().DocumentFrequency("x") != 1 {
-		t.Fatal("scorer statistics alias caller memory")
-	}
-	if (*BM25Scorer)(nil).IDF(1) != 0 || (*BM25Scorer)(nil).Score(1, 1, 1) != 0 {
-		t.Fatal("nil scorer getters must be safe")
-	}
+	require.True(t, scorer.DocumentFrequency("x") == 1,
+		"scorer statistics alias caller memory")
+	require.True(t, scorer.Stats().DocumentFrequency("x") == 1,
+		"scorer statistics alias caller memory")
+	require.True(t, (*BM25Scorer)(nil).IDF(1) == 0,
+		"nil scorer getters must be safe")
+	require.True(t, (*BM25Scorer)(nil).Score(1, 1, 1) == 0,
+		"nil scorer getters must be safe")
 }
 
 func TestSearchFTSBM25BooleanPhraseBoostAndTopK(t *testing.T) {
@@ -108,70 +117,74 @@ func TestSearchFTSBM25BooleanPhraseBoostAndTopK(t *testing.T) {
 		{{Text: "quick", Position: 0}, {Text: "brown", Position: 1}},
 	})
 	stats, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{{Dictionary: dictionary}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	pipeline := newFTSStandardTestPipeline(t)
 	parse := func(query string) FTSQueryNode {
 		node, parseErr := ParseFTSQuery(context.Background(), query, pipeline, FTSDefaultOperatorOR)
-		if parseErr != nil {
-			t.Fatal(parseErr)
-		}
+		require.NoError(t, parseErr)
+
 		return node
 	}
 	search := func(query string, topK int) []FTSResult {
 		results, searchErr := SearchFTS(context.Background(), dictionary, parse(query), scorer, FTSSearchOptions{TopK: topK})
-		if searchErr != nil {
-			t.Fatal(searchErr)
-		}
+		require.NoError(t, searchErr)
+
 		return results
 	}
 
 	apple := search("apple", 10)
-	if got, want := ftsResultDocumentIDs(apple), []uint32{0, 1, 3}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("apple IDs = %v, want %v (%#v)", got, want, apple)
+	{
+		got, want := ftsResultDocumentIDs(apple), []uint32{0, 1, 3}
+		require.Equal(t, want, got)
 	}
+
 	assertBM25Close(t, "apple doc 0", apple[0].Score, float64(scorer.Score(3, 2, 3)), 1e-6)
 
 	orResults := search("apple OR banana", 10)
-	if got, want := ftsResultDocumentIDs(orResults), []uint32{1, 0, 3}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("OR IDs = %v, want %v (%#v)", got, want, orResults)
+	{
+		got, want := ftsResultDocumentIDs(orResults), []uint32{1, 0, 3}
+		require.Equal(t, want, got)
 	}
+
 	assertBM25Close(t, "OR sum", orResults[0].Score, float64(scorer.Score(3, 1, 4)+scorer.Score(2, 3, 4)), 1e-6)
 
 	shouldResults := search("+apple banana", 10)
-	if !reflect.DeepEqual(shouldResults, orResults) {
-		t.Fatalf("required+optional results = %#v, want %#v", shouldResults, orResults)
-	}
+	require.Equal(t, orResults, shouldResults)
+
 	mustNot := search("apple AND NOT banana", 10)
-	if got, want := ftsResultDocumentIDs(mustNot), []uint32{3}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("must-not IDs = %v, want %v", got, want)
+	{
+		got, want := ftsResultDocumentIDs(mustNot), []uint32{3}
+		require.Equal(t, want, got)
 	}
 
 	phrase := search(`"quick brown"`, 10)
-	if got, want := ftsResultDocumentIDs(phrase), []uint32{4, 3}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("phrase IDs = %v, want %v (%#v)", got, want, phrase)
+	{
+		got, want := ftsResultDocumentIDs(phrase), []uint32{4, 3}
+		require.Equal(t, want, got)
 	}
+
 	duplicatePhrase := search(`"quick brown" OR "quick brown"`, 10)
-	if got, want := ftsResultDocumentIDs(duplicatePhrase), []uint32{4, 3}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("duplicate phrase IDs = %v, want %v", got, want)
+	{
+		got, want := ftsResultDocumentIDs(duplicatePhrase), []uint32{4, 3}
+		require.Equal(t, want, got)
 	}
+
 	for index := range phrase {
 		assertBM25Close(t, "duplicate phrase boost", duplicatePhrase[index].Score, float64(phrase[index].Score*2), 2e-6)
 	}
 	optionalPhrase := search(`+apple "quick brown"`, 10)
 	document3, found := findFTSResult(optionalPhrase, 3)
-	if !found {
-		t.Fatalf("optional phrase omitted required document: %#v", optionalPhrase)
-	}
+	require.True(t, found)
+
 	wantDocument3 := scorer.Score(3, 1, 4) + scorer.Score(2, 1, 4) + scorer.Score(2, 1, 4)
 	assertBM25Close(t, "optional phrase score", document3.Score, float64(wantDocument3), 1e-6)
-	if got := search("apple OR banana", 2); !reflect.DeepEqual(got, orResults[:2]) {
-		t.Fatalf("top-2 = %#v, want %#v", got, orResults[:2])
+	{
+		got := search("apple OR banana", 2)
+		require.Equal(t, orResults[:2], got)
 	}
 }
 
@@ -184,51 +197,57 @@ func TestSearchFTSTiesDeletionAdvanceAndValidation(t *testing.T) {
 	deleted := ailego.NewBitmap(3)
 	deleted.Set(1)
 	stats, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{{Dictionary: dictionary, DeletedDocuments: deleted}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	node := &FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: "same"}
 	options := FTSQueryExecutionOptions{DeletedDocuments: deleted}
 	iterator, err := NewFTSScoredQueryIterator(context.Background(), dictionary, node, scorer, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !iterator.Advance(context.Background(), 2) || iterator.DocumentID() != 2 || iterator.Score() <= 0 {
-		t.Fatalf("Advance = %v, %d, %g", iterator.Valid(), iterator.DocumentID(), iterator.Score())
-	}
-	if !iterator.Advance(context.Background(), 1) || iterator.DocumentID() != 2 {
-		t.Fatal("Advance moved a suitable current result")
-	}
+	require.NoError(t, err)
+	require.True(t, iterator.Advance(context.Background(), 2))
+	require.True(t, iterator.DocumentID() == 2)
+	require.True(t, iterator.Score() > 0)
+	require.True(t, iterator.Advance(context.Background(), 1),
+		"Advance moved a suitable current result")
+	require.True(t, iterator.DocumentID() == 2,
+		"Advance moved a suitable current result")
+
 	results, err := SearchFTS(context.Background(), dictionary, node, scorer, FTSSearchOptions{TopK: 1, FTSQueryExecutionOptions: options})
-	if err != nil || !reflect.DeepEqual(ftsResultDocumentIDs(results), []uint32{0}) {
-		t.Fatalf("tie/deletion search = %#v, %v", results, err)
+	require.NoError(t, err)
+	require.Equal(t, []uint32{0}, ftsResultDocumentIDs(results))
+	{
+		_, err := NewFTSScoredQueryIterator(context.Background(), dictionary, node, nil, options)
+		require.ErrorIs(t, err, ErrInvalidFTSQueryExecution)
 	}
-	if _, err := NewFTSScoredQueryIterator(context.Background(), dictionary, node, nil, options); !errors.Is(err, ErrInvalidFTSQueryExecution) {
-		t.Fatalf("nil scorer = %v", err)
+	{
+		_, err := NewFTSScoredQueryIterator(nil, dictionary, node, scorer, options)
+		require.ErrorIs(t, err, ErrInvalidFTSQueryExecution)
 	}
-	if _, err := NewFTSScoredQueryIterator(nil, dictionary, node, scorer, options); !errors.Is(err, ErrInvalidFTSQueryExecution) {
-		t.Fatalf("nil scored-iterator context = %v", err)
+	{
+		_, err := SearchFTS(nil, dictionary, node, scorer, FTSSearchOptions{TopK: 1})
+		require.ErrorIs(t, err, ErrInvalidFTSSearch)
 	}
-	if _, err := SearchFTS(nil, dictionary, node, scorer, FTSSearchOptions{TopK: 1}); !errors.Is(err, ErrInvalidFTSSearch) {
-		t.Fatalf("nil context = %v", err)
+	{
+		_, err := SearchFTS(context.Background(), dictionary, node, scorer, FTSSearchOptions{TopK: -1})
+		require.ErrorIs(t, err, ErrInvalidFTSSearch)
 	}
-	if _, err := SearchFTS(context.Background(), dictionary, node, scorer, FTSSearchOptions{TopK: -1}); !errors.Is(err, ErrInvalidFTSSearch) {
-		t.Fatalf("negative TopK = %v", err)
+	{
+		results, err := SearchFTS(context.Background(), dictionary, nil, scorer, FTSSearchOptions{TopK: 0})
+		require.NoError(t, err)
+		require.Len(t, results, 0)
 	}
-	if results, err := SearchFTS(context.Background(), dictionary, nil, scorer, FTSSearchOptions{TopK: 0}); err != nil || len(results) != 0 {
-		t.Fatalf("zero TopK = %#v, %v", results, err)
+	{
+		_, err := SearchFTS(context.Background(), nil, nil, scorer, FTSSearchOptions{TopK: 0})
+		require.ErrorIs(t, err, ErrInvalidFTSQueryExecution)
 	}
-	if _, err := SearchFTS(context.Background(), nil, nil, scorer, FTSSearchOptions{TopK: 0}); !errors.Is(err, ErrInvalidFTSQueryExecution) {
-		t.Fatalf("zero TopK nil dictionary = %v", err)
-	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := SearchFTS(canceled, dictionary, node, scorer, FTSSearchOptions{TopK: 1}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled search = %v", err)
+	{
+		_, err := SearchFTS(canceled, dictionary, node, scorer, FTSSearchOptions{TopK: 1})
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
@@ -237,13 +256,11 @@ func TestBM25ScorerAndSearchConcurrentUse(t *testing.T) {
 		{{Text: "x", Position: 0}}, {{Text: "x", Position: 0}}, {{Text: "y", Position: 0}},
 	})
 	stats, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{{Dictionary: dictionary}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	node := &FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: "x"}
 	var wait sync.WaitGroup
 	errorsChannel := make(chan error, 16)
@@ -256,7 +273,7 @@ func TestBM25ScorerAndSearchConcurrentUse(t *testing.T) {
 				errorsChannel <- searchErr
 				return
 			}
-			if got := ftsResultDocumentIDs(results); !reflect.DeepEqual(got, []uint32{0, 1}) {
+			if got := ftsResultDocumentIDs(results); !assert.Equal(t, []uint32{0, 1}, got) {
 				errorsChannel <- errors.New("unexpected concurrent result")
 			}
 		}()
@@ -264,7 +281,7 @@ func TestBM25ScorerAndSearchConcurrentUse(t *testing.T) {
 	wait.Wait()
 	close(errorsChannel)
 	for err := range errorsChannel {
-		t.Error(err)
+		assert.NoError(t, err)
 	}
 }
 
@@ -279,13 +296,12 @@ func FuzzBM25Scorer(f *testing.F) {
 			documentFrequencies: map[string]uint64{"x": documentFrequency},
 		}
 		scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		score := scorer.Score(documentFrequency, termFrequency, documentLength)
-		if math.IsNaN(float64(score)) || math.IsInf(float64(score), 0) || score < 0 {
-			t.Fatalf("score = %g", score)
-		}
+		require.False(t, math.IsNaN(float64(score)))
+		require.False(t, math.IsInf(float64(score), 0))
+		require.True(t, score >= 0)
 	})
 }
 
@@ -322,13 +338,11 @@ func FuzzSearchFTSBM25(f *testing.F) {
 			}
 		}
 		stats, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{{Dictionary: dictionary, DeletedDocuments: deleted}})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		children := make([]FTSQueryNode, 0, 4)
 		selected := make([]int, 0, 4)
 		for termIndex := range 4 {
@@ -350,9 +364,8 @@ func FuzzSearchFTSBM25(f *testing.F) {
 		got, err := SearchFTS(context.Background(), dictionary, node, scorer, FTSSearchOptions{
 			TopK: topK, FTSQueryExecutionOptions: FTSQueryExecutionOptions{DeletedDocuments: deleted},
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		want := make([]FTSResult, 0, len(documents))
 		for documentID, counts := range termCounts {
 			if deleted.Contains(uint64(documentID)) {
@@ -384,13 +397,11 @@ func FuzzSearchFTSBM25(f *testing.F) {
 		if len(want) > topK {
 			want = want[:topK]
 		}
-		if len(got) != len(want) {
-			t.Fatalf("result count = %d, want %d: %#v / %#v", len(got), len(want), got, want)
-		}
+		require.Len(t, got, len(want))
+
 		for index := range want {
-			if got[index].DocumentID != want[index].DocumentID {
-				t.Fatalf("result %d = %#v, want %#v", index, got[index], want[index])
-			}
+			require.Equal(t, want[index].DocumentID, got[index].DocumentID)
+
 			assertBM25Close(t, "fuzz result", got[index].Score, float64(want[index].Score), 1e-6)
 		}
 	})
@@ -407,12 +418,14 @@ func BenchmarkSearchFTSBM25(b *testing.B) {
 	dictionary := buildFTSTestDictionary(b, documents)
 	stats, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{{Dictionary: dictionary}})
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	node := &FTSOrQueryNode{Flags: defaultFTSQueryModifier(), Children: []FTSQueryNode{
 		&FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: "common"},
 		&FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: "rare"},
@@ -420,17 +433,18 @@ func BenchmarkSearchFTSBM25(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		if _, err := SearchFTS(context.Background(), dictionary, node, scorer, FTSSearchOptions{TopK: 10}); err != nil {
-			b.Fatal(err)
+		{
+			_, err := SearchFTS(context.Background(), dictionary, node, scorer, FTSSearchOptions{TopK: 10})
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }
 
 func assertBM25Close(t testing.TB, name string, got float32, want, tolerance float64) {
 	t.Helper()
-	if difference := math.Abs(float64(got) - want); difference > tolerance {
-		t.Fatalf("%s = %.12g, want %.12g (difference %.12g)", name, got, want, difference)
-	}
+	require.InDelta(t, want, got, tolerance, name)
 }
 
 func ftsResultDocumentIDs(results []FTSResult) []uint32 {

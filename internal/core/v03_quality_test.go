@@ -16,8 +16,9 @@ package core
 
 import (
 	"context"
-	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestV03IVFPartialProbeRecall locks the quality boundary that is not covered
@@ -35,18 +36,17 @@ func TestV03IVFPartialProbeRecall(t *testing.T) {
 			SearchOptions: SearchOptions{TopK: 10},
 			NProbe:        8,
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		want, err := TopK(context.Background(), MetricL2, query, candidates, 10)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		matched += resultOverlap(got, want)
 		total += len(want)
 	}
-	if recall := float64(matched) / float64(total); recall < .90 {
-		t.Fatalf("IVF recall@10 = %.3f, want >= .90", recall)
+	{
+		recall := float64(matched) / float64(total)
+		require.True(t, recall >= .90)
 	}
 }
 
@@ -59,16 +59,20 @@ func BenchmarkV03DenseSearchQuality(b *testing.B) {
 	query := candidates[4321].Vector
 	truth, err := TopK(context.Background(), MetricL2, query, candidates, 10)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
 
 	flat, err := NewDenseFlatIndex(4, MetricL2)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	for _, candidate := range candidates {
-		if err := flat.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
-			b.Fatal(err)
+		{
+			err := flat.Add(context.Background(), candidate.Key, candidate.Vector)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 	ivf := buildDenseIVFFromCandidates(b, candidates, 64)
@@ -77,7 +81,7 @@ func BenchmarkV03DenseSearchQuality(b *testing.B) {
 		context.Background(), hnsw, QuantizationInt8, nil,
 	)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
 
 	benchmarks := []struct {
@@ -120,14 +124,18 @@ func BenchmarkV03DenseSearchQuality(b *testing.B) {
 		b.Run(benchmark.name, func(b *testing.B) {
 			got, err := benchmark.search()
 			if err != nil {
-				b.Fatal(err)
+				require.NoError(b, err)
 			}
+
 			recall := float64(resultOverlap(got, truth)) / float64(len(truth))
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
-				if _, err := benchmark.search(); err != nil {
-					b.Fatal(fmt.Errorf("search: %w", err))
+				{
+					_, err := benchmark.search()
+					if err != nil {
+						require.NoError(b, err)
+					}
 				}
 			}
 			b.ReportMetric(recall, "recall@10")

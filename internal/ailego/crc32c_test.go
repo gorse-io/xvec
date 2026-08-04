@@ -14,15 +14,22 @@
 
 package ailego
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestCRC32C(t *testing.T) {
-	if got, want := CRC32C([]byte("123456789")), uint32(0xe3069283); got != want {
-		t.Fatalf("CRC32C = %#x, want %#x", got, want)
+	{
+		got, want := CRC32C([]byte("123456789")), uint32(0xe3069283)
+		require.Equal(t, want, got)
 	}
+
 	crc := UpdateCRC32C(0, []byte("1234"))
 	crc = UpdateCRC32C(crc, []byte("56789"))
-	if got, want := crc, CRC32C([]byte("123456789")); got != want {
-		t.Fatalf("incremental CRC32C = %#x, want %#x", got, want)
+	{
+		got, want := crc, CRC32C([]byte("123456789"))
+		require.Equal(t, want, got)
 	}
 }

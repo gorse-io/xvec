@@ -16,21 +16,21 @@ package core
 
 import (
 	"context"
-	"errors"
 	"math"
-	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHNSWBuildOptionsAndValidation(t *testing.T) {
 	t.Parallel()
 	defaults := DefaultHNSWBuildOptions(MetricCosine)
-	if defaults.M != 50 || defaults.EFConstruction != 500 || defaults.Metric != MetricCosine {
-		t.Fatalf("defaults = %#v", defaults)
-	}
+	require.True(t, defaults.M == 50)
+	require.True(t, defaults.EFConstruction == 500)
+	require.Equal(t, MetricCosine, defaults.Metric)
+
 	valid := DefaultHNSWBuildOptions(MetricL2)
 	for _, options := range []HNSWBuildOptions{
 		{},
@@ -39,15 +39,18 @@ func TestHNSWBuildOptionsAndValidation(t *testing.T) {
 		func() HNSWBuildOptions { value := valid; value.M = MaxHNSWM + 1; return value }(),
 		func() HNSWBuildOptions { value := valid; value.EFConstruction = value.M - 1; return value }(),
 	} {
-		if _, err := NewHNSWBuilder(3, options); !errors.Is(err, ErrInvalidHNSWOptions) {
-			t.Fatalf("options %#v error = %v", options, err)
+		{
+			_, err := NewHNSWBuilder(3, options)
+			require.ErrorIs(t, err, ErrInvalidHNSWOptions)
 		}
 	}
-	if _, err := NewHNSWBuilder(0, valid); !errors.Is(err, ErrInvalidDimension) {
-		t.Fatalf("zero dimension error = %v", err)
+	{
+		_, err := NewHNSWBuilder(0, valid)
+		require.ErrorIs(t, err, ErrInvalidDimension)
 	}
-	if _, err := NewHNSWBuilder(MaxRotationDimension+1, valid); !errors.Is(err, ErrInvalidDimension) {
-		t.Fatalf("large dimension error = %v", err)
+	{
+		_, err := NewHNSWBuilder(MaxRotationDimension+1, valid)
+		require.ErrorIs(t, err, ErrInvalidDimension)
 	}
 }
 
@@ -59,30 +62,28 @@ func TestHNSWBuildGraphInvariants(t *testing.T) {
 		options.EFConstruction = 16
 		options.Seed = 0x5eed
 		builder, err := NewHNSWBuilder(3, options)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		inputs := hnswBuildInputs(80)
 		for _, input := range inputs {
-			if err := builder.Add(context.Background(), input.Key, input.Vector); err != nil {
-				t.Fatal(err)
+			{
+				err := builder.Add(context.Background(), input.Key, input.Vector)
+				require.NoError(t, err)
 			}
 		}
 		index, err := builder.Build(context.Background())
-		if err != nil {
-			t.Fatalf("metric %d: %v", metric, err)
-		}
-		if index.Dimension() != 3 || index.Metric() != metric || index.Len() != len(inputs) || index.BuildOptions() != options {
-			t.Fatalf("metric %d metadata differs", metric)
-		}
+		require.NoError(t, err)
+		require.True(t, index.Dimension() == 3)
+		require.Equal(t, metric, index.Metric())
+		require.Len(t, inputs, index.Len())
+		require.Equal(t, options, index.BuildOptions())
+
 		entryKey, found := index.EntryPoint()
-		if !found {
-			t.Fatalf("metric %d has no entry point", metric)
-		}
+		require.True(t, found)
+
 		entryLevel, _ := index.Level(entryKey)
-		if entryLevel != index.MaxLevel() {
-			t.Fatalf("metric %d entry level = %d, max = %d", metric, entryLevel, index.MaxLevel())
-		}
+		require.Equal(t, index.MaxLevel(), entryLevel)
+
 		assertHNSWGraphInvariants(t, index)
 	}
 }
@@ -96,51 +97,61 @@ func TestHNSWBuildDeterministicAndOwned(t *testing.T) {
 		options.EFConstruction = 12
 		options.Seed = 42
 		builder, err := NewHNSWBuilder(3, options)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		for _, input := range inputs {
-			if err := builder.Add(context.Background(), input.Key, input.Vector); err != nil {
-				t.Fatal(err)
+			{
+				err := builder.Add(context.Background(), input.Key, input.Vector)
+				require.NoError(t, err)
 			}
 		}
 		index, err := builder.Build(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		return index
 	}
 	first, second := build(), build()
-	if first.entryPoint != second.entryPoint || first.maxLevel != second.maxLevel || first.levelRNGState != second.levelRNGState ||
-		!reflect.DeepEqual(first.levels, second.levels) || !reflect.DeepEqual(first.neighbors, second.neighbors) {
-		t.Fatal("fixed seed and insertion order produced different HNSW graphs")
-	}
+	require.Equal(t, second.entryPoint, first.entryPoint,
+
+		"fixed seed and insertion order produced different HNSW graphs")
+	require.Equal(t, second.maxLevel, first.maxLevel,
+
+		"fixed seed and insertion order produced different HNSW graphs")
+	require.Equal(t, second.levelRNGState, first.levelRNGState,
+
+		"fixed seed and insertion order produced different HNSW graphs")
+	require.Equal(t, second.levels, first.levels,
+		"fixed seed and insertion order produced different HNSW graphs")
+	require.Equal(t, second.neighbors, first.neighbors,
+		"fixed seed and insertion order produced different HNSW graphs")
 
 	original, found := first.Vector(inputs[0].Key)
-	if !found {
-		t.Fatal("first input missing")
-	}
+	require.True(t, found,
+		"first input missing")
+
 	inputs[0].Vector[0] = -999
-	if got, _ := first.Vector(inputs[0].Key); got[0] != original[0] {
-		t.Fatal("builder did not own input vector")
+	{
+		got, _ := first.Vector(inputs[0].Key)
+		require.Equal(t, original[0], got[0],
+			"builder did not own input vector")
 	}
+
 	original[0] = -888
-	if got, _ := first.Vector(inputs[0].Key); got[0] == -888 {
-		t.Fatal("Vector exposed mutable storage")
+	{
+		got, _ := first.Vector(inputs[0].Key)
+		require.NotEqual(t, float32(-888), got[0],
+			"Vector exposed mutable storage")
 	}
+
 	neighbors, err := first.Neighbors(first.keys[1], 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	if len(neighbors) != 0 {
 		neighbors[0] = math.MaxUint64
 		again, err := first.Neighbors(first.keys[1], 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if slices.Equal(neighbors, again) {
-			t.Fatal("Neighbors exposed mutable storage")
-		}
+		require.NoError(t, err)
+		require.False(t, slices.Equal(neighbors, again),
+			"Neighbors exposed mutable storage")
 	}
 }
 
@@ -152,40 +163,41 @@ func TestHNSWBuildEmptySingleAndLevels(t *testing.T) {
 	options.Seed = 9
 	builder, _ := NewHNSWBuilder(2, options)
 	empty, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.True(t, empty.Len() == 0)
+	require.Equal(t, -1, empty.MaxLevel())
+	{
+		_, found := empty.EntryPoint()
+		require.False(t, found,
+			"empty graph has entry point")
 	}
-	if empty.Len() != 0 || empty.MaxLevel() != -1 {
-		t.Fatalf("empty metadata = len %d, level %d", empty.Len(), empty.MaxLevel())
-	}
-	if _, found := empty.EntryPoint(); found {
-		t.Fatal("empty graph has entry point")
-	}
-	if _, err := empty.Neighbors(1, 0); !errors.Is(err, ErrHNSWKeyNotFound) {
-		t.Fatalf("unknown key error = %v", err)
+	{
+		_, err := empty.Neighbors(1, 0)
+		require.ErrorIs(t, err, ErrHNSWKeyNotFound)
 	}
 
 	builder, _ = NewHNSWBuilder(2, options)
-	if err := builder.Add(context.Background(), 17, []float32{1, 2}); err != nil {
-		t.Fatal(err)
+	{
+		err := builder.Add(context.Background(), 17, []float32{1, 2})
+		require.NoError(t, err)
 	}
+
 	single, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	entry, found := single.EntryPoint()
-	if !found || entry != 17 {
-		t.Fatalf("single entry = %d, %v", entry, found)
-	}
+	require.True(t, found)
+	require.True(t, entry == 17)
+
 	level, _ := single.Level(17)
 	for current := 0; current <= level; current++ {
 		neighbors, err := single.Neighbors(17, current)
-		if err != nil || len(neighbors) != 0 {
-			t.Fatalf("single level %d neighbors = %v, %v", current, neighbors, err)
-		}
+		require.NoError(t, err)
+		require.Len(t, neighbors, 0)
 	}
-	if _, err := single.Neighbors(17, level+1); !errors.Is(err, ErrInvalidHNSWLevel) {
-		t.Fatalf("invalid level error = %v", err)
+	{
+		_, err := single.Neighbors(17, level+1)
+		require.ErrorIs(t, err, ErrInvalidHNSWLevel)
 	}
 }
 
@@ -195,45 +207,61 @@ func TestHNSWBuilderLifecycleAndErrors(t *testing.T) {
 	options.M = 2
 	options.EFConstruction = 8
 	builder, _ := NewHNSWBuilder(2, options)
-	if err := builder.Add(nil, 1, []float32{1, 2}); err == nil {
-		t.Fatal("nil add context succeeded")
+	{
+		err := builder.Add(nil, 1, []float32{1, 2})
+		require.Error(t, err,
+			"nil add context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := builder.Add(canceled, 1, []float32{1, 2}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled add error = %v", err)
+	{
+		err := builder.Add(canceled, 1, []float32{1, 2})
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if err := builder.Add(context.Background(), 1, []float32{1}); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("dimension error = %v", err)
+	{
+		err := builder.Add(context.Background(), 1, []float32{1})
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
-	if err := builder.Add(context.Background(), 1, []float32{1, float32(math.NaN())}); !errors.Is(err, ailego.ErrNonFiniteVector) {
-		t.Fatalf("finite error = %v", err)
+	{
+		err := builder.Add(context.Background(), 1, []float32{1, float32(math.NaN())})
+		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
 	}
-	if err := builder.Add(context.Background(), 1, []float32{1, 2}); err != nil {
-		t.Fatal(err)
+	{
+		err := builder.Add(context.Background(), 1, []float32{1, 2})
+		require.NoError(t, err)
 	}
-	if err := builder.Add(context.Background(), 1, []float32{2, 3}); !errors.Is(err, ErrDuplicateKey) {
-		t.Fatalf("duplicate error = %v", err)
+	{
+		err := builder.Add(context.Background(), 1, []float32{2, 3})
+		require.ErrorIs(t, err, ErrDuplicateKey)
 	}
-	if _, err := builder.Build(canceled); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled build error = %v", err)
+	{
+		_, err := builder.Build(canceled)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	index, err := builder.Build(context.Background())
-	if err != nil || index.Len() != 1 {
-		t.Fatalf("retry build = %#v, %v", index, err)
+	require.NoError(t, err)
+	require.True(t, index.Len() == 1)
+	{
+		err := builder.Add(context.Background(), 2, []float32{2, 3})
+		require.ErrorIs(t, err, ErrBuilderClosed)
 	}
-	if err := builder.Add(context.Background(), 2, []float32{2, 3}); !errors.Is(err, ErrBuilderClosed) {
-		t.Fatalf("closed add error = %v", err)
+	{
+		_, err := builder.Build(context.Background())
+		require.ErrorIs(t, err, ErrBuilderClosed)
 	}
-	if _, err := builder.Build(context.Background()); !errors.Is(err, ErrBuilderClosed) {
-		t.Fatalf("closed build error = %v", err)
-	}
+
 	var nilBuilder *HNSWBuilder
-	if err := nilBuilder.Add(context.Background(), 1, []float32{1}); err == nil {
-		t.Fatal("nil builder add succeeded")
+	{
+		err := nilBuilder.Add(context.Background(), 1, []float32{1})
+		require.Error(t, err,
+			"nil builder add succeeded")
 	}
-	if _, err := nilBuilder.Build(context.Background()); err == nil {
-		t.Fatal("nil builder build succeeded")
+	{
+		_, err := nilBuilder.Build(context.Background())
+		require.Error(t, err,
+			"nil builder build succeeded")
 	}
 }
 
@@ -245,19 +273,19 @@ func TestHNSWLevelSamplingDeterministicAndBounded(t *testing.T) {
 	upper := 0
 	for index := range levels {
 		levels[index] = sampleHNSWLevel(&first, 4)
-		if got := sampleHNSWLevel(&second, 4); got != levels[index] {
-			t.Fatalf("sample %d = %d, want %d", index, got, levels[index])
+		{
+			got := sampleHNSWLevel(&second, 4)
+			require.Equal(t, levels[index], got)
 		}
-		if levels[index] < 0 || levels[index] > MaxHNSWLevel {
-			t.Fatalf("sample %d out of range: %d", index, levels[index])
-		}
+		require.True(t, levels[index] >= 0)
+		require.True(t, levels[index] <= MaxHNSWLevel)
+
 		if levels[index] > 0 {
 			upper++
 		}
 	}
-	if upper < 2000 || upper > 3000 {
-		t.Fatalf("upper-level sample count = %d, want approximately 2500", upper)
-	}
+	require.True(t, upper >= 2000)
+	require.True(t, upper <= 3000)
 }
 
 func BenchmarkHNSWBuild(b *testing.B) {
@@ -268,15 +296,22 @@ func BenchmarkHNSWBuild(b *testing.B) {
 	for b.Loop() {
 		builder, err := NewHNSWBuilder(3, options)
 		if err != nil {
-			b.Fatal(err)
+			require.NoError(b, err)
 		}
+
 		for _, input := range inputs {
-			if err := builder.Add(context.Background(), input.Key, input.Vector); err != nil {
-				b.Fatal(err)
+			{
+				err := builder.Add(context.Background(), input.Key, input.Vector)
+				if err != nil {
+					require.NoError(b, err)
+				}
 			}
 		}
-		if _, err := builder.Build(context.Background()); err != nil {
-			b.Fatal(err)
+		{
+			_, err := builder.Build(context.Background())
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }
@@ -299,40 +334,48 @@ func hnswBuildInputs(count int) []Candidate {
 
 func assertHNSWGraphInvariants(t testing.TB, index *HNSWIndex) {
 	t.Helper()
-	if len(index.keys) != len(index.levels) || len(index.keys) != len(index.neighbors) || len(index.positions) != len(index.keys) {
-		t.Fatal("inconsistent HNSW top-level storage")
-	}
+	require.Len(t, index.keys, len(index.levels),
+		"inconsistent HNSW top-level storage")
+	require.Len(t, index.keys, len(index.neighbors),
+		"inconsistent HNSW top-level storage")
+	require.Len(t, index.positions, len(index.keys),
+		"inconsistent HNSW top-level storage")
+
 	maxLevel := -1
 	for position, key := range index.keys {
-		if mapped := index.positions[key]; mapped != position {
-			t.Fatalf("key %d maps to %d, want %d", key, mapped, position)
+		{
+			mapped := index.positions[key]
+			require.Equal(t, position, mapped)
 		}
+
 		level := index.levels[position]
 		maxLevel = max(maxLevel, level)
-		if level < 0 || level > MaxHNSWLevel || len(index.neighbors[position]) != level+1 {
-			t.Fatalf("node %d level storage is invalid", position)
-		}
+		require.True(t, level >= 0)
+		require.True(t, level <= MaxHNSWLevel)
+		require.Len(t, index.neighbors[position], level+1)
+
 		for currentLevel, neighbors := range index.neighbors[position] {
 			limit := index.options.M
 			if currentLevel == 0 {
 				limit *= 2
 			}
-			if len(neighbors) > limit {
-				t.Fatalf("node %d level %d degree = %d, limit %d", position, currentLevel, len(neighbors), limit)
-			}
+			require.True(t, len(neighbors) <= limit)
+
 			seen := make(map[int]struct{}, len(neighbors))
 			for _, neighbor := range neighbors {
-				if neighbor < 0 || neighbor >= len(index.keys) || neighbor == position || index.levels[neighbor] < currentLevel {
-					t.Fatalf("node %d level %d has invalid neighbor %d", position, currentLevel, neighbor)
+				require.True(t, neighbor >= 0)
+				require.True(t, neighbor < len(index.keys))
+				require.NotEqual(t, position, neighbor)
+				require.True(t, index.levels[neighbor] >= currentLevel)
+				{
+					_, duplicate := seen[neighbor]
+					require.False(t, duplicate)
 				}
-				if _, duplicate := seen[neighbor]; duplicate {
-					t.Fatalf("node %d level %d repeats neighbor %d", position, currentLevel, neighbor)
-				}
+
 				seen[neighbor] = struct{}{}
 			}
 		}
 	}
-	if maxLevel != index.maxLevel || (len(index.keys) != 0 && index.levels[index.entryPoint] != maxLevel) {
-		t.Fatalf("entry/max level mismatch: entry %d max %d, derived %d", index.entryPoint, index.maxLevel, maxLevel)
-	}
+	require.Equal(t, index.maxLevel, maxLevel)
+	require.False(t, len(index.keys) != 0 && index.levels[index.entryPoint] != maxLevel)
 }

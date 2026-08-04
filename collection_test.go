@@ -16,11 +16,11 @@ package zvec
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestCollectionCRUDFlushReopenAndReadOnly(t *testing.T) {
@@ -30,14 +30,13 @@ func TestCollectionCRUDFlushReopenAndReadOnly(t *testing.T) {
 	options := NewCollectionOptions()
 	options.WALSyncEvery = 1
 	collection, err := CreateAndOpen(ctx, path, schema, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if collection.Path() != path || !reflect.DeepEqual(collection.Schema(), schema) {
-		t.Fatalf("collection metadata = %q, %#v", collection.Path(), collection.Schema())
-	}
-	if got := collection.Options(); !got.EnableMmap || got.MaxBufferSize != DefaultMaxBufferSize {
-		t.Fatalf("effective options = %#v", got)
+	require.NoError(t, err)
+	require.Equal(t, path, collection.Path())
+	require.Equal(t, schema, collection.Schema())
+	{
+		got := collection.Options()
+		require.True(t, got.EnableMmap)
+		require.Equal(t, DefaultMaxBufferSize, got.MaxBufferSize)
 	}
 
 	documents := []Document{
@@ -45,11 +44,14 @@ func TestCollectionCRUDFlushReopenAndReadOnly(t *testing.T) {
 		testPublicDocument("b", "bravo", "high", 2, 2, []float32{5, 0}),
 	}
 	inserted, err := collection.Insert(ctx, documents)
-	if err != nil || inserted[0].DocID != 0 || inserted[1].DocID != 1 {
-		t.Fatalf("insert = %#v, %v", inserted, err)
-	}
-	if stats := collection.Stats(); stats.DocumentCount != 2 || stats.IndexCompleteness["embedding"] != 1 || stats.IndexCompleteness["sparse"] != 1 {
-		t.Fatalf("stats after insert = %#v", stats)
+	require.NoError(t, err)
+	require.True(t, inserted[0].DocID == 0)
+	require.True(t, inserted[1].DocID == 1)
+	{
+		stats := collection.Stats()
+		require.True(t, stats.DocumentCount == 2)
+		require.True(t, stats.IndexCompleteness["embedding"] == 1)
+		require.True(t, stats.IndexCompleteness["sparse"] == 1)
 	}
 
 	mixed, err := collection.Insert(ctx, []Document{
@@ -57,92 +59,96 @@ func TestCollectionCRUDFlushReopenAndReadOnly(t *testing.T) {
 		testPublicDocument("c", "charlie", "low", 3, 3, []float32{4, 0}),
 	})
 	var batchError *BatchWriteError
-	if !errors.As(err, &batchError) || batchError.Failed != 1 || !errors.Is(err, ErrAlreadyExists) {
-		t.Fatalf("mixed insert error = %#v, %v", mixed, err)
-	}
-	if mixed[0].Err == nil || mixed[1].Err != nil || mixed[1].DocID != 2 {
-		t.Fatalf("mixed insert results = %#v", mixed)
-	}
+	require.ErrorAs(t, err, &batchError)
+	require.True(t, batchError.Failed == 1)
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	require.Error(t, mixed[0].Err)
+	require.NoError(t, mixed[1].Err)
+	require.True(t, mixed[1].DocID == 2)
 
 	updated, err := collection.Update(ctx, []Document{{
 		PrimaryKey: "a", Fields: map[string]any{"title": "alpha-updated", "category": nil},
 	}})
-	if err != nil || updated[0].DocID != 3 {
-		t.Fatalf("partial update = %#v, %v", updated, err)
-	}
+	require.NoError(t, err)
+	require.True(t, updated[0].DocID == 3)
+
 	upserted, err := collection.Upsert(ctx, []Document{{
 		PrimaryKey: "b", Fields: map[string]any{"rating": int32(20)},
 	}})
-	if err != nil || upserted[0].DocID != 4 {
-		t.Fatalf("partial upsert = %#v, %v", upserted, err)
-	}
+	require.NoError(t, err)
+	require.True(t, upserted[0].DocID == 4)
+
 	invalidUpsert, err := collection.Upsert(ctx, []Document{{PrimaryKey: "new", Fields: map[string]any{"title": "new"}}})
-	if !errors.Is(err, ErrInvalidArgument) || invalidUpsert[0].Err == nil {
-		t.Fatalf("invalid new upsert = %#v, %v", invalidUpsert, err)
-	}
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	require.Error(t, invalidUpsert[0].Err)
 
 	fetched, err := collection.Fetch(ctx, []string{"a", "b", "missing"}, Projection{IncludeVectors: true})
-	if err != nil || fetched[2] != nil {
-		t.Fatalf("fetch = %#v, %v", fetched, err)
+	require.NoError(t, err)
+	require.Nil(t, fetched[2])
+	require.True(t, fetched[0].Fields["title"] == "alpha-updated")
+	require.Nil(t, fetched[0].Fields["category"])
+	require.Equal(t, int32(1), fetched[0].Fields["rating"])
+	{
+		_, found := fetched[0].Fields["embedding"]
+		require.True(t, found)
 	}
-	if fetched[0].Fields["title"] != "alpha-updated" || fetched[0].Fields["category"] != nil || fetched[0].Fields["rating"] != int32(1) {
-		t.Fatalf("updated document = %#v", fetched[0])
-	}
-	if _, found := fetched[0].Fields["embedding"]; !found {
-		t.Fatalf("Fetch IncludeVectors omitted embedding: %#v", fetched[0])
-	}
-	if fetched[1].Fields["rating"] != int32(20) || fetched[1].Fields["title"] != "bravo" {
-		t.Fatalf("upserted document = %#v", fetched[1])
-	}
+	require.Equal(t, int32(20), fetched[1].Fields["rating"])
+	require.True(t, fetched[1].Fields["title"] == "bravo")
 
 	deleted, err := collection.Delete(ctx, []string{"c", "missing"})
-	if !errors.Is(err, ErrNotFound) || deleted[0].Err != nil || deleted[1].Err == nil {
-		t.Fatalf("mixed delete = %#v, %v", deleted, err)
+	require.ErrorIs(t, err, ErrNotFound)
+	require.NoError(t, deleted[0].Err)
+	require.Error(t, deleted[1].Err)
+	{
+		got := collection.Stats().DocumentCount
+		require.True(t, got == 2)
 	}
-	if got := collection.Stats().DocumentCount; got != 2 {
-		t.Fatalf("document count after delete = %d", got)
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
 	}
-	if err := collection.Flush(ctx); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := collection.Fetch(ctx, []string{"a"}, Projection{}); !errors.Is(err, ErrFailedPrecondition) {
-		t.Fatalf("fetch after close = %v", err)
+	{
+		_, err := collection.Fetch(ctx, []string{"a"}, Projection{})
+		require.ErrorIs(t, err, ErrFailedPrecondition)
 	}
 
 	readOnlyOptions := NewCollectionOptions()
 	readOnlyOptions.ReadOnly = true
 	readOnly, err := Open(ctx, path, readOnlyOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer readOnly.Close()
-	if got := readOnly.Stats().DocumentCount; got != 2 {
-		t.Fatalf("reopened count = %d", got)
+	{
+		got := readOnly.Stats().DocumentCount
+		require.True(t, got == 2)
 	}
+
 	fetched, err = readOnly.Fetch(ctx, []string{"a"}, Projection{})
-	if err != nil || fetched[0].DocID != 3 {
-		t.Fatalf("reopened fetch = %#v, %v", fetched, err)
+	require.NoError(t, err)
+	require.True(t, fetched[0].DocID == 3)
+	{
+		_, found := fetched[0].Fields["embedding"]
+		require.False(t, found)
 	}
-	if _, found := fetched[0].Fields["embedding"]; found {
-		t.Fatalf("default projection included vector: %#v", fetched[0])
-	}
-	if _, err := readOnly.Insert(ctx, []Document{testPublicDocument("x", "xray", "low", 1, 1, []float32{1, 0})}); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("read-only insert = %v", err)
+	{
+		_, err := readOnly.Insert(ctx, []Document{testPublicDocument("x", "xray", "low", 1, 1, []float32{1, 0})})
+		require.ErrorIs(t, err, ErrPermissionDenied)
 	}
 }
 
 func TestCollectionDenseSparseRadiusProjectionAndGroupBy(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "query"), testPublicCollectionSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	documents := []Document{
 		testPublicDocument("a", "alpha", "low", 1, 1, []float32{1, 0}),
@@ -152,8 +158,9 @@ func TestCollectionDenseSparseRadiusProjectionAndGroupBy(t *testing.T) {
 		testPublicDocument("e", "echo", "", 5, 6, []float32{6, 0}),
 	}
 	documents[4].Fields["category"] = nil
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
 
 	params := NewFlatQueryParams()
@@ -162,57 +169,55 @@ func TestCollectionDenseSparseRadiusProjectionAndGroupBy(t *testing.T) {
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 10,
 		Params: params, Projection: Projection{OutputFields: []string{"title"}},
 	})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		got := documentKeys(results)
+		require.Equal(t, []string{"e", "b", "c"}, got)
 	}
-	if got := documentKeys(results); !reflect.DeepEqual(got, []string{"e", "b", "c"}) {
-		t.Fatalf("dense radius keys = %#v", got)
-	}
-	if !reflect.DeepEqual(results[0].Fields, map[string]any{"title": "echo"}) || results[0].Score != 6 {
-		t.Fatalf("dense projection result = %#v", results[0])
-	}
+	require.Equal(t, map[string]any{"title": "echo"}, results[0].Fields)
+	require.True(t, results[0].Score == 6)
 
 	sparseResults, err := collection.Query(ctx, VectorQuery{
 		Field: "sparse", SparseVector: SparseVectorFP32{Indices: []uint32{2}, Values: []float32{1}},
 		TopK: 3, Projection: Projection{OutputFields: []string{}},
 	})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		got := documentKeys(sparseResults)
+		require.Equal(t, []string{"e", "b", "c"}, got)
 	}
-	if got := documentKeys(sparseResults); !reflect.DeepEqual(got, []string{"e", "b", "c"}) {
-		t.Fatalf("sparse keys = %#v", got)
-	}
-	if sparseResults[0].Fields == nil || len(sparseResults[0].Fields) != 0 {
-		t.Fatalf("empty projection = %#v", sparseResults[0])
-	}
+	require.NotNil(t, sparseResults[0].Fields)
+	require.Len(t, sparseResults[0].Fields, 0)
 
 	groups, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0},
 		GroupByField: "category", GroupCount: 3, TopKPerGroup: 2,
 		Projection: Projection{OutputFields: []string{"title"}},
 	})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.Len(t, groups, 3)
+	require.True(t, groups[0].Value == "")
+	require.True(t, groups[1].Value == "high")
+	require.True(t, groups[2].Value == "low")
+	{
+		got := documentKeys(groups[1].Documents)
+		require.Equal(t, []string{"b", "d"}, got)
 	}
-	if len(groups) != 3 || groups[0].Value != "" || groups[1].Value != "high" || groups[2].Value != "low" {
-		t.Fatalf("groups = %#v", groups)
-	}
-	if got := documentKeys(groups[1].Documents); !reflect.DeepEqual(got, []string{"b", "d"}) {
-		t.Fatalf("high group = %#v", got)
-	}
-	if got := documentKeys(groups[2].Documents); !reflect.DeepEqual(got, []string{"c", "a"}) {
-		t.Fatalf("low group = %#v", got)
+	{
+		got := documentKeys(groups[2].Documents)
+		require.Equal(t, []string{"c", "a"}, got)
 	}
 
 	filtered, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 1, Filter: "rating > 1"})
-	if err != nil || !reflect.DeepEqual(documentKeys(filtered), []string{"e"}) {
-		t.Fatalf("filtered query = %#v, %v", filtered, err)
+	require.NoError(t, err)
+	require.Equal(t, []string{"e"}, documentKeys(filtered))
+	{
+		_, err := collection.Query(ctx, VectorQuery{Field: "embedding", SparseVector: SparseVectorFP32{}, TopK: 1})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if _, err := collection.Query(ctx, VectorQuery{Field: "embedding", SparseVector: SparseVectorFP32{}, TopK: 1}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("wrong query vector kind = %v", err)
-	}
-	if _, err := collection.GroupByQuery(ctx, GroupByVectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, GroupByField: "sparse", GroupCount: 1, TopKPerGroup: 1}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("vector group field = %v", err)
+	{
+		_, err := collection.GroupByQuery(ctx, GroupByVectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, GroupByField: "sparse", GroupCount: 1, TopKPerGroup: 1})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
 }
 
@@ -228,25 +233,26 @@ func TestCollectionScalarQuantizedDiskANNDirectSchema(t *testing.T) {
 				Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Index: diskANN,
 			})
 			collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "later"), schema, NewCollectionOptions())
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			defer collection.Close()
-			if _, err := collection.Insert(ctx, []Document{
-				{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{0, 0, 0, 0}}},
-				{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{1.013, .031, -.077, .125}}},
-				{PrimaryKey: "c", Fields: map[string]any{"embedding": VectorFP32{3.117, -.271, .051, -.2}}},
-			}); err != nil {
-				t.Fatal(err)
+			{
+				_, err := collection.Insert(ctx, []Document{
+					{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{0, 0, 0, 0}}},
+					{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{1.013, .031, -.077, .125}}},
+					{PrimaryKey: "c", Fields: map[string]any{"embedding": VectorFP32{3.117, -.271, .051, -.2}}},
+				})
+				require.NoError(t, err)
 			}
+
 			results, err := collection.Query(ctx, VectorQuery{
 				Field: "embedding", DenseVector: VectorFP32{.9, .02, -.04, .1}, TopK: 3,
 			})
-			if err != nil || !reflect.DeepEqual(documentKeys(results), []string{"b", "a", "c"}) {
-				t.Fatalf("query = %#v, %v", results, err)
-			}
-			if got := collection.Stats().IndexCompleteness["embedding"]; got != 1 {
-				t.Fatalf("completeness = %v", got)
+			require.NoError(t, err)
+			require.Equal(t, []string{"b", "a", "c"}, documentKeys(results))
+			{
+				got := collection.Stats().IndexCompleteness["embedding"]
+				require.True(t, got == 1)
 			}
 		})
 	}
@@ -256,55 +262,60 @@ func TestCollectionReplaysPublicDocumentPayloadWithoutFlush(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "recovery")
 	collection, err := CreateAndOpen(ctx, path, testPublicCollectionSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := collection.Insert(ctx, []Document{testPublicDocument("a", "alpha", "low", 1, 2, []float32{2, 0})})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, []Document{testPublicDocument("a", "alpha", "low", 1, 2, []float32{2, 0})}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	reopened, err := Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer reopened.Close()
 	results, err := reopened.Query(ctx, VectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 1,
 		Projection: Projection{IncludeVectors: true},
 	})
-	if err != nil || len(results) != 1 || results[0].PrimaryKey != "a" || results[0].Score != 2 {
-		t.Fatalf("recovered public query = %#v, %v", results, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.True(t, results[0].PrimaryKey == "a")
+	require.True(t, results[0].Score == 2)
 }
 
 func TestCollectionDestroyAndArgumentErrors(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "destroy")
 	collection, err := CreateAndOpen(ctx, path, testPublicCollectionSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := collection.Destroy(ctx)
+		require.NoError(t, err)
 	}
-	if err := collection.Destroy(ctx); err != nil {
-		t.Fatal(err)
+	{
+		_, err := os.Stat(path)
+		require.ErrorIs(t, err, os.ErrNotExist)
 	}
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("destroyed path stat = %v", err)
+	{
+		_, err := Open(ctx, path, NewCollectionOptions())
+		require.ErrorIs(t, err, ErrNotFound)
 	}
-	if _, err := Open(ctx, path, NewCollectionOptions()); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("open destroyed collection = %v", err)
+	{
+		_, err := CreateAndOpen(nil, path, testPublicCollectionSchema(), NewCollectionOptions())
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
 
-	if _, err := CreateAndOpen(nil, path, testPublicCollectionSchema(), NewCollectionOptions()); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil create context = %v", err)
-	}
 	var nilCollection *Collection
-	if _, err := nilCollection.Insert(ctx, []Document{{PrimaryKey: "a"}}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil collection insert = %v", err)
+	{
+		_, err := nilCollection.Insert(ctx, []Document{{PrimaryKey: "a"}})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if _, err := nilCollection.Query(ctx, VectorQuery{}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil collection query = %v", err)
+	{
+		_, err := nilCollection.Query(ctx, VectorQuery{})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
 }
 
@@ -323,9 +334,8 @@ func TestEncodeGroupValueMatchesPinnedFormatting(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		got, err := encodeGroupValue(testCase.value, testCase.dataType)
-		if err != nil || got != testCase.want {
-			t.Fatalf("encodeGroupValue(%T) = %q, %v; want %q", testCase.value, got, err, testCase.want)
-		}
+		require.NoError(t, err)
+		require.Equal(t, testCase.want, got)
 	}
 }
 

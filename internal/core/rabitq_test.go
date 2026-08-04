@@ -16,13 +16,12 @@ package core
 
 import (
 	"context"
-	"errors"
 	"math"
-	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRaBitQPinnedLibraryFixture(t *testing.T) {
@@ -48,17 +47,13 @@ func TestRaBitQPinnedLibraryFixture(t *testing.T) {
 	}
 	for _, test := range tests {
 		code, err := quantizeRaBitQVector(vector, centroid, 0, 7, 15.75, test.metric == MetricIP)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		code.modelFingerprint = 1
 		values, err := code.QuantizedValues()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !slices.Equal(values, wantValues) {
-			t.Fatalf("metric %d values = %v", test.metric, values)
-		}
+		require.NoError(t, err)
+		require.True(t, slices.Equal(values, wantValues))
+
 		assertRaBitQClose(t, "coarse add", code.coarseAdd, test.coarseAdd, 2e-6)
 		assertRaBitQClose(t, "coarse rescale", code.coarseRescale, test.coarseRescale, 2e-6)
 		assertRaBitQClose(t, "coarse error", code.coarseError, test.coarseError, 2e-6)
@@ -77,41 +72,34 @@ func TestRaBitQTrainingDeterministicAcrossWorkers(t *testing.T) {
 	options.Seed = 0x123456789abcdef
 	options.Workers = 1
 	serial, err := TrainRaBitQ(context.Background(), vectors, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	options.Workers = 4
 	parallel, err := TrainRaBitQ(context.Background(), vectors, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(serial.State(), parallel.State()) {
-		t.Fatal("RaBitQ model changed across worker counts")
-	}
-	if serial.Dimension() != 70 || serial.PaddedDimension() != 128 || serial.Len() != 6 || serial.TotalBits() != 4 {
-		t.Fatalf("model metadata = dim %d/%d clusters %d bits %d", serial.Dimension(), serial.PaddedDimension(), serial.Len(), serial.TotalBits())
-	}
+	require.NoError(t, err)
+	require.Equal(t, parallel.State(), serial.State(),
+		"RaBitQ model changed across worker counts")
+	require.True(t, serial.Dimension() == 70)
+	require.True(t, serial.PaddedDimension() == 128)
+	require.True(t, serial.Len() == 6)
+	require.True(t, serial.TotalBits() == 4)
+
 	restored, err := RestoreRaBitQModel(serial.State())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	left, err := serial.Encode(vectors[37])
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	right, err := restored.Encode(vectors[37])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(left, right) {
-		t.Fatal("restored model produced a different code")
-	}
+	require.NoError(t, err)
+	require.Equal(t, right, left,
+		"restored model produced a different code")
+
 	state := serial.State()
 	state.Centroids[0][0]++
 	state.RotationSigns[0]++
-	if reflect.DeepEqual(state, serial.State()) {
-		t.Fatal("State exposed mutable model storage")
-	}
+	require.NotEqual(t, serial.State(), state,
+		"State exposed mutable model storage")
 }
 
 func TestRaBitQFullEstimateImprovesCoarseQuality(t *testing.T) {
@@ -122,36 +110,30 @@ func TestRaBitQFullEstimateImprovesCoarseQuality(t *testing.T) {
 	options.MaxIterations = 10
 	options.Seed = 77
 	model, err := TrainRaBitQ(context.Background(), vectors, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	codes, err := model.EncodeBatch(context.Background(), vectors, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	queryVector := raBitQGaussianVectors(1, 64, 202)[0]
 	for index := range queryVector {
 		queryVector[index] += float32(index%5) * .03125
 	}
 	query, err := model.PrepareQuery(queryVector)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var coarseError, fullError float64
 	var lowerCovered, upperCovered int
 	for index, code := range codes {
 		coarse, err := query.EstimateCoarse(code)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		full, err := query.Estimate(code)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		exact, err := MetricL2.Compute(vectors[index], queryVector)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		coarseError += math.Abs(float64(coarse.Distance - exact))
 		fullError += math.Abs(float64(full.Distance - exact))
 		if exact >= full.LowerBound {
@@ -161,11 +143,11 @@ func TestRaBitQFullEstimateImprovesCoarseQuality(t *testing.T) {
 			upperCovered++
 		}
 	}
-	if fullError >= coarseError*.35 {
-		t.Fatalf("full absolute error %.6f is not materially below coarse %.6f", fullError, coarseError)
-	}
-	if lowerCoverage, upperCoverage := float64(lowerCovered)/float64(len(codes)), float64(upperCovered)/float64(len(codes)); lowerCoverage < .80 || upperCoverage < .80 {
-		t.Fatalf("full probabilistic-envelope coverage = lower %.3f, upper %.3f, want both >= .80", lowerCoverage, upperCoverage)
+	require.True(t, fullError < coarseError*.35)
+	{
+		lowerCoverage, upperCoverage := float64(lowerCovered)/float64(len(codes)), float64(upperCovered)/float64(len(codes))
+		require.True(t, lowerCoverage >= .80)
+		require.True(t, upperCoverage >= .80)
 	}
 }
 
@@ -178,31 +160,24 @@ func TestRaBitQIPCosineAndZeroResidual(t *testing.T) {
 		options.MaxIterations = 6
 		options.Seed = 19
 		model, err := TrainRaBitQ(context.Background(), vectors, options)
-		if err != nil {
-			t.Fatalf("metric %d train: %v", metric, err)
-		}
+		require.NoError(t, err)
+
 		code, err := model.Encode(vectors[23])
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		query, err := model.PrepareQuery(vectors[23])
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		estimate, err := query.Estimate(code)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		exact, err := metric.Compute(vectors[23], vectors[23])
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		if metric == MetricIP {
 			exact = 1 - exact
 		}
-		if math.Abs(float64(estimate.Distance-exact)) > .08 {
-			t.Fatalf("metric %d self estimate %v, exact %v", metric, estimate.Distance, exact)
-		}
+		require.InDelta(t, exact, estimate.Distance, .08)
 	}
 
 	centroid := raBitQTestVectors(1, 64)[0]
@@ -210,18 +185,17 @@ func TestRaBitQIPCosineAndZeroResidual(t *testing.T) {
 		Dimension: 64, Metric: MetricL2, TotalBits: 1,
 		Centroids: [][]float32{centroid}, RotationSigns: make([]byte, 32),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	code, err := model.Encode(centroid)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	query, _ := model.PrepareQuery(centroid)
 	estimate, err := query.Estimate(code)
-	if err != nil || estimate.Distance != 0 || estimate.LowerBound != 0 || estimate.UpperBound != 0 {
-		t.Fatalf("zero residual estimate = %#v, %v", estimate, err)
-	}
+	require.NoError(t, err)
+	require.True(t, estimate.Distance == 0)
+	require.True(t, estimate.LowerBound == 0)
+	require.True(t, estimate.UpperBound == 0)
 }
 
 func TestRaBitQBitWidthsAndDimensionBoundaries(t *testing.T) {
@@ -239,22 +213,18 @@ func TestRaBitQBitWidthsAndDimensionBoundaries(t *testing.T) {
 				Centroids: [][]float32{centroid}, RotationSigns: make([]byte, 4*padded/8),
 				ExtraScale: extraScale,
 			})
-			if err != nil {
-				t.Fatalf("restore dimension %d bits %d: %v", dimension, totalBits, err)
-			}
+			require.NoError(t, err)
+
 			code, err := model.Encode(vector)
-			if err != nil {
-				t.Fatalf("encode dimension %d bits %d: %v", dimension, totalBits, err)
-			}
-			if len(code.BinaryCode()) != padded/8 || len(code.ExtraCode()) != padded*(totalBits-1)/8 {
-				t.Fatalf("dimension %d bits %d code lengths = %d/%d", dimension, totalBits, len(code.BinaryCode()), len(code.ExtraCode()))
-			}
+			require.NoError(t, err)
+			require.Len(t, code.BinaryCode(), padded/8)
+			require.Len(t, code.ExtraCode(), padded*(totalBits-1)/8)
+
 			query, err := model.PrepareQuery(vector)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := query.Estimate(code); err != nil {
-				t.Fatalf("estimate dimension %d bits %d: %v", dimension, totalBits, err)
+			require.NoError(t, err)
+			{
+				_, err := query.Estimate(code)
+				require.NoError(t, err)
 			}
 		}
 	}
@@ -270,53 +240,64 @@ func TestRaBitQValidationCancellationAndOwnership(t *testing.T) {
 		{Metric: MetricL2, TotalBits: 7, Clusters: 1, MaxIterations: 1, Workers: -1},
 	}
 	for _, options := range invalidOptions {
-		if err := options.Validate(); !errors.Is(err, ErrInvalidRaBitQOptions) {
-			t.Fatalf("invalid options %#v: %v", options, err)
+		{
+			err := options.Validate()
+			require.ErrorIs(t, err, ErrInvalidRaBitQOptions)
 		}
 	}
 	options := DefaultRaBitQOptions(MetricL2)
-	if _, err := TrainRaBitQ(nil, raBitQTestVectors(2, 64), options); err == nil {
-		t.Fatal("nil training context succeeded")
+	{
+		_, err := TrainRaBitQ(nil, raBitQTestVectors(2, 64), options)
+		require.Error(t, err,
+			"nil training context succeeded")
 	}
-	if _, err := TrainRaBitQ(context.Background(), raBitQTestVectors(2, 63), options); !errors.Is(err, ErrInvalidRaBitQOptions) {
-		t.Fatalf("dimension error = %v", err)
+	{
+		_, err := TrainRaBitQ(context.Background(), raBitQTestVectors(2, 63), options)
+		require.ErrorIs(t, err, ErrInvalidRaBitQOptions)
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := TrainRaBitQ(canceled, raBitQTestVectors(2, 64), options); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled train error = %v", err)
+	{
+		_, err := TrainRaBitQ(canceled, raBitQTestVectors(2, 64), options)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 
 	model := fixtureRaBitQModel(t, MetricL2)
 	vector := raBitQTestVectors(1, 64)[0]
 	code, err := model.Encode(vector)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	binaryCode := code.BinaryCode()
 	binaryCode[0] ^= 0xff
-	if slices.Equal(binaryCode, code.BinaryCode()) {
-		t.Fatal("BinaryCode exposed mutable storage")
+	require.False(t, slices.Equal(binaryCode, code.BinaryCode()),
+		"BinaryCode exposed mutable storage")
+	{
+		_, err := model.Encode(vector[:63])
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
-	if _, err := model.Encode(vector[:63]); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("encode dimension error = %v", err)
+	{
+		_, err := model.EncodeBatch(nil, [][]float32{vector}, 1)
+		require.Error(t, err,
+			"nil batch context succeeded")
 	}
-	if _, err := model.EncodeBatch(nil, [][]float32{vector}, 1); err == nil {
-		t.Fatal("nil batch context succeeded")
-	}
-	if _, err := model.EncodeBatch(canceled, [][]float32{vector}, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled batch error = %v", err)
+	{
+		_, err := model.EncodeBatch(canceled, [][]float32{vector}, 1)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 
 	other := fixtureRaBitQModelWithSigns(t, MetricL2, 1)
 	query, _ := other.PrepareQuery(vector)
-	if _, err := query.Estimate(code); !errors.Is(err, ErrRaBitQModelMismatch) {
-		t.Fatalf("model mismatch error = %v", err)
+	{
+		_, err := query.Estimate(code)
+		require.ErrorIs(t, err, ErrRaBitQModelMismatch)
 	}
+
 	badState := model.State()
 	badState.RotationSigns = badState.RotationSigns[:len(badState.RotationSigns)-1]
-	if _, err := RestoreRaBitQModel(badState); !errors.Is(err, ErrInvalidRaBitQModel) {
-		t.Fatalf("bad state error = %v", err)
+	{
+		_, err := RestoreRaBitQModel(badState)
+		require.ErrorIs(t, err, ErrInvalidRaBitQModel)
 	}
 }
 
@@ -332,20 +313,15 @@ func FuzzRaBitQEncodeEstimate(f *testing.F) {
 			}
 		}
 		code, err := model.Encode(vector)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		query, err := model.PrepareQuery(vector)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		estimate, err := query.Estimate(code)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if math.IsNaN(float64(estimate.Distance)) || math.IsInf(float64(estimate.Distance), 0) {
-			t.Fatalf("non-finite estimate %#v", estimate)
-		}
+		require.NoError(t, err)
+		require.False(t, math.IsNaN(float64(estimate.Distance)))
+		require.False(t, math.IsInf(float64(estimate.Distance), 0))
 	})
 }
 
@@ -354,25 +330,33 @@ func BenchmarkRaBitQEncodeEstimate(b *testing.B) {
 	vector := raBitQTestVectors(1, 64)[0]
 	query, err := model.PrepareQuery(vector)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	code, err := model.Encode(vector)
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	b.Run("Encode", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			if _, err := model.Encode(vector); err != nil {
-				b.Fatal(err)
+			{
+				_, err := model.Encode(vector)
+				if err != nil {
+					require.NoError(b, err)
+				}
 			}
 		}
 	})
 	b.Run("Estimate", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			if _, err := query.Estimate(code); err != nil {
-				b.Fatal(err)
+			{
+				_, err := query.Estimate(code)
+				if err != nil {
+					require.NoError(b, err)
+				}
 			}
 		}
 	})
@@ -397,9 +381,8 @@ func fixtureRaBitQModelWithSigns(t testing.TB, metric Metric, sign byte) *RaBitQ
 		Dimension: 64, Metric: metric, TotalBits: 7,
 		Centroids: [][]float32{centroid}, RotationSigns: signs, ExtraScale: 15.75,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return model
 }
 
@@ -432,8 +415,5 @@ func raBitQGaussianVectors(count, dimension int, seed uint64) [][]float32 {
 
 func assertRaBitQClose(t testing.TB, name string, got, want, tolerance float64) {
 	t.Helper()
-	difference := math.Abs(got - want)
-	if difference > tolerance*max(1, math.Abs(want)) {
-		t.Fatalf("%s = %.9g, want %.9g (difference %.9g)", name, got, want, difference)
-	}
+	require.InDelta(t, want, got, tolerance*max(1, math.Abs(want)), name)
 }

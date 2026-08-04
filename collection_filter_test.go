@@ -16,12 +16,12 @@ package zvec
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	dbsql "github.com/gorse-io/zvec/internal/db/sql"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCollectionSQLFilterQueryGroupByAndReopen(t *testing.T) {
@@ -39,17 +39,17 @@ func TestCollectionSQLFilterQueryGroupByAndReopen(t *testing.T) {
 	)
 	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	documents := []Document{
 		filterDocument("a", "user-22", int32(1), StringArray{"red", "blue"}, Int32Array{1, 2}, true, "x", 1),
 		filterDocument("b", "user-%22", int32(2), StringArray{"blue"}, Int32Array{}, false, "y", 4),
 		filterDocument("c", "user-_22", nil, nil, Int32Array{2, 3}, true, "x", 3),
 		filterDocument("d", "other", int32(4), StringArray{}, Int32Array{4}, false, "z", 2),
 	}
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
 
 	tests := []struct {
@@ -75,11 +75,10 @@ func TestCollectionSQLFilterQueryGroupByAndReopen(t *testing.T) {
 				Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 10,
 				Filter: testCase.filter, Projection: Projection{OutputFields: []string{}},
 			})
-			if queryErr != nil {
-				t.Fatal(queryErr)
-			}
-			if got := documentKeys(results); !reflect.DeepEqual(got, testCase.want) {
-				t.Fatalf("keys = %#v, want %#v", got, testCase.want)
+			require.NoError(t, queryErr)
+			{
+				got := documentKeys(results)
+				require.Equal(t, testCase.want, got)
 			}
 		})
 	}
@@ -88,54 +87,52 @@ func TestCollectionSQLFilterQueryGroupByAndReopen(t *testing.T) {
 		Field: "sparse", SparseVector: SparseVectorFP32{Indices: []uint32{1}, Values: []float32{1}},
 		TopK: 10, Filter: "numbers CONTAIN_ANY (2)",
 	})
-	if err != nil || !reflect.DeepEqual(documentKeys(sparse), []string{"c", "a"}) {
-		t.Fatalf("sparse filtered query = %#v, %v", documentKeys(sparse), err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"c", "a"}, documentKeys(sparse))
 
 	groups, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, Filter: "tags CONTAIN_ANY ('blue')",
 		GroupByField: "active", GroupCount: 2, TopKPerGroup: 2,
 	})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.Len(t, groups, 2)
+	require.True(t, groups[0].Value == "false")
+	require.True(t, groups[1].Value == "true")
+	require.Equal(t, []string{"b"}, documentKeys(groups[0].Documents))
+	require.Equal(t, []string{"a"}, documentKeys(groups[1].Documents))
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
 	}
-	if len(groups) != 2 || groups[0].Value != "false" || groups[1].Value != "true" ||
-		!reflect.DeepEqual(documentKeys(groups[0].Documents), []string{"b"}) ||
-		!reflect.DeepEqual(documentKeys(groups[1].Documents), []string{"a"}) {
-		t.Fatalf("filtered groups = %#v", groups)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
 
-	if err := collection.Flush(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
 	readOnly := NewCollectionOptions()
 	readOnly.ReadOnly = true
 	collection, err = Open(ctx, path, readOnly)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	results, err := collection.Query(ctx, VectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 10, Filter: "rating >= 2",
 	})
-	if err != nil || !reflect.DeepEqual(documentKeys(results), []string{"b", "d"}) {
-		t.Fatalf("reopened filtered query = %#v, %v", documentKeys(results), err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "d"}, documentKeys(results))
 }
 
 func TestCollectionSQLFilterValidationAndCancellation(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "filter-errors"), testPublicCollectionSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.Insert(ctx, []Document{testPublicDocument("a", "alpha", "low", 1, 1, []float32{1, 0})}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, []Document{testPublicDocument("a", "alpha", "low", 1, 1, []float32{1, 0})})
+		require.NoError(t, err)
 	}
+
 	for _, filter := range []string{
 		"rating >", "missing=1", "rating='bad'", "rating=2147483648",
 		"embedding=1", "category CONTAIN_ANY ('low')", "rating LIKE '1%'",
@@ -143,9 +140,7 @@ func TestCollectionSQLFilterValidationAndCancellation(t *testing.T) {
 		_, queryErr := collection.Query(ctx, VectorQuery{
 			Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 1, Filter: filter,
 		})
-		if !errors.Is(queryErr, ErrInvalidArgument) {
-			t.Errorf("filter %q error = %v", filter, queryErr)
-		}
+		assert.ErrorIs(t, queryErr, ErrInvalidArgument)
 	}
 
 	canceled, cancel := context.WithCancel(ctx)
@@ -153,9 +148,7 @@ func TestCollectionSQLFilterValidationAndCancellation(t *testing.T) {
 	_, err = collection.Query(canceled, VectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 1, Filter: "rating=1",
 	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled filtered query = %v", err)
-	}
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestCollectionScalarInvertedCandidatesMatchForwardSemantics(t *testing.T) {
@@ -172,22 +165,21 @@ func TestCollectionScalarInvertedCandidatesMatchForwardSemantics(t *testing.T) {
 	)
 	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 	plan, err := buildFilterPlan("title LIKE '%alpha' AND rating>=2", schema)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	configured := make(map[string]dbsql.Field)
 	for _, field := range plan.Fields() {
 		configured[field.Name] = field
 	}
-	if !configured["title"].Indexed || !configured["title"].ExtendedWildcard || !configured["title"].RangeOptimized ||
-		!configured["rating"].Indexed || !configured["rating"].RangeOptimized {
-		t.Fatalf("filter index configuration = %#v", configured)
-	}
+	require.True(t, configured["title"].Indexed)
+	require.True(t, configured["title"].ExtendedWildcard)
+	require.True(t, configured["title"].RangeOptimized)
+	require.True(t, configured["rating"].Indexed)
+	require.True(t, configured["rating"].RangeOptimized)
 
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	documents := []Document{
 		invertedFilterDocument("a", "alpha", "alpha", int32(1), StringArray{"red", "blue"}, 5),
 		invertedFilterDocument("b", "alphabet", "alphabet", int32(2), StringArray{"blue"}, 4),
@@ -195,19 +187,20 @@ func TestCollectionScalarInvertedCandidatesMatchForwardSemantics(t *testing.T) {
 		invertedFilterDocument("d", "gamma-alpha", "gamma-alpha", int32(4), StringArray{}, 2),
 		invertedFilterDocument("e", nil, "omega", nil, StringArray{"red"}, 1),
 	}
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
+
 	assertQuery := func(filter string, want []string) {
 		t.Helper()
 		results, queryErr := collection.Query(ctx, VectorQuery{
 			Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 10, Filter: filter,
 		})
-		if queryErr != nil {
-			t.Fatalf("Query(%q): %v", filter, queryErr)
-		}
-		if got := documentKeys(results); !reflect.DeepEqual(got, want) {
-			t.Fatalf("Query(%q) = %v, want %v", filter, got, want)
+		require.NoError(t, queryErr)
+		{
+			got := documentKeys(results)
+			require.Equal(t, want, got)
 		}
 	}
 	assertQuery("title LIKE '%alpha'", []string{"a", "d"})
@@ -217,19 +210,20 @@ func TestCollectionScalarInvertedCandidatesMatchForwardSemantics(t *testing.T) {
 	assertQuery("tags CONTAIN_ANY ('red')", []string{"a", "e"})
 	assertQuery("array_length(tags)=0", []string{"d"})
 	assertQuery("title IS NULL", []string{"e"})
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
+	}
+	{
+		err := collection.Close()
+		require.NoError(t, err)
+	}
 
-	if err := collection.Flush(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
 	readOnly := NewCollectionOptions()
 	readOnly.ReadOnly = true
 	collection, err = Open(ctx, path, readOnly)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	assertQuery("rating>=2 AND tags NOT CONTAIN_ANY ('blue')", []string{"d"})
 }
@@ -241,8 +235,10 @@ func TestFilterSchemaRejectsFTSAndValueAdapterCoversEveryScalarArray(t *testing.
 		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2},
 	)
 	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
-	if _, err := buildFilterPlan("body='text'", schema); err == nil {
-		t.Fatal("FTS field scalar filter succeeded")
+	{
+		_, err := buildFilterPlan("body='text'", schema)
+		require.Error(t, err,
+			"FTS field scalar filter succeeded")
 	}
 
 	tests := []struct {
@@ -273,21 +269,26 @@ func TestFilterSchemaRejectsFTSAndValueAdapterCoversEveryScalarArray(t *testing.
 	for _, testCase := range tests {
 		field := dbsql.Field{Name: "value", Kind: testCase.kind, Array: testCase.array, Filterable: true}
 		value, err := toFilterValue(field, testCase.raw, true)
-		if err != nil || value.Kind() != testCase.kind || value.IsArray() != testCase.array || value.IsNull() {
-			t.Fatalf("toFilterValue(%T) = kind=%s array=%t null=%t error=%v", testCase.raw, value.Kind(), value.IsArray(), value.IsNull(), err)
-		}
+		require.NoError(t, err)
+		require.Equal(t, testCase.kind, value.Kind())
+		require.Equal(t, testCase.array, value.IsArray())
+		require.False(t, value.IsNull())
+
 		if testCase.array {
-			if length, ok := value.Len(); !ok || length != testCase.len {
-				t.Fatalf("array %T length = %d, %t", testCase.raw, length, ok)
+			{
+				length, ok := value.Len()
+				require.True(t, ok)
+				require.Equal(t, testCase.len, length)
 			}
 		}
 	}
 	null, err := toFilterValue(dbsql.Field{Name: "missing", Kind: dbsql.ValueString, Filterable: true}, nil, false)
-	if err != nil || !null.IsNull() {
-		t.Fatalf("missing field = %#v, %v", null, err)
-	}
-	if _, err := toFilterValue(dbsql.Field{Name: "bad", Kind: dbsql.ValueInt32, Filterable: true}, int64(1), true); err == nil {
-		t.Fatal("mismatched adapter value succeeded")
+	require.NoError(t, err)
+	require.True(t, null.IsNull())
+	{
+		_, err := toFilterValue(dbsql.Field{Name: "bad", Kind: dbsql.ValueInt32, Filterable: true}, int64(1), true)
+		require.Error(t, err,
+			"mismatched adapter value succeeded")
 	}
 }
 

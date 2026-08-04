@@ -16,10 +16,10 @@ package core
 
 import (
 	"context"
-	"errors"
-	"reflect"
 	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestScalarQuantizedDiskANNMatchesScalarTruthAndRefinesOriginals(t *testing.T) {
@@ -38,13 +38,10 @@ func TestScalarQuantizedDiskANNMatchesScalarTruthAndRefinesOriginals(t *testing.
 						signs[position] = byte(position*73 + int(kind)*19)
 					}
 					rotator, err := NewFHTRotatorFromSigns(dimension, signs)
-					if err != nil {
-						t.Fatal(err)
-					}
+					require.NoError(t, err)
+
 					reformer, err = NewRotationReformer(rotator)
-					if err != nil {
-						t.Fatal(err)
-					}
+					require.NoError(t, err)
 				}
 
 				options := DefaultDiskANNBuildOptions(metric)
@@ -53,40 +50,33 @@ func TestScalarQuantizedDiskANNMatchesScalarTruthAndRefinesOriginals(t *testing.
 				index, err := NewScalarQuantizedDiskANNIndex(
 					context.Background(), dimension, options, kind, reformer, candidates,
 				)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				defer index.Close()
 				truth, err := NewScalarQuantizedFlatIndex(
 					context.Background(), dimension, metric, kind, reformer, candidates,
 				)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if index.Dimension() != dimension || index.Metric() != metric || index.Len() != len(candidates) || index.PQChunks() != 4 {
-					t.Fatalf("metadata = dimension %d metric %d len %d chunks %d", index.Dimension(), index.Metric(), index.Len(), index.PQChunks())
-				}
+				require.NoError(t, err)
+				require.Equal(t, dimension, index.Dimension())
+				require.Equal(t, metric, index.Metric())
+				require.Len(t, candidates, index.Len())
+				require.True(t, index.PQChunks() == 4)
 
 				search := SearchOptions{TopK: 12, Filter: func(key uint64) bool { return key%3 != 0 }}
 				want, err := truth.SearchWithOptions(context.Background(), query, search)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				linear, err := index.SearchDiskANN(context.Background(), query, DiskANNSearchOptions{
 					SearchOptions: search, ListSize: len(candidates), Linear: true,
 				})
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				graph, err := index.SearchDiskANN(context.Background(), query, DiskANNSearchOptions{
 					SearchOptions: search, ListSize: len(candidates),
 				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !reflect.DeepEqual(linear, want) || !reflect.DeepEqual(graph, want) {
-					t.Fatalf("DiskANN = linear %#v graph %#v, scalar truth %#v", linear, graph, want)
-				}
+				require.NoError(t, err)
+				require.Equal(t, want, linear)
+				require.Equal(t, want, graph)
 
 				boundedOptions := search
 				boundedOptions.Radius = want[6].Score
@@ -96,45 +86,35 @@ func TestScalarQuantizedDiskANNMatchesScalarTruthAndRefinesOriginals(t *testing.
 				bounded, err := index.SearchDiskANN(context.Background(), query, DiskANNSearchOptions{
 					SearchOptions: boundedOptions, ListSize: len(candidates),
 				})
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				for _, result := range bounded {
-					if !scoreWithinRadius(metric, result.Score, boundedOptions.Radius) {
-						t.Fatalf("radius admitted %#v", result)
-					}
+					require.True(t, scoreWithinRadius(metric, result.Score, boundedOptions.Radius))
 				}
 
 				all, err := index.SearchDiskANN(context.Background(), query, DiskANNSearchOptions{
 					SearchOptions: SearchOptions{TopK: len(candidates)}, ListSize: len(candidates), Linear: true,
 				})
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				refiner, err := NewOriginalVectorRefiner(index, metric)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				refined, err := refiner.Refine(context.Background(), query, all, SearchOptions{TopK: 5})
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				originalTruth, err := TopK(context.Background(), metric, query, candidates, 5)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !reflect.DeepEqual(refined, originalTruth) {
-					t.Fatalf("refined = %#v, original truth %#v", refined, originalTruth)
-				}
+				require.NoError(t, err)
+				require.Equal(t, originalTruth, refined)
+
 				original, found := index.Vector(candidates[9].Key)
-				if !found || !slices.Equal(original, candidates[9].Vector) {
-					t.Fatalf("original vector = %v, %v", original, found)
-				}
+				require.True(t, found)
+				require.True(t, slices.Equal(original, candidates[9].Vector))
+
 				original[0]++
 				again, _ := index.Vector(candidates[9].Key)
-				if slices.Equal(original, again) {
-					t.Fatal("Vector returned an alias")
-				}
+				require.False(t, slices.Equal(original, again),
+					"Vector returned an alias")
 			})
 		}
 	}
@@ -144,40 +124,50 @@ func TestScalarQuantizedDiskANNValidationCancellationAndClose(t *testing.T) {
 	options := DefaultDiskANNBuildOptions(MetricL2)
 	options.MaxDegree, options.ListSize, options.PQChunks = 4, 8, 2
 	candidates := []Candidate{{Key: 1, Vector: []float32{1, 2, 3, 4}}}
-	if _, err := NewScalarQuantizedDiskANNIndex(nil, 4, options, QuantizationFP16, nil, candidates); err == nil {
-		t.Fatal("nil context succeeded")
+	{
+		_, err := NewScalarQuantizedDiskANNIndex(nil, 4, options, QuantizationFP16, nil, candidates)
+		require.Error(t, err,
+			"nil context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := NewScalarQuantizedDiskANNIndex(canceled, 4, options, QuantizationFP16, nil, candidates); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled build = %v", err)
+	{
+		_, err := NewScalarQuantizedDiskANNIndex(canceled, 4, options, QuantizationFP16, nil, candidates)
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := NewScalarQuantizedDiskANNIndex(context.Background(), 4, options, QuantizationFP16, nil,
-		[]Candidate{{Key: 1, Vector: []float32{70000, 0, 0, 0}}}); !errors.Is(err, ErrQuantizationOverflow) {
-		t.Fatalf("FP16 overflow = %v", err)
+	{
+		_, err := NewScalarQuantizedDiskANNIndex(context.Background(), 4, options, QuantizationFP16, nil,
+			[]Candidate{{Key: 1, Vector: []float32{70000, 0, 0, 0}}})
+		require.ErrorIs(t, err, ErrQuantizationOverflow)
 	}
-	if _, err := NewScalarQuantizedDiskANNIndex(context.Background(), 3, options, QuantizationInt4, nil,
-		[]Candidate{{Key: 1, Vector: []float32{1, 2, 3}}}); !errors.Is(err, ErrOddInt4Dimension) {
-		t.Fatalf("odd INT4 dimension = %v", err)
+	{
+		_, err := NewScalarQuantizedDiskANNIndex(context.Background(), 3, options, QuantizationInt4, nil,
+			[]Candidate{{Key: 1, Vector: []float32{1, 2, 3}}})
+		require.ErrorIs(t, err, ErrOddInt4Dimension)
 	}
+
 	index, err := NewScalarQuantizedDiskANNIndex(context.Background(), 4, options, QuantizationFP16, nil, candidates)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := index.Search(context.Background(), []float32{1, 2, 3, 4}, 0)
+		require.NoError(t, err)
 	}
-	if _, err := index.Search(context.Background(), []float32{1, 2, 3, 4}, 0); err != nil {
-		t.Fatalf("zero top-k = %v", err)
+	{
+		_, err := index.SearchWithOptions(context.Background(), []float32{1, 2, 3, 4}, SearchOptions{})
+		require.ErrorIs(t, err, ErrInvalidTopK)
 	}
-	if _, err := index.SearchWithOptions(context.Background(), []float32{1, 2, 3, 4}, SearchOptions{}); !errors.Is(err, ErrInvalidTopK) {
-		t.Fatalf("invalid top-k = %v", err)
+	{
+		err := index.Close()
+		require.NoError(t, err)
 	}
-	if err := index.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Close()
+		require.NoError(t, err)
 	}
-	if err := index.Close(); err != nil {
-		t.Fatalf("second Close = %v", err)
-	}
-	if _, err := index.Search(context.Background(), []float32{1, 2, 3, 4}, 1); !errors.Is(err, ErrDiskANNClosed) {
-		t.Fatalf("search after Close = %v", err)
+	{
+		_, err := index.Search(context.Background(), []float32{1, 2, 3, 4}, 1)
+		require.ErrorIs(t, err, ErrDiskANNClosed)
 	}
 }
 

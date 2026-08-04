@@ -16,12 +16,11 @@ package zvec
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/db"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDropScalarIndexPublishesAndPreservesForwardResults(t *testing.T) {
@@ -30,61 +29,64 @@ func TestDropScalarIndexPublishesAndPreservesForwardResults(t *testing.T) {
 	schema := createIndexSchema()
 	schema.Fields[1].Index = NewInvertIndexParams()
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := collection.Insert(ctx, []Document{
+			createIndexDocument("a", "alpha", 1, 3),
+			createIndexDocument("b", "beta", 2, 2),
+			createIndexDocument("c", "gamma", 3, 1),
+		})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, []Document{
-		createIndexDocument("a", "alpha", 1, 3),
-		createIndexDocument("b", "beta", 2, 2),
-		createIndexDocument("c", "gamma", 3, 1),
-	}); err != nil {
-		t.Fatal(err)
-	}
+
 	query := VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 10, Filter: "rating>=2"}
 	before, err := collection.Query(ctx, query)
-	if err != nil || !reflect.DeepEqual(documentKeys(before), []string{"b", "c"}) {
-		t.Fatalf("indexed results = %v, %v", documentKeys(before), err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "c"}, documentKeys(before))
+
 	generation := collection.store.Manifest().Generation
-	if err := collection.DropIndex(ctx, "rating"); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DropIndex(ctx, "rating")
+		require.NoError(t, err)
 	}
-	if collection.store.Manifest().Generation <= generation {
-		t.Fatal("DropIndex did not publish a manifest generation")
-	}
+	require.True(t, collection.store.Manifest().Generation > generation,
+		"DropIndex did not publish a manifest generation")
+
 	rating, _ := collection.Schema().Field("rating")
-	if rating.Index != nil || rating.IndexType() != IndexTypeUndefined {
-		t.Fatalf("dropped scalar index = %#v", rating.Index)
-	}
+	require.Nil(t, rating.Index)
+	require.Equal(t, IndexTypeUndefined, rating.IndexType())
+
 	after, err := collection.Query(ctx, query)
-	if err != nil || !reflect.DeepEqual(documentKeys(after), []string{"b", "c"}) {
-		t.Fatalf("forward results = %v, %v", documentKeys(after), err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "c"}, documentKeys(after))
+
 	idempotentGeneration := collection.store.Manifest().Generation
-	if err := collection.DropIndex(ctx, "rating"); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DropIndex(ctx, "rating")
+		require.NoError(t, err)
 	}
-	if collection.store.Manifest().Generation != idempotentGeneration {
-		t.Fatal("idempotent scalar DropIndex advanced generation")
+	require.Equal(t, idempotentGeneration, collection.store.Manifest().Generation,
+		"idempotent scalar DropIndex advanced generation")
+	{
+		err := collection.CreateIndex(ctx, "rating", NewInvertIndexParams(), CreateIndexOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
-	if err := collection.CreateIndex(ctx, "rating", NewInvertIndexParams(), CreateIndexOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DropIndex(ctx, "rating")
+		require.NoError(t, err)
 	}
-	if err := collection.DropIndex(ctx, "rating"); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	rating, _ = collection.Schema().Field("rating")
-	if rating.Index != nil || collection.Stats().DocumentCount != 3 {
-		t.Fatalf("reopened state = index %#v count %d", rating.Index, collection.Stats().DocumentCount)
-	}
+	require.Nil(t, rating.Index)
+	require.True(t, collection.Stats().DocumentCount == 3)
 }
 
 func TestDropVectorIndexRestoresDefaultFlatIP(t *testing.T) {
@@ -95,50 +97,55 @@ func TestDropVectorIndexRestoresDefaultFlatIP(t *testing.T) {
 	)
 	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := collection.Insert(ctx, []Document{
+			{PrimaryKey: "far", Fields: map[string]any{"embedding": VectorFP32{10, 0}}},
+			{PrimaryKey: "near", Fields: map[string]any{"embedding": VectorFP32{1, 0}}},
+		})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, []Document{
-		{PrimaryKey: "far", Fields: map[string]any{"embedding": VectorFP32{10, 0}}},
-		{PrimaryKey: "near", Fields: map[string]any{"embedding": VectorFP32{1, 0}}},
-	}); err != nil {
-		t.Fatal(err)
-	}
+
 	query := VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2}
 	before, err := collection.Query(ctx, query)
-	if err != nil || !reflect.DeepEqual(documentKeys(before), []string{"near", "far"}) {
-		t.Fatalf("L2 results = %v, %v", documentKeys(before), err)
+	require.NoError(t, err)
+	require.Equal(t, []string{"near", "far"}, documentKeys(before))
+	{
+		err := collection.DropIndex(ctx, "embedding")
+		require.NoError(t, err)
 	}
-	if err := collection.DropIndex(ctx, "embedding"); err != nil {
-		t.Fatal(err)
-	}
+
 	field, _ := collection.Schema().Field("embedding")
 	flat, ok := field.Index.(FlatIndexParams)
-	if !ok || flat.Metric != MetricTypeIP || flat.Quantize != QuantizeTypeUndefined {
-		t.Fatalf("default vector index = %#v", field.Index)
-	}
+	require.True(t, ok)
+	require.Equal(t, MetricTypeIP, flat.Metric)
+	require.Equal(t, QuantizeTypeUndefined, flat.Quantize)
+
 	after, err := collection.Query(ctx, query)
-	if err != nil || !reflect.DeepEqual(documentKeys(after), []string{"far", "near"}) {
-		t.Fatalf("default IP results = %v, %v", documentKeys(after), err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"far", "near"}, documentKeys(after))
+
 	generation := collection.store.Manifest().Generation
-	if err := collection.DropIndex(ctx, "embedding"); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DropIndex(ctx, "embedding")
+		require.NoError(t, err)
 	}
-	if collection.store.Manifest().Generation != generation {
-		t.Fatal("idempotent vector DropIndex advanced generation")
+	require.Equal(t, generation, collection.store.Manifest().Generation,
+		"idempotent vector DropIndex advanced generation")
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	field, _ = collection.Schema().Field("embedding")
-	if flat, ok = field.Index.(FlatIndexParams); !ok || flat.Metric != MetricTypeIP {
-		t.Fatalf("reopened default index = %#v", field.Index)
+	{
+		flat, ok = field.Index.(FlatIndexParams)
+		require.True(t, ok)
+		require.Equal(t, MetricTypeIP, flat.Metric)
 	}
 }
 
@@ -151,58 +158,60 @@ func TestDropUnsupportedOrFTSIndexRemovesMetadata(t *testing.T) {
 	)
 	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := collection.Insert(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{
+			"text": "hello", "embedding": VectorFP32{1, 0},
+		}}})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{
-		"text": "hello", "embedding": VectorFP32{1, 0},
-	}}}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DropIndex(ctx, "text")
+		require.NoError(t, err)
 	}
-	if err := collection.DropIndex(ctx, "text"); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DropIndex(ctx, "embedding")
+		require.NoError(t, err)
 	}
-	if err := collection.DropIndex(ctx, "embedding"); err != nil {
-		t.Fatal(err)
-	}
+
 	text, _ := collection.Schema().Field("text")
 	embedding, _ := collection.Schema().Field("embedding")
-	if text.Index != nil || embedding.IndexType() != IndexTypeFlat {
-		t.Fatalf("dropped later indexes = text %#v vector %#v", text.Index, embedding.Index)
-	}
+	require.Nil(t, text.Index)
+	require.Equal(t, IndexTypeFlat, embedding.IndexType())
+
 	results, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 1})
-	if err != nil || len(results) != 1 || results[0].PrimaryKey != "a" {
-		t.Fatalf("query after dropping HNSW = %#v, %v", results, err)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.True(t, results[0].PrimaryKey == "a")
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	text, _ = collection.Schema().Field("text")
 	embedding, _ = collection.Schema().Field("embedding")
-	if text.Index != nil || embedding.IndexType() != IndexTypeFlat {
-		t.Fatalf("reopened dropped indexes = text %#v vector %#v", text.Index, embedding.Index)
-	}
+	require.Nil(t, text.Index)
+	require.Equal(t, IndexTypeFlat, embedding.IndexType())
 }
 
 func TestDropIndexValidationLifecycleAndRollback(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "drop-index-errors")
 	collection, err := CreateAndOpen(ctx, path, createIndexSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	generation := collection.store.Manifest().Generation
-	if err := collection.DropIndex(ctx, "title"); err != nil {
-		t.Fatalf("unindexed scalar no-op = %v", err)
+	{
+		err := collection.DropIndex(ctx, "title")
+		require.NoError(t, err)
 	}
-	if collection.store.Manifest().Generation != generation {
-		t.Fatal("unindexed scalar no-op advanced generation")
-	}
+	require.Equal(t, generation, collection.store.Manifest().Generation,
+		"unindexed scalar no-op advanced generation")
+
 	for _, testCase := range []struct {
 		name   string
 		column string
@@ -214,59 +223,72 @@ func TestDropIndexValidationLifecycleAndRollback(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			before := collection.Schema()
 			beforeGeneration := collection.store.Manifest().Generation
-			if err := collection.DropIndex(ctx, testCase.column); !errors.Is(err, testCase.want) {
-				t.Fatalf("error = %v, want %v", err, testCase.want)
+			{
+				err := collection.DropIndex(ctx, testCase.column)
+				require.ErrorIs(t, err, testCase.want)
 			}
-			if !reflect.DeepEqual(collection.Schema(), before) || collection.store.Manifest().Generation != beforeGeneration {
-				t.Fatal("failed DropIndex changed schema")
-			}
+			require.Equal(t, before, collection.Schema(),
+				"failed DropIndex changed schema")
+			require.Equal(t, beforeGeneration, collection.store.Manifest().Generation,
+				"failed DropIndex changed schema")
 		})
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := collection.DropIndex(canceled, "embedding"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled DropIndex = %v", err)
+	{
+		err := collection.DropIndex(canceled, "embedding")
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if err := collection.DropIndex(nil, "embedding"); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil context = %v", err)
+	{
+		err := collection.DropIndex(nil, "embedding")
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
+
 	var nilCollection *Collection
-	if err := nilCollection.DropIndex(ctx, "embedding"); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil collection = %v", err)
+	{
+		err := nilCollection.DropIndex(ctx, "embedding")
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.DropIndex(ctx, "embedding"); !errors.Is(err, ErrFailedPrecondition) {
-		t.Fatalf("closed DropIndex = %v", err)
+	{
+		err := collection.DropIndex(ctx, "embedding")
+		require.ErrorIs(t, err, ErrFailedPrecondition)
 	}
+
 	readOnlyOptions := NewCollectionOptions()
 	readOnlyOptions.ReadOnly = true
 	readOnly, err := Open(ctx, path, readOnlyOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer readOnly.Close()
-	if err := readOnly.DropIndex(ctx, "embedding"); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("read-only DropIndex = %v", err)
+	{
+		err := readOnly.DropIndex(ctx, "embedding")
+		require.ErrorIs(t, err, ErrPermissionDenied)
 	}
 
 	corrupt, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "drop-index-rollback"), NewCollectionSchema("drop_rollback",
 		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: NewFlatIndexParams(MetricTypeL2)},
 	), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer corrupt.Close()
-	if _, err := corrupt.store.Insert(ctx, []db.WriteInput{{PrimaryKey: "corrupt", Payload: []byte("bad")}}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := corrupt.store.Insert(ctx, []db.WriteInput{{PrimaryKey: "corrupt", Payload: []byte("bad")}})
+		require.NoError(t, err)
 	}
+
 	before := corrupt.Schema()
 	beforeGeneration := corrupt.store.Manifest().Generation
-	if err := corrupt.DropIndex(ctx, "embedding"); err == nil {
-		t.Fatal("DropIndex accepted corrupt vector backfill")
+	{
+		err := corrupt.DropIndex(ctx, "embedding")
+		require.Error(t, err,
+			"DropIndex accepted corrupt vector backfill")
 	}
-	if !reflect.DeepEqual(corrupt.Schema(), before) || corrupt.store.Manifest().Generation != beforeGeneration {
-		t.Fatal("failed vector DropIndex changed schema")
-	}
+	require.Equal(t, before, corrupt.Schema(),
+		"failed vector DropIndex changed schema")
+	require.Equal(t, beforeGeneration, corrupt.store.Manifest().Generation,
+		"failed vector DropIndex changed schema")
 }

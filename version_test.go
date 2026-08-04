@@ -18,13 +18,10 @@ import (
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/db"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReleaseAndDiskFormatVersions(t *testing.T) {
-	if Version != "0.5.0" {
-		t.Fatalf("Version = %q", Version)
-	}
-	if NativeDiskFormatVersion != db.DiskFormatVersion {
-		t.Fatalf("public disk format = %d, internal = %d", NativeDiskFormatVersion, db.DiskFormatVersion)
-	}
+	require.True(t, Version == "0.5.0")
+	require.Equal(t, db.DiskFormatVersion, NativeDiskFormatVersion)
 }

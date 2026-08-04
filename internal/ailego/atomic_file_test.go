@@ -17,12 +17,13 @@ package ailego
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 const atomicCrashPayloadSize = 32 << 20
@@ -31,36 +32,38 @@ func TestWriteFileAtomicReplaceAndCancel(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "artifact")
-	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(path, []byte("old"), 0o644)
+		require.NoError(t, err)
 	}
-	if err := WriteFileAtomic(context.Background(), path, []byte("new"), 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := WriteFileAtomic(context.Background(), path, []byte("new"), 0o600)
+		require.NoError(t, err)
 	}
+
 	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "new" {
-		t.Fatalf("contents = %q", got)
-	}
+	require.NoError(t, err)
+	require.True(t, string(got) == "new")
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := WriteFileAtomic(ctx, path, []byte("bad"), 0o600); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled error = %v", err)
+	{
+		err := WriteFileAtomic(ctx, path, []byte("bad"), 0o600)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	got, err = os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.True(t, string(got) == "new")
+	{
+		err := WriteFileAtomic(nil, path, nil, 0o600)
+		require.Error(t, err,
+			"nil context succeeded")
 	}
-	if string(got) != "new" {
-		t.Fatalf("canceled write changed contents to %q", got)
-	}
-	if err := WriteFileAtomic(nil, path, nil, 0o600); err == nil {
-		t.Fatal("nil context succeeded")
-	}
-	if err := WriteFileAtomic(context.Background(), "", nil, 0o600); err == nil {
-		t.Fatal("empty path succeeded")
+	{
+		err := WriteFileAtomic(context.Background(), "", nil, 0o600)
+		require.Error(t, err,
+			"empty path succeeded")
 	}
 }
 
@@ -71,17 +74,21 @@ func TestWriteFileAtomicProcessKill(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "artifact")
 	old := []byte("previous-generation")
-	if err := os.WriteFile(path, old, 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(path, old, 0o600)
+		require.NoError(t, err)
 	}
+
 	command := exec.Command(os.Args[0], "-test.run=^TestWriteFileAtomicCrashHelper$")
 	command.Env = append(os.Environ(),
 		"ZVEC_ATOMIC_CRASH_HELPER=1",
 		"ZVEC_ATOMIC_CRASH_PATH="+path,
 	)
-	if err := command.Start(); err != nil {
-		t.Fatal(err)
+	{
+		err := command.Start()
+		require.NoError(t, err)
 	}
+
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
 
@@ -94,9 +101,8 @@ func TestWriteFileAtomicProcessKill(t *testing.T) {
 		select {
 		case <-ticker.C:
 			temps, err := filepath.Glob(filepath.Join(dir, ".zvec-atomic-*.tmp"))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			if len(temps) != 0 {
 				_ = command.Process.Kill()
 				<-done
@@ -107,24 +113,20 @@ func TestWriteFileAtomicProcessKill(t *testing.T) {
 		case <-deadline.C:
 			_ = command.Process.Kill()
 			<-done
-			t.Fatal("atomic write helper did not reach a persistence boundary")
+			require.FailNow(t, "atomic write helper did not reach a persistence boundary")
 		}
 	}
 
 	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	if bytes.Equal(got, old) {
 		return
 	}
-	if len(got) != atomicCrashPayloadSize {
-		t.Fatalf("published torn generation of %d bytes", len(got))
-	}
+	require.Len(t, got, atomicCrashPayloadSize)
+
 	for offset, value := range got {
-		if value != byte(offset) {
-			t.Fatalf("published generation differs at byte %d", offset)
-		}
+		require.Equal(t, byte(offset), value)
 	}
 }
 

@@ -17,8 +17,9 @@ package zvec
 import (
 	"context"
 	"path/filepath"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestCollectionBinaryInvertedDDLQueryOptimizeAndReopen(t *testing.T) {
@@ -33,65 +34,62 @@ func TestCollectionBinaryInvertedDDLQueryOptimizeAndReopen(t *testing.T) {
 		},
 	)
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := collection.Insert(ctx, []Document{
+			{PrimaryKey: "a", Fields: map[string]any{"payload": Binary("x"), "blobs": BinaryArray{Binary("x"), Binary("y")}, "embedding": VectorFP32{3, 0}}},
+			{PrimaryKey: "b", Fields: map[string]any{"payload": Binary("y"), "blobs": BinaryArray{Binary("z")}, "embedding": VectorFP32{2, 0}}},
+			{PrimaryKey: "c", Fields: map[string]any{"payload": nil, "blobs": nil, "embedding": VectorFP32{1, 0}}},
+		})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, []Document{
-		{PrimaryKey: "a", Fields: map[string]any{"payload": Binary("x"), "blobs": BinaryArray{Binary("x"), Binary("y")}, "embedding": VectorFP32{3, 0}}},
-		{PrimaryKey: "b", Fields: map[string]any{"payload": Binary("y"), "blobs": BinaryArray{Binary("z")}, "embedding": VectorFP32{2, 0}}},
-		{PrimaryKey: "c", Fields: map[string]any{"payload": nil, "blobs": nil, "embedding": VectorFP32{1, 0}}},
-	}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.CreateIndex(ctx, "payload", NewInvertIndexParams(), CreateIndexOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
-	if err := collection.CreateIndex(ctx, "payload", NewInvertIndexParams(), CreateIndexOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
-	}
+
 	plan, err := buildFilterPlan("payload = 'x'", collection.Schema())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	documents, err := collection.store.LiveDocuments(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	decoded := make([]Document, len(documents))
 	for index := range documents {
 		decoded[index], err = decodeStoredDocument(documents[index])
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 	}
 	evaluated, err := evaluateFilterDocuments(ctx, plan, decoded, 1)
-	if err != nil || !evaluated.usedIndex {
-		t.Fatalf("binary candidate route = %#v, %v", evaluated, err)
-	}
-	assert := func(handle *Collection, filter string, want []string) {
+	require.NoError(t, err)
+	require.True(t, evaluated.usedIndex)
+
+	assertQuery := func(handle *Collection, filter string, want []string) {
 		t.Helper()
 		results, queryErr := handle.Query(ctx, VectorQuery{
 			Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 10, Filter: filter,
 		})
-		if queryErr != nil || !reflect.DeepEqual(documentKeys(results), want) {
-			t.Fatalf("Query(%q) = %v, %v; want %v", filter, documentKeys(results), queryErr, want)
-		}
+		require.NoError(t, queryErr)
+		require.Equal(t, want, documentKeys(results))
 	}
-	assert(collection, "payload IN ('x', 'z')", []string{"a"})
-	assert(collection, "payload >= 'y'", []string{"b"})
-	assert(collection, "payload IS NULL", []string{"c"})
-	assert(collection, "blobs CONTAIN_ANY ('y')", []string{"a"})
-	assert(collection, "array_length(blobs) = 1", []string{"b"})
-	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
+	assertQuery(collection, "payload IN ('x', 'z')", []string{"a"})
+	assertQuery(collection, "payload >= 'y'", []string{"b"})
+	assertQuery(collection, "payload IS NULL", []string{"c"})
+	assertQuery(collection, "blobs CONTAIN_ANY ('y')", []string{"a"})
+	assertQuery(collection, "array_length(blobs) = 1", []string{"b"})
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
 
 	options := NewCollectionOptions()
 	options.ReadOnly = true
 	reopened, err := Open(ctx, path, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer reopened.Close()
-	assert(reopened, "payload IN ('x', 'z') AND blobs CONTAIN_ALL ('x', 'y')", []string{"a"})
+	assertQuery(reopened, "payload IN ('x', 'z') AND blobs CONTAIN_ALL ('x', 'y')", []string{"a"})
 }

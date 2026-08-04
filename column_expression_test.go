@@ -17,6 +17,8 @@ package zvec
 import (
 	"math"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestColumnExpressionArithmeticAndCasts(t *testing.T) {
@@ -45,16 +47,11 @@ func TestColumnExpressionArithmeticAndCasts(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.expression, func(t *testing.T) {
 			expression, err := parseColumnExpression(test.expression, schema)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			got, err := expression.evaluate(fields, test.target)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != test.want {
-				t.Fatalf("evaluate = %#v (%T), want %#v (%T)", got, got, test.want, test.want)
-			}
+			require.NoError(t, err)
+			require.Equal(t, test.want, got)
 		})
 	}
 }
@@ -66,17 +63,17 @@ func TestColumnExpressionRejectsInvalidInput(t *testing.T) {
 	)
 	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 	for _, input := range []string{"", "missing", "text", "number +", "(number + 1", "number $ 1", "1e"} {
-		if _, err := parseColumnExpression(input, schema); err == nil {
-			t.Fatalf("parse %q succeeded", input)
+		{
+			_, err := parseColumnExpression(input, schema)
+			require.Error(t, err)
 		}
 	}
 	for _, input := range []string{"number / 0", "1 / (number - number)"} {
 		expression, err := parseColumnExpression(input, schema)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := expression.evaluate(map[string]any{"number": int32(3)}, DataTypeInt32); err == nil {
-			t.Fatalf("evaluate %q succeeded", input)
+		require.NoError(t, err)
+		{
+			_, err := expression.evaluate(map[string]any{"number": int32(3)}, DataTypeInt32)
+			require.Error(t, err)
 		}
 	}
 }

@@ -18,23 +18,23 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestPublicDefaultsCompatibility(t *testing.T) {
 	data, err := os.ReadFile("testdata/cpp_defaults_58375ff.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var fixture struct {
 		Baseline string                    `json:"baseline_commit"`
 		Defaults map[string]map[string]any `json:"defaults"`
 	}
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(data, &fixture)
+		require.NoError(t, err)
 	}
-	if fixture.Baseline != "58375ff7b8fdd0d6fc7d234e47567b179777883b" {
-		t.Fatalf("fixture baseline = %q", fixture.Baseline)
-	}
+	require.True(t, fixture.Baseline == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
 
 	invert := NewInvertIndexParams()
 	hnsw := NewHNSWIndexParams(MetricTypeL2)
@@ -71,7 +71,5 @@ func TestPublicDefaultsCompatibility(t *testing.T) {
 	}
 	wantJSON, _ := json.Marshal(fixture.Defaults)
 	gotJSON, _ := json.Marshal(got)
-	if string(gotJSON) != string(wantJSON) {
-		t.Fatalf("default compatibility mismatch: want %s, got %s", wantJSON, gotJSON)
-	}
+	require.Equal(t, string(wantJSON), string(gotJSON))
 }

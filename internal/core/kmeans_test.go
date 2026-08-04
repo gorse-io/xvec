@@ -18,11 +18,12 @@ import (
 	"context"
 	"errors"
 	"math"
-	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTrainKMeansTwoClusters(t *testing.T) {
@@ -31,36 +32,28 @@ func TestTrainKMeansTwoClusters(t *testing.T) {
 	options := DefaultKMeansOptions(2, MetricL2)
 	options.InitialCentroids = [][]float32{{0, 0}, {10, 10}}
 	model, err := TrainKMeans(context.Background(), vectors, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if model.Dimension() != 2 || model.Len() != 2 || model.Metric() != MetricL2 {
-		t.Fatalf("metadata = (%d, %d, %d)", model.Dimension(), model.Len(), model.Metric())
-	}
+	require.NoError(t, err)
+	require.True(t, model.Dimension() == 2)
+	require.True(t, model.Len() == 2)
+	require.Equal(t, MetricL2, model.Metric())
+
 	wantCentroids := [][]float32{{0, .5}, {10, 10.5}}
-	if !reflect.DeepEqual(model.Centroids(), wantCentroids) {
-		t.Fatalf("centroids = %v, want %v", model.Centroids(), wantCentroids)
-	}
-	if !slices.Equal(model.Counts(), []int{2, 2}) {
-		t.Fatalf("counts = %v", model.Counts())
-	}
-	if model.Cost() != 1 {
-		t.Fatalf("cost = %g, want 1", model.Cost())
-	}
-	if !model.Converged() || model.Iterations() < 1 || model.Iterations() > options.MaxIterations {
-		t.Fatalf("training state = iterations %d, converged %v", model.Iterations(), model.Converged())
-	}
+	require.Equal(t, wantCentroids, model.Centroids())
+	require.True(t, slices.Equal(model.Counts(), []int{2, 2}))
+	require.True(t, model.Cost() == 1)
+	require.True(t, model.Converged())
+	require.True(t, model.Iterations() >= 1)
+	require.True(t, model.Iterations() <= options.MaxIterations)
+
 	labels, scores, err := model.Classify(context.Background(), vectors, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(labels, []int{0, 0, 1, 1}) || !slices.Equal(scores, []float32{.25, .25, .25, .25}) {
-		t.Fatalf("classification = %v, %v", labels, scores)
-	}
+	require.NoError(t, err)
+	require.True(t, slices.Equal(labels, []int{0, 0, 1, 1}))
+	require.True(t, slices.Equal(scores, []float32{.25, .25, .25, .25}))
+
 	label, score, err := model.Nearest([]float32{9, 10})
-	if err != nil || label != 1 || score != 1.25 {
-		t.Fatalf("nearest = %d, %g, %v", label, score, err)
-	}
+	require.NoError(t, err)
+	require.True(t, label == 1)
+	require.True(t, score == 1.25)
 }
 
 func TestKMeansDeterministicAcrossWorkers(t *testing.T) {
@@ -79,19 +72,16 @@ func TestKMeansDeterministicAcrossWorkers(t *testing.T) {
 		options.Seed = 0x123456789abcdef0
 		options.Workers = 1
 		one, err := TrainKMeans(context.Background(), vectors, options)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		options.Workers = 8
 		many, err := TrainKMeans(context.Background(), vectors, options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(one.Centroids(), many.Centroids()) ||
-			!slices.Equal(one.Counts(), many.Counts()) || one.Cost() != many.Cost() ||
-			one.Iterations() != many.Iterations() || one.Converged() != many.Converged() {
-			t.Fatalf("initializer %d differs across workers", initializer)
-		}
+		require.NoError(t, err)
+		require.Equal(t, many.Centroids(), one.Centroids())
+		require.True(t, slices.Equal(one.Counts(), many.Counts()))
+		require.Equal(t, many.Cost(), one.Cost())
+		require.Equal(t, many.Iterations(), one.Iterations())
+		require.Equal(t, many.Converged(), one.Converged())
 	}
 }
 
@@ -100,27 +90,17 @@ func TestKMeansReservoirSeedFixture(t *testing.T) {
 	vectors := [][]float32{{0}, {1}, {2}, {3}, {4}, {5}}
 	options := DefaultKMeansOptions(3, MetricL2)
 	centroids, err := initializeKMeans(context.Background(), vectors, 3, 1, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(centroids, [][]float32{{4}, {5}, {2}}) {
-		t.Fatalf("seed-zero reservoir centroids = %v", centroids)
-	}
+	require.NoError(t, err)
+	require.Equal(t, [][]float32{{4}, {5}, {2}}, centroids)
 }
 
 func TestKMeansClusterCountCapsAtSamples(t *testing.T) {
 	t.Parallel()
 	options := DefaultKMeansOptions(10, MetricL2)
 	model, err := TrainKMeans(context.Background(), [][]float32{{1}, {2}, {3}}, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if model.Len() != 3 {
-		t.Fatalf("centroid count = %d, want 3", model.Len())
-	}
-	if !slices.Equal(model.Counts(), []int{1, 1, 1}) {
-		t.Fatalf("counts = %v", model.Counts())
-	}
+	require.NoError(t, err)
+	require.True(t, model.Len() == 3)
+	require.True(t, slices.Equal(model.Counts(), []int{1, 1, 1}))
 }
 
 func TestKMeansEmptyPolicies(t *testing.T) {
@@ -133,36 +113,26 @@ func TestKMeansEmptyPolicies(t *testing.T) {
 	keepOptions.EmptyPolicy = KMeansEmptyKeep
 	keepOptions.MaxIterations = 1
 	keep, err := TrainKMeans(context.Background(), vectors, keepOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if keep.Len() != 3 || !reflect.DeepEqual(keep.Centroids(), [][]float32{{5}, {0}, {20}}) {
-		t.Fatalf("kept model = %v, %v", keep.Centroids(), keep.Counts())
-	}
+	require.NoError(t, err)
+	require.True(t, keep.Len() == 3)
+	require.Equal(t, [][]float32{{5}, {0}, {20}}, keep.Centroids())
 
 	dropOptions := keepOptions
 	dropOptions.EmptyPolicy = KMeansEmptyDrop
 	drop, err := TrainKMeans(context.Background(), vectors, dropOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if drop.Len() != 2 || !slices.Equal(drop.Counts(), []int{2, 1}) {
-		t.Fatalf("dropped model = %v, %v", drop.Centroids(), drop.Counts())
-	}
+	require.NoError(t, err)
+	require.True(t, drop.Len() == 2)
+	require.True(t, slices.Equal(drop.Counts(), []int{2, 1}))
 
 	reseedOptions := keepOptions
 	reseedOptions.EmptyPolicy = KMeansEmptyReseedFarthest
 	reseed, err := TrainKMeans(context.Background(), vectors, reseedOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reseed.Len() != 3 || !slices.Equal(reseed.Counts(), []int{1, 1, 1}) {
-		t.Fatalf("reseeded model = %v, %v", reseed.Centroids(), reseed.Counts())
-	}
+	require.NoError(t, err)
+	require.True(t, reseed.Len() == 3)
+	require.True(t, slices.Equal(reseed.Counts(), []int{1, 1, 1}))
+
 	centroids := reseed.Centroids()
-	if !reflect.DeepEqual(centroids, [][]float32{{5}, {10}, {20}}) {
-		t.Fatalf("reseeded centroids = %v", centroids)
-	}
+	require.Equal(t, [][]float32{{5}, {10}, {20}}, centroids)
 }
 
 func TestKMeansInnerProductAndSpherical(t *testing.T) {
@@ -172,19 +142,16 @@ func TestKMeansInnerProductAndSpherical(t *testing.T) {
 	options.InitialCentroids = [][]float32{{-1, 0}, {1, 0}}
 	options.Spherical = true
 	model, err := TrainKMeans(context.Background(), vectors, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	centroids := model.Centroids()
 	assertFloatSlicesClose(t, centroids[0], []float32{-1, 0}, 1e-7)
 	assertFloatSlicesClose(t, centroids[1], []float32{1, 0}, 1e-7)
 	label, score, err := model.Nearest([]float32{2, 0})
-	if err != nil || label != 1 || score != 2 {
-		t.Fatalf("nearest = %d, %g, %v", label, score, err)
-	}
-	if model.Cost() != -7 {
-		t.Fatalf("IP objective = %g, want -7", model.Cost())
-	}
+	require.NoError(t, err)
+	require.True(t, label == 1)
+	require.True(t, score == 2)
+	require.Equal(t, float64(-7), model.Cost())
 }
 
 func TestKMeansModelOwnsState(t *testing.T) {
@@ -194,42 +161,50 @@ func TestKMeansModelOwnsState(t *testing.T) {
 	options := DefaultKMeansOptions(2, MetricL2)
 	options.InitialCentroids = initial
 	model, err := TrainKMeans(context.Background(), vectors, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	vectors[0][0] = 99
 	initial[0][0] = 88
 	centroids := model.Centroids()
 	centroids[0][0] = 77
 	counts := model.Counts()
 	counts[0] = 99
-	if model.Centroids()[0][0] != 0 || model.Counts()[0] != 1 {
-		t.Fatal("model state aliases caller or accessor slices")
-	}
+	require.True(t, model.Centroids()[0][0] == 0,
+		"model state aliases caller or accessor slices")
+	require.True(t, model.Counts()[0] == 1,
+		"model state aliases caller or accessor slices")
 }
 
 func TestKMeansValidation(t *testing.T) {
 	t.Parallel()
 	valid := DefaultKMeansOptions(2, MetricL2)
-	if _, err := TrainKMeans(nil, [][]float32{{1}}, valid); err == nil {
-		t.Fatal("nil context accepted")
+	{
+		_, err := TrainKMeans(nil, [][]float32{{1}}, valid)
+		require.Error(t, err,
+			"nil context accepted")
 	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := TrainKMeans(ctx, [][]float32{{1}}, valid); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled error = %v", err)
+	{
+		_, err := TrainKMeans(ctx, [][]float32{{1}}, valid)
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := TrainKMeans(context.Background(), nil, valid); !errors.Is(err, ErrEmptyTrainingSet) {
-		t.Fatalf("empty data error = %v", err)
+	{
+		_, err := TrainKMeans(context.Background(), nil, valid)
+		require.ErrorIs(t, err, ErrEmptyTrainingSet)
 	}
-	if _, err := TrainKMeans(context.Background(), [][]float32{{}}, valid); !errors.Is(err, ailego.ErrEmptyVector) {
-		t.Fatalf("empty vector error = %v", err)
+	{
+		_, err := TrainKMeans(context.Background(), [][]float32{{}}, valid)
+		require.ErrorIs(t, err, ailego.ErrEmptyVector)
 	}
-	if _, err := TrainKMeans(context.Background(), [][]float32{{1}, {1, 2}}, valid); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("dimension error = %v", err)
+	{
+		_, err := TrainKMeans(context.Background(), [][]float32{{1}, {1, 2}}, valid)
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
-	if _, err := TrainKMeans(context.Background(), [][]float32{{float32(math.NaN())}}, valid); !errors.Is(err, ailego.ErrNonFiniteVector) {
-		t.Fatalf("non-finite error = %v", err)
+	{
+		_, err := TrainKMeans(context.Background(), [][]float32{{float32(math.NaN())}}, valid)
+		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
 	}
 
 	invalidOptions := []KMeansOptions{
@@ -243,39 +218,48 @@ func TestKMeansValidation(t *testing.T) {
 		func() KMeansOptions { value := valid; value.EmptyPolicy = 99; return value }(),
 	}
 	for _, options := range invalidOptions {
-		if _, err := TrainKMeans(context.Background(), [][]float32{{1}}, options); !errors.Is(err, ErrInvalidKMeansOptions) {
-			t.Errorf("options %#v error = %v", options, err)
+		{
+			_, err := TrainKMeans(context.Background(), [][]float32{{1}}, options)
+			assert.ErrorIs(t, err, ErrInvalidKMeansOptions)
 		}
 	}
 
 	badInitial := valid
 	badInitial.InitialCentroids = [][]float32{{1}}
-	if _, err := TrainKMeans(context.Background(), [][]float32{{1}, {2}}, badInitial); !errors.Is(err, ErrInvalidCentroid) {
-		t.Fatalf("initial count error = %v", err)
+	{
+		_, err := TrainKMeans(context.Background(), [][]float32{{1}, {2}}, badInitial)
+		require.ErrorIs(t, err, ErrInvalidCentroid)
 	}
 }
 
 func TestKMeansModelValidation(t *testing.T) {
 	t.Parallel()
 	var model *KMeansModel
-	if _, _, err := model.Nearest([]float32{1}); err == nil {
-		t.Fatal("nil model accepted")
+	{
+		_, _, err := model.Nearest([]float32{1})
+		require.Error(t, err,
+			"nil model accepted")
 	}
+
 	options := DefaultKMeansOptions(1, MetricL2)
 	model, err := TrainKMeans(context.Background(), [][]float32{{1}, {2}}, options)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, _, err := model.Nearest([]float32{1, 2})
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
-	if _, _, err := model.Nearest([]float32{1, 2}); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("nearest dimension error = %v", err)
+	{
+		_, _, err := model.Classify(nil, nil, 1)
+		require.Error(t, err,
+			"nil classify context accepted")
 	}
-	if _, _, err := model.Classify(nil, nil, 1); err == nil {
-		t.Fatal("nil classify context accepted")
-	}
+
 	labels, scores, err := model.Classify(context.Background(), nil, 1)
-	if err != nil || labels == nil || scores == nil || len(labels) != 0 || len(scores) != 0 {
-		t.Fatalf("empty classify = %v, %v, %v", labels, scores, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, labels)
+	require.NotNil(t, scores)
+	require.Len(t, labels, 0)
+	require.Len(t, scores, 0)
 }
 
 func TestKMeansTieBreaksByCentroidIndex(t *testing.T) {
@@ -285,9 +269,9 @@ func TestKMeansTieBreaksByCentroidIndex(t *testing.T) {
 		centroids: [][]float32{{-1}, {1}}, counts: []int{0, 0},
 	}
 	label, score, err := model.Nearest([]float32{0})
-	if err != nil || label != 0 || score != 1 {
-		t.Fatalf("tie = %d, %g, %v", label, score, err)
-	}
+	require.NoError(t, err)
+	require.True(t, label == 0)
+	require.True(t, score == 1)
 }
 
 func FuzzTrainKMeans(f *testing.F) {
@@ -305,22 +289,17 @@ func FuzzTrainKMeans(f *testing.F) {
 		options.Seed = seed
 		options.Initializer = KMeansInitializer(seed%2 + 1)
 		model, err := TrainKMeans(context.Background(), vectors, options)
-		if err != nil {
-			if errors.Is(err, ailego.ErrNonFiniteVector) {
-				return
-			}
-			t.Fatal(err)
+		if errors.Is(err, ailego.ErrNonFiniteVector) {
+			return
 		}
-		if model.Len() == 0 || model.Len() > min(count, clusters) {
-			t.Fatalf("centroid count = %d", model.Len())
-		}
+		require.NoError(t, err)
+		require.False(t, model.Len() == 0)
+		require.True(t, model.Len() <= min(count, clusters))
+
 		labels, scores, err := model.Classify(context.Background(), vectors, 3)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(labels) != count || len(scores) != count {
-			t.Fatalf("classification lengths = %d, %d", len(labels), len(scores))
-		}
+		require.NoError(t, err)
+		require.Len(t, labels, count)
+		require.Len(t, scores, count)
 	})
 }
 
@@ -336,8 +315,11 @@ func BenchmarkTrainKMeans(b *testing.B) {
 	options.MaxIterations = 10
 	b.ResetTimer()
 	for range b.N {
-		if _, err := TrainKMeans(context.Background(), vectors, options); err != nil {
-			b.Fatal(err)
+		{
+			_, err := TrainKMeans(context.Background(), vectors, options)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }

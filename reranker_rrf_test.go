@@ -20,9 +20,11 @@ import (
 	"errors"
 	"math"
 	"os"
-	"reflect"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRRFRerankerPinnedScoresAndDeterministicTies(t *testing.T) {
@@ -39,33 +41,28 @@ func TestRRFRerankerPinnedScoresAndDeterministicTies(t *testing.T) {
 		}},
 	}
 	reranker := NewRRFReranker()
-	if DefaultRRFRankConstant != 60 || reranker.RankConstant != DefaultRRFRankConstant {
-		t.Fatalf("default RRF = %#v", reranker)
-	}
+	require.True(t, DefaultRRFRankConstant == 60)
+	require.Equal(t, DefaultRRFRankConstant, reranker.RankConstant)
+
 	results, err := reranker.Rerank(context.Background(), batches, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := documentKeys(results); !reflect.DeepEqual(got, []string{"a", "b", "c", "d"}) {
-		t.Fatalf("RRF keys = %#v", got)
-	}
-	wantTop := float32(1.0/61.0 + 1.0/62.0)
-	wantTail := float32(1.0 / 63.0)
-	if results[0].Score != wantTop || results[1].Score != wantTop ||
-		results[2].Score != wantTail || results[3].Score != wantTail {
-		t.Fatalf("RRF scores = %#v, want top %v tail %v", results, wantTop, wantTail)
-	}
-	if !reflect.DeepEqual(results[0].Fields, map[string]any{"source": "first"}) {
-		t.Fatalf("RRF did not retain the first occurrence: %#v", results[0])
-	}
-	if !math.IsNaN(float64(batches[0].Documents[0].Score)) {
-		t.Fatalf("RRF mutated its input document: %#v", batches[0].Documents[0])
+	require.NoError(t, err)
+	{
+		got := documentKeys(results)
+		require.Equal(t, []string{"a", "b", "c", "d"}, got)
 	}
 
+	wantTop := float32(1.0/61.0 + 1.0/62.0)
+	wantTail := float32(1.0 / 63.0)
+	require.Equal(t, wantTop, results[0].Score)
+	require.Equal(t, wantTop, results[1].Score)
+	require.Equal(t, wantTail, results[2].Score)
+	require.Equal(t, wantTail, results[3].Score)
+	require.Equal(t, map[string]any{"source": "first"}, results[0].Fields)
+	require.True(t, math.IsNaN(float64(batches[0].Documents[0].Score)))
+
 	top, err := reranker.Rerank(context.Background(), batches, 2)
-	if err != nil || !reflect.DeepEqual(documentKeys(top), []string{"a", "b"}) {
-		t.Fatalf("RRF topK = %#v, %v", top, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, documentKeys(top))
 }
 
 func TestRRFRerankerZeroConstantDuplicateAndArgumentBoundaries(t *testing.T) {
@@ -76,39 +73,43 @@ func TestRRFRerankerZeroConstantDuplicateAndArgumentBoundaries(t *testing.T) {
 		{PrimaryKey: "b", DocID: 2},
 	}}}
 	results, err := r.Rerank(context.Background(), batches, 10)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		got := documentKeys(results)
+		require.Equal(t, []string{"a", "b"}, got)
 	}
-	if got := documentKeys(results); !reflect.DeepEqual(got, []string{"a", "b"}) {
-		t.Fatalf("zero-constant duplicate keys = %#v", got)
+	require.Equal(t, float32(1+1.0/2.0), results[0].Score)
+	require.Equal(t, float32(1.0/3.0), results[1].Score)
+	{
+		err := (RRFReranker{RankConstant: -1}).Validate()
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if results[0].Score != float32(1+1.0/2.0) || results[1].Score != float32(1.0/3.0) {
-		t.Fatalf("zero-constant duplicate scores = %#v", results)
+	{
+		_, err := (RRFReranker{RankConstant: -1}).Rerank(context.Background(), batches, 1)
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if err := (RRFReranker{RankConstant: -1}).Validate(); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("negative Validate = %v", err)
+	{
+		_, err := r.Rerank(nil, batches, 1)
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if _, err := (RRFReranker{RankConstant: -1}).Rerank(context.Background(), batches, 1); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("negative Rerank = %v", err)
-	}
-	if _, err := r.Rerank(nil, batches, 1); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil context = %v", err)
-	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := r.Rerank(canceled, batches, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled context = %v", err)
+	{
+		_, err := r.Rerank(canceled, batches, 1)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	for _, topK := range []int{0, -1} {
 		empty, err := r.Rerank(context.Background(), batches, topK)
-		if err != nil || empty == nil || len(empty) != 0 {
-			t.Fatalf("topK %d = %#v, %v", topK, empty, err)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, empty)
+		require.Len(t, empty, 0)
 	}
 	empty, err := r.Rerank(context.Background(), nil, 10)
-	if err != nil || empty == nil || len(empty) != 0 {
-		t.Fatalf("empty batches = %#v, %v", empty, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, empty)
+	require.Len(t, empty, 0)
 }
 
 func TestRRFRerankerConcurrentDeterminism(t *testing.T) {
@@ -122,9 +123,8 @@ func TestRRFRerankerConcurrentDeterminism(t *testing.T) {
 	}
 	reranker := NewRRFReranker()
 	want, err := reranker.Rerank(context.Background(), batches, 40)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var wait sync.WaitGroup
 	errorsFound := make(chan error, 8)
 	for worker := 0; worker < 8; worker++ {
@@ -137,7 +137,7 @@ func TestRRFRerankerConcurrentDeterminism(t *testing.T) {
 					errorsFound <- err
 					return
 				}
-				if !reflect.DeepEqual(got, want) {
+				if !assert.Equal(t, want, got) {
 					errorsFound <- errors.New("non-deterministic RRF result")
 					return
 				}
@@ -147,15 +147,14 @@ func TestRRFRerankerConcurrentDeterminism(t *testing.T) {
 	wait.Wait()
 	close(errorsFound)
 	for err := range errorsFound {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 }
 
 func TestRRFCompatibilityFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/rrf_58375ff.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var fixture struct {
 		BaselineCommit string `json:"baseline_commit"`
 		HeaderHash     string `json:"header_sha256"`
@@ -164,16 +163,16 @@ func TestRRFCompatibilityFixture(t *testing.T) {
 		RankConstant   int    `json:"default_rank_constant"`
 		Formula        string `json:"formula"`
 	}
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(data, &fixture)
+		require.NoError(t, err)
 	}
-	if fixture.BaselineCommit != "58375ff7b8fdd0d6fc7d234e47567b179777883b" ||
-		fixture.HeaderHash != "bc1949536968bc27f0cb11026d0ab8633dbb46641365455c20b433367837c7d6" ||
-		fixture.SourceHash != "3c93edc12303898af52911589c46c720072f9470446858fc36a61206d538aa1e" ||
-		fixture.TestsHash != "05a03cacf74e7615661cec3153b2d2307f6a991510018386f6650f2625cb9a7d" ||
-		fixture.RankConstant != DefaultRRFRankConstant || fixture.Formula != "1/(rank_constant+rank+1)" {
-		t.Fatalf("RRF compatibility fixture mismatch: %#v", fixture)
-	}
+	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
+	require.True(t, fixture.HeaderHash == "bc1949536968bc27f0cb11026d0ab8633dbb46641365455c20b433367837c7d6")
+	require.True(t, fixture.SourceHash == "3c93edc12303898af52911589c46c720072f9470446858fc36a61206d538aa1e")
+	require.True(t, fixture.TestsHash == "05a03cacf74e7615661cec3153b2d2307f6a991510018386f6650f2625cb9a7d")
+	require.Equal(t, DefaultRRFRankConstant, fixture.RankConstant)
+	require.True(t, fixture.Formula == "1/(rank_constant+rank+1)")
 }
 
 func FuzzRRFReranker(f *testing.F) {
@@ -194,28 +193,25 @@ func FuzzRRFReranker(f *testing.F) {
 		topK := int(topKByte % 40)
 		reranker := RRFReranker{RankConstant: int(constantByte)}
 		first, err := reranker.Rerank(context.Background(), batches, topK)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		second, err := reranker.Rerank(context.Background(), batches, topK)
-		if err != nil || !reflect.DeepEqual(first, second) {
-			t.Fatalf("non-deterministic output: %#v / %#v, %v", first, second, err)
-		}
-		if len(first) > topK {
-			t.Fatalf("result length %d exceeds %d", len(first), topK)
-		}
+		require.NoError(t, err)
+		require.Equal(t, first, second)
+		require.True(t, len(first) <= topK)
+
 		seen := make(map[string]struct{}, len(first))
 		for index, document := range first {
-			if _, found := seen[document.PrimaryKey]; found {
-				t.Fatalf("duplicate primary key %q", document.PrimaryKey)
+			{
+				_, found := seen[document.PrimaryKey]
+				require.False(t, found)
 			}
+
 			seen[document.PrimaryKey] = struct{}{}
-			if document.Score <= 0 || math.IsNaN(float64(document.Score)) || math.IsInf(float64(document.Score), 0) {
-				t.Fatalf("invalid score %v", document.Score)
-			}
-			if index > 0 && first[index-1].Score < document.Score {
-				t.Fatalf("scores are not descending: %#v", first)
-			}
+			require.True(t, document.Score > 0)
+			require.False(t, math.IsNaN(float64(document.Score)))
+			require.False(t, math.IsInf(float64(document.Score), 0))
+			require.False(t, index > 0 && first[index-1].Score < document.Score)
 		}
 	})
 }
@@ -233,8 +229,11 @@ func BenchmarkRRFReranker(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for iteration := 0; iteration < b.N; iteration++ {
-		if _, err := reranker.Rerank(context.Background(), batches, 100); err != nil {
-			b.Fatal(err)
+		{
+			_, err := reranker.Rerank(context.Background(), batches, 100)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }

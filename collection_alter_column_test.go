@@ -19,139 +19,148 @@ import (
 	"errors"
 	"math"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAlterColumnMigratesNamesTypesIndexesAndReopens(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "alter-column")
 	collection, err := CreateAndOpen(ctx, path, alterColumnSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	inserted, err := collection.Insert(ctx, []Document{
 		alterColumnDocument("a", 1, float32(1.75), true, math.MaxUint32, []float32{3, 0}),
 		alterColumnDocument("b", 2, nil, true, 10, []float32{2, 0}),
 		alterColumnDocument("c", 3, nil, false, 20, []float32{1, 0}),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	updated, err := collection.Update(ctx, []Document{{PrimaryKey: "b", Fields: map[string]any{"count": int32(4)}}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	wantIDs := map[string]uint64{"a": inserted[0].DocID, "b": updated[0].DocID, "c": inserted[2].DocID}
 
 	invert := NewInvertIndexParams()
 	invert.EnableRangeOptimization = true
 	total := FieldSchema{Name: "total", DataType: DataTypeInt64, Index: invert}
-	if err := collection.AlterColumn(ctx, "count", "", &total, AlterColumnOptions{Concurrency: 3}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.AlterColumn(ctx, "count", "", &total, AlterColumnOptions{Concurrency: 3})
+		require.NoError(t, err)
 	}
+
 	invert.EnableRangeOptimization = false
 	storedTotal, _ := collection.Schema().Field("total")
-	if !storedTotal.Index.(InvertIndexParams).EnableRangeOptimization {
-		t.Fatal("AlterColumn retained caller-owned index parameters")
+	require.True(t, storedTotal.Index.(InvertIndexParams).EnableRangeOptimization,
+		"AlterColumn retained caller-owned index parameters")
+	{
+		err := collection.AlterColumn(ctx, "maybe", "cost", nil, AlterColumnOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
-	if err := collection.AlterColumn(ctx, "maybe", "cost", nil, AlterColumnOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
-	}
+
 	price := FieldSchema{Name: "price", DataType: DataTypeDouble, Nullable: true}
-	if err := collection.AlterColumn(ctx, "cost", "", &price, AlterColumnOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.AlterColumn(ctx, "cost", "", &price, AlterColumnOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
+
 	capField := FieldSchema{Name: "cap", DataType: DataTypeInt32}
-	if err := collection.AlterColumn(ctx, "cap", "", &capField, AlterColumnOptions{Concurrency: 1}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.AlterColumn(ctx, "cap", "", &capField, AlterColumnOptions{Concurrency: 1})
+		require.NoError(t, err)
 	}
 
 	schema := collection.Schema()
 	for _, old := range []string{"count", "maybe", "cost"} {
-		if _, found := schema.Field(old); found {
-			t.Fatalf("old field %q remains in schema", old)
+		{
+			_, found := schema.Field(old)
+			require.False(t, found)
 		}
 	}
 	for _, current := range []string{"total", "price", "cap"} {
-		if _, found := schema.Field(current); !found {
-			t.Fatalf("new field %q missing from schema", current)
+		{
+			_, found := schema.Field(current)
+			require.True(t, found)
 		}
 	}
 	fetched, err := collection.Fetch(ctx, []string{"a", "b", "c"}, Projection{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	wantTotals := []int64{1, 4, 3}
 	wantCaps := []int32{-1, 10, 20}
 	for index, document := range fetched {
-		if document == nil || document.DocID != wantIDs[document.PrimaryKey] ||
-			document.Fields["total"] != wantTotals[index] || document.Fields["cap"] != wantCaps[index] {
-			t.Fatalf("migrated document %d = %#v", index, document)
-		}
+		require.NotNil(t, document)
+		require.Equal(t, wantIDs[document.PrimaryKey], document.DocID)
+		require.Equal(t, wantTotals[index], document.Fields["total"])
+		require.Equal(t, wantCaps[index], document.Fields["cap"])
 	}
-	if fetched[0].Fields["price"] != float64(1.75) {
-		t.Fatalf("converted price = %#v", fetched[0].Fields["price"])
+	require.Equal(t, float64(1.75), fetched[0].Fields["price"])
+	{
+		value, found := fetched[1].Fields["price"]
+		require.True(t, found)
+		require.Nil(t, value)
 	}
-	if value, found := fetched[1].Fields["price"]; !found || value != nil {
-		t.Fatalf("explicit NULL price = %#v, found %v", value, found)
+	{
+		_, found := fetched[2].Fields["price"]
+		require.False(t, found)
 	}
-	if _, found := fetched[2].Fields["price"]; found {
-		t.Fatalf("missing nullable price became present: %#v", fetched[2].Fields)
-	}
+
 	results, err := collection.Query(ctx, VectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 10,
 		Filter: "total >= 3", Projection: Projection{OutputFields: []string{"total"}},
 	})
-	if err != nil || !reflect.DeepEqual(documentKeys(results), []string{"b", "c"}) {
-		t.Fatalf("query after AlterColumn = %v, %v", documentKeys(results), err)
-	}
-	if collection.Stats().DocumentCount != 3 {
-		t.Fatalf("document count = %d", collection.Stats().DocumentCount)
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "c"}, documentKeys(results))
+	require.True(t, collection.Stats().DocumentCount == 3)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
 
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	fetched, err = collection.Fetch(ctx, []string{"a", "b", "c"}, Projection{})
-	if err != nil || fetched[0].Fields["total"] != int64(1) || fetched[0].Fields["price"] != float64(1.75) {
-		t.Fatalf("reopened migration = %#v, %v", fetched, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, int64(1), fetched[0].Fields["total"])
+	require.Equal(t, float64(1.75), fetched[0].Fields["price"])
+
 	document := Document{PrimaryKey: "d", Fields: map[string]any{
 		"total": int64(5), "price": float64(2.5), "cap": int32(30), "text": "d",
 		"embedding": VectorFP32{0.5, 0},
 	}}
-	if _, err := collection.Insert(ctx, []Document{document}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, []Document{document})
+		require.NoError(t, err)
 	}
 }
 
 func TestAlterColumnValidationAndPublicationRollback(t *testing.T) {
 	ctx := context.Background()
 	var nilCollection *Collection
-	if err := nilCollection.AlterColumn(ctx, "count", "renamed", nil, AlterColumnOptions{}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil collection AlterColumn = %v", err)
+	{
+		err := nilCollection.AlterColumn(ctx, "count", "renamed", nil, AlterColumnOptions{})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
+
 	path := filepath.Join(t.TempDir(), "alter-column-errors")
 	collection, err := CreateAndOpen(ctx, path, alterColumnSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.Insert(ctx, []Document{alterColumnDocument("one", 2, nil, true, 3, []float32{1, 0})}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, []Document{alterColumnDocument("one", 2, nil, true, 3, []float32{1, 0})})
+		require.NoError(t, err)
 	}
-	if err := collection.AlterColumn(nil, "count", "renamed", nil, AlterColumnOptions{}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil context AlterColumn = %v", err)
+	{
+		err := collection.AlterColumn(nil, "count", "renamed", nil, AlterColumnOptions{})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
+
 	initialSchema := collection.Schema()
 	initialGeneration := collection.store.Manifest().Generation
 	tests := []struct {
@@ -176,101 +185,105 @@ func TestAlterColumnValidationAndPublicationRollback(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if err := collection.AlterColumn(ctx, test.column, test.rename, test.field, test.options); err == nil {
-				t.Fatal("AlterColumn succeeded")
+			{
+				err := collection.AlterColumn(ctx, test.column, test.rename, test.field, test.options)
+				require.Error(t, err,
+					"AlterColumn succeeded")
 			}
-			if !reflect.DeepEqual(collection.Schema(), initialSchema) {
-				t.Fatalf("failed AlterColumn changed schema to %#v", collection.Schema())
-			}
-			if got := collection.store.Manifest().Generation; got != initialGeneration {
-				t.Fatalf("failed AlterColumn published generation %d", got)
+			require.Equal(t, initialSchema, collection.Schema())
+			{
+				got := collection.store.Manifest().Generation
+				require.Equal(t, initialGeneration, got)
 			}
 		})
 	}
 	equal := initialSchema.Fields[0].Clone()
-	if err := collection.AlterColumn(ctx, "count", "", &equal, AlterColumnOptions{}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.AlterColumn(ctx, "count", "", &equal, AlterColumnOptions{})
+		require.NoError(t, err)
 	}
-	if got := collection.store.Manifest().Generation; got != initialGeneration {
-		t.Fatalf("idempotent AlterColumn published generation %d", got)
+	{
+		got := collection.store.Manifest().Generation
+		require.Equal(t, initialGeneration, got)
 	}
+
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := collection.AlterColumn(canceled, "count", "renamed", nil, AlterColumnOptions{}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled AlterColumn = %v", err)
+	{
+		err := collection.AlterColumn(canceled, "count", "renamed", nil, AlterColumnOptions{})
+		require.ErrorIs(t, err, context.Canceled)
 	}
 
 	versionLock, err := ailego.AcquireFileLock(ctx, filepath.Join(path, ".version.lock"), ailego.LockExclusive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	deadline, cancel := context.WithTimeout(ctx, 75*time.Millisecond)
 	err = collection.AlterColumn(deadline, "count", "renamed", nil, AlterColumnOptions{Concurrency: 2})
 	cancel()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		_ = versionLock.Close()
-		t.Fatalf("blocked AlterColumn = %v", err)
 	}
-	if err := versionLock.Close(); err != nil {
-		t.Fatal(err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	{
+		err := versionLock.Close()
+		require.NoError(t, err)
 	}
-	if !reflect.DeepEqual(collection.Schema(), initialSchema) || collection.store.Manifest().Generation != initialGeneration {
-		t.Fatalf("failed publication changed state: schema %#v generation %d", collection.Schema(), collection.store.Manifest().Generation)
-	}
+	require.Equal(t, initialSchema, collection.Schema())
+	require.Equal(t, initialGeneration, collection.store.Manifest().Generation)
+
 	fetched, err := collection.Fetch(ctx, []string{"one"}, Projection{})
-	if err != nil || fetched[0] == nil || fetched[0].Fields["count"] != int32(2) {
-		t.Fatalf("document after rollback = %#v, %v", fetched, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, fetched[0])
+	require.Equal(t, int32(2), fetched[0].Fields["count"])
 }
 
 func TestAlterColumnRejectsReadOnlyHandle(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "alter-column-read-only")
 	collection, err := CreateAndOpen(ctx, path, alterColumnSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	options := NewCollectionOptions()
 	options.ReadOnly = true
 	collection, err = Open(ctx, path, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	err = collection.AlterColumn(ctx, "count", "renamed", nil, AlterColumnOptions{})
-	if !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("read-only AlterColumn = %v", err)
-	}
+	require.ErrorIs(t, err, ErrPermissionDenied)
 }
 
 func TestAlterColumnEmptyCollectionPublishesSchemaOnly(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "alter-column-empty")
 	collection, err := CreateAndOpen(ctx, path, alterColumnSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	initialGeneration := collection.store.Manifest().Generation
 	replacement := FieldSchema{Name: "amount", DataType: DataTypeInt64}
-	if err := collection.AlterColumn(ctx, "count", "", &replacement, AlterColumnOptions{Concurrency: 4}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.AlterColumn(ctx, "count", "", &replacement, AlterColumnOptions{Concurrency: 4})
+		require.NoError(t, err)
 	}
-	if collection.store.Manifest().Generation <= initialGeneration || collection.store.Manifest().PersistedSegments != nil {
-		t.Fatalf("empty migration manifest = %#v", collection.store.Manifest())
+	require.True(t, collection.store.Manifest().Generation > initialGeneration)
+	require.Nil(t, collection.store.Manifest().PersistedSegments)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, found := collection.Schema().Field("amount"); !found {
-		t.Fatal("reopened schema does not contain replacement field")
+	{
+		_, found := collection.Schema().Field("amount")
+		require.True(t, found,
+			"reopened schema does not contain replacement field")
 	}
 }
 

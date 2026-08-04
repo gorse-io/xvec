@@ -16,15 +16,14 @@ package zvec
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
 	"github.com/gorse-io/zvec/internal/core"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCollectionDenseHNSWQueryControlsAndRecall(t *testing.T) {
@@ -37,14 +36,15 @@ func TestCollectionDenseHNSWQueryControlsAndRecall(t *testing.T) {
 		FieldSchema{Name: "rating", DataType: DataTypeInt32},
 	)
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "hnsw"), schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	documents := annDenseDocuments(core.DefaultHNSWBruteForceThreshold + 200)
-	if results, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatalf("Insert = %#v, %v", results, err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
+
 	queryVector := documents[713].Fields["embedding"].(VectorFP32)
 	queryParams := NewHNSWQueryParams()
 	queryParams.EF = 120
@@ -55,35 +55,29 @@ func TestCollectionDenseHNSWQueryControlsAndRecall(t *testing.T) {
 		Filter: "rating >= 1", Params: queryParams,
 	}
 	approximate, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	queryParams.Linear = true
 	query.Params = queryParams
 	exact, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		recall := documentRecall(approximate, exact)
+		require.True(t, recall >= .75)
 	}
-	if recall := documentRecall(approximate, exact); recall < .75 {
-		t.Fatalf("collection HNSW recall@20 = %.3f, want >= .75", recall)
-	}
+
 	for _, document := range approximate {
-		if document.Fields["rating"].(int32) < 1 {
-			t.Fatalf("filter admitted %#v", document)
-		}
+		require.True(t, document.Fields["rating"].(int32) >= 1)
 	}
 	queryParams.Linear = false
 	queryParams.UseRefiner = true
 	query.Params = queryParams
 	refined, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(documentKeys(refined), documentKeys(approximate)) {
-		t.Fatalf("unquantized HNSW refiner changed keys: %v vs %v", documentKeys(refined), documentKeys(approximate))
-	}
-	if got := collection.Stats().IndexCompleteness["embedding"]; got != 1 {
-		t.Fatalf("HNSW completeness = %v", got)
+	require.NoError(t, err)
+	require.Equal(t, documentKeys(approximate), documentKeys(refined))
+	{
+		got := collection.Stats().IndexCompleteness["embedding"]
+		require.True(t, got == 1)
 	}
 }
 
@@ -95,13 +89,14 @@ func TestCollectionHNSWRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 		FieldSchema{Name: "rating", DataType: DataTypeInt32},
 	)
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	documents := annRaBitQDocuments(180)
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
+
 	queryVector := documents[73].Fields["embedding"].(VectorFP32)
 	exact := exactDenseDocumentResults(t, documents, queryVector, core.MetricL2, 15)
 
@@ -110,36 +105,32 @@ func TestCollectionHNSWRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 	indexParams.NumClusters = 8
 	indexParams.M = 8
 	indexParams.EFConstruction = 40
-	if err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3})
+		require.NoError(t, err)
 	}
+
 	defaulted, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 5})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(defaulted) != 5 {
-		t.Fatalf("default HNSW-RaBitQ query returned %d documents", len(defaulted))
-	}
+	require.NoError(t, err)
+	require.Len(t, defaulted, 5)
+
 	queryParams := NewHNSWRaBitQQueryParams()
 	queryParams.EF = 100
 	query := VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 15, Params: queryParams}
 	approximate, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		recall := documentRecall(approximate, exact)
+		require.True(t, recall >= .85)
 	}
-	if recall := documentRecall(approximate, exact); recall < .85 {
-		t.Fatalf("collection HNSW-RaBitQ recall@15 = %.3f", recall)
-	}
+
 	queryParams.Linear = true
 	queryParams.UseRefiner = true
 	query.Params = queryParams
 	refined, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(documentKeys(refined), documentKeys(exact)) || !reflect.DeepEqual(documentScores(refined), documentScores(exact)) {
-		t.Fatalf("linear refined HNSW-RaBitQ differs: keys %v vs %v, scores %v vs %v", documentKeys(refined), documentKeys(exact), documentScores(refined), documentScores(exact))
-	}
+	require.NoError(t, err)
+	require.Equal(t, documentKeys(exact), documentKeys(refined))
+	require.Equal(t, documentScores(exact), documentScores(refined))
 
 	queryParams.Linear = false
 	queryParams.UseRefiner = false
@@ -147,39 +138,37 @@ func TestCollectionHNSWRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 	query.Params = queryParams
 	query.Filter = "rating >= 1"
 	filtered, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, document := range filtered {
-		if document.Fields["rating"].(int32) < 1 || document.Score > queryParams.Radius {
-			t.Fatalf("filter/radius admitted %#v", document)
-		}
+		require.True(t, document.Fields["rating"].(int32) >= 1)
+		require.True(t, document.Score <= queryParams.Radius)
 	}
-	if got := collection.Stats().IndexCompleteness["embedding"]; got != 1 {
-		t.Fatalf("HNSW-RaBitQ completeness = %v", got)
+	{
+		got := collection.Stats().IndexCompleteness["embedding"]
+		require.True(t, got == 1)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	reopened, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(reopened, filtered) {
-		t.Fatal("reopened HNSW-RaBitQ query differs")
-	}
+	require.NoError(t, err)
+	require.Equal(t, filtered, reopened,
+		"reopened HNSW-RaBitQ query differs")
+
 	field, _ := collection.Schema().Field("embedding")
-	if field.IndexType() != IndexTypeHNSWRaBitQ || collection.Stats().IndexCompleteness["embedding"] != 1 {
-		t.Fatalf("reopened HNSW-RaBitQ state = %#v, %#v", field, collection.Stats())
-	}
+	require.Equal(t, IndexTypeHNSWRaBitQ, field.IndexType())
+	require.True(t, collection.Stats().IndexCompleteness["embedding"] == 1)
 }
 
 func TestCollectionVamanaQueryCreateIndexQuantizeOptimizeAndReopen(t *testing.T) {
@@ -190,13 +179,14 @@ func TestCollectionVamanaQueryCreateIndexQuantizeOptimizeAndReopen(t *testing.T)
 		FieldSchema{Name: "rating", DataType: DataTypeInt32},
 	)
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	documents := annDenseDocuments(320)
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
+
 	queryVector := documents[217].Fields["embedding"].(VectorFP32)
 
 	indexParams := NewVamanaIndexParams(MetricTypeL2)
@@ -208,13 +198,15 @@ func TestCollectionVamanaQueryCreateIndexQuantizeOptimizeAndReopen(t *testing.T)
 	indexParams.UseIDMap = true
 	indexParams.Quantize = QuantizeTypeInt8
 	indexParams.Quantizer.EnableRotate = true
-	if err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3})
+		require.NoError(t, err)
 	}
+
 	defaulted, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 5})
-	if err != nil || len(defaulted) != 5 {
-		t.Fatalf("default Vamana query = %#v, %v", defaulted, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, defaulted, 5)
+
 	queryParams := NewVamanaQueryParams()
 	queryParams.EFSearch = 100
 	queryParams.PrefetchOffset = math.MaxUint32
@@ -224,23 +216,17 @@ func TestCollectionVamanaQueryCreateIndexQuantizeOptimizeAndReopen(t *testing.T)
 		Filter: "rating >= 1", Params: queryParams,
 	}
 	approximate, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(approximate) != 15 {
-		t.Fatalf("Vamana returned %d documents", len(approximate))
-	}
+	require.NoError(t, err)
+	require.Len(t, approximate, 15)
+
 	for _, document := range approximate {
-		if document.Fields["rating"].(int32) < 1 {
-			t.Fatalf("Vamana filter admitted %#v", document)
-		}
+		require.True(t, document.Fields["rating"].(int32) >= 1)
 	}
 	queryParams.UseRefiner = true
 	query.Params = queryParams
 	refined, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	byKey := make(map[string]Document, len(documents))
 	for _, document := range documents {
 		byKey[document.PrimaryKey] = document
@@ -248,60 +234,49 @@ func TestCollectionVamanaQueryCreateIndexQuantizeOptimizeAndReopen(t *testing.T)
 	for _, document := range refined {
 		original := byKey[document.PrimaryKey].Fields["embedding"].(VectorFP32)
 		want, err := core.MetricL2.Compute(queryVector, original)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if document.Score != want {
-			t.Fatalf("refined score for %q = %v, want %v", document.PrimaryKey, document.Score, want)
-		}
+		require.NoError(t, err)
+		require.Equal(t, want, document.Score)
 	}
 	queryParams.UseRefiner = false
 	queryParams.Radius = approximate[len(approximate)-1].Score
 	query.Params = queryParams
 	bounded, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, document := range bounded {
-		if document.Score > queryParams.Radius {
-			t.Fatalf("Vamana radius admitted %#v", document)
-		}
+		require.True(t, document.Score <= queryParams.Radius)
 	}
 	queryParams.Linear = true
 	queryParams.Radius = 0
 	query.Params = queryParams
 	linear, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.Len(t, linear, 15)
+	{
+		got := collection.Stats().IndexCompleteness["embedding"]
+		require.True(t, got == 1)
 	}
-	if len(linear) != 15 {
-		t.Fatalf("linear Vamana returned %d documents", len(linear))
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
-	if got := collection.Stats().IndexCompleteness["embedding"]; got != 1 {
-		t.Fatalf("Vamana completeness = %v", got)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
-	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	reopened, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(reopened, linear) {
-		t.Fatal("reopened Vamana query differs")
-	}
+	require.NoError(t, err)
+	require.Equal(t, linear, reopened,
+		"reopened Vamana query differs")
+
 	field, _ := collection.Schema().Field("embedding")
-	if field.IndexType() != IndexTypeVamana || collection.Stats().IndexCompleteness["embedding"] != 1 {
-		t.Fatalf("reopened Vamana state = %#v, %#v", field, collection.Stats())
-	}
+	require.Equal(t, IndexTypeVamana, field.IndexType())
+	require.True(t, collection.Stats().IndexCompleteness["embedding"] == 1)
 }
 
 func TestCollectionDiskANNQueryCreateIndexRefineOptimizeAndReopen(t *testing.T) {
@@ -312,26 +287,29 @@ func TestCollectionDiskANNQueryCreateIndexRefineOptimizeAndReopen(t *testing.T) 
 		FieldSchema{Name: "rating", DataType: DataTypeInt32},
 	)
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	documents := annDenseDocuments(320)
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
+
 	queryVector := documents[217].Fields["embedding"].(VectorFP32)
 
 	indexParams := NewDiskANNIndexParams(MetricTypeL2)
 	indexParams.MaxDegree = 12
 	indexParams.ListSize = 60
 	indexParams.PQChunks = 2
-	if err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3})
+		require.NoError(t, err)
 	}
+
 	defaulted, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 5})
-	if err != nil || len(defaulted) != 5 {
-		t.Fatalf("default DiskANN query = %#v, %v", defaulted, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, defaulted, 5)
+
 	params := NewDiskANNQueryParams()
 	params.ListSize = 100
 	query := VectorQuery{
@@ -339,24 +317,18 @@ func TestCollectionDiskANNQueryCreateIndexRefineOptimizeAndReopen(t *testing.T) 
 		Filter: "rating >= 1", Params: params,
 	}
 	approximate, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(approximate) != 15 {
-		t.Fatalf("DiskANN returned %d documents", len(approximate))
-	}
+	require.NoError(t, err)
+	require.Len(t, approximate, 15)
+
 	for _, document := range approximate {
-		if document.Fields["rating"].(int32) < 1 {
-			t.Fatalf("DiskANN filter admitted %#v", document)
-		}
+		require.True(t, document.Fields["rating"].(int32) >= 1)
 	}
 
 	params.UseRefiner = true
 	query.Params = params
 	refined, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	byKey := make(map[string]Document, len(documents))
 	for _, document := range documents {
 		byKey[document.PrimaryKey] = document
@@ -364,64 +336,54 @@ func TestCollectionDiskANNQueryCreateIndexRefineOptimizeAndReopen(t *testing.T) 
 	for _, document := range refined {
 		original := byKey[document.PrimaryKey].Fields["embedding"].(VectorFP32)
 		want, err := core.MetricL2.Compute(queryVector, original)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if document.Score != want {
-			t.Fatalf("refined score for %q = %v, want %v", document.PrimaryKey, document.Score, want)
-		}
+		require.NoError(t, err)
+		require.Equal(t, want, document.Score)
 	}
 
 	params.UseRefiner = false
 	params.Radius = approximate[len(approximate)-1].Score
 	query.Params = params
 	bounded, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, document := range bounded {
-		if document.Score > params.Radius {
-			t.Fatalf("DiskANN radius admitted %#v", document)
-		}
+		require.True(t, document.Score <= params.Radius)
 	}
 	params.Linear = true
 	params.Radius = 0
 	query.Params = params
 	linear, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.Len(t, linear, 15)
+	{
+		recall := documentRecall(approximate, linear)
+		require.True(t, recall >= .80)
 	}
-	if len(linear) != 15 {
-		t.Fatalf("linear DiskANN returned %d documents", len(linear))
+	{
+		got := collection.Stats().IndexCompleteness["embedding"]
+		require.True(t, got == 1)
 	}
-	if recall := documentRecall(approximate, linear); recall < .80 {
-		t.Fatalf("collection DiskANN recall@15 = %.3f", recall)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
-	if got := collection.Stats().IndexCompleteness["embedding"]; got != 1 {
-		t.Fatalf("DiskANN completeness = %v", got)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
-	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	reopened, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(reopened, linear) {
-		t.Fatal("reopened DiskANN query differs")
-	}
+	require.NoError(t, err)
+	require.Equal(t, linear, reopened,
+		"reopened DiskANN query differs")
+
 	field, _ := collection.Schema().Field("embedding")
-	if field.IndexType() != IndexTypeDiskANN || collection.Stats().IndexCompleteness["embedding"] != 1 {
-		t.Fatalf("reopened DiskANN state = %#v, %#v", field, collection.Stats())
-	}
+	require.Equal(t, IndexTypeDiskANN, field.IndexType())
+	require.True(t, collection.Stats().IndexCompleteness["embedding"] == 1)
 }
 
 func TestCollectionDiskANNDirectFP16SchemaDefaults(t *testing.T) {
@@ -432,28 +394,26 @@ func TestCollectionDiskANNDirectFP16SchemaDefaults(t *testing.T) {
 		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP16, Dimension: 2, Index: params},
 	)
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "direct"), schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.Insert(ctx, []Document{
-		{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(0), Float16FromFloat32(0)}}},
-		{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(1), Float16FromFloat32(0)}}},
-		{PrimaryKey: "c", Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(3), Float16FromFloat32(0)}}},
-	}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, []Document{
+			{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(0), Float16FromFloat32(0)}}},
+			{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(1), Float16FromFloat32(0)}}},
+			{PrimaryKey: "c", Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(3), Float16FromFloat32(0)}}},
+		})
+		require.NoError(t, err)
 	}
+
 	results, err := collection.Query(ctx, VectorQuery{
 		Field:       "embedding",
 		DenseVector: VectorFP16{Float16FromFloat32(0.9), Float16FromFloat32(0)},
 		TopK:        2,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(documentKeys(results), []string{"b", "a"}) || collection.Stats().IndexCompleteness["embedding"] != 1 {
-		t.Fatalf("direct DiskANN = %v, stats %#v", documentKeys(results), collection.Stats())
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "a"}, documentKeys(results))
+	require.True(t, collection.Stats().IndexCompleteness["embedding"] == 1)
 }
 
 func TestCollectionScalarQuantizedDiskANNBackfillRefineOptimizeAndReopen(t *testing.T) {
@@ -467,20 +427,21 @@ func TestCollectionScalarQuantizedDiskANNBackfillRefineOptimizeAndReopen(t *test
 			)
 			schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 			collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			documents := annDenseDocuments(48)
-			if _, err := collection.Insert(ctx, documents); err != nil {
-				t.Fatal(err)
+			{
+				_, err := collection.Insert(ctx, documents)
+				require.NoError(t, err)
 			}
 
 			indexParams := NewDiskANNIndexParams(MetricTypeL2)
 			indexParams.MaxDegree, indexParams.ListSize, indexParams.PQChunks = 8, len(documents), 2
 			indexParams.Quantize = quantize
 			indexParams.Quantizer.EnableRotate = quantize != QuantizeTypeFP16
-			if err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 2}); err != nil {
-				t.Fatal(err)
+			{
+				err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 2})
+				require.NoError(t, err)
 			}
 
 			queryVector := append(VectorFP32(nil), documents[17].Fields["embedding"].(VectorFP32)...)
@@ -489,18 +450,14 @@ func TestCollectionScalarQuantizedDiskANNBackfillRefineOptimizeAndReopen(t *test
 			queryParams.ListSize = len(documents)
 			query := VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 12, Params: queryParams}
 			graph, err := collection.Query(ctx, query)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			queryParams.Linear = true
 			query.Params = queryParams
 			linear, err := collection.Query(ctx, query)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(graph, linear) {
-				t.Fatalf("full-list graph = %#v, scalar Flat truth %#v", graph, linear)
-			}
+			require.NoError(t, err)
+			require.Equal(t, linear, graph)
+
 			byKey := make(map[string]Document, len(documents))
 			for _, document := range documents {
 				byKey[document.PrimaryKey] = document
@@ -509,89 +466,80 @@ func TestCollectionScalarQuantizedDiskANNBackfillRefineOptimizeAndReopen(t *test
 			for _, document := range linear {
 				original := byKey[document.PrimaryKey].Fields["embedding"].(VectorFP32)
 				score, err := core.MetricL2.Compute(queryVector, original)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				if document.Score != score {
 					quantizedDifference = true
 					break
 				}
 			}
-			if !quantizedDifference {
-				t.Fatal("DiskANN scalar quantization did not affect any first-stage score")
-			}
+			require.True(t, quantizedDifference,
+				"DiskANN scalar quantization did not affect any first-stage score")
 
 			queryParams.Linear = false
 			queryParams.UseRefiner = true
 			query.Params = queryParams
 			refined, err := collection.Query(ctx, query)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			exact := exactDenseDocumentResults(t, documents, queryVector, core.MetricL2, query.TopK)
-			if !reflect.DeepEqual(documentKeys(refined), documentKeys(exact)) || !reflect.DeepEqual(documentScores(refined), documentScores(exact)) {
-				t.Fatalf("refined = keys %v scores %v, exact keys %v scores %v",
-					documentKeys(refined), documentScores(refined), documentKeys(exact), documentScores(exact))
-			}
+			require.Equal(t, documentKeys(exact), documentKeys(refined))
+			require.Equal(t, documentScores(exact), documentScores(refined))
 
 			queryParams.UseRefiner = false
 			queryParams.Radius = graph[7].Score
 			query.Filter = "rating >= 1"
 			query.Params = queryParams
 			bounded, err := collection.Query(ctx, query)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			for _, document := range bounded {
-				if document.Fields["rating"].(int32) < 1 || document.Score > queryParams.Radius {
-					t.Fatalf("filter/radius admitted %#v", document)
-				}
+				require.True(t, document.Fields["rating"].(int32) >= 1)
+				require.True(t, document.Score <= queryParams.Radius)
 			}
-			if len(bounded) == 0 {
-				t.Fatal("filter/radius removed every document")
-			}
+			require.False(t, len(bounded) == 0,
+				"filter/radius removed every document")
 
 			if quantize == QuantizeTypeFP16 {
 				results, err := collection.Insert(ctx, []Document{{
 					PrimaryKey: "overflow", Fields: map[string]any{"embedding": VectorFP32{70000, 0, 0, 0}, "rating": int32(1)},
 				}})
-				if err == nil || len(results) != 1 || !errors.Is(results[0].Err, ErrInvalidArgument) {
-					t.Fatalf("FP16 overflow write = %#v, %v", results, err)
-				}
+				require.Error(t, err)
+				require.Len(t, results, 1)
+				require.ErrorIs(t, results[0].Err, ErrInvalidArgument)
 			}
-			if _, err := collection.Delete(ctx, []string{"d0003"}); err != nil {
-				t.Fatal(err)
+			{
+				_, err := collection.Delete(ctx, []string{"d0003"})
+				require.NoError(t, err)
 			}
-			if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
-				t.Fatal(err)
+			{
+				err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2})
+				require.NoError(t, err)
 			}
-			if got := collection.Stats().IndexCompleteness["embedding"]; got != 1 {
-				t.Fatalf("completeness = %v", got)
+			{
+				got := collection.Stats().IndexCompleteness["embedding"]
+				require.True(t, got == 1)
 			}
+
 			beforeReopen, err := collection.Query(ctx, query)
-			if err != nil {
-				t.Fatal(err)
+			require.NoError(t, err)
+			{
+				err := collection.Close()
+				require.NoError(t, err)
 			}
-			if err := collection.Close(); err != nil {
-				t.Fatal(err)
-			}
+
 			collection, err = Open(ctx, path, NewCollectionOptions())
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			defer collection.Close()
 			reopened, err := collection.Query(ctx, query)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(reopened, beforeReopen) {
-				t.Fatalf("reopened = %#v, before close %#v", reopened, beforeReopen)
-			}
+			require.NoError(t, err)
+			require.Equal(t, beforeReopen, reopened)
+
 			field, _ := collection.Schema().Field("embedding")
 			persisted := field.Index.(DiskANNIndexParams)
-			if persisted.Quantize != quantize || persisted.Quantizer.EnableRotate != (quantize != QuantizeTypeFP16) {
-				t.Fatalf("persisted index params = %#v", persisted)
-			}
+			require.Equal(t, quantize, persisted.Quantize)
+			require.Equal(t, quantize != QuantizeTypeFP16, persisted.Quantizer.EnableRotate)
 		})
 	}
 }
@@ -604,20 +552,20 @@ func TestCollectionQuantizedIVFSOARRefinementCreateIndexAndReopen(t *testing.T) 
 		FieldSchema{Name: "rating", DataType: DataTypeInt32},
 	)
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	documents := annDenseDocuments(320)
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
+
 	queryVector := documents[217].Fields["embedding"].(VectorFP32)
 	exact, err := collection.Query(ctx, VectorQuery{
 		Field: "embedding", DenseVector: queryVector, TopK: 15, Filter: "rating >= 1",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	indexParams := NewIVFIndexParams(MetricTypeL2)
 	indexParams.NList = 16
 	indexParams.NIterations = 12
@@ -626,9 +574,11 @@ func TestCollectionQuantizedIVFSOARRefinementCreateIndexAndReopen(t *testing.T) 
 	indexParams.Quantizer.EnableRotate = true
 	standardParams := indexParams
 	standardParams.UseSOAR = false
-	if err := collection.CreateIndex(ctx, "embedding", standardParams, CreateIndexOptions{Concurrency: 3}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.CreateIndex(ctx, "embedding", standardParams, CreateIndexOptions{Concurrency: 3})
+		require.NoError(t, err)
 	}
+
 	compatibilityParams := NewIVFQueryParams()
 	compatibilityParams.NProbe = 4
 	compatibilityQuery := VectorQuery{
@@ -636,19 +586,16 @@ func TestCollectionQuantizedIVFSOARRefinementCreateIndexAndReopen(t *testing.T) 
 		Filter: "rating >= 1", Params: compatibilityParams,
 	}
 	standardResults, err := collection.Query(ctx, compatibilityQuery)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3})
+		require.NoError(t, err)
 	}
-	if err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3}); err != nil {
-		t.Fatal(err)
-	}
+
 	soarResults, err := collection.Query(ctx, compatibilityQuery)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(soarResults, standardResults) {
-		t.Fatalf("UseSOAR compatibility results = %#v, standard %#v", soarResults, standardResults)
-	}
+	require.NoError(t, err)
+	require.Equal(t, standardResults, soarResults)
+
 	queryParams := NewIVFQueryParams()
 	queryParams.NProbe = 16
 	queryParams.UseRefiner = true
@@ -659,40 +606,35 @@ func TestCollectionQuantizedIVFSOARRefinementCreateIndexAndReopen(t *testing.T) 
 		Filter: "rating >= 1", Params: queryParams,
 	}
 	refined, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(documentKeys(refined), documentKeys(exact)) {
-		t.Fatalf("refined IVF keys = %v, exact %v", documentKeys(refined), documentKeys(exact))
-	}
+	require.NoError(t, err)
+	require.Equal(t, documentKeys(exact), documentKeys(refined))
+
 	for position := range refined {
-		if refined[position].Score != exact[position].Score {
-			t.Fatalf("refined score %d = %v, exact %v", position, refined[position].Score, exact[position].Score)
-		}
+		require.Equal(t, exact[position].Score, refined[position].Score)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	reopened, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(reopened, refined) {
-		t.Fatalf("reopened refined IVF differs")
-	}
+	require.NoError(t, err)
+	require.Equal(t, refined, reopened,
+		"reopened refined IVF differs")
+
 	field, _ := collection.Schema().Field("embedding")
 	persisted := field.Index.(IVFIndexParams)
-	if field.IndexType() != IndexTypeIVF || !persisted.UseSOAR || collection.Stats().IndexCompleteness["embedding"] != 1 {
-		t.Fatalf("reopened IVF state = %#v, %#v", field, collection.Stats())
-	}
+	require.Equal(t, IndexTypeIVF, field.IndexType())
+	require.True(t, persisted.UseSOAR)
+	require.True(t, collection.Stats().IndexCompleteness["embedding"] == 1)
 }
 
 func TestCollectionQuantizedFlatRotationAndRefiner(t *testing.T) {
@@ -705,14 +647,15 @@ func TestCollectionQuantizedFlatRotationAndRefiner(t *testing.T) {
 		FieldSchema{Name: "rating", DataType: DataTypeInt32},
 	)
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "flat"), schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	documents := annDenseDocuments(80)
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
+
 	queryVector := VectorFP32{3.25, -1.5, 7, 2}
 	queryParams := NewFlatQueryParams()
 	queryParams.UseRefiner = true
@@ -720,17 +663,13 @@ func TestCollectionQuantizedFlatRotationAndRefiner(t *testing.T) {
 	refined, err := collection.Query(ctx, VectorQuery{
 		Field: "embedding", DenseVector: queryVector, TopK: 12, Params: queryParams,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := exactDenseDocumentResults(t, documents, queryVector, core.MetricL2, 12)
-	if !reflect.DeepEqual(documentKeys(refined), documentKeys(want)) {
-		t.Fatalf("refined quantized Flat = %v, exact %v", documentKeys(refined), documentKeys(want))
-	}
+	require.Equal(t, documentKeys(want), documentKeys(refined))
+
 	for position := range refined {
-		if refined[position].Score != want[position].Score {
-			t.Fatalf("refined score %d = %v, want %v", position, refined[position].Score, want[position].Score)
-		}
+		require.Equal(t, want[position].Score, refined[position].Score)
 	}
 }
 
@@ -745,9 +684,8 @@ func TestCollectionSparseHNSWFP16Controls(t *testing.T) {
 		FieldSchema{Name: "rating", DataType: DataTypeInt32},
 	)
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "sparse"), schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	documents := make([]Document, 240)
 	for position := range documents {
@@ -759,9 +697,11 @@ func TestCollectionSparseHNSWFP16Controls(t *testing.T) {
 			"rating": int32(position % 3),
 		}}
 	}
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
+
 	queryParams := NewHNSWQueryParams()
 	queryParams.EF = 24
 	queryParams.PrefetchOffset = 8
@@ -772,25 +712,20 @@ func TestCollectionSparseHNSWFP16Controls(t *testing.T) {
 		TopK: 20, Filter: "rating >= 1", Params: queryParams,
 	}
 	got, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	queryParams.Linear = true
 	query.Params = queryParams
 	want, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("small sparse HNSW differs from linear: %#v vs %#v", got, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+
 	queryParams.Linear = false
 	queryParams.UseRefiner = true
 	query.Params = queryParams
 	refined, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	approximateByKey := make(map[string]float32, len(got))
 	for _, document := range got {
 		approximateByKey[document.PrimaryKey] = document.Score
@@ -802,24 +737,20 @@ func TestCollectionSparseHNSWFP16Controls(t *testing.T) {
 	changedScore := false
 	querySparse := query.SparseVector.(SparseVectorFP32)
 	for _, document := range refined {
-		if document.Fields["rating"].(int32) < 1 || document.Score < queryParams.Radius {
-			t.Fatalf("refined filter/radius admitted %#v", document)
-		}
+		require.True(t, document.Fields["rating"].(int32) >= 1)
+		require.True(t, document.Score >= queryParams.Radius)
+
 		original := originalByKey[document.PrimaryKey]
 		exact, err := ailego.SparseInnerProduct(querySparse.Indices, querySparse.Values, original.Indices, original.Values)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if document.Score != exact {
-			t.Fatalf("refined score for %q = %v, want %v", document.PrimaryKey, document.Score, exact)
-		}
+		require.NoError(t, err)
+		require.Equal(t, exact, document.Score)
+
 		if approximate, found := approximateByKey[document.PrimaryKey]; found && approximate != exact {
 			changedScore = true
 		}
 	}
-	if len(refined) == 0 || !changedScore {
-		t.Fatalf("sparse HNSW refinement did not expose original scores: %#v", refined)
-	}
+	require.False(t, len(refined) == 0)
+	require.True(t, changedScore)
 }
 
 func TestCollectionSparseFlatFP16RefinementMultiQueryAndReopen(t *testing.T) {
@@ -833,9 +764,8 @@ func TestCollectionSparseFlatFP16RefinementMultiQueryAndReopen(t *testing.T) {
 	)
 	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	documents := []Document{
 		{PrimaryKey: "a", Fields: map[string]any{"sparse": SparseVectorFP32{Indices: []uint32{0, 3}, Values: []float32{1.0003, 4.0007}}, "rating": int32(1)}},
 		{PrimaryKey: "b", Fields: map[string]any{"sparse": SparseVectorFP32{Indices: []uint32{0, 2}, Values: []float32{2.0009, 5.0011}}, "rating": int32(2)}},
@@ -844,9 +774,11 @@ func TestCollectionSparseFlatFP16RefinementMultiQueryAndReopen(t *testing.T) {
 		{PrimaryKey: "e", Fields: map[string]any{"sparse": SparseVectorFP32{Indices: []uint32{2, 3}, Values: []float32{8.0005, 3.0009}}, "rating": int32(5)}},
 		{PrimaryKey: "f", Fields: map[string]any{"sparse": SparseVectorFP32{Indices: []uint32{0, 2}, Values: []float32{.5003, 1.0007}}, "rating": int32(6)}},
 	}
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
+
 	queryVector := SparseVectorFP32{Indices: []uint32{0, 3}, Values: []float32{2.0007, 1.0003}}
 	queryParams := NewFlatQueryParams()
 	queryParams.UseRefiner = true
@@ -855,14 +787,9 @@ func TestCollectionSparseFlatFP16RefinementMultiQueryAndReopen(t *testing.T) {
 	queryParams.Radius = exact[4].Score
 	query := VectorQuery{Field: "sparse", SparseVector: queryVector, TopK: 5, Params: queryParams}
 	refined, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(documentKeys(refined), documentKeys(exact[:5])) ||
-		!reflect.DeepEqual(documentScores(refined), documentScores(exact[:5])) {
-		t.Fatalf("refined sparse Flat = keys %v scores %v, exact keys %v scores %v",
-			documentKeys(refined), documentScores(refined), documentKeys(exact[:5]), documentScores(exact[:5]))
-	}
+	require.NoError(t, err)
+	require.Equal(t, documentKeys(exact[:5]), documentKeys(refined))
+	require.Equal(t, documentScores(exact[:5]), documentScores(refined))
 
 	unrefinedParams := queryParams
 	unrefinedParams.UseRefiner = false
@@ -870,12 +797,9 @@ func TestCollectionSparseFlatFP16RefinementMultiQueryAndReopen(t *testing.T) {
 	unrefined, err := collection.Query(ctx, VectorQuery{
 		Field: "sparse", SparseVector: queryVector, TopK: 5, Params: unrefinedParams,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reflect.DeepEqual(documentScores(unrefined), documentScores(refined)) {
-		t.Fatal("FP16 sparse first-stage scores unexpectedly equal original-vector scores")
-	}
+	require.NoError(t, err)
+	require.NotEqual(t, documentScores(refined), documentScores(unrefined),
+		"FP16 sparse first-stage scores unexpectedly equal original-vector scores")
 
 	alternate := SparseVectorFP32{Indices: []uint32{1, 2}, Values: []float32{.7503, 1.2509}}
 	alternateExact := exactSparseDocumentResults(t, documents, alternate, 4)
@@ -888,43 +812,36 @@ func TestCollectionSparseFlatFP16RefinementMultiQueryAndReopen(t *testing.T) {
 		},
 		TopK: 2,
 		Reranker: testRerankerFunc(func(_ context.Context, batches []RerankBatch, _ int) ([]Document, error) {
-			if !reflect.DeepEqual(documentKeys(batches[0].Documents), documentKeys(exact[:5])) ||
-				!reflect.DeepEqual(documentScores(batches[0].Documents), documentScores(exact[:5])) {
-				t.Fatalf("first sparse refinement batch = %#v", batches[0].Documents)
-			}
-			if !reflect.DeepEqual(documentKeys(batches[1].Documents), documentKeys(alternateExact)) ||
-				!reflect.DeepEqual(documentScores(batches[1].Documents), documentScores(alternateExact)) {
-				t.Fatalf("second sparse refinement batch = %#v", batches[1].Documents)
-			}
+			require.Equal(t, documentKeys(exact[:5]), documentKeys(batches[0].Documents))
+			require.Equal(t, documentScores(exact[:5]), documentScores(batches[0].Documents))
+			require.Equal(t, documentKeys(alternateExact), documentKeys(batches[1].Documents))
+			require.Equal(t, documentScores(alternateExact), documentScores(batches[1].Documents))
+
 			return []Document{batches[0].Documents[0], batches[1].Documents[0]}, nil
 		}),
 	}
 	beforeReopen, err := collection.MultiQuery(ctx, multi)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	reopened, err := collection.Query(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(reopened, refined) {
-		t.Fatalf("reopened sparse refinement = %#v, before close %#v", reopened, refined)
-	}
+	require.NoError(t, err)
+	require.Equal(t, refined, reopened)
+
 	reopenedMulti, err := collection.MultiQuery(ctx, multi)
-	if err != nil || !reflect.DeepEqual(reopenedMulti, beforeReopen) {
-		t.Fatalf("reopened sparse MultiQuery = %#v, %v; before %#v", reopenedMulti, err, beforeReopen)
-	}
+	require.NoError(t, err)
+	require.Equal(t, beforeReopen, reopenedMulti)
 }
 
 func TestCollectionANNValidationAndBackfillRollback(t *testing.T) {
@@ -934,93 +851,118 @@ func TestCollectionANNValidationAndBackfillRollback(t *testing.T) {
 		FieldSchema{Name: "group", DataType: DataTypeString},
 	)
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "validation"), schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.Insert(ctx, []Document{{PrimaryKey: "huge", Fields: map[string]any{
-		"embedding": VectorFP32{70000, 1, 2, 3}, "group": "g",
-	}}}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, []Document{{PrimaryKey: "huge", Fields: map[string]any{
+			"embedding": VectorFP32{70000, 1, 2, 3}, "group": "g",
+		}}})
+		require.NoError(t, err)
 	}
+
 	before := collection.Schema()
 	generation := collection.store.Manifest().Generation
 	quantized := NewIVFIndexParams(MetricTypeL2)
 	quantized.NList = 1
 	quantized.Quantize = QuantizeTypeFP16
-	if err := collection.CreateIndex(ctx, "embedding", quantized, CreateIndexOptions{}); err == nil {
-		t.Fatal("FP16 overflow backfill succeeded")
+	{
+		err := collection.CreateIndex(ctx, "embedding", quantized, CreateIndexOptions{})
+		require.Error(t, err,
+			"FP16 overflow backfill succeeded")
 	}
-	if !reflect.DeepEqual(collection.Schema(), before) || collection.store.Manifest().Generation != generation {
-		t.Fatal("failed ANN backfill changed schema generation")
-	}
+	require.Equal(t, before, collection.Schema(),
+		"failed ANN backfill changed schema generation")
+	require.Equal(t, generation, collection.store.Manifest().Generation,
+		"failed ANN backfill changed schema generation")
+
 	vamana := NewVamanaIndexParams(MetricTypeL2)
 	vamana.MaxDegree, vamana.SearchListSize, vamana.MaxOcclusionSize = 4, 8, 16
 	vamana.Quantize = QuantizeTypeFP16
-	if err := collection.CreateIndex(ctx, "embedding", vamana, CreateIndexOptions{}); err == nil {
-		t.Fatal("Vamana FP16 overflow backfill succeeded")
+	{
+		err := collection.CreateIndex(ctx, "embedding", vamana, CreateIndexOptions{})
+		require.Error(t, err,
+			"Vamana FP16 overflow backfill succeeded")
 	}
-	if !reflect.DeepEqual(collection.Schema(), before) || collection.store.Manifest().Generation != generation {
-		t.Fatal("failed Vamana backfill changed schema generation")
-	}
+	require.Equal(t, before, collection.Schema(),
+		"failed Vamana backfill changed schema generation")
+	require.Equal(t, generation, collection.store.Manifest().Generation,
+		"failed Vamana backfill changed schema generation")
+
 	diskANN := NewDiskANNIndexParams(MetricTypeL2)
 	diskANN.MaxDegree, diskANN.ListSize, diskANN.PQChunks = 4, 8, 2
 	diskANN.Quantize = QuantizeTypeFP16
-	if err := collection.CreateIndex(ctx, "embedding", diskANN, CreateIndexOptions{}); err == nil {
-		t.Fatal("DiskANN FP16 overflow backfill succeeded")
+	{
+		err := collection.CreateIndex(ctx, "embedding", diskANN, CreateIndexOptions{})
+		require.Error(t, err,
+			"DiskANN FP16 overflow backfill succeeded")
 	}
-	if !reflect.DeepEqual(collection.Schema(), before) || collection.store.Manifest().Generation != generation {
-		t.Fatal("failed DiskANN backfill changed schema generation")
-	}
+	require.Equal(t, before, collection.Schema(),
+		"failed DiskANN backfill changed schema generation")
+	require.Equal(t, generation, collection.store.Manifest().Generation,
+		"failed DiskANN backfill changed schema generation")
+
 	soar := NewIVFIndexParams(MetricTypeL2)
 	soar.UseSOAR = true
-	if err := collection.CreateIndex(ctx, "embedding", soar, CreateIndexOptions{}); err != nil {
-		t.Fatalf("IVF SOAR compatibility hint = %v", err)
+	{
+		err := collection.CreateIndex(ctx, "embedding", soar, CreateIndexOptions{})
+		require.NoError(t, err)
 	}
+
 	soarField, _ := collection.Schema().Field("embedding")
-	if persisted := soarField.Index.(IVFIndexParams); !persisted.UseSOAR || collection.store.Manifest().Generation != generation+1 {
-		t.Fatalf("IVF SOAR compatibility state = %#v, generation %d", persisted, collection.store.Manifest().Generation)
+	{
+		persisted := soarField.Index.(IVFIndexParams)
+		require.True(t, persisted.UseSOAR)
+		require.Equal(t, generation+1, collection.store.Manifest().Generation)
 	}
 
 	hnswParams := NewHNSWQueryParams()
 	hnswParams.EF = MaxGraphEFSearch + 1
-	if _, err := collection.Query(ctx, VectorQuery{
-		Field: "embedding", DenseVector: VectorFP32{1, 2, 3, 4}, TopK: 1, Params: hnswParams,
-	}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("mismatched query params error = %v", err)
+	{
+		_, err := collection.Query(ctx, VectorQuery{
+			Field: "embedding", DenseVector: VectorFP32{1, 2, 3, 4}, TopK: 1, Params: hnswParams,
+		})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
 
 	index := NewHNSWIndexParams(MetricTypeL2)
-	if err := collection.CreateIndex(ctx, "embedding", index, CreateIndexOptions{}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.CreateIndex(ctx, "embedding", index, CreateIndexOptions{})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Query(ctx, VectorQuery{
-		Field: "embedding", DenseVector: VectorFP32{1, 2, 3, 4}, TopK: 1, Params: hnswParams,
-	}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("oversized HNSW EF error = %v", err)
+	{
+		_, err := collection.Query(ctx, VectorQuery{
+			Field: "embedding", DenseVector: VectorFP32{1, 2, 3, 4}, TopK: 1, Params: hnswParams,
+		})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
+
 	groups, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 2, 3, 4},
 		GroupByField: "group", GroupCount: 1, TopKPerGroup: 1,
 	})
-	if err != nil || len(groups) != 1 || groups[0].Value != "g" {
-		t.Fatalf("HNSW group-by = %#v, %v", groups, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+	require.True(t, groups[0].Value == "g")
+
 	refined := NewHNSWQueryParams()
 	refined.UseRefiner = true
-	if _, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
-		Field: "embedding", DenseVector: VectorFP32{1, 2, 3, 4}, Params: refined,
-		GroupByField: "group", GroupCount: 1, TopKPerGroup: 1,
-	}); !errors.Is(err, ErrNotSupported) {
-		t.Fatalf("refined HNSW group-by error = %v", err)
+	{
+		_, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
+			Field: "embedding", DenseVector: VectorFP32{1, 2, 3, 4}, Params: refined,
+			GroupByField: "group", GroupCount: 1, TopKPerGroup: 1,
+		})
+		require.ErrorIs(t, err, ErrNotSupported)
 	}
+
 	linear := NewHNSWQueryParams()
 	linear.Linear = true
-	if _, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
-		Field: "embedding", DenseVector: VectorFP32{1, 2, 3, 4}, Params: linear,
-		GroupByField: "group", GroupCount: 1, TopKPerGroup: 1,
-	}); err != nil {
-		t.Fatalf("linear ANN group-by = %v", err)
+	{
+		_, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
+			Field: "embedding", DenseVector: VectorFP32{1, 2, 3, 4}, Params: linear,
+			GroupByField: "group", GroupCount: 1, TopKPerGroup: 1,
+		})
+		require.NoError(t, err)
 	}
 }
 
@@ -1063,29 +1005,31 @@ func TestCollectionGroupByPreservesUnsupportedANNBoundary(t *testing.T) {
 				FieldSchema{Name: "group", DataType: DataTypeString},
 			)
 			collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "collection"), schema, NewCollectionOptions())
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			defer collection.Close()
-			if _, err := collection.Insert(ctx, []Document{
-				{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{0, 0, 0, 0}, "group": "a"}},
-				{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{1, 1, 1, 1}, "group": "b"}},
-			}); err != nil {
-				t.Fatal(err)
+			{
+				_, err := collection.Insert(ctx, []Document{
+					{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{0, 0, 0, 0}, "group": "a"}},
+					{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{1, 1, 1, 1}, "group": "b"}},
+				})
+				require.NoError(t, err)
 			}
+
 			query := GroupByVectorQuery{
 				Field: "embedding", DenseVector: VectorFP32{0, 0, 0, 0},
 				GroupByField: "group", GroupCount: 2, TopKPerGroup: 1,
 				Params: testCase.params(false),
 			}
-			if _, err := collection.GroupByQuery(ctx, query); !errors.Is(err, ErrNotSupported) {
-				t.Fatalf("native group-by error = %v", err)
+			{
+				_, err := collection.GroupByQuery(ctx, query)
+				require.ErrorIs(t, err, ErrNotSupported)
 			}
+
 			query.Params = testCase.params(true)
 			groups, err := collection.GroupByQuery(ctx, query)
-			if err != nil || len(groups) != 2 {
-				t.Fatalf("Linear group-by = %#v, %v", groups, err)
-			}
+			require.NoError(t, err)
+			require.Len(t, groups, 2)
 		})
 	}
 }
@@ -1098,19 +1042,17 @@ func TestCollectionQuantizedWriteRejectsUnrepresentableVector(t *testing.T) {
 		Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: params,
 	})
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "write"), schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	results, err := collection.Insert(ctx, []Document{{
 		PrimaryKey: "overflow", Fields: map[string]any{"embedding": VectorFP32{70000, 1}},
 	}})
-	if err == nil || len(results) != 1 || !errors.Is(results[0].Err, ErrInvalidArgument) {
-		t.Fatalf("quantized overflow write = %#v, %v", results, err)
-	}
-	if collection.Stats().DocumentCount != 0 {
-		t.Fatal("failed quantized write changed document count")
-	}
+	require.Error(t, err)
+	require.Len(t, results, 1)
+	require.ErrorIs(t, results[0].Err, ErrInvalidArgument)
+	require.True(t, collection.Stats().DocumentCount == 0,
+		"failed quantized write changed document count")
 }
 
 func annDenseDocuments(count int) []Document {
@@ -1179,9 +1121,8 @@ func exactDenseDocumentResults(t testing.TB, documents []Document, query VectorF
 		byID[uint64(position)] = document
 	}
 	results, err := core.TopK(context.Background(), metric, []float32(query), candidates, topK)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	output := make([]Document, len(results))
 	for position, result := range results {
 		output[position] = byID[result.Key]
@@ -1193,30 +1134,28 @@ func exactDenseDocumentResults(t testing.TB, documents []Document, query VectorF
 func exactSparseDocumentResults(t testing.TB, documents []Document, query SparseVectorFP32, topK int) []Document {
 	t.Helper()
 	index, err := core.NewSparseFlatIndex(core.MetricIP)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	byID := make(map[uint64]Document, len(documents))
 	for position, document := range documents {
 		vector, err := sparseValueToCore(document.Fields["sparse"])
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		key := uint64(position)
-		if err := index.AddSparse(context.Background(), key, vector); err != nil {
-			t.Fatal(err)
+		{
+			err := index.AddSparse(context.Background(), key, vector)
+			require.NoError(t, err)
 		}
+
 		document.DocID = key
 		byID[key] = document
 	}
 	queryVector, err := sparseValueToCore(query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	results, err := index.SearchSparseWithOptions(context.Background(), queryVector, core.SearchOptions{TopK: topK})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	output := make([]Document, len(results))
 	for position, result := range results {
 		output[position] = byID[result.Key]

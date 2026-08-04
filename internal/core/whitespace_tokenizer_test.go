@@ -18,11 +18,11 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 type whitespaceTokenizerFixture struct {
@@ -40,47 +40,39 @@ type whitespaceTokenizerFixture struct {
 
 func TestWhitespaceTokenizerBaselineFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/whitespace_tokenizer_58375ff.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var fixture whitespaceTokenizerFixture
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(data, &fixture)
+		require.NoError(t, err)
 	}
-	if fixture.BaselineCommit != "58375ff7b8fdd0d6fc7d234e47567b179777883b" {
-		t.Fatalf("fixture baseline = %q", fixture.BaselineCommit)
-	}
+	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
+
 	tokenizer := NewWhitespaceTokenizer()
 	for _, test := range fixture.Cases {
 		t.Run(test.Name, func(t *testing.T) {
 			input, err := hex.DecodeString(test.InputHex)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			want := make([]Token, len(test.Tokens))
 			for index, token := range test.Tokens {
 				text, err := hex.DecodeString(token.TextHex)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				want[index] = Token{Text: string(text), Offset: token.Offset, Position: token.Position}
 			}
 			got, err := tokenizer.Tokenize(context.Background(), string(input))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("tokens = %#v, want %#v", got, want)
-			}
+			require.NoError(t, err)
+			require.Equal(t, want, got)
 		})
 	}
 }
 
 func TestWhitespaceTokenizerPinnedByteSemantics(t *testing.T) {
 	tokenizer := NewWhitespaceTokenizer()
-	if tokenizer.Name() != "whitespace" {
-		t.Fatalf("name = %q", tokenizer.Name())
-	}
+	require.True(t, tokenizer.Name() == "whitespace")
+
 	input := " \talpha\nBETA\v中文\fC++\r\nlast "
 	want := []Token{
 		{Text: "alpha", Offset: 2, Position: 0},
@@ -90,21 +82,14 @@ func TestWhitespaceTokenizerPinnedByteSemantics(t *testing.T) {
 		{Text: "last", Offset: 25, Position: 4},
 	}
 	got, err := tokenizer.Tokenize(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("tokens = %#v, want %#v", got, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 
 	for _, input := range []string{"", " ", "\t\n\v\f\r"} {
 		got, err := tokenizer.Tokenize(context.Background(), input)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got == nil || len(got) != 0 {
-			t.Fatalf("whitespace-only %q = %#v", input, got)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		require.Len(t, got, 0)
 	}
 }
 
@@ -118,27 +103,29 @@ func TestWhitespaceTokenizerPreservesUnicodeSpacesPunctuationAndInvalidUTF8(t *t
 		{Text: "\xffx", Offset: 23, Position: 3},
 	}
 	got, err := tokenizer.Tokenize(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("tokens = %#v, want %#v", got, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 }
 
 func TestWhitespaceTokenizerContextCancellation(t *testing.T) {
 	tokenizer := NewWhitespaceTokenizer()
-	if _, err := tokenizer.Tokenize(nil, "text"); err == nil {
-		t.Fatal("nil context succeeded")
+	{
+		_, err := tokenizer.Tokenize(nil, "text")
+		require.Error(t, err,
+			"nil context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := tokenizer.Tokenize(canceled, "text"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pre-canceled error = %v", err)
+	{
+		_, err := tokenizer.Tokenize(canceled, "text")
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	midway := newCancelAfterChecks(3)
-	if _, err := tokenizer.Tokenize(midway, strings.Repeat("x", 32<<10)); !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-token cancellation error = %v", err)
+	{
+		_, err := tokenizer.Tokenize(midway, strings.Repeat("x", 32<<10))
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
@@ -151,35 +138,29 @@ func FuzzWhitespaceTokenizer(f *testing.F) {
 	tokenizer := NewWhitespaceTokenizer()
 	f.Fuzz(func(t *testing.T, input string) {
 		tokens, err := tokenizer.Tokenize(context.Background(), input)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		cursor := 0
 		for position, token := range tokens {
-			if token.Position != uint32(position) || token.Text == "" {
-				t.Fatalf("token %d = %#v", position, token)
-			}
+			require.Equal(t, uint32(position), token.Position)
+			require.False(t, token.Text == "")
+
 			start := int(token.Offset)
 			end := start + len(token.Text)
-			if start < cursor || end > len(input) || input[start:end] != token.Text {
-				t.Fatalf("token %d has invalid source range: %#v", position, token)
-			}
+			require.True(t, start >= cursor)
+			require.True(t, end <= len(input))
+			require.Equal(t, token.Text, input[start:end])
+
 			for _, value := range []byte(token.Text) {
-				if asciiWhitespace(value) {
-					t.Fatalf("token %d contains ASCII whitespace: %#v", position, token)
-				}
+				require.False(t, asciiWhitespace(value))
 			}
 			for ; cursor < start; cursor++ {
-				if !asciiWhitespace(input[cursor]) {
-					t.Fatalf("un-tokenized non-whitespace byte at %d", cursor)
-				}
+				require.True(t, asciiWhitespace(input[cursor]))
 			}
 			cursor = end
 		}
 		for ; cursor < len(input); cursor++ {
-			if !asciiWhitespace(input[cursor]) {
-				t.Fatalf("trailing non-whitespace byte at %d", cursor)
-			}
+			require.True(t, asciiWhitespace(input[cursor]))
 		}
 	})
 }
@@ -190,8 +171,11 @@ func BenchmarkWhitespaceTokenizer(b *testing.B) {
 	b.SetBytes(int64(len(text)))
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := tokenizer.Tokenize(context.Background(), text); err != nil {
-			b.Fatal(err)
+		{
+			_, err := tokenizer.Tokenize(context.Background(), text)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }

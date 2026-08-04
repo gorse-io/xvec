@@ -18,146 +18,160 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDropColumnRemovesPayloadsAndSurvivesReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "drop-column")
 	collection, err := CreateAndOpen(ctx, path, dropColumnSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	inserted, err := collection.Insert(ctx, []Document{
 		dropColumnDocument("a", 5, float64(1.25), true, []float32{3, 0}),
 		dropColumnDocument("b", 3, nil, true, []float32{2, 0}),
 		dropColumnDocument("c", 1, nil, false, []float32{1, 0}),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	updated, err := collection.Update(ctx, []Document{{PrimaryKey: "b", Fields: map[string]any{"rating": int32(4)}}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	wantIDs := map[string]uint64{"a": inserted[0].DocID, "b": updated[0].DocID, "c": inserted[2].DocID}
-	if err := collection.DropColumn(ctx, "rating"); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DropColumn(ctx, "rating")
+		require.NoError(t, err)
 	}
-	if _, found := collection.Schema().Field("rating"); found {
-		t.Fatal("dropped indexed field remains in schema")
+	{
+		_, found := collection.Schema().Field("rating")
+		require.False(t, found,
+			"dropped indexed field remains in schema")
 	}
+
 	assertStoredFieldAbsent(t, ctx, collection, "rating", wantIDs)
-	if _, err := collection.Query(ctx, VectorQuery{
-		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 3, Filter: "rating >= 2",
-	}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("query using dropped field = %v", err)
+	{
+		_, err := collection.Query(ctx, VectorQuery{
+			Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 3, Filter: "rating >= 2",
+		})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if err := collection.DropColumn(ctx, "optional"); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DropColumn(ctx, "optional")
+		require.NoError(t, err)
 	}
+
 	assertStoredFieldAbsent(t, ctx, collection, "optional", wantIDs)
 	results, err := collection.Query(ctx, VectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 3,
 	})
-	if err != nil || !reflect.DeepEqual(documentKeys(results), []string{"a", "b", "c"}) {
-		t.Fatalf("query after DropColumn = %v, %v", documentKeys(results), err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b", "c"}, documentKeys(results))
+
 	for index := range results {
-		if _, found := results[index].Fields["rating"]; found {
-			t.Fatalf("query result %d contains rating: %#v", index, results[index].Fields)
+		{
+			_, found := results[index].Fields["rating"]
+			require.False(t, found)
 		}
-		if _, found := results[index].Fields["optional"]; found {
-			t.Fatalf("query result %d contains optional: %#v", index, results[index].Fields)
+		{
+			_, found := results[index].Fields["optional"]
+			require.False(t, found)
 		}
 	}
-	if collection.Stats().DocumentCount != 3 {
-		t.Fatalf("document count = %d", collection.Stats().DocumentCount)
+	require.True(t, collection.Stats().DocumentCount == 3)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
 
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	assertStoredFieldAbsent(t, ctx, collection, "rating", wantIDs)
 	assertStoredFieldAbsent(t, ctx, collection, "optional", wantIDs)
 	withDropped := dropColumnDocument("bad", 2, nil, false, []float32{1, 0})
-	if _, err := collection.Insert(ctx, []Document{withDropped}); err == nil {
-		t.Fatal("insert containing dropped fields succeeded")
+	{
+		_, err := collection.Insert(ctx, []Document{withDropped})
+		require.Error(t, err,
+			"insert containing dropped fields succeeded")
 	}
+
 	valid := Document{PrimaryKey: "d", Fields: map[string]any{
 		"text": "d", "embedding": VectorFP32{0.5, 0},
 	}}
-	if _, err := collection.Insert(ctx, []Document{valid}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, []Document{valid})
+		require.NoError(t, err)
 	}
 }
 
 func TestDropColumnValidationAndPublicationRollback(t *testing.T) {
 	ctx := context.Background()
 	var nilCollection *Collection
-	if err := nilCollection.DropColumn(ctx, "rating"); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil collection DropColumn = %v", err)
+	{
+		err := nilCollection.DropColumn(ctx, "rating")
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
+
 	path := filepath.Join(t.TempDir(), "drop-column-errors")
 	collection, err := CreateAndOpen(ctx, path, dropColumnSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.Insert(ctx, []Document{dropColumnDocument("one", 2, nil, false, []float32{1, 0})}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, []Document{dropColumnDocument("one", 2, nil, false, []float32{1, 0})})
+		require.NoError(t, err)
 	}
-	if err := collection.DropColumn(nil, "rating"); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil context DropColumn = %v", err)
+	{
+		err := collection.DropColumn(nil, "rating")
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
+
 	initialSchema := collection.Schema()
 	initialGeneration := collection.store.Manifest().Generation
 	for _, column := range []string{"", "missing", "text", "embedding"} {
 		t.Run(column, func(t *testing.T) {
-			if err := collection.DropColumn(ctx, column); err == nil {
-				t.Fatal("DropColumn succeeded")
+			{
+				err := collection.DropColumn(ctx, column)
+				require.Error(t, err,
+					"DropColumn succeeded")
 			}
-			if !reflect.DeepEqual(collection.Schema(), initialSchema) || collection.store.Manifest().Generation != initialGeneration {
-				t.Fatalf("failed DropColumn changed state: schema %#v generation %d", collection.Schema(), collection.store.Manifest().Generation)
-			}
+			require.Equal(t, initialSchema, collection.Schema())
+			require.Equal(t, initialGeneration, collection.store.Manifest().Generation)
 		})
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := collection.DropColumn(canceled, "rating"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled DropColumn = %v", err)
+	{
+		err := collection.DropColumn(canceled, "rating")
+		require.ErrorIs(t, err, context.Canceled)
 	}
 
 	versionLock, err := ailego.AcquireFileLock(ctx, filepath.Join(path, ".version.lock"), ailego.LockExclusive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	deadline, cancel := context.WithTimeout(ctx, 75*time.Millisecond)
 	err = collection.DropColumn(deadline, "rating")
 	cancel()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		_ = versionLock.Close()
-		t.Fatalf("blocked DropColumn = %v", err)
 	}
-	if err := versionLock.Close(); err != nil {
-		t.Fatal(err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	{
+		err := versionLock.Close()
+		require.NoError(t, err)
 	}
-	if !reflect.DeepEqual(collection.Schema(), initialSchema) || collection.store.Manifest().Generation != initialGeneration {
-		t.Fatalf("failed publication changed state: schema %#v generation %d", collection.Schema(), collection.store.Manifest().Generation)
-	}
+	require.Equal(t, initialSchema, collection.Schema())
+	require.Equal(t, initialGeneration, collection.store.Manifest().Generation)
+
 	fetched, err := collection.Fetch(ctx, []string{"one"}, Projection{})
-	if err != nil || fetched[0] == nil || fetched[0].Fields["rating"] != int32(2) {
-		t.Fatalf("document after rollback = %#v, %v", fetched, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, fetched[0])
+	require.Equal(t, int32(2), fetched[0].Fields["rating"])
 }
 
 func TestDropColumnRejectsLastFieldAndReadOnlyHandle(t *testing.T) {
@@ -167,32 +181,32 @@ func TestDropColumnRejectsLastFieldAndReadOnlyHandle(t *testing.T) {
 		schema := NewCollectionSchema("drop_last", FieldSchema{Name: "only", DataType: DataTypeInt32})
 		schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 		collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		defer collection.Close()
-		if err := collection.DropColumn(ctx, "only"); !errors.Is(err, ErrInvalidArgument) {
-			t.Fatalf("drop last field = %v", err)
+		{
+			err := collection.DropColumn(ctx, "only")
+			require.ErrorIs(t, err, ErrInvalidArgument)
 		}
 	})
 	t.Run("read only", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "drop-column-read-only")
 		collection, err := CreateAndOpen(ctx, path, dropColumnSchema(), NewCollectionOptions())
-		if err != nil {
-			t.Fatal(err)
+		require.NoError(t, err)
+		{
+			err := collection.Close()
+			require.NoError(t, err)
 		}
-		if err := collection.Close(); err != nil {
-			t.Fatal(err)
-		}
+
 		options := NewCollectionOptions()
 		options.ReadOnly = true
 		collection, err = Open(ctx, path, options)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		defer collection.Close()
-		if err := collection.DropColumn(ctx, "rating"); !errors.Is(err, ErrPermissionDenied) {
-			t.Fatalf("read-only DropColumn = %v", err)
+		{
+			err := collection.DropColumn(ctx, "rating")
+			require.ErrorIs(t, err, ErrPermissionDenied)
 		}
 	})
 }
@@ -201,45 +215,44 @@ func TestDropColumnEmptyCollectionPublishesSchemaOnly(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "drop-column-empty")
 	collection, err := CreateAndOpen(ctx, path, dropColumnSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	initialGeneration := collection.store.Manifest().Generation
-	if err := collection.DropColumn(ctx, "rating"); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.DropColumn(ctx, "rating")
+		require.NoError(t, err)
 	}
-	if collection.store.Manifest().Generation <= initialGeneration || collection.store.Manifest().PersistedSegments != nil {
-		t.Fatalf("empty drop manifest = %#v", collection.store.Manifest())
+	require.True(t, collection.store.Manifest().Generation > initialGeneration)
+	require.Nil(t, collection.store.Manifest().PersistedSegments)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, found := collection.Schema().Field("rating"); found {
-		t.Fatal("reopened schema contains dropped field")
+	{
+		_, found := collection.Schema().Field("rating")
+		require.False(t, found,
+			"reopened schema contains dropped field")
 	}
 }
 
 func assertStoredFieldAbsent(t *testing.T, ctx context.Context, collection *Collection, field string, wantIDs map[string]uint64) {
 	t.Helper()
 	stored, err := collection.store.LiveDocuments(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, item := range stored {
-		if item.DocID != wantIDs[item.PrimaryKey] {
-			t.Fatalf("document %q ID = %d, want %d", item.PrimaryKey, item.DocID, wantIDs[item.PrimaryKey])
-		}
+		require.Equal(t, wantIDs[item.PrimaryKey], item.DocID)
+
 		fields, decodeErr := unmarshalDocumentPayload(item.Payload)
-		if decodeErr != nil {
-			t.Fatal(decodeErr)
-		}
-		if _, found := fields[field]; found {
-			t.Fatalf("stored document %q still contains %q", item.PrimaryKey, field)
+		require.NoError(t, decodeErr)
+		{
+			_, found := fields[field]
+			require.False(t, found)
 		}
 	}
 }

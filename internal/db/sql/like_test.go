@@ -14,7 +14,12 @@
 
 package sql
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestLikePatternBaselineCasesAndClassification(t *testing.T) {
 	tests := []struct {
@@ -38,21 +43,16 @@ func TestLikePatternBaselineCasesAndClassification(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.pattern, func(t *testing.T) {
 			pattern, err := CompileLike(testCase.pattern)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if pattern.Raw() != testCase.pattern || pattern.Mode() != testCase.mode || pattern.Literal() != testCase.literal {
-				t.Fatalf("compiled pattern = raw %q mode %s literal %q", pattern.Raw(), pattern.Mode(), pattern.Literal())
-			}
+			require.NoError(t, err)
+			require.Equal(t, testCase.pattern, pattern.Raw())
+			require.Equal(t, testCase.mode, pattern.Mode())
+			require.Equal(t, testCase.literal, pattern.Literal())
+
 			for _, value := range testCase.matches {
-				if !pattern.Match(value) {
-					t.Errorf("%q did not match", value)
-				}
+				assert.True(t, pattern.Match(value))
 			}
 			for _, value := range testCase.misses {
-				if pattern.Match(value) {
-					t.Errorf("%q unexpectedly matched", value)
-				}
+				assert.False(t, pattern.Match(value))
 			}
 		})
 	}
@@ -60,18 +60,17 @@ func TestLikePatternBaselineCasesAndClassification(t *testing.T) {
 
 func TestLikePatternCollapsesPercentsAndRejectsInvalidUTF8(t *testing.T) {
 	pattern, err := CompileLike("%%needle%%")
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.Equal(t, LikeContains, pattern.Mode())
+	require.True(t, pattern.Literal() == "needle")
+	require.True(t, pattern.Match("a needle here"))
+	{
+		_, err := CompileLike(string([]byte{0xff}))
+		require.Error(t, err,
+			"invalid UTF-8 pattern succeeded")
 	}
-	if pattern.Mode() != LikeContains || pattern.Literal() != "needle" || !pattern.Match("a needle here") {
-		t.Fatalf("pattern = mode %s literal %q", pattern.Mode(), pattern.Literal())
-	}
-	if _, err := CompileLike(string([]byte{0xff})); err == nil {
-		t.Fatal("invalid UTF-8 pattern succeeded")
-	}
-	if (*LikePattern)(nil).Match("anything") {
-		t.Fatal("nil pattern matched")
-	}
+	require.False(t, (*LikePattern)(nil).Match("anything"),
+		"nil pattern matched")
 }
 
 func FuzzLikePattern(f *testing.F) {
@@ -87,8 +86,7 @@ func FuzzLikePattern(f *testing.F) {
 			return
 		}
 		first := compiled.Match(value)
-		if compiled.Match(value) != first {
-			t.Fatal("LIKE result is not deterministic")
-		}
+		require.Equal(t, first, compiled.Match(value),
+			"LIKE result is not deterministic")
 	})
 }

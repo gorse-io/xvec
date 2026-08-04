@@ -16,23 +16,26 @@ package core
 
 import (
 	"context"
-	"errors"
 	"math"
-	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPQChunkOffsetsAndOptions(t *testing.T) {
-	if got := pqChunkOffsets(10, 3); !slices.Equal(got, []int{0, 4, 7, 10}) {
-		t.Fatalf("chunk offsets = %v", got)
+	{
+		got := pqChunkOffsets(10, 3)
+		require.True(t, slices.Equal(got, []int{0, 4, 7, 10}))
 	}
+
 	defaults := DefaultPQOptions(MetricL2)
-	if defaults.Metric != MetricL2 || defaults.Chunks != 0 || defaults.MaxTrainSamples != 200_000 || defaults.MaxIterations != 12 {
-		t.Fatalf("defaults = %#v", defaults)
-	}
+	require.Equal(t, MetricL2, defaults.Metric)
+	require.True(t, defaults.Chunks == 0)
+	require.True(t, defaults.MaxTrainSamples == 200_000)
+	require.True(t, defaults.MaxIterations == 12)
+
 	invalid := []PQOptions{
 		DefaultPQOptions(MetricCosine),
 		DefaultPQOptions(MetricMIPSL2),
@@ -42,25 +45,24 @@ func TestPQChunkOffsetsAndOptions(t *testing.T) {
 		{Metric: MetricL2, MaxTrainSamples: 1, MaxIterations: 1, Workers: -1},
 	}
 	for _, options := range invalid {
-		if err := options.Validate(); !errors.Is(err, ErrInvalidPQOptions) {
-			t.Fatalf("options %#v error = %v", options, err)
+		{
+			err := options.Validate()
+			require.ErrorIs(t, err, ErrInvalidPQOptions)
 		}
 	}
-	if err := invalid[0].Validate(); !errors.Is(err, ErrPQUnsupportedMetric) {
-		t.Fatalf("unsupported metric error = %v", err)
+	{
+		err := invalid[0].Validate()
+		require.ErrorIs(t, err, ErrPQUnsupportedMetric)
 	}
 }
 
 func TestPQKMC2SeedFixture(t *testing.T) {
 	vectors := [][]float32{{0}, {1}, {2}, {3}, {4}, {5}}
 	centroids, err := initializePQKMC2(context.Background(), vectors, 3, MetricL2, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := [][]float32{{1}, {5}, {3}}
-	if !reflect.DeepEqual(centroids, want) {
-		t.Fatalf("KMC2 centroids = %v", centroids)
-	}
+	require.Equal(t, want, centroids)
 }
 
 func TestPQTrainDeterminismPrefixSamplingAndOwnership(t *testing.T) {
@@ -71,21 +73,18 @@ func TestPQTrainDeterminismPrefixSamplingAndOwnership(t *testing.T) {
 	options.Seed = 0x123456789abcdef0
 	options.Workers = 1
 	one, err := TrainPQ(context.Background(), vectors, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if one.Dimension() != 8 || one.Chunks() != 4 || one.Metric() != MetricL2 ||
-		!slices.Equal(one.ChunkOffsets(), []int{0, 2, 4, 6, 8}) || len(one.Pivots()) != PQCentroidCount*8 {
-		t.Fatalf("model metadata = dim %d chunks %d metric %d offsets %v pivots %d", one.Dimension(), one.Chunks(), one.Metric(), one.ChunkOffsets(), len(one.Pivots()))
-	}
+	require.NoError(t, err)
+	require.True(t, one.Dimension() == 8)
+	require.True(t, one.Chunks() == 4)
+	require.Equal(t, MetricL2, one.Metric())
+	require.True(t, slices.Equal(one.ChunkOffsets(), []int{0, 2, 4, 6, 8}))
+	require.Len(t, one.Pivots(), PQCentroidCount*8)
+
 	options.Workers = 8
 	many, err := TrainPQ(context.Background(), vectors, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(one.State(), many.State()) {
-		t.Fatal("PQ training differs across worker counts")
-	}
+	require.NoError(t, err)
+	require.Equal(t, many.State(), one.State(),
+		"PQ training differs across worker counts")
 
 	changedTail := cloneVectors(vectors)
 	for index := options.MaxTrainSamples; index < len(changedTail); index++ {
@@ -94,21 +93,16 @@ func TestPQTrainDeterminismPrefixSamplingAndOwnership(t *testing.T) {
 		}
 	}
 	prefix, err := TrainPQ(context.Background(), changedTail, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(one.State(), prefix.State()) {
-		t.Fatal("vectors beyond MaxTrainSamples changed PQ model")
-	}
+	require.NoError(t, err)
+	require.Equal(t, prefix.State(), one.State(),
+		"vectors beyond MaxTrainSamples changed PQ model")
 
 	code, err := one.Encode(vectors[0])
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	decoded, err := one.Decode(code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertFloatSlicesClose(t, decoded, vectors[0], 1e-6)
 	vectors[0][0] = 9999
 	state := one.State()
@@ -118,9 +112,10 @@ func TestPQTrainDeterminismPrefixSamplingAndOwnership(t *testing.T) {
 	offsets[1] = 1
 	pivots := one.Pivots()
 	pivots[0] = 9999
-	if one.ChunkOffsets()[1] != 2 || one.Pivots()[0] == 9999 {
-		t.Fatal("PQ model aliases input, state, or accessor slices")
-	}
+	require.True(t, one.ChunkOffsets()[1] == 2,
+		"PQ model aliases input, state, or accessor slices")
+	require.False(t, one.Pivots()[0] == 9999,
+		"PQ model aliases input, state, or accessor slices")
 }
 
 func TestPQTrainingBuildsLossyCodebook(t *testing.T) {
@@ -139,33 +134,29 @@ func TestPQTrainingBuildsLossyCodebook(t *testing.T) {
 	options.MaxIterations = 4
 	options.Workers = 4
 	model, err := TrainPQ(context.Background(), vectors, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	codes, err := model.EncodeBatch(context.Background(), vectors, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	distinct := make(map[[2]byte]struct{})
 	var distortion float64
 	for index, code := range codes {
 		encoded := code.Bytes()
 		distinct[[2]byte{encoded[0], encoded[1]}] = struct{}{}
 		decoded, err := model.Decode(code)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		score, err := MetricL2.Compute(vectors[index], decoded)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		distortion += float64(score)
 	}
-	if len(distinct) < 200 {
-		t.Fatalf("only %d distinct product codes", len(distinct))
-	}
-	if average := distortion / float64(len(vectors)); average <= 0 || average > 10 {
-		t.Fatalf("average reconstruction distortion = %g", average)
+	require.True(t, len(distinct) >= 200)
+	{
+		average := distortion / float64(len(vectors))
+		require.True(t, average > 0)
+		require.True(t, average <= 10)
 	}
 }
 
@@ -173,89 +164,74 @@ func TestPQL2EncodingDecodeAndDistanceTableFixture(t *testing.T) {
 	model := pqFixtureModel(t, MetricL2)
 	vector := []float32{2.2, 0, 0, 3.6}
 	code, err := model.Encode(vector)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(code.Bytes(), []byte{2, 4}) || code.Chunks() != 2 {
-		t.Fatalf("code = %v", code.Bytes())
-	}
+	require.NoError(t, err)
+	require.True(t, slices.Equal(code.Bytes(), []byte{2, 4}))
+	require.True(t, code.Chunks() == 2)
+
 	bytes := code.Bytes()
 	bytes[0] = 99
-	if code.Bytes()[0] != 2 {
-		t.Fatal("PQ code accessor aliases storage")
-	}
+	require.True(t, code.Bytes()[0] == 2,
+		"PQ code accessor aliases storage")
+
 	restoredCode, err := model.Code([]byte{2, 4})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	decoded, err := model.Decode(restoredCode)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(decoded, []float32{2, 0, 0, 4}) {
-		t.Fatalf("decoded = %v", decoded)
-	}
+	require.NoError(t, err)
+	require.True(t, slices.Equal(decoded, []float32{2, 0, 0, 4}))
+
 	query := []float32{1, 0, 0, 5}
 	table, err := model.DistanceTable(query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if table.Metric() != MetricL2 || table.Chunks() != 2 || table.Centroids() != 256 || len(table.Values()) != 512 {
-		t.Fatalf("table metadata = metric %d chunks %d centroids %d values %d", table.Metric(), table.Chunks(), table.Centroids(), len(table.Values()))
-	}
+	require.NoError(t, err)
+	require.Equal(t, MetricL2, table.Metric())
+	require.True(t, table.Chunks() == 2)
+	require.True(t, table.Centroids() == 256)
+	require.Len(t, table.Values(), 512)
+
 	values := table.Values()
-	if values[2] != 1 || values[PQCentroidCount+4] != 1 {
-		t.Fatalf("selected table entries = %g, %g", values[2], values[PQCentroidCount+4])
-	}
+	require.True(t, values[2] == 1)
+	require.True(t, values[PQCentroidCount+4] == 1)
+
 	values[2] = 999
-	if table.Values()[2] != 1 {
-		t.Fatal("distance table accessor aliases storage")
-	}
+	require.True(t, table.Values()[2] == 1,
+		"distance table accessor aliases storage")
+
 	score, err := table.Lookup(code)
-	if err != nil || score != 2 {
-		t.Fatalf("lookup = %g, %v", score, err)
-	}
+	require.NoError(t, err)
+	require.True(t, score == 2)
+
 	direct, err := model.Distance(query, code)
-	if err != nil || direct != score {
-		t.Fatalf("direct distance = %g, %v", direct, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, score, direct)
+
 	want, err := MetricL2.Compute(query, decoded)
-	if err != nil || want != score {
-		t.Fatalf("decoded distance = %g, %v", want, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, score, want)
 }
 
 func TestPQInnerProductTableAndBatch(t *testing.T) {
 	model := pqFixtureModel(t, MetricIP)
 	vectors := [][]float32{{0, 2, 3, 0}, {2, 0, 0, 4}}
 	codes, err := model.EncodeBatch(context.Background(), vectors, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(codes[0].Bytes(), []byte{1, 0}) || !slices.Equal(codes[1].Bytes(), []byte{0, 1}) {
-		t.Fatalf("IP codes = %v, %v", codes[0].Bytes(), codes[1].Bytes())
-	}
+	require.NoError(t, err)
+	require.True(t, slices.Equal(codes[0].Bytes(), []byte{1, 0}))
+	require.True(t, slices.Equal(codes[1].Bytes(), []byte{0, 1}))
+
 	query := []float32{0, 4, 2, 0}
 	table, err := model.DistanceTable(query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	scores, err := table.LookupBatch(context.Background(), codes, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(scores, []float32{6, 0}) {
-		t.Fatalf("IP scores = %v", scores)
-	}
+	require.NoError(t, err)
+	require.True(t, slices.Equal(scores, []float32{6, 0}))
+
 	for index, code := range codes {
 		decoded, err := model.Decode(code)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		want, err := MetricIP.Compute(query, decoded)
-		if err != nil || scores[index] != want {
-			t.Fatalf("score %d = %g, want %g, err %v", index, scores[index], want, err)
-		}
+		require.NoError(t, err)
+		require.Equal(t, want, scores[index])
 	}
 }
 
@@ -267,65 +243,59 @@ func TestPQInnerProductTraining(t *testing.T) {
 	options.MaxIterations = 4
 	options.Workers = 4
 	model, err := TrainPQ(context.Background(), vectors, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	code, err := model.Encode(vectors[71])
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	decoded, err := model.Decode(code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	table, err := model.DistanceTable(vectors[17])
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	got, err := table.Lookup(code)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want, err := MetricIP.Compute(vectors[17], decoded)
-	if err != nil || math.Abs(float64(got-want)) > 1e-5 {
-		t.Fatalf("trained IP score = %g, want %g, err %v", got, want, err)
-	}
+	require.NoError(t, err)
+	require.InDelta(t, want, got, 1e-5)
 }
 
 func TestPQRestoreMismatchAndValidation(t *testing.T) {
 	model := pqFixtureModel(t, MetricL2)
 	state := model.State()
 	restored, err := RestorePQModel(state)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	code, err := model.Encode([]float32{2, 0, 0, 4})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := restored.Decode(code)
+		require.NoError(t, err)
 	}
-	if _, err := restored.Decode(code); err != nil {
-		t.Fatalf("restored model rejected matching code: %v", err)
-	}
+
 	state.Pivots[0]++
 	different, err := RestorePQModel(state)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := different.Decode(code)
+		require.ErrorIs(t, err, ErrPQModelMismatch)
 	}
-	if _, err := different.Decode(code); !errors.Is(err, ErrPQModelMismatch) {
-		t.Fatalf("model mismatch error = %v", err)
-	}
+
 	table, err := different.DistanceTable([]float32{0, 0, 0, 0})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := table.Lookup(code)
+		require.ErrorIs(t, err, ErrPQModelMismatch)
 	}
-	if _, err := table.Lookup(code); !errors.Is(err, ErrPQModelMismatch) {
-		t.Fatalf("table mismatch error = %v", err)
+	{
+		_, err := model.Code([]byte{1})
+		require.ErrorIs(t, err, ErrInvalidPQCode)
 	}
-	if _, err := model.Code([]byte{1}); !errors.Is(err, ErrInvalidPQCode) {
-		t.Fatalf("short code error = %v", err)
-	}
-	if _, err := model.Decode(PQCode{}); !errors.Is(err, ErrInvalidPQCode) {
-		t.Fatalf("zero code error = %v", err)
+	{
+		_, err := model.Decode(PQCode{})
+		require.ErrorIs(t, err, ErrInvalidPQCode)
 	}
 
 	badStates := []PQModelState{
@@ -339,8 +309,9 @@ func TestPQRestoreMismatchAndValidation(t *testing.T) {
 	nonFinite.Pivots[0] = float32(math.NaN())
 	badStates = append(badStates, nonFinite)
 	for _, bad := range badStates {
-		if _, err := RestorePQModel(bad); !errors.Is(err, ErrInvalidPQModel) {
-			t.Fatalf("bad state error = %v", err)
+		{
+			_, err := RestorePQModel(bad)
+			require.ErrorIs(t, err, ErrInvalidPQModel)
 		}
 	}
 	wideDimension := 4097
@@ -349,69 +320,91 @@ func TestPQRestoreMismatchAndValidation(t *testing.T) {
 		ChunkOffsets: pqChunkOffsets(wideDimension, wideDimension),
 		Pivots:       make([]float32, PQCentroidCount*wideDimension),
 	})
-	if err != nil || wide.Chunks() != wideDimension {
-		t.Fatalf("wide model restore = %#v, %v", wide, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, wideDimension, wide.Chunks())
 }
 
 func TestPQContextDimensionAndOverflowErrors(t *testing.T) {
 	options := DefaultPQOptions(MetricL2)
-	if _, err := TrainPQ(nil, [][]float32{{1, 2}}, options); err == nil {
-		t.Fatal("nil training context succeeded")
+	{
+		_, err := TrainPQ(nil, [][]float32{{1, 2}}, options)
+		require.Error(t, err,
+			"nil training context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := TrainPQ(canceled, [][]float32{{1, 2}}, options); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled training error = %v", err)
+	{
+		_, err := TrainPQ(canceled, [][]float32{{1, 2}}, options)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	midTraining := newCancelAfterChecks(4)
-	if _, err := TrainPQ(midTraining, pqTrainingVectors(64, 4), options); !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-training cancellation error = %v", err)
+	{
+		_, err := TrainPQ(midTraining, pqTrainingVectors(64, 4), options)
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := TrainPQ(context.Background(), nil, options); !errors.Is(err, ErrEmptyTrainingSet) {
-		t.Fatalf("empty training error = %v", err)
+	{
+		_, err := TrainPQ(context.Background(), nil, options)
+		require.ErrorIs(t, err, ErrEmptyTrainingSet)
 	}
-	if _, err := TrainPQ(context.Background(), [][]float32{{1}}, options); !errors.Is(err, ErrInvalidPQOptions) {
-		t.Fatalf("one-dimensional auto chunks error = %v", err)
+	{
+		_, err := TrainPQ(context.Background(), [][]float32{{1}}, options)
+		require.ErrorIs(t, err, ErrInvalidPQOptions)
 	}
+
 	options.Chunks = 3
-	if _, err := TrainPQ(context.Background(), [][]float32{{1, 2}}, options); !errors.Is(err, ErrInvalidPQOptions) {
-		t.Fatalf("too many chunks error = %v", err)
+	{
+		_, err := TrainPQ(context.Background(), [][]float32{{1, 2}}, options)
+		require.ErrorIs(t, err, ErrInvalidPQOptions)
 	}
+
 	model := pqFixtureModel(t, MetricL2)
 	var nilModel *PQModel
-	if _, err := nilModel.Encode([]float32{1}); !errors.Is(err, ErrInvalidPQModel) {
-		t.Fatalf("nil model encode error = %v", err)
+	{
+		_, err := nilModel.Encode([]float32{1})
+		require.ErrorIs(t, err, ErrInvalidPQModel)
 	}
-	if _, err := nilModel.DistanceTable([]float32{1}); !errors.Is(err, ErrInvalidPQModel) {
-		t.Fatalf("nil model table error = %v", err)
+	{
+		_, err := nilModel.DistanceTable([]float32{1})
+		require.ErrorIs(t, err, ErrInvalidPQModel)
 	}
-	if _, err := model.Encode([]float32{1, 2}); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("encode dimension error = %v", err)
+	{
+		_, err := model.Encode([]float32{1, 2})
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
-	if _, err := model.DistanceTable([]float32{1, 2}); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("table dimension error = %v", err)
+	{
+		_, err := model.DistanceTable([]float32{1, 2})
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
-	if _, err := model.EncodeBatch(nil, nil, 0); err == nil {
-		t.Fatal("nil batch encode context succeeded")
+	{
+		_, err := model.EncodeBatch(nil, nil, 0)
+		require.Error(t, err,
+			"nil batch encode context succeeded")
 	}
-	if _, err := model.EncodeBatch(canceled, nil, 0); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled batch encode error = %v", err)
+	{
+		_, err := model.EncodeBatch(canceled, nil, 0)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	table, err := model.DistanceTable([]float32{0, 0, 0, 0})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := table.LookupBatch(nil, nil, 0)
+		require.Error(t, err,
+			"nil batch lookup context succeeded")
 	}
-	if _, err := table.LookupBatch(nil, nil, 0); err == nil {
-		t.Fatal("nil batch lookup context succeeded")
+	{
+		_, err := table.LookupBatch(canceled, nil, 0)
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := table.LookupBatch(canceled, nil, 0); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled batch lookup error = %v", err)
-	}
+
 	var nilTable *PQDistanceTable
-	if _, err := nilTable.Lookup(PQCode{}); !errors.Is(err, ErrInvalidPQModel) {
-		t.Fatalf("nil table lookup error = %v", err)
+	{
+		_, err := nilTable.Lookup(PQCode{})
+		require.ErrorIs(t, err, ErrInvalidPQModel)
 	}
+
 	overflow := &PQDistanceTable{
 		modelFingerprint: 1, metric: MetricL2, chunks: 3,
 		values: make([]float32, 3*PQCentroidCount),
@@ -419,8 +412,9 @@ func TestPQContextDimensionAndOverflowErrors(t *testing.T) {
 	for chunk := 0; chunk < 3; chunk++ {
 		overflow.values[chunk*PQCentroidCount] = math.MaxFloat32 / 2
 	}
-	if _, err := overflow.Lookup(PQCode{modelFingerprint: 1, codes: []byte{0, 0, 0}}); !errors.Is(err, ErrPQScoreOverflow) {
-		t.Fatalf("overflow lookup error = %v", err)
+	{
+		_, err := overflow.Lookup(PQCode{modelFingerprint: 1, codes: []byte{0, 0, 0}})
+		require.ErrorIs(t, err, ErrPQScoreOverflow)
 	}
 }
 
@@ -464,17 +458,22 @@ func BenchmarkPQDistanceLookup(b *testing.B) {
 	model := pqFixtureModel(b, MetricL2)
 	code, err := model.Code([]byte{2, 4})
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	table, err := model.DistanceTable([]float32{1, 0, 0, 5})
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := table.Lookup(code); err != nil {
-			b.Fatal(err)
+		{
+			_, err := table.Lookup(code)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }
@@ -497,9 +496,8 @@ func pqFixtureModel(t testing.TB, metric Metric) *PQModel {
 	model, err := RestorePQModel(PQModelState{
 		Dimension: 4, Metric: metric, ChunkOffsets: []int{0, 2, 4}, Pivots: pivots,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return model
 }
 

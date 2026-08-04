@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"io"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 type shortReaderAt struct{ data []byte }
@@ -41,21 +43,20 @@ func (w shortWriterAt) WriteAt(src []byte, off int64) (int, error) {
 
 func TestFullAt(t *testing.T) {
 	dst := make([]byte, 6)
-	if err := ReadFullAt(shortReaderAt{data: []byte("0123456789")}, dst, 2); err != nil {
-		t.Fatal(err)
+	{
+		err := ReadFullAt(shortReaderAt{data: []byte("0123456789")}, dst, 2)
+		require.NoError(t, err)
 	}
-	if !bytes.Equal(dst, []byte("234567")) {
-		t.Fatalf("read %q", dst)
-	}
+	require.True(t, bytes.Equal(dst, []byte("234567")))
 
 	written := make([]byte, 10)
-	if err := WriteFullAt(shortWriterAt{data: written}, []byte("abcdef"), 2); err != nil {
-		t.Fatal(err)
+	{
+		err := WriteFullAt(shortWriterAt{data: written}, []byte("abcdef"), 2)
+		require.NoError(t, err)
 	}
-	if !bytes.Equal(written[2:8], []byte("abcdef")) {
-		t.Fatalf("wrote %q", written)
-	}
-	if err := ReadFullAt(shortReaderAt{}, make([]byte, 1), 0); err != io.EOF {
-		t.Fatalf("short read error = %v", err)
+	require.True(t, bytes.Equal(written[2:8], []byte("abcdef")))
+	{
+		err := ReadFullAt(shortReaderAt{}, make([]byte, 1), 0)
+		require.Same(t, io.EOF, err)
 	}
 }

@@ -17,8 +17,9 @@ package zvec
 import (
 	"context"
 	"path/filepath"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestOptimizeFTSCompactsDeletesAndReopens(t *testing.T) {
@@ -37,25 +38,28 @@ func TestOptimizeFTSCompactsDeletesAndReopens(t *testing.T) {
 	)
 	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := collection.Insert(ctx, []Document{
+			{PrimaryKey: "a", Fields: map[string]any{"title": "Go searching", "embedding": VectorFP32{1, 0}}},
+			{PrimaryKey: "b", Fields: map[string]any{"title": "Database search", "embedding": VectorFP32{0.7, 0}}},
+			{PrimaryKey: "remove", Fields: map[string]any{"title": "Go removed", "embedding": VectorFP32{0.9, 0}}},
+		})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, []Document{
-		{PrimaryKey: "a", Fields: map[string]any{"title": "Go searching", "embedding": VectorFP32{1, 0}}},
-		{PrimaryKey: "b", Fields: map[string]any{"title": "Database search", "embedding": VectorFP32{0.7, 0}}},
-		{PrimaryKey: "remove", Fields: map[string]any{"title": "Go removed", "embedding": VectorFP32{0.9, 0}}},
-	}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
 	}
-	if err := collection.Flush(ctx); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Update(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{"title": "Go optimized searching"}}})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Update(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{"title": "Go optimized searching"}}}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Delete(ctx, []string{"remove"})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Delete(ctx, []string{"remove"}); err != nil {
-		t.Fatal(err)
-	}
+
 	query := MultiQuery{
 		Queries: []SubQuery{
 			{Field: "title", FTS: &FTSClause{Match: "optimized search"}, NumCandidates: 3},
@@ -64,37 +68,38 @@ func TestOptimizeFTSCompactsDeletesAndReopens(t *testing.T) {
 		TopK: 2, Projection: Projection{OutputFields: []string{"title"}},
 	}
 	want, err := collection.MultiQuery(ctx, query)
-	if err != nil || len(want) != 2 || want[0].PrimaryKey != "a" {
-		t.Fatalf("query before Optimize = %#v, %v", want, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, want, 2)
+	require.True(t, want[0].PrimaryKey == "a")
+
 	before := collection.Stats()
-	if before.DeletedDocuments < 2 {
-		t.Fatalf("deletions before Optimize = %#v", before)
+	require.True(t, before.DeletedDocuments >= 2)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
-	}
+
 	after := collection.Stats()
-	if after.DocumentCount != 2 || after.DeletedDocuments != 0 || after.MutableDocuments != 0 || after.ImmutableSegments != 2 {
-		t.Fatalf("stats after FTS Optimize = %#v", after)
-	}
+	require.True(t, after.DocumentCount == 2)
+	require.True(t, after.DeletedDocuments == 0)
+	require.True(t, after.MutableDocuments == 0)
+	require.True(t, after.ImmutableSegments == 2)
+
 	got, err := collection.MultiQuery(ctx, query)
-	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("query after Optimize = %#v, %v; want %#v", got, err, want)
-	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
 
 	options := NewCollectionOptions()
 	options.ReadOnly = true
 	reopened, err := Open(ctx, path, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer reopened.Close()
 	got, err = reopened.MultiQuery(ctx, query)
-	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("reopened optimized FTS query = %#v, %v; want %#v", got, err, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 }

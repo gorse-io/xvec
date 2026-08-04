@@ -20,10 +20,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type callbackContextKey struct{}
@@ -35,45 +37,54 @@ func TestCallbackRerankerDelegatesExactInputs(t *testing.T) {
 	invocations := 0
 	reranker := NewCallbackReranker(func(gotContext context.Context, gotBatches []RerankBatch, topK int) ([]Document, error) {
 		invocations++
-		if gotContext.Value(callbackContextKey{}) != "owned" || topK != 2 || !reflect.DeepEqual(gotBatches, batches) {
-			t.Fatalf("callback inputs = %#v, %d", gotBatches, topK)
-		}
+		require.True(t, gotContext.Value(callbackContextKey{}) == "owned")
+		require.True(t, topK == 2)
+		require.Equal(t, batches, gotBatches)
+
 		return want, nil
 	})
-	if err := reranker.Validate(); err != nil {
-		t.Fatal(err)
+	{
+		err := reranker.Validate()
+		require.NoError(t, err)
 	}
+
 	got, err := reranker.Rerank(ctx, batches, 2)
-	if err != nil || !reflect.DeepEqual(got, want) || invocations != 1 {
-		t.Fatalf("callback output = %#v, %v, invocations %d", got, err, invocations)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	require.True(t, invocations == 1)
 
 	zeroInvoked := false
 	zero := NewCallbackReranker(func(_ context.Context, _ []RerankBatch, topK int) ([]Document, error) {
 		zeroInvoked = true
-		if topK != 0 {
-			t.Fatalf("topK = %d", topK)
-		}
+		require.True(t, topK == 0)
+
 		return []Document{}, nil
 	})
-	if got, err := zero.Rerank(context.Background(), nil, 0); err != nil || got == nil || !zeroInvoked {
-		t.Fatalf("zero callback = %#v, %v, invoked %v", got, err, zeroInvoked)
+	{
+		got, err := zero.Rerank(context.Background(), nil, 0)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		require.True(t, zeroInvoked)
 	}
 }
 
 func TestCallbackRerankerValidationErrorsCancellationAndPanic(t *testing.T) {
 	var empty CallbackReranker
-	if err := empty.Validate(); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("empty validation = %v", err)
+	{
+		err := empty.Validate()
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if _, err := empty.Rerank(context.Background(), nil, 1); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("empty callback = %v", err)
+	{
+		_, err := empty.Rerank(context.Background(), nil, 1)
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
+
 	valid := NewCallbackReranker(func(context.Context, []RerankBatch, int) ([]Document, error) {
 		return []Document{}, nil
 	})
-	if _, err := valid.Rerank(nil, nil, 1); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil context = %v", err)
+	{
+		_, err := valid.Rerank(nil, nil, 1)
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
 
 	invoked := false
@@ -83,30 +94,37 @@ func TestCallbackRerankerValidationErrorsCancellationAndPanic(t *testing.T) {
 		invoked = true
 		return nil, nil
 	})
-	if _, err := preCanceled.Rerank(canceled, nil, 1); !errors.Is(err, context.Canceled) || invoked {
-		t.Fatalf("pre-canceled callback = %v, invoked %v", err, invoked)
+	{
+		_, err := preCanceled.Rerank(canceled, nil, 1)
+		require.ErrorIs(t, err, context.Canceled)
+		require.False(t, invoked)
 	}
 
 	sentinel := errors.New("callback failed")
 	failing := NewCallbackReranker(func(context.Context, []RerankBatch, int) ([]Document, error) {
 		return nil, sentinel
 	})
-	if _, err := failing.Rerank(context.Background(), nil, 1); !errors.Is(err, sentinel) {
-		t.Fatalf("callback error = %v", err)
+	{
+		_, err := failing.Rerank(context.Background(), nil, 1)
+		require.ErrorIs(t, err, sentinel)
 	}
 
 	panicSentinel := errors.New("callback panic")
 	panicking := NewCallbackReranker(func(context.Context, []RerankBatch, int) ([]Document, error) {
 		panic(panicSentinel)
 	})
-	if _, err := panicking.Rerank(context.Background(), nil, 1); !errors.Is(err, ErrInternal) || !errors.Is(err, panicSentinel) {
-		t.Fatalf("panic error = %v", err)
+	{
+		_, err := panicking.Rerank(context.Background(), nil, 1)
+		require.ErrorIs(t, err, ErrInternal)
+		require.ErrorIs(t, err, panicSentinel)
 	}
+
 	panickingString := NewCallbackReranker(func(context.Context, []RerankBatch, int) ([]Document, error) {
 		panic("bad callback")
 	})
-	if _, err := panickingString.Rerank(context.Background(), nil, 1); !errors.Is(err, ErrInternal) {
-		t.Fatalf("string panic error = %v", err)
+	{
+		_, err := panickingString.Rerank(context.Background(), nil, 1)
+		require.ErrorIs(t, err, ErrInternal)
 	}
 
 	duringContext, cancelDuring := context.WithCancel(context.Background())
@@ -114,21 +132,23 @@ func TestCallbackRerankerValidationErrorsCancellationAndPanic(t *testing.T) {
 		cancelDuring()
 		return []Document{}, nil
 	})
-	if _, err := canceling.Rerank(duringContext, nil, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("post-callback cancellation = %v", err)
+	{
+		_, err := canceling.Rerank(duringContext, nil, 1)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
 func TestCollectionMultiQueryCallbackReranker(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "callback"), testMultiQuerySchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.Insert(ctx, testMultiQueryDocuments()); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, testMultiQueryDocuments())
+		require.NoError(t, err)
 	}
+
 	query := MultiQuery{
 		Queries: []SubQuery{
 			{Field: "embedding", DenseVector: VectorFP32{1, 0}, NumCandidates: 4},
@@ -137,29 +157,31 @@ func TestCollectionMultiQueryCallbackReranker(t *testing.T) {
 		TopK: 2, Filter: "category = 'keep'", Projection: Projection{OutputFields: []string{"title"}},
 	}
 	query.Reranker = NewCallbackReranker(func(_ context.Context, batches []RerankBatch, topK int) ([]Document, error) {
-		if topK != 2 || batches[0].Field.Name != "embedding" || batches[1].Field.Name != "title" {
-			t.Fatalf("callback batches = %#v, topK %d", batches, topK)
-		}
+		require.True(t, topK == 2)
+		require.True(t, batches[0].Field.Name == "embedding")
+		require.True(t, batches[1].Field.Name == "title")
+
 		first := batches[1].Documents[0]
 		second := batches[0].Documents[0]
 		first.Score, second.Score = 9, 8
 		return []Document{first, second}, nil
 	})
 	results, err := collection.MultiQuery(ctx, query)
-	if err != nil || !reflect.DeepEqual(documentKeys(results), []string{"b", "a"}) || results[0].Score != 9 || results[1].Score != 8 {
-		t.Fatalf("callback MultiQuery = %#v, %v", results, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "a"}, documentKeys(results))
+	require.True(t, results[0].Score == 9)
+	require.True(t, results[1].Score == 8)
+
 	for _, document := range results {
-		if len(document.Fields) != 1 {
-			t.Fatalf("callback projection = %#v", document)
-		}
+		require.Len(t, document.Fields, 1)
 	}
 
 	query.Reranker = NewCallbackReranker(func(context.Context, []RerankBatch, int) ([]Document, error) {
 		panic("collection callback panic")
 	})
-	if _, err := collection.MultiQuery(ctx, query); !errors.Is(err, ErrInternal) {
-		t.Fatalf("collection callback panic = %v", err)
+	{
+		_, err := collection.MultiQuery(ctx, query)
+		require.ErrorIs(t, err, ErrInternal)
 	}
 }
 
@@ -171,9 +193,8 @@ func TestCallbackRerankerConcurrentUse(t *testing.T) {
 		return firstDistinctDocuments(batches, topK), nil
 	})
 	want, err := reranker.Rerank(context.Background(), batches, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var wait sync.WaitGroup
 	errorsFound := make(chan error, 8)
 	for worker := 0; worker < 8; worker++ {
@@ -186,7 +207,7 @@ func TestCallbackRerankerConcurrentUse(t *testing.T) {
 					errorsFound <- err
 					return
 				}
-				if !reflect.DeepEqual(got, want) {
+				if !assert.Equal(t, want, got) {
 					errorsFound <- errors.New("non-deterministic callback result")
 					return
 				}
@@ -196,18 +217,15 @@ func TestCallbackRerankerConcurrentUse(t *testing.T) {
 	wait.Wait()
 	close(errorsFound)
 	for err := range errorsFound {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
-	if invocations.Load() != 801 {
-		t.Fatalf("invocations = %d", invocations.Load())
-	}
+	require.True(t, invocations.Load() == 801)
 }
 
 func TestCallbackRerankerCompatibilityFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/callback_reranker_58375ff.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var fixture struct {
 		BaselineCommit string   `json:"baseline_commit"`
 		HeaderHash     string   `json:"header_sha256"`
@@ -216,16 +234,16 @@ func TestCallbackRerankerCompatibilityFixture(t *testing.T) {
 		Arguments      []string `json:"arguments"`
 		EmptyIsError   bool     `json:"empty_callback_is_error"`
 	}
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(data, &fixture)
+		require.NoError(t, err)
 	}
-	if fixture.BaselineCommit != "58375ff7b8fdd0d6fc7d234e47567b179777883b" ||
-		fixture.HeaderHash != "bc1949536968bc27f0cb11026d0ab8633dbb46641365455c20b433367837c7d6" ||
-		fixture.SourceHash != "3c93edc12303898af52911589c46c720072f9470446858fc36a61206d538aa1e" ||
-		fixture.TestsHash != "05a03cacf74e7615661cec3153b2d2307f6a991510018386f6650f2625cb9a7d" ||
-		!reflect.DeepEqual(fixture.Arguments, []string{"results", "fields", "topn"}) || !fixture.EmptyIsError {
-		t.Fatalf("callback compatibility fixture mismatch: %#v", fixture)
-	}
+	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
+	require.True(t, fixture.HeaderHash == "bc1949536968bc27f0cb11026d0ab8633dbb46641365455c20b433367837c7d6")
+	require.True(t, fixture.SourceHash == "3c93edc12303898af52911589c46c720072f9470446858fc36a61206d538aa1e")
+	require.True(t, fixture.TestsHash == "05a03cacf74e7615661cec3153b2d2307f6a991510018386f6650f2625cb9a7d")
+	require.Equal(t, []string{"results", "fields", "topn"}, fixture.Arguments)
+	require.True(t, fixture.EmptyIsError)
 }
 
 func FuzzCallbackRerankerPanicBoundary(f *testing.F) {
@@ -244,15 +262,20 @@ func FuzzCallbackRerankerPanicBoundary(f *testing.F) {
 			return batches[0].Documents[:1], nil
 		})
 		results, err := reranker.Rerank(context.Background(), callbackTestBatches(), int(topK))
-		if !invoked {
-			t.Fatal("callback was not invoked")
-		}
+		require.True(t, invoked,
+			"callback was not invoked")
+
 		if mode&1 != 0 {
-			if !errors.Is(err, ErrInternal) || results != nil {
-				t.Fatalf("panic result = %#v, %v", results, err)
+			require.ErrorIs(t, err, ErrInternal)
+			require.Nil(t, results)
+		} else {
+			require.NoError(t, err)
+			if topK == 0 {
+				require.NotNil(t, results)
+				require.Len(t, results, 0)
+			} else {
+				require.Len(t, results, 1)
 			}
-		} else if err != nil || (topK == 0 && (results == nil || len(results) != 0)) || (topK != 0 && len(results) != 1) {
-			t.Fatalf("callback result = %#v, %v", results, err)
 		}
 	})
 }
@@ -265,8 +288,11 @@ func BenchmarkCallbackReranker(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for iteration := 0; iteration < b.N; iteration++ {
-		if _, err := reranker.Rerank(context.Background(), batches, 2); err != nil {
-			b.Fatal(err)
+		{
+			_, err := reranker.Rerank(context.Background(), batches, 2)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }

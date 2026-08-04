@@ -14,7 +14,12 @@
 
 package sql
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestTruthKleeneLogic(t *testing.T) {
 	values := []Truth{TruthFalse, TruthUnknown, TruthTrue}
@@ -30,20 +35,28 @@ func TestTruthKleeneLogic(t *testing.T) {
 	}
 	for leftIndex, left := range values {
 		for rightIndex, right := range values {
-			if got := left.And(right); got != wantAnd[leftIndex][rightIndex] {
-				t.Errorf("%s AND %s = %s", left, right, got)
+			{
+				got := left.And(right)
+				assert.Equal(t, wantAnd[leftIndex][rightIndex], got)
 			}
-			if got := left.Or(right); got != wantOr[leftIndex][rightIndex] {
-				t.Errorf("%s OR %s = %s", left, right, got)
+			{
+				got := left.Or(right)
+				assert.Equal(t, wantOr[leftIndex][rightIndex], got)
 			}
 		}
 	}
-	if TruthTrue.Not() != TruthFalse || TruthFalse.Not() != TruthTrue || TruthUnknown.Not() != TruthUnknown {
-		t.Fatal("invalid NOT truth table")
-	}
-	if !TruthTrue.Match() || TruthFalse.Match() || TruthUnknown.Match() {
-		t.Fatal("filter Match must retain only TRUE")
-	}
+	require.Equal(t, TruthFalse, TruthTrue.Not(),
+		"invalid NOT truth table")
+	require.Equal(t, TruthTrue, TruthFalse.Not(),
+		"invalid NOT truth table")
+	require.Equal(t, TruthUnknown, TruthUnknown.Not(),
+		"invalid NOT truth table")
+	require.True(t, TruthTrue.Match(),
+		"filter Match must retain only TRUE")
+	require.False(t, TruthFalse.Match(),
+		"filter Match must retain only TRUE")
+	require.False(t, TruthUnknown.Match(),
+		"filter Match must retain only TRUE")
 }
 
 func TestComparisonPredicatesExactTypesAndNull(t *testing.T) {
@@ -82,57 +95,62 @@ func TestComparisonPredicatesExactTypesAndNull(t *testing.T) {
 
 	for _, testCase := range tests {
 		predicate, err := NewComparisonPredicate(testCase.operator, testCase.right)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		got, err := predicate.Evaluate(testCase.left)
-		if err != nil || got != testCase.want {
-			t.Fatalf("%s %s: got %s, error=%v", testCase.left.describe(), testCase.operator, got, err)
-		}
+		require.NoError(t, err)
+		require.Equal(t, testCase.want, got)
 	}
 
 	predicate, _ := NewComparisonPredicate(PredicateEQ, Int32Value(1))
 	null, _ := NullValue(ValueInt32, false)
-	if got, err := predicate.Evaluate(null); err != nil || got != TruthUnknown {
-		t.Fatalf("NULL comparison = %s, %v", got, err)
+	{
+		got, err := predicate.Evaluate(null)
+		require.NoError(t, err)
+		require.Equal(t, TruthUnknown, got)
 	}
-	if _, err := predicate.Evaluate(Int64Value(1)); err == nil {
-		t.Fatal("mixed-width comparison succeeded")
+	{
+		_, err := predicate.Evaluate(Int64Value(1))
+		require.Error(t, err,
+			"mixed-width comparison succeeded")
 	}
+
 	boolOrder, _ := NewComparisonPredicate(PredicateLT, BoolValue(true))
-	if _, err := boolOrder.Evaluate(BoolValue(false)); err == nil {
-		t.Fatal("ordered BOOL comparison succeeded")
+	{
+		_, err := boolOrder.Evaluate(BoolValue(false))
+		require.Error(t, err,
+			"ordered BOOL comparison succeeded")
 	}
 }
 
 func TestInPredicateAndDefensiveCopy(t *testing.T) {
 	values := []Value{StringValue("a"), StringValue("b")}
 	predicate, err := NewSetPredicate(PredicateIn, false, values)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	values[0] = StringValue("changed")
 	for input, want := range map[string]Truth{"a": TruthTrue, "b": TruthTrue, "c": TruthFalse} {
 		got, evalErr := predicate.Evaluate(StringValue(input))
-		if evalErr != nil || got != want {
-			t.Fatalf("IN(%q) = %s, %v; want %s", input, got, evalErr, want)
-		}
+		require.NoError(t, evalErr)
+		require.Equal(t, want, got)
 	}
 	notIn, _ := NewSetPredicate(PredicateIn, true, []Value{StringValue("a")})
-	if got, _ := notIn.Evaluate(StringValue("b")); got != TruthTrue {
-		t.Fatalf("NOT IN = %s", got)
+	{
+		got, _ := notIn.Evaluate(StringValue("b"))
+		require.Equal(t, TruthTrue, got)
 	}
+
 	null, _ := NullValue(ValueString, false)
-	if got, _ := notIn.Evaluate(null); got != TruthUnknown {
-		t.Fatalf("NULL NOT IN = %s", got)
+	{
+		got, _ := notIn.Evaluate(null)
+		require.Equal(t, TruthUnknown, got)
 	}
 }
 
 func TestContainPredicatesIncludingEmptyAndNull(t *testing.T) {
 	array, err := ArrayValue(ValueInt32, Int32Value(1), Int32Value(2), Int32Value(2))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	tests := []struct {
 		operator PredicateOperator
 		negated  bool
@@ -150,18 +168,17 @@ func TestContainPredicatesIncludingEmptyAndNull(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		predicate, bindErr := NewSetPredicate(testCase.operator, testCase.negated, testCase.set)
-		if bindErr != nil {
-			t.Fatal(bindErr)
-		}
+		require.NoError(t, bindErr)
+
 		got, evalErr := predicate.Evaluate(array)
-		if evalErr != nil || got != testCase.want {
-			t.Fatalf("%s negated=%t set=%v = %s, %v; want %s", testCase.operator, testCase.negated, testCase.set, got, evalErr, testCase.want)
-		}
+		require.NoError(t, evalErr)
+		require.Equal(t, testCase.want, got)
 	}
 	null, _ := NullValue(ValueInt32, true)
 	predicate, _ := NewSetPredicate(PredicateContainAny, true, []Value{Int32Value(1)})
-	if got, _ := predicate.Evaluate(null); got != TruthUnknown {
-		t.Fatalf("NULL NOT CONTAIN_ANY = %s", got)
+	{
+		got, _ := predicate.Evaluate(null)
+		require.Equal(t, TruthUnknown, got)
 	}
 }
 
@@ -178,19 +195,20 @@ func TestNullAndLikePredicates(t *testing.T) {
 		{NewNullPredicate(true), StringValue(""), TruthTrue},
 	} {
 		got, err := testCase.predicate.Evaluate(testCase.value)
-		if err != nil || got != testCase.want {
-			t.Fatalf("null predicate = %s, %v; want %s", got, err, testCase.want)
-		}
+		require.NoError(t, err)
+		require.Equal(t, testCase.want, got)
 	}
 	like, err := NewLikePredicate(`user-\_%`)
-	if err != nil || like.Operator() != PredicateLike || like.LikePattern().Mode() != LikePrefix {
-		t.Fatalf("LIKE bind = %#v, %v", like, err)
+	require.NoError(t, err)
+	require.Equal(t, PredicateLike, like.Operator())
+	require.Equal(t, LikePrefix, like.LikePattern().Mode())
+	{
+		got, _ := like.Evaluate(StringValue("user-_22"))
+		require.Equal(t, TruthTrue, got)
 	}
-	if got, _ := like.Evaluate(StringValue("user-_22")); got != TruthTrue {
-		t.Fatalf("LIKE = %s", got)
-	}
-	if got, _ := like.Evaluate(null); got != TruthUnknown {
-		t.Fatalf("NULL LIKE = %s", got)
+	{
+		got, _ := like.Evaluate(null)
+		require.Equal(t, TruthUnknown, got)
 	}
 }
 
@@ -216,13 +234,16 @@ func TestPredicateBindingRejectsInvalidForms(t *testing.T) {
 			return err
 		},
 	}
-	for index, testCase := range tests {
-		if err := testCase(); err == nil {
-			t.Fatalf("invalid binding %d succeeded", index)
+	for _, testCase := range tests {
+		{
+			err := testCase()
+			require.Error(t, err)
 		}
 	}
 	predicate := NewNullPredicate(false)
-	if _, err := predicate.Evaluate(Value{}); err == nil {
-		t.Fatal("invalid runtime value succeeded")
+	{
+		_, err := predicate.Evaluate(Value{})
+		require.Error(t, err,
+			"invalid runtime value succeeded")
 	}
 }

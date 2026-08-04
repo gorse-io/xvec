@@ -17,51 +17,71 @@ package sql
 import (
 	"math"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestValueConstructorsPreserveExactKindsAndOwnership(t *testing.T) {
 	binary := []byte{1, 2}
 	value := BinaryValue(binary)
 	binary[0] = 9
-	if value.binary[0] != 1 || value.Kind() != ValueBinary || value.IsArray() || value.IsNull() {
-		t.Fatalf("binary value = %#v", value)
-	}
+	require.True(t, value.binary[0] == 1)
+	require.Equal(t, ValueBinary, value.Kind())
+	require.False(t, value.IsArray())
+	require.False(t, value.IsNull())
 
 	element := BinaryValue([]byte{3, 4})
 	array, err := ArrayValue(ValueBinary, element)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	element.binary[0] = 8
-	if length, ok := array.Len(); !ok || length != 1 || array.elements[0].binary[0] != 3 {
-		t.Fatalf("array = %#v, length=%d valid=%t", array, length, ok)
+	{
+		length, ok := array.Len()
+		require.True(t, ok)
+		require.True(t, length == 1)
+		require.True(t, array.elements[0].binary[0] == 3)
 	}
 
 	null, err := NullValue(ValueString, true)
-	if err != nil || !null.IsNull() || !null.IsArray() || null.Kind() != ValueString {
-		t.Fatalf("null = %#v, error=%v", null, err)
-	}
+	require.NoError(t, err)
+	require.True(t, null.IsNull())
+	require.True(t, null.IsArray())
+	require.Equal(t, ValueString, null.Kind())
 }
 
 func TestValueRejectsInvalidFloatAndArrayForms(t *testing.T) {
-	if _, err := Float32Value(float32(math.Inf(1))); err == nil {
-		t.Fatal("infinite FLOAT succeeded")
+	{
+		_, err := Float32Value(float32(math.Inf(1)))
+		require.Error(t, err,
+			"infinite FLOAT succeeded")
 	}
-	if _, err := Float64Value(math.NaN()); err == nil {
-		t.Fatal("NaN DOUBLE succeeded")
+	{
+		_, err := Float64Value(math.NaN())
+		require.Error(t, err,
+			"NaN DOUBLE succeeded")
 	}
-	if _, err := NullValue(0, false); err == nil {
-		t.Fatal("invalid null kind succeeded")
+	{
+		_, err := NullValue(0, false)
+		require.Error(t, err,
+			"invalid null kind succeeded")
 	}
-	if _, err := ArrayValue(ValueInt32, Int64Value(1)); err == nil {
-		t.Fatal("mixed-width array succeeded")
+	{
+		_, err := ArrayValue(ValueInt32, Int64Value(1))
+		require.Error(t, err,
+			"mixed-width array succeeded")
 	}
+
 	null, _ := NullValue(ValueInt32, false)
-	if _, err := ArrayValue(ValueInt32, null); err == nil {
-		t.Fatal("null array element succeeded")
+	{
+		_, err := ArrayValue(ValueInt32, null)
+		require.Error(t, err,
+			"null array element succeeded")
 	}
+
 	array, _ := ArrayValue(ValueInt32, Int32Value(1))
-	if _, err := ArrayValue(ValueInt32, array); err == nil {
-		t.Fatal("nested array succeeded")
+	{
+		_, err := ArrayValue(ValueInt32, array)
+		require.Error(t, err,
+			"nested array succeeded")
 	}
 }

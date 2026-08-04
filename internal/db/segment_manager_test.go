@@ -16,9 +16,9 @@ package db
 
 import (
 	"context"
-	"errors"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSegmentManagerLifecycleAndLookup(t *testing.T) {
@@ -27,125 +27,167 @@ func TestSegmentManagerLifecycleAndLookup(t *testing.T) {
 	manager := NewSegmentManager(primary, deletes)
 	late := testImmutableSegment(2, 10, "ten", "eleven")
 	early := testImmutableSegment(1, 0, "zero", "one")
-	if err := manager.AddImmutable(late); err != nil {
-		t.Fatal(err)
+	{
+		err := manager.AddImmutable(late)
+		require.NoError(t, err)
 	}
-	if err := manager.AddImmutable(early); err != nil {
-		t.Fatal(err)
+	{
+		err := manager.AddImmutable(early)
+		require.NoError(t, err)
 	}
-	if got := manager.ImmutableMetadata(); len(got) != 2 || got[0].ID != 1 || got[1].ID != 2 {
-		t.Fatalf("sorted metadata = %#v", got)
+	{
+		got := manager.ImmutableMetadata()
+		require.Len(t, got, 2)
+		require.True(t, got[0].ID == 1)
+		require.True(t, got[1].ID == 2)
 	}
-	if err := manager.AddImmutable(early); err == nil {
-		t.Fatal("duplicate segment succeeded")
+	{
+		err := manager.AddImmutable(early)
+		require.Error(t, err,
+			"duplicate segment succeeded")
 	}
+
 	overlap := testImmutableSegment(9, 1, "overlap")
-	if err := manager.AddImmutable(overlap); err == nil {
-		t.Fatal("overlapping segment succeeded")
+	{
+		err := manager.AddImmutable(overlap)
+		require.Error(t, err,
+			"overlapping segment succeeded")
 	}
 
 	writing, _ := NewWriteSegment(3, 20, 5)
-	if err := manager.SetWriting(writing); err != nil {
-		t.Fatal(err)
+	{
+		err := manager.SetWriting(writing)
+		require.NoError(t, err)
 	}
+
 	written, err := writing.Append(context.Background(), "twenty", []byte("live"))
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := manager.SetWriting(writing)
+		require.Error(t, err,
+			"second writing segment succeeded")
 	}
-	if err := manager.SetWriting(writing); err == nil {
-		t.Fatal("second writing segment succeeded")
-	}
+
 	reservedOverlap := testImmutableSegment(4, 24, "reserved")
-	if err := manager.AddImmutable(reservedOverlap); err == nil {
-		t.Fatal("reserved write range overlap succeeded")
+	{
+		err := manager.AddImmutable(reservedOverlap)
+		require.Error(t, err,
+			"reserved write range overlap succeeded")
 	}
 
 	_, _, _ = primary.Put(context.Background(), "zero", DocumentLocation{SegmentID: 1, DocID: 0})
 	_, _, _ = primary.Put(context.Background(), "twenty", DocumentLocation{SegmentID: 3, DocID: written.DocID})
-	if doc, found := manager.DocumentByPrimaryKey("zero"); !found || doc.DocID != 0 {
-		t.Fatalf("immutable lookup = %#v, %v", doc, found)
+	{
+		doc, found := manager.DocumentByPrimaryKey("zero")
+		require.True(t, found)
+		require.True(t, doc.DocID == 0)
 	}
-	if doc, found := manager.DocumentByPrimaryKey("twenty"); !found || string(doc.Payload) != "live" {
-		t.Fatalf("writing lookup = %#v, %v", doc, found)
-	}
-	_, _ = deletes.MarkDeleted(context.Background(), 0)
-	if _, found := manager.Document(0); found {
-		t.Fatal("deleted document is visible by ID")
-	}
-	if _, found := manager.DocumentByPrimaryKey("zero"); found {
-		t.Fatal("deleted document is visible by key")
+	{
+		doc, found := manager.DocumentByPrimaryKey("twenty")
+		require.True(t, found)
+		require.True(t, string(doc.Payload) == "live")
 	}
 
-	if cleared := manager.ClearWriting(); cleared != writing || manager.Writing() != nil {
-		t.Fatal("clear writing returned wrong segment")
+	_, _ = deletes.MarkDeleted(context.Background(), 0)
+	{
+		_, found := manager.Document(0)
+		require.False(t, found,
+			"deleted document is visible by ID")
 	}
+	{
+		_, found := manager.DocumentByPrimaryKey("zero")
+		require.False(t, found,
+			"deleted document is visible by key")
+	}
+	{
+		cleared := manager.ClearWriting()
+		require.Same(t, writing, cleared,
+			"clear writing returned wrong segment")
+		require.Nil(t, manager.Writing(),
+			"clear writing returned wrong segment")
+	}
+
 	removed, err := manager.RemoveImmutable(2)
-	if err != nil || removed != late {
-		t.Fatalf("remove = %p, %v", removed, err)
+	require.NoError(t, err)
+	require.Same(t, late, removed)
+	{
+		_, err := manager.RemoveImmutable(2)
+		require.ErrorIs(t, err, ErrSegmentNotFound)
 	}
-	if _, err := manager.RemoveImmutable(2); !errors.Is(err, ErrSegmentNotFound) {
-		t.Fatalf("second remove = %v", err)
-	}
-	if manager.PrimaryKeys() != primary || manager.Deletes() != deletes {
-		t.Fatal("manager replaced stores")
-	}
+	require.Same(t, primary, manager.PrimaryKeys(),
+		"manager replaced stores")
+	require.Same(t, deletes, manager.Deletes(),
+		"manager replaced stores")
 }
 
 func TestSegmentManagerRejectsWritingReservedOverlap(t *testing.T) {
 	manager := NewSegmentManager(nil, nil)
-	if err := manager.AddImmutable(testImmutableSegment(1, 10, "ten", "eleven")); err != nil {
-		t.Fatal(err)
+	{
+		err := manager.AddImmutable(testImmutableSegment(1, 10, "ten", "eleven"))
+		require.NoError(t, err)
 	}
+
 	writing, _ := NewWriteSegment(2, 9, 2)
-	if err := manager.SetWriting(writing); err == nil {
-		t.Fatal("overlapping empty write segment succeeded")
+	{
+		err := manager.SetWriting(writing)
+		require.Error(t, err,
+			"overlapping empty write segment succeeded")
 	}
 }
 
 func TestSegmentManagerValidatesStalePrimaryLocation(t *testing.T) {
 	manager := NewSegmentManager(nil, nil)
 	segment := testImmutableSegment(1, 0, "zero")
-	if err := manager.AddImmutable(segment); err != nil {
-		t.Fatal(err)
+	{
+		err := manager.AddImmutable(segment)
+		require.NoError(t, err)
 	}
+
 	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "wrong", DocumentLocation{SegmentID: 1, DocID: 0})
-	if _, found := manager.DocumentByPrimaryKey("wrong"); found {
-		t.Fatal("stale primary-key location returned another document")
+	{
+		_, found := manager.DocumentByPrimaryKey("wrong")
+		require.False(t, found,
+			"stale primary-key location returned another document")
 	}
+
 	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "zero", DocumentLocation{SegmentID: 99, DocID: 0})
-	if _, found := manager.DocumentByPrimaryKey("zero"); found {
-		t.Fatal("missing segment location returned a document")
+	{
+		_, found := manager.DocumentByPrimaryKey("zero")
+		require.False(t, found,
+			"missing segment location returned a document")
 	}
 }
 
 func TestSegmentManagerFetch(t *testing.T) {
 	manager := NewSegmentManager(nil, nil)
 	segment := testImmutableSegment(1, 5, "five", "six")
-	if err := manager.AddImmutable(segment); err != nil {
-		t.Fatal(err)
+	{
+		err := manager.AddImmutable(segment)
+		require.NoError(t, err)
 	}
+
 	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "five", DocumentLocation{SegmentID: 1, DocID: 5})
 	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "six", DocumentLocation{SegmentID: 1, DocID: 6})
 	_, _ = manager.Deletes().MarkDeleted(context.Background(), 6)
 	results, err := manager.Fetch(context.Background(), []string{"missing", "five", "six", "five"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 4 || results[0].Document != nil || results[1].Document == nil || results[2].Document != nil || results[3].Document == nil {
-		t.Fatalf("fetch results = %#v", results)
-	}
-	if results[1].Document.DocID != 5 || string(results[1].Document.Payload) != "five" {
-		t.Fatalf("fetched document = %#v", results[1].Document)
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 4)
+	require.Nil(t, results[0].Document)
+	require.NotNil(t, results[1].Document)
+	require.Nil(t, results[2].Document)
+	require.NotNil(t, results[3].Document)
+	require.True(t, results[1].Document.DocID == 5)
+	require.True(t, string(results[1].Document.Payload) == "five")
+
 	results[1].Document.Payload[0] = 'X'
 	again, err := manager.Fetch(context.Background(), []string{"five"})
-	if err != nil || string(again[0].Document.Payload) != "five" {
-		t.Fatalf("fetch shares payload: %#v, %v", again, err)
-	}
+	require.NoError(t, err)
+	require.True(t, string(again[0].Document.Payload) == "five")
+
 	empty, err := manager.Fetch(context.Background(), nil)
-	if err != nil || empty == nil || len(empty) != 0 {
-		t.Fatalf("empty fetch = %#v, %v", empty, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, empty)
+	require.Len(t, empty, 0)
 }
 
 func TestSegmentManagerFetchCancellation(t *testing.T) {
@@ -153,26 +195,31 @@ func TestSegmentManagerFetchCancellation(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	results, err := manager.Fetch(canceled, []string{"one", "two"})
-	if !errors.Is(err, context.Canceled) || len(results) != 2 || !errors.Is(results[0].Err, context.Canceled) || !errors.Is(results[1].Err, context.Canceled) {
-		t.Fatalf("canceled fetch = %#v, %v", results, err)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Len(t, results, 2)
+	require.ErrorIs(t, results[0].Err, context.Canceled)
+	require.ErrorIs(t, results[1].Err, context.Canceled)
+	{
+		_, err := manager.Fetch(nil, []string{"one"})
+		require.Error(t, err,
+			"nil fetch context succeeded")
 	}
-	if _, err := manager.Fetch(nil, []string{"one"}); err == nil {
-		t.Fatal("nil fetch context succeeded")
-	}
+
 	var nilManager *SegmentManager
-	if _, err := nilManager.Fetch(context.Background(), nil); err == nil {
-		t.Fatal("nil manager fetch succeeded")
+	{
+		_, err := nilManager.Fetch(context.Background(), nil)
+		require.Error(t, err,
+			"nil manager fetch succeeded")
 	}
 }
 
 func TestNewSegmentManagerCreatesStores(t *testing.T) {
 	manager := NewSegmentManager(nil, nil)
-	if manager.PrimaryKeys() == nil || manager.Deletes() == nil {
-		t.Fatal("default stores are nil")
-	}
-	if !reflect.DeepEqual(manager.ImmutableMetadata(), []SegmentMetadata{}) && manager.ImmutableMetadata() != nil {
-		t.Fatalf("initial metadata = %#v", manager.ImmutableMetadata())
-	}
+	require.NotNil(t, manager.PrimaryKeys(),
+		"default stores are nil")
+	require.NotNil(t, manager.Deletes(),
+		"default stores are nil")
+	require.Empty(t, manager.ImmutableMetadata())
 }
 
 func testImmutableSegment(id, minDocID uint64, keys ...string) *ImmutableSegment {

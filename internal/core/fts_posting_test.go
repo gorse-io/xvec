@@ -17,19 +17,20 @@ package core
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"math"
 	"math/rand/v2"
-	"reflect"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFTSBitPacking(t *testing.T) {
-	if got := packFTSUint32([]uint32{1, 2, 3}, 2); !reflect.DeepEqual(got, []byte{0x39}) {
-		t.Fatalf("packed example = %x", got)
+	{
+		got := packFTSUint32([]uint32{1, 2, 3}, 2)
+		require.Equal(t, []byte{0x39}, got)
 	}
+
 	for width := uint8(0); width <= 32; width++ {
 		for _, count := range []int{0, 1, 3, 31, 32, 127, 128} {
 			values := make([]uint32, count)
@@ -43,11 +44,13 @@ func TestFTSBitPacking(t *testing.T) {
 				values[index] = rand.Uint32() & mask
 			}
 			packed := packFTSUint32(values, width)
-			if got, want := uint64(len(packed)), ftsPackedByteSize(width, uint32(count)); got != want {
-				t.Fatalf("width %d count %d size = %d, want %d", width, count, got, want)
+			{
+				got, want := uint64(len(packed)), ftsPackedByteSize(width, uint32(count))
+				require.Equal(t, want, got)
 			}
-			if decoded := unpackFTSUint32(packed, width, uint32(count)); !reflect.DeepEqual(decoded, values) {
-				t.Fatalf("width %d count %d round trip differs", width, count)
+			{
+				decoded := unpackFTSUint32(packed, width, uint32(count))
+				require.Equal(t, values, decoded)
 			}
 		}
 	}
@@ -55,88 +58,83 @@ func TestFTSBitPacking(t *testing.T) {
 		value uint32
 		want  uint8
 	}{{0, 0}, {1, 1}, {2, 2}, {3, 2}, {255, 8}, {256, 9}, {math.MaxUint32, 32}} {
-		if got := ftsBitsNeeded(test.value); got != test.want {
-			t.Fatalf("ftsBitsNeeded(%d) = %d, want %d", test.value, got, test.want)
+		{
+			got := ftsBitsNeeded(test.value)
+			require.Equal(t, test.want, got)
 		}
 	}
 }
 
 func TestFTSPostingListEmpty(t *testing.T) {
 	list, err := BuildFTSPostingList(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if list.DocumentFrequency() != 0 || len(list.Bytes()) != ftsPostingHeaderSize || list.Iterator().Next() {
-		t.Fatalf("unexpected empty list: %#v", list)
-	}
+	require.NoError(t, err)
+	require.True(t, list.DocumentFrequency() == 0)
+	require.Len(t, list.Bytes(), ftsPostingHeaderSize)
+	require.False(t, list.Iterator().Next())
+
 	reopened, err := OpenFTSPostingList(context.Background(), list.Bytes())
-	if err != nil || reopened.DocumentFrequency() != 0 {
-		t.Fatalf("reopen = %#v, %v", reopened, err)
-	}
+	require.NoError(t, err)
+	require.True(t, reopened.DocumentFrequency() == 0)
 }
 
 func TestFTSPostingListBlockRoundTrip(t *testing.T) {
 	postings := makeFTSPostingTestData(301)
 	want := cloneFTSPostings(postings)
 	list, err := BuildFTSPostingList(context.Background(), postings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if list.DocumentFrequency() != uint32(len(want)) || len(list.blocks) != 3 {
-		t.Fatalf("list count/blocks = %d/%d", list.DocumentFrequency(), len(list.blocks))
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint32(len(want)), list.DocumentFrequency())
+	require.Len(t, list.blocks, 3)
+
 	postings[0].Positions[0] = 999
 	postings[0].DocumentID = 999
 	got := collectFTSPostings(list.Iterator())
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("round trip differs\ngot  %#v\nwant %#v", got[:3], want[:3])
-	}
+	require.Equal(t, want, got)
 
 	encoded := list.Bytes()
 	reopened, err := OpenFTSPostingList(context.Background(), encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	encoded[0] ^= 0xff
-	if got := collectFTSPostings(reopened.Iterator()); !reflect.DeepEqual(got, want) {
-		t.Fatal("reopened list aliases caller bytes")
+	{
+		got := collectFTSPostings(reopened.Iterator())
+		require.Equal(t, want, got,
+			"reopened list aliases caller bytes")
 	}
-	if got := reopened.Bytes(); string(got[0:4]) != string(ftsPostingMagic[:]) {
-		t.Fatal("Bytes did not return an independent copy")
+	{
+		got := reopened.Bytes()
+		require.Equal(t, string(ftsPostingMagic[:]), string(got[0:4]),
+			"Bytes did not return an independent copy")
 	}
 }
 
 func TestFTSPostingIteratorAdvance(t *testing.T) {
 	postings := makeFTSPostingTestData(301)
 	list, err := BuildFTSPostingList(context.Background(), postings)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	iterator := list.Iterator()
 	for _, target := range []uint32{0, 1, 100, 510, 511, 512, 900, math.MaxUint32} {
 		wantIndex := sortFTSPostingIndex(postings, target)
 		found := iterator.Advance(target)
 		if wantIndex == len(postings) {
-			if found {
-				t.Fatalf("Advance(%d) found %d", target, iterator.DocumentID())
-			}
+			require.False(t, found)
+
 			break
 		}
-		if !found || iterator.DocumentID() != postings[wantIndex].DocumentID {
-			t.Fatalf("Advance(%d) = %v/%d, want %d", target, found, iterator.DocumentID(), postings[wantIndex].DocumentID)
-		}
-		if !iterator.Advance(target) || iterator.DocumentID() != postings[wantIndex].DocumentID {
-			t.Fatalf("repeated Advance(%d) moved", target)
-		}
+		require.True(t, found)
+		require.Equal(t, postings[wantIndex].DocumentID, iterator.DocumentID())
+		require.True(t, iterator.Advance(target))
+		require.Equal(t, postings[wantIndex].DocumentID, iterator.DocumentID())
 	}
 
 	iterator = list.Iterator()
-	if !iterator.Next() || iterator.DocumentID() != postings[0].DocumentID || !iterator.Advance(postings[129].DocumentID) {
-		t.Fatal("Next then Advance failed")
-	}
-	if iterator.DocumentID() != postings[129].DocumentID {
-		t.Fatalf("advanced document = %d", iterator.DocumentID())
-	}
+	require.True(t, iterator.Next(),
+		"Next then Advance failed")
+	require.Equal(t, postings[0].DocumentID, iterator.DocumentID(),
+		"Next then Advance failed")
+	require.True(t, iterator.Advance(postings[129].DocumentID),
+		"Next then Advance failed")
+	require.Equal(t, postings[129].DocumentID, iterator.DocumentID())
 }
 
 func TestFTSPostingListInvalidInput(t *testing.T) {
@@ -149,24 +147,27 @@ func TestFTSPostingListInvalidInput(t *testing.T) {
 		{valid, valid},
 		{valid, {DocumentID: 0, TermFrequency: 1, DocumentLength: 1, Positions: []uint32{0}}},
 	}
-	for index, postings := range tests {
-		if list, err := BuildFTSPostingList(context.Background(), postings); list != nil || !errors.Is(err, ErrInvalidFTSPosting) {
-			t.Fatalf("case %d = %#v, %v", index, list, err)
+	for _, postings := range tests {
+		{
+			list, err := BuildFTSPostingList(context.Background(), postings)
+			require.Nil(t, list)
+			require.ErrorIs(t, err, ErrInvalidFTSPosting)
 		}
 	}
-	if _, err := BuildFTSPostingList(nil, nil); !errors.Is(err, ErrInvalidFTSPosting) {
-		t.Fatalf("nil context error = %v", err)
+	{
+		_, err := BuildFTSPostingList(nil, nil)
+		require.ErrorIs(t, err, ErrInvalidFTSPosting)
 	}
-	if _, err := OpenFTSPostingList(nil, nil); !errors.Is(err, ErrCorruptFTSPosting) {
-		t.Fatalf("nil open context error = %v", err)
+	{
+		_, err := OpenFTSPostingList(nil, nil)
+		require.ErrorIs(t, err, ErrCorruptFTSPosting)
 	}
 }
 
 func TestFTSPostingListCorruption(t *testing.T) {
 	list, err := BuildFTSPostingList(context.Background(), makeFTSPostingTestData(150))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	valid := list.Bytes()
 	tests := map[string]func([]byte) []byte{
 		"truncated": func(data []byte) []byte { return data[:20] },
@@ -212,8 +213,10 @@ func TestFTSPostingListCorruption(t *testing.T) {
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
 			data := mutate(append([]byte(nil), valid...))
-			if opened, err := OpenFTSPostingList(context.Background(), data); opened != nil || !errors.Is(err, ErrCorruptFTSPosting) {
-				t.Fatalf("Open = %#v, %v", opened, err)
+			{
+				opened, err := OpenFTSPostingList(context.Background(), data)
+				require.Nil(t, opened)
+				require.ErrorIs(t, err, ErrCorruptFTSPosting)
 			}
 		})
 	}
@@ -223,28 +226,31 @@ func TestFTSPostingListContextCancellation(t *testing.T) {
 	postings := makeFTSPostingTestData(5000)
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := BuildFTSPostingList(canceled, postings); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pre-canceled build = %v", err)
+	{
+		_, err := BuildFTSPostingList(canceled, postings)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	midBuild := newCancelAfterChecks(4)
-	if _, err := BuildFTSPostingList(midBuild, postings); !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-build = %v", err)
+	{
+		_, err := BuildFTSPostingList(midBuild, postings)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	list, err := BuildFTSPostingList(context.Background(), postings)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	midOpen := newCancelAfterChecks(4)
-	if _, err := OpenFTSPostingList(midOpen, list.Bytes()); !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-open = %v", err)
+	{
+		_, err := OpenFTSPostingList(midOpen, list.Bytes())
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
 func FuzzFTSPostingListOpen(f *testing.F) {
 	list, err := BuildFTSPostingList(context.Background(), makeFTSPostingTestData(140))
-	if err != nil {
-		f.Fatal(err)
-	}
+	require.NoError(f, err)
+
 	f.Add(list.Bytes())
 	f.Add([]byte{})
 	f.Add([]byte("ZVFP"))
@@ -253,19 +259,17 @@ func FuzzFTSPostingListOpen(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if opened.DocumentFrequency() > uint32(len(data)) {
-			t.Fatalf("impossible count %d for %d bytes", opened.DocumentFrequency(), len(data))
-		}
+		require.True(t, opened.DocumentFrequency() <= uint32(len(data)))
+
 		iterator := opened.Iterator()
 		var previous uint32
 		first := true
 		for iterator.Next() {
-			if !first && iterator.DocumentID() <= previous {
-				t.Fatal("document IDs are not increasing")
-			}
-			if uint32(len(iterator.Positions())) != iterator.TermFrequency() {
-				t.Fatal("position count differs from term frequency")
-			}
+			require.False(t, !first && iterator.DocumentID() <= previous,
+				"document IDs are not increasing")
+			require.Equal(t, iterator.TermFrequency(), uint32(len(iterator.Positions())),
+				"position count differs from term frequency")
+
 			previous = iterator.DocumentID()
 			first = false
 		}
@@ -275,8 +279,9 @@ func FuzzFTSPostingListOpen(f *testing.F) {
 func BenchmarkFTSPostingIterator(b *testing.B) {
 	list, err := BuildFTSPostingList(context.Background(), makeFTSPostingTestData(10000))
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	b.SetBytes(int64(len(list.data)))
 	b.ReportAllocs()
 	for b.Loop() {
@@ -286,7 +291,7 @@ func BenchmarkFTSPostingIterator(b *testing.B) {
 			count++
 		}
 		if count != 10000 {
-			b.Fatal(count)
+			require.Equal(b, 10000, count)
 		}
 	}
 }

@@ -17,12 +17,13 @@ package core
 import (
 	"context"
 	"errors"
-	"reflect"
 	"slices"
 	"sync"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMergeFTSTermDictionariesDenseRemapPositionsAndReopen(t *testing.T) {
@@ -40,30 +41,30 @@ func TestMergeFTSTermDictionariesDenseRemapPositionsAndReopen(t *testing.T) {
 	deleted1 := ailego.NewBitmap(2)
 	deleted1.Set(0)
 	before0, err := segment0.Encode(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	before1, err := segment1.Encode(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	merged, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{
 		{Dictionary: segment0, DeletedDocuments: deleted0},
 		{Dictionary: segment1, DeletedDocuments: deleted1},
 	})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		got, want := merged.Stats(), (FTSSegmentStats{TotalDocuments: 3, TotalTokens: 6})
+		require.Equal(t, want, got)
 	}
-	if got, want := merged.Stats(), (FTSSegmentStats{TotalDocuments: 3, TotalTokens: 6}); got != want {
-		t.Fatalf("stats = %#v, want %#v", got, want)
+	{
+		got, want := merged.Terms(), []string{"apple", "banana"}
+		require.Equal(t, want, got)
 	}
-	if got, want := merged.Terms(), []string{"apple", "banana"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("terms = %q, want %q", got, want)
-	}
+
 	for documentID := uint32(0); documentID < 3; documentID++ {
-		if length, ok := merged.DocumentLength(documentID); !ok || length != 2 {
-			t.Fatalf("document %d length = %d, %v", documentID, length, ok)
+		{
+			length, ok := merged.DocumentLength(documentID)
+			require.True(t, ok)
+			require.True(t, length == 2)
 		}
 	}
 	wantPostings := map[string][]FTSPosting{
@@ -79,45 +80,44 @@ func TestMergeFTSTermDictionariesDenseRemapPositionsAndReopen(t *testing.T) {
 	}
 	for term, want := range wantPostings {
 		info, postings, found := merged.Lookup(term)
-		if !found || info.DocumentFrequency != uint32(len(want)) || !reflect.DeepEqual(collectFTSPostings(postings.Iterator()), want) {
-			t.Fatalf("%q = %#v, %#v, %v; want %#v", term, info, collectFTSPostings(postings.Iterator()), found, want)
-		}
+		require.True(t, found)
+		require.Equal(t, uint32(len(want)), info.DocumentFrequency)
+		require.Equal(t, want, collectFTSPostings(postings.Iterator()))
 	}
-	if info, _, found := merged.Lookup("carrot"); found || info != (FTSTermInfo{}) {
-		t.Fatalf("deleted-only term survived: %#v", info)
+	{
+		info, _, found := merged.Lookup("carrot")
+		require.False(t, found)
+		require.Equal(t, FTSTermInfo{}, info)
 	}
+
 	appleInfo, _, _ := merged.Lookup("apple")
-	if appleInfo.MaximumTermFrequency != 2 {
-		t.Fatalf("apple max tf = %d", appleInfo.MaximumTermFrequency)
-	}
+	require.True(t, appleInfo.MaximumTermFrequency == 2)
 
 	pipeline := newFTSStandardTestPipeline(t)
 	node, err := ParseFTSQuery(context.Background(), `"apple banana"`, pipeline, FTSDefaultOperatorOR)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	iterator, err := NewFTSQueryIterator(context.Background(), merged, node, FTSQueryExecutionOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := collectFTSQueryDocuments(t, iterator), []uint32{0, 2}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("phrase IDs = %v, want %v", got, want)
+	require.NoError(t, err)
+	{
+		got, want := collectFTSQueryDocuments(t, iterator), []uint32{0, 2}
+		require.Equal(t, want, got)
 	}
 
 	encoded, err := merged.Encode(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	reopened, err := OpenFTSTermDictionary(context.Background(), encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertFTSDictionariesEqual(t, reopened, merged)
 	after0, _ := segment0.Encode(context.Background())
 	after1, _ := segment1.Encode(context.Background())
-	if !reflect.DeepEqual(before0, after0) || !reflect.DeepEqual(before1, after1) {
-		t.Fatal("merge mutated a source dictionary")
-	}
+	require.Equal(t, after0, before0,
+		"merge mutated a source dictionary")
+	require.Equal(t, after1, before1,
+		"merge mutated a source dictionary")
+
 	deleted0.Clear(1)
 	deleted1.Clear(0)
 	assertFTSDictionariesEqual(t, reopened, merged)
@@ -125,15 +125,16 @@ func TestMergeFTSTermDictionariesDenseRemapPositionsAndReopen(t *testing.T) {
 
 func TestMergeFTSTermDictionariesEmptyAllDeletedAndMaximumTF(t *testing.T) {
 	empty, err := MergeFTSTermDictionaries(context.Background(), nil)
-	if err != nil || empty.Stats() != (FTSSegmentStats{}) || empty.TermCount() != 0 {
-		t.Fatalf("empty merge = %#v, %v", empty, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, FTSSegmentStats{}, empty.Stats())
+	require.True(t, empty.TermCount() == 0)
+
 	encoded, err := empty.Encode(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reopened, err := OpenFTSTermDictionary(context.Background(), encoded); err != nil || reopened.Stats() != (FTSSegmentStats{}) {
-		t.Fatalf("reopen empty = %#v, %v", reopened, err)
+	require.NoError(t, err)
+	{
+		reopened, err := OpenFTSTermDictionary(context.Background(), encoded)
+		require.NoError(t, err)
+		require.Equal(t, FTSSegmentStats{}, reopened.Stats())
 	}
 
 	source := buildFTSTestDictionary(t, [][]Token{
@@ -143,54 +144,70 @@ func TestMergeFTSTermDictionariesEmptyAllDeletedAndMaximumTF(t *testing.T) {
 	deleteHighest := ailego.NewBitmap(2)
 	deleteHighest.Set(0)
 	merged, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{{Dictionary: source, DeletedDocuments: deleteHighest}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	info, postings, found := merged.Lookup("x")
-	if !found || info.MaximumTermFrequency != 1 || !reflect.DeepEqual(collectFTSPostings(postings.Iterator()), []FTSPosting{
+	require.True(t, found)
+	require.True(t, info.MaximumTermFrequency == 1)
+	require.Equal(t, []FTSPosting{
 		{DocumentID: 0, TermFrequency: 1, DocumentLength: 1, Positions: []uint32{0}},
-	}) {
-		t.Fatalf("max-tf merge = %#v, %#v, %v", info, collectFTSPostings(postings.Iterator()), found)
-	}
+	}, collectFTSPostings(postings.Iterator()))
+
 	deleteAll := ailego.NewBitmap(2)
 	deleteAll.Set(0)
 	deleteAll.Set(1)
 	allDeleted, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{{Dictionary: source, DeletedDocuments: deleteAll}})
-	if err != nil || allDeleted.Stats() != (FTSSegmentStats{}) || allDeleted.TermCount() != 0 {
-		t.Fatalf("all-deleted merge = %#v, %v", allDeleted, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, FTSSegmentStats{}, allDeleted.Stats())
+	require.True(t, allDeleted.TermCount() == 0)
 }
 
 func TestMergeFTSTermDictionariesValidationCancellationAndConcurrency(t *testing.T) {
 	source := buildFTSTestDictionary(t, [][]Token{{{Text: "x", Position: 0}}})
-	if merged, err := MergeFTSTermDictionaries(nil, nil); merged != nil || !errors.Is(err, ErrInvalidFTSMerge) {
-		t.Fatalf("nil context = %#v, %v", merged, err)
+	{
+		merged, err := MergeFTSTermDictionaries(nil, nil)
+		require.Nil(t, merged)
+		require.ErrorIs(t, err, ErrInvalidFTSMerge)
 	}
-	if merged, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{{}}); merged != nil || !errors.Is(err, ErrInvalidFTSMerge) {
-		t.Fatalf("nil dictionary = %#v, %v", merged, err)
+	{
+		merged, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{{}})
+		require.Nil(t, merged)
+		require.ErrorIs(t, err, ErrInvalidFTSMerge)
 	}
+
 	inconsistent := buildFTSTestDictionary(t, [][]Token{{{Text: "x", Position: 0}}})
 	inconsistent.stats.TotalTokens++
-	if merged, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{{Dictionary: inconsistent}}); merged != nil || !errors.Is(err, ErrInvalidFTSMerge) {
-		t.Fatalf("inconsistent dictionary = %#v, %v", merged, err)
+	{
+		merged, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{{Dictionary: inconsistent}})
+		require.Nil(t, merged)
+		require.ErrorIs(t, err, ErrInvalidFTSMerge)
 	}
+
 	outside := ailego.NewBitmap(1)
 	outside.Set(1)
-	if merged, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{{Dictionary: source, DeletedDocuments: outside}}); merged != nil || !errors.Is(err, ErrInvalidFTSMerge) {
-		t.Fatalf("outside deletion = %#v, %v", merged, err)
+	{
+		merged, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{{Dictionary: source, DeletedDocuments: outside}})
+		require.Nil(t, merged)
+		require.ErrorIs(t, err, ErrInvalidFTSMerge)
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if merged, err := MergeFTSTermDictionaries(canceled, []FTSSegmentView{{Dictionary: source}}); merged != nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled merge = %#v, %v", merged, err)
+	{
+		merged, err := MergeFTSTermDictionaries(canceled, []FTSSegmentView{{Dictionary: source}})
+		require.Nil(t, merged)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	largeDocuments := make([][]Token, 5000)
 	for index := range largeDocuments {
 		largeDocuments[index] = []Token{{Text: "x", Position: 0}}
 	}
 	large := buildFTSTestDictionary(t, largeDocuments)
-	if merged, err := MergeFTSTermDictionaries(newCancelAfterChecks(3), []FTSSegmentView{{Dictionary: large}}); merged != nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-merge cancellation = %#v, %v", merged, err)
+	{
+		merged, err := MergeFTSTermDictionaries(newCancelAfterChecks(3), []FTSSegmentView{{Dictionary: large}})
+		require.Nil(t, merged)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 
 	var wait sync.WaitGroup
@@ -212,7 +229,7 @@ func TestMergeFTSTermDictionariesValidationCancellationAndConcurrency(t *testing
 	wait.Wait()
 	close(errorsChannel)
 	for err := range errorsChannel {
-		t.Error(err)
+		assert.NoError(t, err)
 	}
 }
 
@@ -253,9 +270,8 @@ func FuzzMergeFTSTermDictionaries(f *testing.F) {
 			views[partIndex].DeletedDocuments = deleted
 		}
 		merged, err := MergeFTSTermDictionaries(context.Background(), views)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		want := buildFTSTestDictionary(t, survivors)
 		assertFTSDictionariesEqual(t, merged, want)
 	})
@@ -275,8 +291,11 @@ func BenchmarkMergeFTSTermDictionaries(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		if _, err := MergeFTSTermDictionaries(context.Background(), views); err != nil {
-			b.Fatal(err)
+		{
+			_, err := MergeFTSTermDictionaries(context.Background(), views)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }
@@ -284,20 +303,19 @@ func BenchmarkMergeFTSTermDictionaries(b *testing.B) {
 func assertFTSDictionariesEqual(t testing.TB, got, want *FTSTermDictionary) {
 	t.Helper()
 	if got == nil || want == nil {
-		if got != want {
-			t.Fatalf("dictionary nil mismatch: got %#v, want %#v", got, want)
-		}
+		require.Equal(t, want, got)
+
 		return
 	}
-	if got.Stats() != want.Stats() || !slices.Equal(got.Terms(), want.Terms()) || !slices.Equal(got.documentLengths, want.documentLengths) {
-		t.Fatalf("dictionary metadata = %#v/%q/%v, want %#v/%q/%v", got.Stats(), got.Terms(), got.documentLengths, want.Stats(), want.Terms(), want.documentLengths)
-	}
+	require.Equal(t, want.Stats(), got.Stats())
+	require.True(t, slices.Equal(got.Terms(), want.Terms()))
+	require.True(t, slices.Equal(got.documentLengths, want.documentLengths))
+
 	for _, term := range want.Terms() {
 		gotInfo, gotPostings, gotFound := got.Lookup(term)
 		wantInfo, wantPostings, wantFound := want.Lookup(term)
-		if gotFound != wantFound || gotInfo != wantInfo ||
-			!reflect.DeepEqual(collectFTSPostings(gotPostings.Iterator()), collectFTSPostings(wantPostings.Iterator())) {
-			t.Fatalf("term %q mismatch: %#v/%#v/%v, want %#v/%#v/%v", term, gotInfo, collectFTSPostings(gotPostings.Iterator()), gotFound, wantInfo, collectFTSPostings(wantPostings.Iterator()), wantFound)
-		}
+		require.Equal(t, wantFound, gotFound)
+		require.Equal(t, wantInfo, gotInfo)
+		require.Equal(t, collectFTSPostings(wantPostings.Iterator()), collectFTSPostings(gotPostings.Iterator()))
 	}
 }

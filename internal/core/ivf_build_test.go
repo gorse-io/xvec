@@ -16,13 +16,13 @@ package core
 
 import (
 	"context"
-	"errors"
 	"math"
-	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIVFBuildPartitionsVectors(t *testing.T) {
@@ -32,9 +32,8 @@ func TestIVFBuildPartitionsVectors(t *testing.T) {
 	options.NIterations = 20
 	options.Seed = 7
 	builder, err := NewIVFBuilder(2, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	input := []Candidate{
 		{Key: 10, Vector: []float32{0, 0}},
 		{Key: 11, Vector: []float32{0, 1}},
@@ -42,47 +41,46 @@ func TestIVFBuildPartitionsVectors(t *testing.T) {
 		{Key: 21, Vector: []float32{10, 11}},
 	}
 	for _, candidate := range input {
-		if err := builder.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.Add(context.Background(), candidate.Key, candidate.Vector)
+			require.NoError(t, err)
 		}
 	}
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if index.Dimension() != 2 || index.Metric() != MetricL2 || index.Len() != 4 || index.NList() != 2 {
-		t.Fatalf("metadata = (%d, %d, %d, %d)", index.Dimension(), index.Metric(), index.Len(), index.NList())
-	}
+	require.NoError(t, err)
+	require.True(t, index.Dimension() == 2)
+	require.Equal(t, MetricL2, index.Metric())
+	require.True(t, index.Len() == 4)
+	require.True(t, index.NList() == 2)
+
 	centroids := index.Centroids()
-	if len(centroids) != 2 {
-		t.Fatalf("centroids = %v", centroids)
-	}
+	require.Len(t, centroids, 2)
+
 	firstList, ok := index.ListForKey(10)
-	if !ok {
-		t.Fatal("key 10 is not assigned")
+	require.True(t, ok,
+		"key 10 is not assigned")
+	{
+		list, _ := index.ListForKey(11)
+		require.Equal(t, firstList, list)
 	}
-	if list, _ := index.ListForKey(11); list != firstList {
-		t.Fatalf("near vectors split across lists: %d and %d", firstList, list)
-	}
+
 	secondList, ok := index.ListForKey(20)
-	if !ok || secondList == firstList {
-		t.Fatalf("far cluster list = %d, first = %d", secondList, firstList)
+	require.True(t, ok)
+	require.NotEqual(t, firstList, secondList)
+	{
+		list, _ := index.ListForKey(21)
+		require.Equal(t, secondList, list)
 	}
-	if list, _ := index.ListForKey(21); list != secondList {
-		t.Fatalf("near vectors split across lists: %d and %d", secondList, list)
-	}
+
 	for _, list := range []int{firstList, secondList} {
 		candidates, err := index.List(list)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(candidates) != 2 || candidates[0].Key > candidates[1].Key {
-			t.Fatalf("list %d candidates = %#v", list, candidates)
-		}
+		require.NoError(t, err)
+		require.Len(t, candidates, 2)
+		require.True(t, candidates[0].Key <= candidates[1].Key)
 	}
-	if index.TrainingIterations() == 0 || math.IsNaN(index.TrainingCost()) || math.IsInf(index.TrainingCost(), 0) {
-		t.Fatalf("training stats = (%d, %g)", index.TrainingIterations(), index.TrainingCost())
-	}
+	require.False(t, index.TrainingIterations() == 0)
+	require.False(t, math.IsNaN(index.TrainingCost()))
+	require.False(t, math.IsInf(index.TrainingCost(), 0))
 }
 
 func TestIVFBuildOwnsOriginalVectors(t *testing.T) {
@@ -91,27 +89,29 @@ func TestIVFBuildOwnsOriginalVectors(t *testing.T) {
 	options.NList = 1
 	builder, _ := NewIVFBuilder(2, options)
 	input := []float32{1, 2}
-	if err := builder.Add(context.Background(), 7, input); err != nil {
-		t.Fatal(err)
+	{
+		err := builder.Add(context.Background(), 7, input)
+		require.NoError(t, err)
 	}
+
 	input[0] = 99
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	vector, found := index.Vector(7)
-	if !found || !slices.Equal(vector, []float32{1, 2}) {
-		t.Fatalf("vector = %v, %v", vector, found)
-	}
+	require.True(t, found)
+	require.True(t, slices.Equal(vector, []float32{1, 2}))
+
 	vector[0] = 88
 	candidates, _ := index.List(0)
 	candidates[0].Vector[0] = 77
 	centroids := index.Centroids()
 	centroids[0][0] = 66
 	vector, _ = index.Vector(7)
-	if vector[0] != 1 || index.Centroids()[0][0] != 1 {
-		t.Fatal("IVF accessors expose mutable index state")
-	}
+	require.True(t, vector[0] == 1,
+		"IVF accessors expose mutable index state")
+	require.True(t, index.Centroids()[0][0] == 1,
+		"IVF accessors expose mutable index state")
 }
 
 func TestIVFBuildDeterministicAcrossWorkers(t *testing.T) {
@@ -123,31 +123,30 @@ func TestIVFBuildDeterministicAcrossWorkers(t *testing.T) {
 		options.Seed = 123
 		options.Workers = workers
 		builder, err := NewIVFBuilder(3, options)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		for index := 0; index < 100; index++ {
 			vector := []float32{float32(index % 11), float32(index%7) / 2, float32(index%5) - 2}
-			if err := builder.Add(context.Background(), uint64(index+1), vector); err != nil {
-				t.Fatal(err)
+			{
+				err := builder.Add(context.Background(), uint64(index+1), vector)
+				require.NoError(t, err)
 			}
 		}
 		built, err := builder.Build(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		return built
 	}
 	one, many := build(1), build(8)
-	if !reflect.DeepEqual(one.Centroids(), many.Centroids()) || one.TrainingCost() != many.TrainingCost() {
-		t.Fatal("IVF training differs across worker counts")
-	}
+	require.Equal(t, many.Centroids(), one.Centroids(),
+		"IVF training differs across worker counts")
+	require.Equal(t, many.TrainingCost(), one.TrainingCost(),
+		"IVF training differs across worker counts")
+
 	for key := uint64(1); key <= 100; key++ {
 		left, _ := one.ListForKey(key)
 		right, _ := many.ListForKey(key)
-		if left != right {
-			t.Fatalf("key %d list = %d and %d", key, left, right)
-		}
+		require.Equal(t, right, left)
 	}
 }
 
@@ -156,30 +155,26 @@ func TestIVFBuildEmptyAndClusterCap(t *testing.T) {
 	options := DefaultIVFBuildOptions(MetricL2)
 	builder, _ := NewIVFBuilder(3, options)
 	empty, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if empty.Len() != 0 || empty.NList() != 0 || len(empty.Centroids()) != 0 {
-		t.Fatalf("empty index = (%d, %d, %v)", empty.Len(), empty.NList(), empty.Centroids())
-	}
-	if _, err := empty.List(0); !errors.Is(err, ErrInvalidIVFList) {
-		t.Fatalf("empty list error = %v", err)
+	require.NoError(t, err)
+	require.True(t, empty.Len() == 0)
+	require.True(t, empty.NList() == 0)
+	require.Len(t, empty.Centroids(), 0)
+	{
+		_, err := empty.List(0)
+		require.ErrorIs(t, err, ErrInvalidIVFList)
 	}
 
 	options.NList = 100
 	builder, _ = NewIVFBuilder(1, options)
 	for key := uint64(1); key <= 3; key++ {
-		if err := builder.Add(context.Background(), key, []float32{float32(key)}); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.Add(context.Background(), key, []float32{float32(key)})
+			require.NoError(t, err)
 		}
 	}
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if index.NList() != 3 {
-		t.Fatalf("effective NList = %d, want 3", index.NList())
-	}
+	require.NoError(t, err)
+	require.True(t, index.NList() == 3)
 }
 
 func TestIVFBuilderLifecycleAndValidation(t *testing.T) {
@@ -193,47 +188,63 @@ func TestIVFBuilderLifecycleAndValidation(t *testing.T) {
 		func() IVFBuildOptions { value := valid; value.Tolerance = -1; return value }(),
 		func() IVFBuildOptions { value := valid; value.Tolerance = math.NaN(); return value }(),
 	} {
-		if _, err := NewIVFBuilder(2, options); !errors.Is(err, ErrInvalidIVFOptions) {
-			t.Errorf("options %#v error = %v", options, err)
+		{
+			_, err := NewIVFBuilder(2, options)
+			assert.ErrorIs(t, err, ErrInvalidIVFOptions)
 		}
 	}
-	if _, err := NewIVFBuilder(0, valid); !errors.Is(err, ErrInvalidDimension) {
-		t.Fatalf("dimension error = %v", err)
+	{
+		_, err := NewIVFBuilder(0, valid)
+		require.ErrorIs(t, err, ErrInvalidDimension)
 	}
+
 	builder, _ := NewIVFBuilder(2, valid)
-	if err := builder.Add(nil, 1, []float32{1, 2}); err == nil {
-		t.Fatal("nil add context accepted")
+	{
+		err := builder.Add(nil, 1, []float32{1, 2})
+		require.Error(t, err,
+			"nil add context accepted")
 	}
-	if err := builder.Add(context.Background(), 1, []float32{1}); !errors.Is(err, ailego.ErrDimensionMismatch) {
-		t.Fatalf("vector dimension error = %v", err)
+	{
+		err := builder.Add(context.Background(), 1, []float32{1})
+		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
 	}
-	if err := builder.Add(context.Background(), 1, []float32{1, float32(math.Inf(1))}); !errors.Is(err, ailego.ErrNonFiniteVector) {
-		t.Fatalf("non-finite error = %v", err)
+	{
+		err := builder.Add(context.Background(), 1, []float32{1, float32(math.Inf(1))})
+		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
 	}
-	if err := builder.Add(context.Background(), 1, []float32{1, 2}); err != nil {
-		t.Fatal(err)
+	{
+		err := builder.Add(context.Background(), 1, []float32{1, 2})
+		require.NoError(t, err)
 	}
-	if err := builder.Add(context.Background(), 1, []float32{3, 4}); !errors.Is(err, ErrDuplicateKey) {
-		t.Fatalf("duplicate error = %v", err)
+	{
+		err := builder.Add(context.Background(), 1, []float32{3, 4})
+		require.ErrorIs(t, err, ErrDuplicateKey)
 	}
+
 	index, err := builder.Build(context.Background())
-	if err != nil || index.Len() != 1 {
-		t.Fatalf("build = %v, %v", index, err)
+	require.NoError(t, err)
+	require.True(t, index.Len() == 1)
+	{
+		_, err := builder.Build(context.Background())
+		require.ErrorIs(t, err, ErrBuilderClosed)
 	}
-	if _, err := builder.Build(context.Background()); !errors.Is(err, ErrBuilderClosed) {
-		t.Fatalf("second build error = %v", err)
+	{
+		err := builder.Add(context.Background(), 2, []float32{3, 4})
+		require.ErrorIs(t, err, ErrBuilderClosed)
 	}
-	if err := builder.Add(context.Background(), 2, []float32{3, 4}); !errors.Is(err, ErrBuilderClosed) {
-		t.Fatalf("post-build add error = %v", err)
+	{
+		_, found := index.Vector(99)
+		require.False(t, found,
+			"missing vector found")
 	}
-	if _, found := index.Vector(99); found {
-		t.Fatal("missing vector found")
+	{
+		_, found := index.ListForKey(99)
+		require.False(t, found,
+			"missing list assignment found")
 	}
-	if _, found := index.ListForKey(99); found {
-		t.Fatal("missing list assignment found")
-	}
-	if _, err := index.List(-1); !errors.Is(err, ErrInvalidIVFList) {
-		t.Fatalf("negative list error = %v", err)
+	{
+		_, err := index.List(-1)
+		require.ErrorIs(t, err, ErrInvalidIVFList)
 	}
 }
 
@@ -243,19 +254,21 @@ func TestIVFBuilderCancellationCanRetry(t *testing.T) {
 	options.NList = 2
 	builder, _ := NewIVFBuilder(1, options)
 	for key := uint64(1); key <= 4; key++ {
-		if err := builder.Add(context.Background(), key, []float32{float32(key)}); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.Add(context.Background(), key, []float32{float32(key)})
+			require.NoError(t, err)
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := builder.Build(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled build error = %v", err)
+	{
+		_, err := builder.Build(ctx)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	index, err := builder.Build(context.Background())
-	if err != nil || index.Len() != 4 {
-		t.Fatalf("retry = %v, %v", index, err)
-	}
+	require.NoError(t, err)
+	require.True(t, index.Len() == 4)
 }
 
 func TestIVFBuildOptionsAreValueSemantic(t *testing.T) {
@@ -264,16 +277,14 @@ func TestIVFBuildOptionsAreValueSemantic(t *testing.T) {
 	options.NList = 2
 	builder, _ := NewIVFBuilder(1, options)
 	for key, value := range map[uint64]float32{1: -2, 2: -1, 3: 1, 4: 2} {
-		if err := builder.Add(context.Background(), key, []float32{value}); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.Add(context.Background(), key, []float32{value})
+			require.NoError(t, err)
 		}
 	}
 	options.NList = 99
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if index.BuildOptions().NList != 2 || index.Metric() != MetricIP {
-		t.Fatalf("options = %#v", index.BuildOptions())
-	}
+	require.NoError(t, err)
+	require.True(t, index.BuildOptions().NList == 2)
+	require.Equal(t, MetricIP, index.Metric())
 }

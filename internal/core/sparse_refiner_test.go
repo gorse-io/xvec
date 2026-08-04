@@ -16,68 +16,73 @@ package core
 
 import (
 	"context"
-	"errors"
 	"math"
 	"slices"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOriginalSparseVectorRefiner(t *testing.T) {
 	t.Parallel()
 	provider, err := NewSparseFlatIndex(MetricIP)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for key, vector := range map[uint64]SparseVector{
 		10: {Indices: []uint32{0, 3}, Values: []float32{1, 4}},
 		20: {Indices: []uint32{0, 2}, Values: []float32{2, 5}},
 		30: {Indices: []uint32{1, 3}, Values: []float32{9, 1}},
 	} {
-		if err := provider.AddSparse(context.Background(), key, vector); err != nil {
-			t.Fatal(err)
+		{
+			err := provider.AddSparse(context.Background(), key, vector)
+			require.NoError(t, err)
 		}
 	}
 	refiner, err := NewOriginalSparseVectorRefiner(provider)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	query := SparseVector{Indices: []uint32{0, 3}, Values: []float32{2, 1}}
 	results, err := refiner.RefineSparse(context.Background(), query,
 		[]Result{{Key: 30, Score: 99}, {Key: 10}, {Key: 20}, {Key: 10, Score: -1}},
 		SearchOptions{TopK: 3, Radius: 4, Filter: func(key uint64) bool { return key != 30 }},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(results, []Result{{Key: 10, Score: 6}, {Key: 20, Score: 4}}) {
-		t.Fatalf("results = %#v", results)
-	}
+	require.NoError(t, err)
+	require.True(t, slices.Equal(results, []Result{{Key: 10, Score: 6}, {Key: 20, Score: 4}}))
 }
 
 func TestOriginalSparseVectorRefinerValidation(t *testing.T) {
 	t.Parallel()
-	if _, err := NewOriginalSparseVectorRefiner(nil); err == nil {
-		t.Fatal("nil provider accepted")
+	{
+		_, err := NewOriginalSparseVectorRefiner(nil)
+		require.Error(t, err,
+			"nil provider accepted")
 	}
+
 	provider, _ := NewSparseFlatIndex(MetricIP)
 	refiner, _ := NewOriginalSparseVectorRefiner(provider)
 	valid := SparseVector{Indices: []uint32{1}, Values: []float32{1}}
-	if _, err := refiner.RefineSparse(nil, valid, nil, SearchOptions{TopK: 1}); err == nil {
-		t.Fatal("nil context accepted")
+	{
+		_, err := refiner.RefineSparse(nil, valid, nil, SearchOptions{TopK: 1})
+		require.Error(t, err,
+			"nil context accepted")
 	}
+
 	invalid := SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.NaN())}}
-	if _, err := refiner.RefineSparse(context.Background(), invalid, nil, SearchOptions{TopK: 1}); !errors.Is(err, ailego.ErrNonFiniteVector) {
-		t.Fatalf("invalid query = %v", err)
+	{
+		_, err := refiner.RefineSparse(context.Background(), invalid, nil, SearchOptions{TopK: 1})
+		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
 	}
-	if _, err := refiner.RefineSparse(context.Background(), valid, []Result{{Key: 99}}, SearchOptions{TopK: 1}); !errors.Is(err, ErrMissingRefineVector) {
-		t.Fatalf("missing vector = %v", err)
+	{
+		_, err := refiner.RefineSparse(context.Background(), valid, []Result{{Key: 99}}, SearchOptions{TopK: 1})
+		require.ErrorIs(t, err, ErrMissingRefineVector)
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := refiner.RefineSparse(canceled, valid, nil, SearchOptions{TopK: 1}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled refine = %v", err)
+	{
+		_, err := refiner.RefineSparse(canceled, valid, nil, SearchOptions{TopK: 1})
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
@@ -85,8 +90,9 @@ func TestRefinedSparseSearch(t *testing.T) {
 	t.Parallel()
 	provider, _ := NewSparseFlatIndex(MetricIP)
 	for key, value := range map[uint64]float32{1: 1, 2: 2, 3: 3, 4: 4} {
-		if err := provider.AddSparse(context.Background(), key, SparseVector{Indices: []uint32{0}, Values: []float32{value}}); err != nil {
-			t.Fatal(err)
+		{
+			err := provider.AddSparse(context.Background(), key, SparseVector{Indices: []uint32{0}, Values: []float32{value}})
+			require.NoError(t, err)
 		}
 	}
 	base := &recordingSparseSearcher{
@@ -98,17 +104,14 @@ func TestRefinedSparseSearch(t *testing.T) {
 		SparseVector{Indices: []uint32{0}, Values: []float32{1}},
 		SearchOptions{TopK: 2, Radius: 2}, 2,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(results, []Result{{Key: 4, Score: 4}, {Key: 3, Score: 3}}) {
-		t.Fatalf("results = %#v", results)
-	}
-	if base.options.TopK != 4 || base.options.Radius != 0 {
-		t.Fatalf("base options = %#v", base.options)
-	}
-	if _, err := RefinedSparseSearch(context.Background(), nil, refiner, SparseVector{}, SearchOptions{TopK: 1}, 1); err == nil {
-		t.Fatal("nil base accepted")
+	require.NoError(t, err)
+	require.True(t, slices.Equal(results, []Result{{Key: 4, Score: 4}, {Key: 3, Score: 3}}))
+	require.True(t, base.options.TopK == 4)
+	require.True(t, base.options.Radius == 0)
+	{
+		_, err := RefinedSparseSearch(context.Background(), nil, refiner, SparseVector{}, SearchOptions{TopK: 1}, 1)
+		require.Error(t, err,
+			"nil base accepted")
 	}
 }
 

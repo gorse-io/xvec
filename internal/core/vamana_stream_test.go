@@ -18,10 +18,11 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestVamanaIncrementalFailuresAreAtomic(t *testing.T) {
@@ -29,35 +30,37 @@ func TestVamanaIncrementalFailuresAreAtomic(t *testing.T) {
 	options.MaxDegree, options.SearchListSize = 8, 32
 	index := buildVamana(t, hnswBuildInputs(100), options)
 	before, err := encodeVamanaIndex(context.Background(), index)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	vector := []float32{1, 2, 3}
-	if err := index.Add(nil, 999999, vector); err == nil {
-		t.Fatal("nil Add context succeeded")
+	{
+		err := index.Add(nil, 999999, vector)
+		require.Error(t, err,
+			"nil Add context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := index.Add(canceled, 999999, vector); err != context.Canceled {
-		t.Fatalf("pre-canceled Add error = %v", err)
+	{
+		err := index.Add(canceled, 999999, vector)
+		require.Equal(t, context.Canceled, err)
 	}
+
 	midGeneration := newCancelAfterChecks(4)
-	if err := index.Add(midGeneration, 999999, vector); err != context.Canceled {
-		t.Fatalf("mid-generation Add error = %v", err)
+	{
+		err := index.Add(midGeneration, 999999, vector)
+		require.Equal(t, context.Canceled, err)
 	}
+
 	after, err := encodeVamanaIndex(context.Background(), index)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.True(t, slices.Equal(after, before),
+		"failed Add changed Vamana generation")
+	{
+		err := index.Add(context.Background(), 999999, vector)
+		require.NoError(t, err)
 	}
-	if !slices.Equal(after, before) {
-		t.Fatal("failed Add changed Vamana generation")
-	}
-	if err := index.Add(context.Background(), 999999, vector); err != nil {
-		t.Fatal(err)
-	}
-	if index.Len() != 101 {
-		t.Fatalf("successful Add length = %d", index.Len())
-	}
+	require.True(t, index.Len() == 101)
 }
 
 func TestVamanaConcurrentAddSearchSaveAndOpen(t *testing.T) {
@@ -120,11 +123,9 @@ func TestVamanaConcurrentAddSearchSaveAndOpen(t *testing.T) {
 	readers.Wait()
 	close(errCh)
 	for err := range errCh {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
-	if index.Len() != 36 {
-		t.Fatalf("concurrent final length = %d", index.Len())
-	}
+	require.True(t, index.Len() == 36)
 }
 
 func TestScalarQuantizedVamanaSearch(t *testing.T) {
@@ -133,34 +134,35 @@ func TestScalarQuantizedVamanaSearch(t *testing.T) {
 	options.MaxDegree, options.SearchListSize = 8, 32
 	base := buildVamana(t, inputs, options)
 	index, err := NewScalarQuantizedVamanaIndex(context.Background(), base, QuantizationInt8, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	flat, err := NewScalarQuantizedFlatIndex(context.Background(), 3, MetricL2, QuantizationInt8, nil, inputs)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	query := []float32{7.25, 11.5, 1.1}
 	search := VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 15, Filter: func(key uint64) bool { return key%2 == 1 }}, EFSearch: 80}
 	got, err := index.SearchVamana(context.Background(), query, search)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want, err := flat.SearchWithOptions(context.Background(), query, search.SearchOptions)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	{
+		vector, found := index.Vector(inputs[0].Key)
+		require.True(t, found,
+			"quantized Vamana lost original vector")
+		require.Equal(t, inputs[0].Vector, vector,
+			"quantized Vamana lost original vector")
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("small quantized Vamana differs: %#v vs %#v", got, want)
+	{
+		_, err := NewScalarQuantizedVamanaIndex(nil, base, QuantizationInt8, nil)
+		require.Error(t, err,
+			"nil quantization context succeeded")
 	}
-	if vector, found := index.Vector(inputs[0].Key); !found || !reflect.DeepEqual(vector, inputs[0].Vector) {
-		t.Fatal("quantized Vamana lost original vector")
-	}
-	if _, err := NewScalarQuantizedVamanaIndex(nil, base, QuantizationInt8, nil); err == nil {
-		t.Fatal("nil quantization context succeeded")
-	}
-	if _, err := NewScalarQuantizedVamanaIndex(context.Background(), nil, QuantizationInt8, nil); err == nil {
-		t.Fatal("nil source index succeeded")
+	{
+		_, err := NewScalarQuantizedVamanaIndex(context.Background(), nil, QuantizationInt8, nil)
+		require.Error(t, err,
+			"nil source index succeeded")
 	}
 }
 
@@ -174,8 +176,11 @@ func BenchmarkVamanaSearch(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := index.SearchVamana(context.Background(), query, search); err != nil {
-			b.Fatal(err)
+		{
+			_, err := index.SearchVamana(context.Background(), query, search)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }

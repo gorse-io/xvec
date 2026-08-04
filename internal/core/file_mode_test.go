@@ -18,6 +18,8 @@ import (
 	"io/fs"
 	"runtime"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func assertPrivateFileMode(t testing.TB, mode fs.FileMode) {
@@ -25,7 +27,5 @@ func assertPrivateFileMode(t testing.TB, mode fs.FileMode) {
 	if runtime.GOOS == "windows" {
 		return
 	}
-	if mode.Perm()&0o077 != 0 {
-		t.Fatalf("artifact mode = %o, want private", mode.Perm())
-	}
+	require.Zero(t, mode.Perm()&0o077, "artifact mode = %o, want private", mode.Perm())
 }

@@ -19,20 +19,18 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOptimizeCompactsLiveDocumentsAndPrunesArtifacts(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "optimize")
 	collection, err := CreateAndOpen(ctx, path, testPublicCollectionSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	documents := []Document{
 		testPublicDocument("a", "alpha", "low", 1, 1, []float32{1, 0}),
@@ -45,32 +43,36 @@ func TestOptimizeCompactsLiveDocumentsAndPrunesArtifacts(t *testing.T) {
 	wantIDs := make(map[string]uint64, len(documents))
 	for start := 0; start < len(documents); start += 2 {
 		results, insertErr := collection.Insert(ctx, documents[start:start+2])
-		if insertErr != nil {
-			t.Fatal(insertErr)
-		}
+		require.NoError(t, insertErr)
+
 		for index := range results {
 			wantIDs[results[index].PrimaryKey] = results[index].DocID
 		}
-		if err := collection.Flush(ctx); err != nil {
-			t.Fatal(err)
+		{
+			err := collection.Flush(ctx)
+			require.NoError(t, err)
 		}
 	}
 	initial := collection.store.Manifest()
-	if len(initial.PersistedSegments) != 3 {
-		t.Fatalf("initial segments = %d", len(initial.PersistedSegments))
-	}
+	require.Len(t, initial.PersistedSegments, 3)
+
 	unknown := filepath.Join(path, "segments", "application", "note.txt")
-	if err := os.MkdirAll(filepath.Dir(unknown), 0o755); err != nil {
-		t.Fatal(err)
+	{
+		err := os.MkdirAll(filepath.Dir(unknown), 0o755)
+		require.NoError(t, err)
 	}
-	if err := os.WriteFile(unknown, []byte("retain me"), 0o644); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(unknown, []byte("retain me"), 0o644)
+		require.NoError(t, err)
 	}
+
 	outside := t.TempDir()
 	escapeTarget := filepath.Join(outside, "data-external.seg")
-	if err := os.WriteFile(escapeTarget, []byte("external"), 0o644); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(escapeTarget, []byte("external"), 0o644)
+		require.NoError(t, err)
 	}
+
 	escapeLink := filepath.Join(path, "segments", "escape")
 	symlinkCreated := os.Symlink(outside, escapeLink) == nil
 
@@ -78,209 +80,239 @@ func TestOptimizeCompactsLiveDocumentsAndPrunesArtifacts(t *testing.T) {
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 6,
 		Projection: Projection{OutputFields: []string{"title"}},
 	})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 3})
+		require.NoError(t, err)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 3}); err != nil {
-		t.Fatal(err)
-	}
+
 	optimized := collection.store.Manifest()
-	if optimized.Generation <= initial.Generation || len(optimized.PersistedSegments) != 1 || optimized.WritingSegmentStartDocID != 6 {
-		t.Fatalf("optimized manifest = %#v", optimized)
-	}
+	require.True(t, optimized.Generation > initial.Generation)
+	require.Len(t, optimized.PersistedSegments, 1)
+	require.True(t, optimized.WritingSegmentStartDocID == 6)
+
 	assertOptimizeArtifacts(t, path, 1)
-	if content, err := os.ReadFile(unknown); err != nil || string(content) != "retain me" {
-		t.Fatalf("unknown artifact = %q, %v", content, err)
+	{
+		content, err := os.ReadFile(unknown)
+		require.NoError(t, err)
+		require.True(t, string(content) == "retain me")
 	}
+
 	if symlinkCreated {
-		if content, err := os.ReadFile(escapeTarget); err != nil || string(content) != "external" {
-			t.Fatalf("symlink escape target = %q, %v", content, err)
+		{
+			content, err := os.ReadFile(escapeTarget)
+			require.NoError(t, err)
+			require.True(t, string(content) == "external")
 		}
 	}
 	after, err := collection.Query(ctx, VectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 6,
 		Projection: Projection{OutputFields: []string{"title"}},
 	})
-	if err != nil || !reflect.DeepEqual(after, before) {
-		t.Fatalf("query after optimize = %#v, %v; want %#v", after, err, before)
-	}
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+
 	assertOptimizeDocumentIDs(t, ctx, collection, wantIDs)
 
 	// A canonical collection is a manifest no-op, while prune remains safe to
 	// retry for a process that stopped just after an earlier publication.
 	generation := optimized.Generation
-	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 1}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 1})
+		require.NoError(t, err)
 	}
-	if got := collection.store.Manifest().Generation; got != generation {
-		t.Fatalf("no-op optimize advanced generation to %d", got)
+	{
+		got := collection.store.Manifest().Generation
+		require.Equal(t, generation, got)
 	}
 
 	updated, err := collection.Update(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{"rating": int32(10)}}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	wantIDs["a"] = updated[0].DocID
-	if _, err := collection.Delete(ctx, []string{"e"}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Delete(ctx, []string{"e"})
+		require.NoError(t, err)
 	}
+
 	delete(wantIDs, "e")
 	temporary := testPublicDocument("temporary", "temporary", "low", 7, 7, []float32{7, 0})
 	inserted, err := collection.Insert(ctx, []Document{temporary})
-	if err != nil || inserted[0].DocID != 7 {
-		t.Fatalf("temporary insert = %#v, %v", inserted, err)
+	require.NoError(t, err)
+	require.True(t, inserted[0].DocID == 7)
+	{
+		_, err := collection.Delete(ctx, []string{"temporary"})
+		require.NoError(t, err)
 	}
-	if _, err := collection.Delete(ctx, []string{"temporary"}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2})
+		require.NoError(t, err)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
-		t.Fatal(err)
-	}
+
 	optimized = collection.store.Manifest()
-	if len(optimized.PersistedSegments) != 2 || optimized.WritingSegmentStartDocID != 8 {
-		t.Fatalf("optimized gapped manifest = %#v", optimized)
-	}
+	require.Len(t, optimized.PersistedSegments, 2)
+	require.True(t, optimized.WritingSegmentStartDocID == 8)
+
 	assertOptimizeArtifacts(t, path, 2)
 	assertOptimizeDocumentIDs(t, ctx, collection, wantIDs)
 	fetched, err := collection.Fetch(ctx, []string{"a", "e", "temporary"}, Projection{})
-	if err != nil || fetched[0] == nil || fetched[0].Fields["rating"] != int32(10) || fetched[1] != nil || fetched[2] != nil {
-		t.Fatalf("fetch after delete reclamation = %#v, %v", fetched, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, fetched[0])
+	require.Equal(t, int32(10), fetched[0].Fields["rating"])
+	require.Nil(t, fetched[1])
+	require.Nil(t, fetched[2])
 
 	next := testPublicDocument("next", "next", "low", 8, 8, []float32{8, 0})
 	inserted, err = collection.Insert(ctx, []Document{next})
-	if err != nil || inserted[0].DocID != 8 {
-		t.Fatalf("next insert = %#v, %v", inserted, err)
-	}
+	require.NoError(t, err)
+	require.True(t, inserted[0].DocID == 8)
+
 	wantIDs["next"] = 8
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	assertOptimizeDocumentIDs(t, ctx, collection, wantIDs)
-	if collection.Stats().DocumentCount != uint64(len(wantIDs)) {
-		t.Fatalf("reopened document count = %d", collection.Stats().DocumentCount)
-	}
+	require.Equal(t, uint64(len(wantIDs)), collection.Stats().DocumentCount)
 }
 
 func TestOptimizeFullyDeletedCollectionKeepsDocumentIDsMonotonic(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "optimize-empty")
 	collection, err := CreateAndOpen(ctx, path, testPublicCollectionSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	documents := []Document{
 		testPublicDocument("a", "a", "low", 1, 1, []float32{1, 0}),
 		testPublicDocument("b", "b", "high", 2, 2, []float32{2, 0}),
 	}
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		require.NoError(t, err)
 	}
-	if err := collection.Flush(ctx); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
 	}
-	if _, err := collection.Delete(ctx, []string{"a", "b"}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Delete(ctx, []string{"a", "b"})
+		require.NoError(t, err)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{})
+		require.NoError(t, err)
 	}
+
 	manifest := collection.store.Manifest()
-	if len(manifest.PersistedSegments) != 0 || manifest.WritingSegmentStartDocID != 2 || collection.Stats().DocumentCount != 0 {
-		t.Fatalf("fully deleted manifest = %#v, stats = %#v", manifest, collection.Stats())
-	}
+	require.Len(t, manifest.PersistedSegments, 0)
+	require.True(t, manifest.WritingSegmentStartDocID == 2)
+	require.True(t, collection.Stats().DocumentCount == 0)
+
 	assertOptimizeArtifacts(t, path, 0)
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
+
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
 	inserted, err := collection.Insert(ctx, []Document{testPublicDocument("c", "c", "low", 3, 3, []float32{3, 0})})
-	if err != nil || inserted[0].DocID != 2 {
-		t.Fatalf("insert after full reclamation = %#v, %v", inserted, err)
-	}
+	require.NoError(t, err)
+	require.True(t, inserted[0].DocID == 2)
 }
 
 func TestOptimizeValidationAndRollback(t *testing.T) {
 	ctx := context.Background()
 	var nilCollection *Collection
-	if err := nilCollection.Optimize(ctx, OptimizeOptions{}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil collection Optimize = %v", err)
+	{
+		err := nilCollection.Optimize(ctx, OptimizeOptions{})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
 
 	path := filepath.Join(t.TempDir(), "optimize-errors")
 	collection, err := CreateAndOpen(ctx, path, testPublicCollectionSchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := collection.Optimize(nil, OptimizeOptions{})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if err := collection.Optimize(nil, OptimizeOptions{}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil context Optimize = %v", err)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{Concurrency: -1})
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: -1}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("negative concurrency Optimize = %v", err)
-	}
+
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := collection.Optimize(canceled, OptimizeOptions{}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled Optimize = %v", err)
+	{
+		err := collection.Optimize(canceled, OptimizeOptions{})
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	initialGeneration := collection.store.Manifest().Generation
-	if err := collection.Optimize(ctx, OptimizeOptions{}); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{})
+		require.NoError(t, err)
 	}
-	if got := collection.store.Manifest().Generation; got != initialGeneration {
-		t.Fatalf("empty Optimize advanced generation to %d", got)
+	{
+		got := collection.store.Manifest().Generation
+		require.Equal(t, initialGeneration, got)
 	}
-	if _, err := collection.Insert(ctx, []Document{testPublicDocument("a", "a", "low", 1, 1, []float32{1, 0})}); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, []Document{testPublicDocument("a", "a", "low", 1, 1, []float32{1, 0})})
+		require.NoError(t, err)
 	}
+
 	initialGeneration = collection.store.Manifest().Generation
 	versionLock, err := ailego.AcquireFileLock(ctx, filepath.Join(path, ".version.lock"), ailego.LockExclusive)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	deadline, cancel := context.WithTimeout(ctx, 75*time.Millisecond)
 	err = collection.Optimize(deadline, OptimizeOptions{Concurrency: 2})
 	cancel()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		_ = versionLock.Close()
-		t.Fatalf("blocked Optimize = %v", err)
 	}
-	if err := versionLock.Close(); err != nil {
-		t.Fatal(err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	{
+		err := versionLock.Close()
+		require.NoError(t, err)
 	}
-	if got := collection.store.Manifest().Generation; got != initialGeneration {
-		t.Fatalf("failed Optimize published generation %d", got)
+	{
+		got := collection.store.Manifest().Generation
+		require.Equal(t, initialGeneration, got)
 	}
+
 	fetched, err := collection.Fetch(ctx, []string{"a"}, Projection{})
-	if err != nil || fetched[0] == nil || fetched[0].DocID != 0 {
-		t.Fatalf("document after Optimize rollback = %#v, %v", fetched, err)
+	require.NoError(t, err)
+	require.NotNil(t, fetched[0])
+	require.True(t, fetched[0].DocID == 0)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{})
+		require.ErrorIs(t, err, ErrFailedPrecondition)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{}); !errors.Is(err, ErrFailedPrecondition) {
-		t.Fatalf("closed Optimize = %v", err)
-	}
+
 	readOnlyOptions := NewCollectionOptions()
 	readOnlyOptions.ReadOnly = true
 	collection, err = Open(ctx, path, readOnlyOptions)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := collection.Optimize(ctx, OptimizeOptions{})
+		require.ErrorIs(t, err, ErrPermissionDenied)
 	}
-	if err := collection.Optimize(ctx, OptimizeOptions{}); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("read-only Optimize = %v", err)
-	}
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
 }
 
@@ -291,13 +323,11 @@ func assertOptimizeDocumentIDs(t *testing.T, ctx context.Context, collection *Co
 		keys = append(keys, key)
 	}
 	fetched, err := collection.Fetch(ctx, keys, Projection{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for index, key := range keys {
-		if fetched[index] == nil || fetched[index].DocID != want[key] {
-			t.Fatalf("document %q = %#v, want ID %d", key, fetched[index], want[key])
-		}
+		require.NotNil(t, fetched[index])
+		require.Equal(t, want[key], fetched[index].DocID)
 	}
 }
 
@@ -312,22 +342,18 @@ func assertOptimizeArtifacts(t *testing.T, path string, segments int) {
 	}
 	for pattern, want := range patterns {
 		matches, err := filepath.Glob(pattern)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		filtered := matches[:0]
 		for _, name := range matches {
 			parent, statErr := os.Lstat(filepath.Dir(name))
-			if statErr != nil {
-				t.Fatal(statErr)
-			}
+			require.NoError(t, statErr)
+
 			if parent.Mode()&os.ModeSymlink == 0 {
 				filtered = append(filtered, name)
 			}
 		}
 		matches = filtered
-		if len(matches) != want {
-			t.Fatalf("artifacts %q = %v, want %d", pattern, matches, want)
-		}
+		require.Len(t, matches, want)
 	}
 }

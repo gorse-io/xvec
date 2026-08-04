@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSimplifyFTSQueryParsedExpressions(t *testing.T) {
@@ -48,24 +50,20 @@ func TestSimplifyFTSQueryParsedExpressions(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.query, func(t *testing.T) {
 			parsed, err := ParseFTSQuery(context.Background(), test.query, pipeline, FTSDefaultOperatorOR)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			before := parsed.String()
 			simplified, err := SimplifyFTSQuery(context.Background(), parsed)
-			if err != nil {
-				t.Fatal(err)
+			require.NoError(t, err)
+			{
+				got := simplified.String()
+				require.Equal(t, test.want, got)
 			}
-			if got := simplified.String(); got != test.want {
-				t.Fatalf("simplified = %q, want %q (raw %q)", got, test.want, before)
-			}
-			if parsed.String() != before {
-				t.Fatalf("simplification mutated input: %q -> %q", before, parsed.String())
-			}
+			require.Equal(t, before, parsed.String())
+
 			twice, err := SimplifyFTSQuery(context.Background(), simplified)
-			if err != nil || twice.String() != simplified.String() {
-				t.Fatalf("second simplify = %#v, %v", twice, err)
-			}
+			require.NoError(t, err)
+			require.Equal(t, simplified.String(), twice.String())
 		})
 	}
 }
@@ -99,11 +97,10 @@ func TestSimplifyFTSQueryEmptyAndModifierRules(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			simplified, err := SimplifyFTSQuery(context.Background(), test.node)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := simplified.String(); got != test.want {
-				t.Fatalf("simplified = %q, want %q", got, test.want)
+			require.NoError(t, err)
+			{
+				got := simplified.String()
+				require.Equal(t, test.want, got)
 			}
 		})
 	}
@@ -120,63 +117,77 @@ func TestSimplifyFTSQueryPhraseDedupAndOwnership(t *testing.T) {
 		},
 	}
 	simplified, err := SimplifyFTSQuery(context.Background(), node)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		got := simplified.String()
+		require.True(t, got == `OR("to be"^5.000000 "be to")`)
 	}
-	if got := simplified.String(); got != `OR("to be"^5.000000 "be to")` {
-		t.Fatalf("simplified = %q", got)
-	}
+
 	phraseTerms[0] = "changed"
 	node.Children[1].(*FTSPhraseQueryNode).Terms[0] = "also changed"
-	if simplified.String() != `OR("to be"^5.000000 "be to")` {
-		t.Fatal("simplified AST aliases input storage")
-	}
+	require.True(t, simplified.String() == `OR("to be"^5.000000 "be to")`,
+		"simplified AST aliases input storage")
 }
 
 func TestSimplifyFTSQueryInvalidAndCancellation(t *testing.T) {
-	if node, err := SimplifyFTSQuery(nil, &FTSEmptyQueryNode{}); node != nil || !errors.Is(err, ErrInvalidFTSQueryAST) {
-		t.Fatalf("nil context = %#v, %v", node, err)
+	{
+		node, err := SimplifyFTSQuery(nil, &FTSEmptyQueryNode{})
+		require.Nil(t, node)
+		require.ErrorIs(t, err, ErrInvalidFTSQueryAST)
 	}
-	if node, err := SimplifyFTSQuery(context.Background(), nil); node != nil || !errors.Is(err, ErrInvalidFTSQueryAST) {
-		t.Fatalf("nil root = %#v, %v", node, err)
+	{
+		node, err := SimplifyFTSQuery(context.Background(), nil)
+		require.Nil(t, node)
+		require.ErrorIs(t, err, ErrInvalidFTSQueryAST)
 	}
+
 	var typedNil *FTSTermQueryNode
-	if node, err := SimplifyFTSQuery(context.Background(), typedNil); node != nil || !errors.Is(err, ErrInvalidFTSQueryAST) {
-		t.Fatalf("typed nil root = %#v, %v", node, err)
+	{
+		node, err := SimplifyFTSQuery(context.Background(), typedNil)
+		require.Nil(t, node)
+		require.ErrorIs(t, err, ErrInvalidFTSQueryAST)
 	}
+
 	cyclic := &FTSAndQueryNode{Flags: defaultFTSQueryModifier()}
 	cyclic.Children = []FTSQueryNode{cyclic}
-	if node, err := SimplifyFTSQuery(context.Background(), cyclic); node != nil || !errors.Is(err, ErrInvalidFTSQueryAST) {
-		t.Fatalf("cycle = %#v, %v", node, err)
+	{
+		node, err := SimplifyFTSQuery(context.Background(), cyclic)
+		require.Nil(t, node)
+		require.ErrorIs(t, err, ErrInvalidFTSQueryAST)
 	}
+
 	notFinite := &FTSTermQueryNode{Flags: FTSQueryModifier{Boost: float32(math.NaN())}, Term: "a"}
-	if node, err := SimplifyFTSQuery(context.Background(), notFinite); node != nil || !errors.Is(err, ErrInvalidFTSQueryAST) {
-		t.Fatalf("nonfinite boost = %#v, %v", node, err)
+	{
+		node, err := SimplifyFTSQuery(context.Background(), notFinite)
+		require.Nil(t, node)
+		require.ErrorIs(t, err, ErrInvalidFTSQueryAST)
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := SimplifyFTSQuery(canceled, &FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: "a"}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled = %v", err)
+	{
+		_, err := SimplifyFTSQuery(canceled, &FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: "a"})
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	children := make([]FTSQueryNode, 10_000)
 	for index := range children {
 		children[index] = &FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: strings.Repeat("x", index%3+1)}
 	}
-	if _, err := SimplifyFTSQuery(newCancelAfterChecks(3), &FTSOrQueryNode{Flags: defaultFTSQueryModifier(), Children: children}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("midway cancellation = %v", err)
+	{
+		_, err := SimplifyFTSQuery(newCancelAfterChecks(3), &FTSOrQueryNode{Flags: defaultFTSQueryModifier(), Children: children})
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
 func TestSimplifyFTSQueryConcurrentUse(t *testing.T) {
 	pipeline := newFTSStandardTestPipeline(t)
 	parsed, err := ParseFTSQuery(context.Background(), "+apple banana -pear apple", pipeline, FTSDefaultOperatorOR)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want, err := SimplifyFTSQuery(context.Background(), parsed)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var wait sync.WaitGroup
 	errorsChannel := make(chan error, 32)
 	for worker := 0; worker < 32; worker++ {
@@ -195,7 +206,7 @@ func TestSimplifyFTSQueryConcurrentUse(t *testing.T) {
 	wait.Wait()
 	close(errorsChannel)
 	for err := range errorsChannel {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 }
 
@@ -210,15 +221,11 @@ func FuzzSimplifyFTSQuery(f *testing.F) {
 			return
 		}
 		first, err := SimplifyFTSQuery(context.Background(), parsed)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		second, err := SimplifyFTSQuery(context.Background(), first)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if first.String() != second.String() || reflect.TypeOf(first) != reflect.TypeOf(second) {
-			t.Fatalf("simplifier is not idempotent: %q -> %q", first, second)
-		}
+		require.NoError(t, err)
+		require.Equal(t, second.String(), first.String())
+		require.Equal(t, reflect.TypeOf(second), reflect.TypeOf(first))
 	})
 }

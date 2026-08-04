@@ -15,41 +15,40 @@
 package ailego
 
 import (
-	"errors"
-	"math"
 	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestFHTInPlace(t *testing.T) {
 	t.Parallel()
 	data := []float32{1, 2, 3, 4}
-	if err := FHTInPlace(data); err != nil {
-		t.Fatal(err)
+	{
+		err := FHTInPlace(data)
+		require.NoError(t, err)
 	}
-	if !slices.Equal(data, []float32{10, -2, -4, 0}) {
-		t.Fatalf("transform = %v", data)
+	require.True(t, slices.Equal(data, []float32{10, -2, -4, 0}))
+	{
+		err := FHTInPlace(data)
+		require.NoError(t, err)
 	}
-	if err := FHTInPlace(data); err != nil {
-		t.Fatal(err)
-	}
+
 	ScaleFloat32(data, .25)
-	if !slices.Equal(data, []float32{1, 2, 3, 4}) {
-		t.Fatalf("inverse = %v", data)
-	}
+	require.True(t, slices.Equal(data, []float32{1, 2, 3, 4}))
 }
 
 func TestFHTFlipSigns(t *testing.T) {
 	t.Parallel()
 	data := []float32{1, 2, 3, 4, 5, 6, 7, 8, 9}
-	if err := FHTFlipSigns([]byte{0b10001001, 1}, data); err != nil {
-		t.Fatal(err)
+	{
+		err := FHTFlipSigns([]byte{0b10001001, 1}, data)
+		require.NoError(t, err)
 	}
-	if !slices.Equal(data, []float32{-1, 2, 3, -4, 5, 6, 7, -8, -9}) {
-		t.Fatalf("flipped = %v", data)
-	}
-	if err := FHTFlipSigns([]byte{0}, data); !errors.Is(err, ErrShortSignBits) {
-		t.Fatalf("short signs error = %v", err)
+	require.True(t, slices.Equal(data, []float32{-1, 2, 3, -4, 5, 6, 7, -8, -9}))
+	{
+		err := FHTFlipSigns([]byte{0}, data)
+		require.ErrorIs(t, err, ErrShortSignBits)
 	}
 }
 
@@ -57,16 +56,17 @@ func TestFHTKacWalkRoundTrip(t *testing.T) {
 	t.Parallel()
 	for _, input := range [][]float32{{1}, {1, 2}, {1, 2, 3, 4, 5}, {-2, 7, 1, 0, 4, -3}} {
 		data := slices.Clone(input)
-		if err := FHTKacWalk(data); err != nil {
-			t.Fatal(err)
+		{
+			err := FHTKacWalk(data)
+			require.NoError(t, err)
 		}
-		if err := FHTInverseKacWalk(data); err != nil {
-			t.Fatal(err)
+		{
+			err := FHTInverseKacWalk(data)
+			require.NoError(t, err)
 		}
+
 		for index := range input {
-			if difference := math.Abs(float64(data[index] - input[index])); difference > 1e-6 {
-				t.Fatalf("length %d element %d = %g, want %g", len(input), index, data[index], input[index])
-			}
+			require.InDelta(t, input[index], data[index], 1e-6)
 		}
 	}
 }
@@ -74,14 +74,17 @@ func TestFHTKacWalkRoundTrip(t *testing.T) {
 func TestFHTValidation(t *testing.T) {
 	t.Parallel()
 	for _, data := range [][]float32{nil, {1, 2, 3}} {
-		if err := FHTInPlace(data); !errors.Is(err, ErrInvalidFHTLength) {
-			t.Fatalf("length %d error = %v", len(data), err)
+		{
+			err := FHTInPlace(data)
+			require.ErrorIs(t, err, ErrInvalidFHTLength)
 		}
 	}
-	if err := FHTKacWalk(nil); !errors.Is(err, ErrInvalidFHTLength) {
-		t.Fatalf("empty Kac error = %v", err)
+	{
+		err := FHTKacWalk(nil)
+		require.ErrorIs(t, err, ErrInvalidFHTLength)
 	}
-	if err := FHTInverseKacWalk(nil); !errors.Is(err, ErrInvalidFHTLength) {
-		t.Fatalf("empty inverse Kac error = %v", err)
+	{
+		err := FHTInverseKacWalk(nil)
+		require.ErrorIs(t, err, ErrInvalidFHTLength)
 	}
 }

@@ -17,12 +17,11 @@ package db
 import (
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"math"
-	"reflect"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestManifestRoundTrip(t *testing.T) {
@@ -30,16 +29,11 @@ func TestManifestRoundTrip(t *testing.T) {
 
 	original := sampleManifest(42)
 	encoded, err := MarshalManifest(original)
-	if err != nil {
-		t.Fatalf("marshal manifest: %v", err)
-	}
+	require.NoError(t, err)
+
 	decoded, err := UnmarshalManifest(encoded)
-	if err != nil {
-		t.Fatalf("unmarshal manifest: %v", err)
-	}
-	if !reflect.DeepEqual(decoded, original) {
-		t.Fatalf("decoded = %#v, want %#v", decoded, original)
-	}
+	require.NoError(t, err)
+	require.Equal(t, original, decoded)
 }
 
 func TestManifestCloneIsIndependent(t *testing.T) {
@@ -50,15 +44,14 @@ func TestManifestCloneIsIndependent(t *testing.T) {
 	clone.Schema[0] = '['
 	clone.PersistedSegments[0].Files[0] = "changed"
 	clone.WritingSegment.Files[0] = "changed"
-	if json.Valid(clone.Schema) || !json.Valid(original.Schema) {
-		t.Fatal("schema clone shares storage")
-	}
-	if original.PersistedSegments[0].Files[0] == "changed" {
-		t.Fatal("persisted segment clone shares files")
-	}
-	if original.WritingSegment.Files[0] == "changed" {
-		t.Fatal("writing segment clone shares files")
-	}
+	require.False(t, json.Valid(clone.Schema),
+		"schema clone shares storage")
+	require.True(t, json.Valid(original.Schema),
+		"schema clone shares storage")
+	require.False(t, original.PersistedSegments[0].Files[0] == "changed",
+		"persisted segment clone shares files")
+	require.False(t, original.WritingSegment.Files[0] == "changed",
+		"writing segment clone shares files")
 }
 
 func TestManifestValidation(t *testing.T) {
@@ -92,8 +85,9 @@ func TestManifestValidation(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			manifest := sampleManifest(1)
 			testCase.mutate(&manifest)
-			if err := manifest.Validate(); !errors.Is(err, testCase.expected) {
-				t.Fatalf("validation error = %v, want %v", err, testCase.expected)
+			{
+				err := manifest.Validate()
+				require.ErrorIs(t, err, testCase.expected)
 			}
 		})
 	}
@@ -108,8 +102,9 @@ func TestManifestValidation(t *testing.T) {
 		}},
 		NextSegmentID: 2,
 	}
-	if err := fullRange.Validate(); err != nil {
-		t.Fatalf("full document range: %v", err)
+	{
+		err := fullRange.Validate()
+		require.NoError(t, err)
 	}
 }
 
@@ -117,12 +112,12 @@ func TestManifestDetectsCorruptionAndTruncation(t *testing.T) {
 	t.Parallel()
 
 	encoded, err := MarshalManifest(sampleManifest(7))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for length := 0; length < len(encoded); length++ {
-		if _, err := UnmarshalManifest(encoded[:length]); err == nil {
-			t.Fatalf("truncation at %d bytes succeeded", length)
+		{
+			_, err := UnmarshalManifest(encoded[:length])
+			require.Error(t, err)
 		}
 	}
 
@@ -143,8 +138,9 @@ func TestManifestDetectsCorruptionAndTruncation(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			corrupted := testCase.mutate(append([]byte(nil), encoded...))
-			if _, err := UnmarshalManifest(corrupted); !errors.Is(err, testCase.expected) {
-				t.Fatalf("error = %v, want %v", err, testCase.expected)
+			{
+				_, err := UnmarshalManifest(corrupted)
+				require.ErrorIs(t, err, testCase.expected)
 			}
 		})
 	}
@@ -154,39 +150,40 @@ func TestManifestRejectsUnknownPayloadField(t *testing.T) {
 	t.Parallel()
 
 	encoded, err := MarshalManifest(sampleManifest(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var payload map[string]any
-	if err := json.Unmarshal(encoded[manifestHeaderSize:], &payload); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(encoded[manifestHeaderSize:], &payload)
+		require.NoError(t, err)
 	}
+
 	payload["future_field"] = true
 	newPayload, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	encoded = append(encoded[:manifestHeaderSize], newPayload...)
 	binary.LittleEndian.PutUint64(encoded[20:28], uint64(len(newPayload)))
 	binary.LittleEndian.PutUint32(encoded[28:32], ailego.CRC32C(newPayload))
-	if _, err := UnmarshalManifest(encoded); !errors.Is(err, ErrManifestCorrupt) {
-		t.Fatalf("unknown field error = %v", err)
+	{
+		_, err := UnmarshalManifest(encoded)
+		require.ErrorIs(t, err, ErrManifestCorrupt)
 	}
 }
 
 func FuzzUnmarshalManifest(f *testing.F) {
 	encoded, err := MarshalManifest(sampleManifest(1))
-	if err != nil {
-		f.Fatal(err)
-	}
+	require.NoError(f, err)
+
 	f.Add(encoded)
 	f.Add(encoded[:manifestHeaderSize])
 	f.Add([]byte("not a manifest"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		manifest, err := UnmarshalManifest(data)
 		if err == nil {
-			if err := manifest.Validate(); err != nil {
-				t.Fatalf("decoded invalid manifest: %v", err)
+			{
+				err := manifest.Validate()
+				require.NoError(t, err)
 			}
 		}
 	})

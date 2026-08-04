@@ -18,10 +18,12 @@ import (
 	"context"
 	"errors"
 	"math"
-	"reflect"
 	"slices"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDiskANNBuildSearchMetricsFilterRadiusAndRefiner(t *testing.T) {
@@ -32,46 +34,39 @@ func TestDiskANNBuildSearchMetricsFilterRadiusAndRefiner(t *testing.T) {
 			options.MaxDegree, options.ListSize, options.PQChunks = 8, 24, 4
 			options.CacheCapacity = len(candidates)
 			index := buildDiskANNIndex(t, candidates, options)
-			if index.Dimension() != 8 || index.Metric() != metric || index.Len() != len(candidates) || index.PQChunks() != 4 {
-				t.Fatalf("index metadata = dimension %d metric %d len %d chunks %d", index.Dimension(), index.Metric(), index.Len(), index.PQChunks())
+			require.True(t, index.Dimension() == 8)
+			require.Equal(t, metric, index.Metric())
+			require.Len(t, candidates, index.Len())
+			require.True(t, index.PQChunks() == 4)
+			{
+				got, ok := index.EntryPoint()
+				require.True(t, ok)
+				require.True(t, slices.ContainsFunc(candidates, func(candidate Candidate) bool { return candidate.Key == got }))
 			}
-			if got, ok := index.EntryPoint(); !ok || !slices.ContainsFunc(candidates, func(candidate Candidate) bool { return candidate.Key == got }) {
-				t.Fatalf("entry point = %d, %v", got, ok)
-			}
+
 			query := slices.Clone(candidates[17].Vector)
 			linearOptions := DiskANNSearchOptions{SearchOptions: SearchOptions{TopK: 12}, ListSize: len(candidates), Linear: true}
 			want, err := index.SearchDiskANN(context.Background(), query, linearOptions)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			graphOptions := linearOptions
 			graphOptions.Linear = false
 			got, err := index.SearchDiskANN(context.Background(), query, graphOptions)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("graph = %#v, exact = %#v", got, want)
-			}
-			if got[0].Key != candidates[17].Key {
-				t.Fatalf("self result = %#v", got[0])
-			}
+			require.NoError(t, err)
+			require.Equal(t, want, got)
+			require.Equal(t, candidates[17].Key, got[0].Key)
 
 			filter := func(key uint64) bool { return key%2 == 0 }
 			filteredOptions := graphOptions
 			filteredOptions.Filter = filter
 			filtered, err := index.SearchDiskANN(context.Background(), query, filteredOptions)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			for _, result := range filtered {
-				if !filter(result.Key) {
-					t.Fatalf("filter admitted %#v", result)
-				}
+				require.True(t, filter(result.Key))
 			}
-			if len(filtered) == 0 {
-				t.Fatal("filter removed every result")
-			}
+			require.False(t, len(filtered) == 0,
+				"filter removed every result")
 
 			radiusOptions := graphOptions
 			radiusOptions.Radius = want[min(5, len(want)-1)].Score
@@ -79,44 +74,40 @@ func TestDiskANNBuildSearchMetricsFilterRadiusAndRefiner(t *testing.T) {
 				radiusOptions.Radius = 0.0001
 			}
 			radius, err := index.SearchDiskANN(context.Background(), query, radiusOptions)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			for _, result := range radius {
-				if !scoreWithinRadius(metric, result.Score, radiusOptions.Radius) {
-					t.Fatalf("radius admitted %#v", result)
-				}
+				require.True(t, scoreWithinRadius(metric, result.Score, radiusOptions.Radius))
 			}
 
 			refiner, err := NewOriginalVectorRefiner(index, metric)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			refined, err := refiner.Refine(context.Background(), query, got, SearchOptions{TopK: 5})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(refined, want[:5]) {
-				t.Fatalf("refined = %#v, want %#v", refined, want[:5])
-			}
+			require.NoError(t, err)
+			require.Equal(t, want[:5], refined)
+
 			vector, found := index.Vector(candidates[9].Key)
-			if !found || !slices.Equal(vector, candidates[9].Vector) {
-				t.Fatal("original vector provider differs")
-			}
+			require.True(t, found,
+				"original vector provider differs")
+			require.True(t, slices.Equal(vector, candidates[9].Vector),
+				"original vector provider differs")
+
 			vector[0]++
 			again, _ := index.Vector(candidates[9].Key)
-			if slices.Equal(vector, again) {
-				t.Fatal("vector provider returned an alias")
-			}
+			require.False(t, slices.Equal(vector, again),
+				"vector provider returned an alias")
 		})
 	}
 }
 
 func TestDiskANNBuilderEmptyValidationCancellationAndClose(t *testing.T) {
 	defaults := DefaultDiskANNBuildOptions(MetricL2)
-	if defaults.MaxDegree != 100 || defaults.ListSize != 50 || defaults.PQChunks != 0 || defaults.CacheCapacity != 1024 {
-		t.Fatalf("defaults = %#v", defaults)
-	}
+	require.True(t, defaults.MaxDegree == 100)
+	require.True(t, defaults.ListSize == 50)
+	require.True(t, defaults.PQChunks == 0)
+	require.True(t, defaults.CacheCapacity == 1024)
+
 	invalid := []DiskANNBuildOptions{
 		{},
 		func() DiskANNBuildOptions { value := defaults; value.MaxDegree = 0; return value }(),
@@ -126,84 +117,100 @@ func TestDiskANNBuilderEmptyValidationCancellationAndClose(t *testing.T) {
 		func() DiskANNBuildOptions { value := defaults; value.CacheCapacity = -1; return value }(),
 	}
 	for _, options := range invalid {
-		if _, err := NewDiskANNBuilder(8, options); !errors.Is(err, ErrInvalidDiskANNOptions) {
-			t.Fatalf("options %#v error = %v", options, err)
+		{
+			_, err := NewDiskANNBuilder(8, options)
+			require.ErrorIs(t, err, ErrInvalidDiskANNOptions)
 		}
 	}
-	if _, err := NewDiskANNBuilder(0, defaults); !errors.Is(err, ErrInvalidDimension) {
-		t.Fatalf("dimension error = %v", err)
+	{
+		_, err := NewDiskANNBuilder(0, defaults)
+		require.ErrorIs(t, err, ErrInvalidDimension)
 	}
+
 	tooManyChunks := defaults
 	tooManyChunks.PQChunks = 9
-	if _, err := NewDiskANNBuilder(8, tooManyChunks); !errors.Is(err, ErrInvalidDiskANNOptions) {
-		t.Fatalf("chunk error = %v", err)
+	{
+		_, err := NewDiskANNBuilder(8, tooManyChunks)
+		require.ErrorIs(t, err, ErrInvalidDiskANNOptions)
 	}
 
 	builder, err := NewDiskANNBuilder(4, defaults)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := builder.Add(context.Background(), 7, []float32{1, 2, 3, 4})
+		require.NoError(t, err)
 	}
-	if err := builder.Add(context.Background(), 7, []float32{1, 2, 3, 4}); err != nil {
-		t.Fatal(err)
+	{
+		err := builder.Add(context.Background(), 7, []float32{4, 3, 2, 1})
+		require.ErrorIs(t, err, ErrDuplicateKey)
 	}
-	if err := builder.Add(context.Background(), 7, []float32{4, 3, 2, 1}); !errors.Is(err, ErrDuplicateKey) {
-		t.Fatalf("duplicate error = %v", err)
+	{
+		err := builder.Add(context.Background(), 8, []float32{1})
+		require.Error(t, err,
+			"invalid vector succeeded")
 	}
-	if err := builder.Add(context.Background(), 8, []float32{1}); err == nil {
-		t.Fatal("invalid vector succeeded")
-	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := builder.Add(canceled, 8, []float32{1, 2, 3, 4}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled Add error = %v", err)
+	{
+		err := builder.Add(canceled, 8, []float32{1, 2, 3, 4})
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := builder.Build(canceled); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled Build error = %v", err)
+	{
+		_, err := builder.Build(canceled)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := builder.Build(context.Background())
+		require.ErrorIs(t, err, ErrBuilderClosed)
 	}
-	if _, err := builder.Build(context.Background()); !errors.Is(err, ErrBuilderClosed) {
-		t.Fatalf("second Build error = %v", err)
+	{
+		err := builder.Add(context.Background(), 8, []float32{1, 2, 3, 4})
+		require.ErrorIs(t, err, ErrBuilderClosed)
 	}
-	if err := builder.Add(context.Background(), 8, []float32{1, 2, 3, 4}); !errors.Is(err, ErrBuilderClosed) {
-		t.Fatalf("post-build Add error = %v", err)
+	{
+		_, err := index.SearchDiskANN(context.Background(), []float32{1, 2, 3, 4}, DiskANNSearchOptions{})
+		require.ErrorIs(t, err, ErrInvalidDiskANNListSize)
 	}
-	if _, err := index.SearchDiskANN(context.Background(), []float32{1, 2, 3, 4}, DiskANNSearchOptions{}); !errors.Is(err, ErrInvalidDiskANNListSize) {
-		t.Fatalf("invalid list error = %v", err)
+	{
+		_, err := index.SearchWithOptions(context.Background(), []float32{1, 2, 3, 4}, SearchOptions{})
+		require.ErrorIs(t, err, ErrInvalidTopK)
 	}
-	if _, err := index.SearchWithOptions(context.Background(), []float32{1, 2, 3, 4}, SearchOptions{}); !errors.Is(err, ErrInvalidTopK) {
-		t.Fatalf("invalid top-k error = %v", err)
+	{
+		_, err := index.SearchDiskANN(canceled, []float32{1, 2, 3, 4}, DiskANNSearchOptions{SearchOptions: SearchOptions{TopK: 1}, ListSize: 1})
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := index.SearchDiskANN(canceled, []float32{1, 2, 3, 4}, DiskANNSearchOptions{SearchOptions: SearchOptions{TopK: 1}, ListSize: 1}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled Search error = %v", err)
+	{
+		err := index.Close()
+		require.NoError(t, err)
 	}
-	if err := index.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Close()
+		require.NoError(t, err)
 	}
-	if err := index.Close(); err != nil {
-		t.Fatal(err)
+	{
+		_, err := index.SearchDiskANN(context.Background(), []float32{1, 2, 3, 4}, DiskANNSearchOptions{SearchOptions: SearchOptions{TopK: 1}, ListSize: 1})
+		require.ErrorIs(t, err, ErrDiskANNClosed)
 	}
-	if _, err := index.SearchDiskANN(context.Background(), []float32{1, 2, 3, 4}, DiskANNSearchOptions{SearchOptions: SearchOptions{TopK: 1}, ListSize: 1}); !errors.Is(err, ErrDiskANNClosed) {
-		t.Fatalf("closed Search error = %v", err)
-	}
-	if _, found := index.Vector(7); found {
-		t.Fatal("closed provider returned a vector")
+	{
+		_, found := index.Vector(7)
+		require.False(t, found,
+			"closed provider returned a vector")
 	}
 
 	emptyBuilder, err := NewDiskANNBuilder(4, defaults)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	empty, err := emptyBuilder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	results, err := empty.SearchDiskANN(context.Background(), []float32{0, 0, 0, 0}, DiskANNSearchOptions{SearchOptions: SearchOptions{TopK: 1}, ListSize: 1})
-	if err != nil || len(results) != 0 || empty.PQChunks() != 0 {
-		t.Fatalf("empty search = %#v, %v", results, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 0)
+	require.True(t, empty.PQChunks() == 0)
 }
 
 func TestDiskANNWarmCacheBoundAndSearchOwnership(t *testing.T) {
@@ -211,28 +218,23 @@ func TestDiskANNWarmCacheBoundAndSearchOwnership(t *testing.T) {
 	options.MaxDegree, options.ListSize, options.PQChunks, options.CacheCapacity = 6, 16, 3, 7
 	index := buildDiskANNIndex(t, diskANNIndexCandidates(40, 6), options)
 	warmed, err := index.WarmCache(context.Background(), 20)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.True(t, warmed == 7)
+	require.True(t, index.nodes.cache.Len() == 7)
+	{
+		_, err := index.WarmCache(context.Background(), -1)
+		require.ErrorIs(t, err, ErrInvalidDiskANNOptions)
 	}
-	if warmed != 7 || index.nodes.cache.Len() != 7 {
-		t.Fatalf("warmed %d cache len %d", warmed, index.nodes.cache.Len())
-	}
-	if _, err := index.WarmCache(context.Background(), -1); !errors.Is(err, ErrInvalidDiskANNOptions) {
-		t.Fatalf("negative warm error = %v", err)
-	}
+
 	before := index.CacheStats()
 	query := diskANNIndexCandidates(1, 6)[0].Vector
 	first, err := index.SearchDiskANN(context.Background(), query, DiskANNSearchOptions{SearchOptions: SearchOptions{TopK: 5}, ListSize: 30})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	second, err := index.SearchDiskANN(context.Background(), query, DiskANNSearchOptions{SearchOptions: SearchOptions{TopK: 5}, ListSize: 30})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(first, second) || index.CacheStats().Hits <= before.Hits {
-		t.Fatalf("repeat search differs or missed cache: %#v %#v", first, second)
-	}
+	require.NoError(t, err)
+	require.Equal(t, second, first)
+	require.True(t, index.CacheStats().Hits > before.Hits)
 }
 
 func TestDiskANNApproximateRecall(t *testing.T) {
@@ -247,15 +249,13 @@ func TestDiskANNApproximateRecall(t *testing.T) {
 		want, err := index.SearchDiskANN(context.Background(), query, DiskANNSearchOptions{
 			SearchOptions: SearchOptions{TopK: topK}, ListSize: count, Linear: true,
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		got, err := index.SearchDiskANN(context.Background(), query, DiskANNSearchOptions{
 			SearchOptions: SearchOptions{TopK: topK}, ListSize: 64,
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		truth := make(map[uint64]struct{}, len(want))
 		for _, result := range want {
 			truth[result.Key] = struct{}{}
@@ -267,9 +267,7 @@ func TestDiskANNApproximateRecall(t *testing.T) {
 		}
 	}
 	recall := float64(hits) / (queryCount * topK)
-	if recall < 0.80 {
-		t.Fatalf("recall@%d = %.3f", topK, recall)
-	}
+	require.True(t, recall >= 0.80)
 }
 
 func TestDiskANNConcurrentSearchAndProviderReads(t *testing.T) {
@@ -280,9 +278,8 @@ func TestDiskANNConcurrentSearchAndProviderReads(t *testing.T) {
 	query := candidates[31].Vector
 	search := DiskANNSearchOptions{SearchOptions: SearchOptions{TopK: 10}, ListSize: 64}
 	want, err := index.SearchDiskANN(context.Background(), query, search)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var wait sync.WaitGroup
 	errorsCh := make(chan error, 8)
 	for worker := 0; worker < 8; worker++ {
@@ -295,7 +292,7 @@ func TestDiskANNConcurrentSearchAndProviderReads(t *testing.T) {
 					errorsCh <- err
 					return
 				}
-				if !reflect.DeepEqual(got, want) {
+				if !assert.Equal(t, want, got) {
 					errorsCh <- errors.New("concurrent DiskANN result differs")
 					return
 				}
@@ -310,7 +307,7 @@ func TestDiskANNConcurrentSearchAndProviderReads(t *testing.T) {
 	wait.Wait()
 	close(errorsCh)
 	for err := range errorsCh {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 }
 
@@ -321,18 +318,17 @@ func buildDiskANNIndex(t testing.TB, candidates []Candidate, options DiskANNBuil
 		dimension = len(candidates[0].Vector)
 	}
 	builder, err := NewDiskANNBuilder(dimension, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, candidate := range candidates {
-		if err := builder.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
-			t.Fatal(err)
+		{
+			err := builder.Add(context.Background(), candidate.Key, candidate.Vector)
+			require.NoError(t, err)
 		}
 	}
 	index, err := builder.Build(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return index
 }
 

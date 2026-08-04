@@ -16,12 +16,13 @@ package sql
 
 import (
 	"math"
-	"reflect"
 	"sync"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInvertedScalarPredicatesAndRangeStrategies(t *testing.T) {
@@ -32,9 +33,8 @@ func TestInvertedScalarPredicatesAndRangeStrategies(t *testing.T) {
 
 	comparison := func(operator PredicateOperator, value int32) BoundPredicate {
 		predicate, err := NewComparisonPredicate(operator, Int32Value(value))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		return predicate
 	}
 	for _, testCase := range []struct {
@@ -55,38 +55,32 @@ func TestInvertedScalarPredicatesAndRangeStrategies(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			result, err := index.Search(testCase.query)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			assertInvertedResult(t, result, testCase.want, testCase.strategy, testCase.terms)
 		})
 	}
 
 	in, err := NewSetPredicate(PredicateIn, false, []Value{Int32Value(1), Int32Value(4)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	result, err := index.Search(in)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertInvertedResult(t, result, []uint64{1, 4}, InvertedPostingUnion, 2)
 	notIn, err := NewSetPredicate(PredicateIn, true, []Value{Int32Value(1), Int32Value(4)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	result, err = index.Search(notIn)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertInvertedResult(t, result, []uint64{2, 3}, InvertedPostingUnion, 2)
 
 	field.RangeOptimized = false
 	scan := mustInvertedIndex(t, field, Int32Value(1), Int32Value(2), Int32Value(4))
 	result, err = scan.Search(comparison(PredicateGE, 2))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertInvertedResult(t, result, []uint64{1, 2}, InvertedTermScan, 2)
 }
 
@@ -113,22 +107,19 @@ func TestInvertedArrayContainAndLength(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			predicate, err := NewSetPredicate(testCase.op, testCase.negated, testCase.values)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			result, err := index.Search(predicate)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			assertInvertedResult(t, result, testCase.want, InvertedPostingUnion, len(testCase.values))
 		})
 	}
 
 	length := func(operator PredicateOperator, value uint32) BoundPredicate {
 		predicate, err := NewComparisonPredicate(operator, Uint32Value(value))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		return predicate
 	}
 	for _, testCase := range []struct {
@@ -142,38 +133,32 @@ func TestInvertedArrayContainAndLength(t *testing.T) {
 		{PredicateGE, 2, []uint64{2, 3}},
 	} {
 		result, err := index.SearchArrayLength(length(testCase.operator, testCase.value))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := bitmapBits(result.Bitmap); !reflect.DeepEqual(got, testCase.want) {
-			t.Errorf("array_length %s %d = %v, want %v", testCase.operator, testCase.value, got, testCase.want)
+		require.NoError(t, err)
+		{
+			got := bitmapBits(result.Bitmap)
+			assert.Equal(t, testCase.want, got)
 		}
 	}
 }
 
 func TestInvertedFloatCanonicalizesSignedZero(t *testing.T) {
 	negativeZero, err := Float64Value(math.Copysign(0, -1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	positiveZero, err := Float64Value(0.0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	one, err := Float64Value(1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	field := Field{Name: "number", Kind: ValueFloat64, Filterable: true, Indexed: true, RangeOptimized: true}
 	index := mustInvertedIndex(t, field, negativeZero, positiveZero, one)
 	predicate, err := NewComparisonPredicate(PredicateEQ, positiveZero)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	result, err := index.Search(predicate)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertInvertedResult(t, result, []uint64{0, 1}, InvertedExact, 1)
 }
 
@@ -190,26 +175,28 @@ func TestInvertedLikeRouting(t *testing.T) {
 
 	search := func(index *InvertedIndex, pattern string) InvertedResult {
 		predicate, err := NewLikePredicate(pattern)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		result, err := index.Search(predicate)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		return result
 	}
 	assertInvertedResult(t, search(plain, "alpha"), []uint64{1}, InvertedExact, 1)
 	assertInvertedResult(t, search(plain, "%"), []uint64{1, 2, 3, 4}, InvertedPrefix, 4)
 	assertInvertedResult(t, search(plain, "alp%"), []uint64{1, 2}, InvertedPrefix, 2)
-	if result := search(plain, "%alpha"); result.Supported {
-		t.Fatal("suffix search used index without extended wildcard")
+	{
+		result := search(plain, "%alpha")
+		require.False(t, result.Supported,
+			"suffix search used index without extended wildcard")
 	}
+
 	assertInvertedResult(t, search(extended, "%alpha"), []uint64{1, 4}, InvertedSuffix, 2)
 	assertInvertedResult(t, search(extended, "al%bet"), []uint64{2}, InvertedPrefixSuffix, 1)
 	for _, pattern := range []string{"%pha%", "a_pha", "a%b%t", "a%%bet", "%%"} {
-		if result := search(extended, pattern); result.Supported {
-			t.Errorf("general pattern %q unexpectedly used index", pattern)
+		{
+			result := search(extended, pattern)
+			assert.False(t, result.Supported)
 		}
 	}
 }
@@ -221,9 +208,8 @@ func TestPlanCandidateCompositionNeverDropsPossibleMatches(t *testing.T) {
 		{Name: "tags", Kind: ValueString, Array: true, Filterable: true, Indexed: true},
 	}
 	schema, err := NewSchema(fields)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	indexes := IndexSet{
 		"number": mustInvertedIndex(t, fields[0], Int32Value(1), Int32Value(2), Int32Value(3)),
 		"tags": mustInvertedIndex(t, fields[2],
@@ -243,58 +229,66 @@ func TestPlanCandidateCompositionNeverDropsPossibleMatches(t *testing.T) {
 		{"tags CONTAIN_ANY ()", []uint64{}, true, true},
 	} {
 		plan, err := BuildPlan(testCase.filter, schema)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		bitmap, used, exact, err := plan.Candidates(indexes, 3)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		var got []uint64
 		if bitmap != nil {
 			got = bitmapBits(bitmap)
 		}
-		if !reflect.DeepEqual(got, testCase.want) || used != testCase.used || exact != testCase.exact {
-			t.Errorf("Candidates(%q) = %v used=%t exact=%t; want %v used=%t exact=%t", testCase.filter, got, used, exact, testCase.want, testCase.used, testCase.exact)
-		}
+		assert.Equal(t, testCase.want, got)
+		assert.Equal(t, testCase.used, used)
+		assert.Equal(t, testCase.exact, exact)
 	}
 }
 
 func TestInvertedIndexLifecycleAndConcurrentSearch(t *testing.T) {
 	field := Field{Name: "number", Kind: ValueInt32, Filterable: true, Indexed: true}
-	if _, err := NewInvertedIndex(Field{Name: "bad", Kind: ValueInt32, Filterable: true}); err == nil {
-		t.Fatal("unindexed field succeeded")
+	{
+		_, err := NewInvertedIndex(Field{Name: "bad", Kind: ValueInt32, Filterable: true})
+		require.Error(t, err,
+			"unindexed field succeeded")
 	}
+
 	index, err := NewInvertedIndex(field)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := index.Search(NewNullPredicate(false))
+		require.Error(t, err,
+			"unsealed search succeeded")
 	}
-	if _, err := index.Search(NewNullPredicate(false)); err == nil {
-		t.Fatal("unsealed search succeeded")
+	{
+		err := index.Add(0, Int32Value(1))
+		require.NoError(t, err)
 	}
-	if err := index.Add(0, Int32Value(1)); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Add(0, Int32Value(1))
+		require.Error(t, err,
+			"duplicate row succeeded")
 	}
-	if err := index.Add(0, Int32Value(1)); err == nil {
-		t.Fatal("duplicate row succeeded")
+	{
+		err := index.Seal()
+		require.NoError(t, err)
 	}
-	if err := index.Seal(); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Add(1, Int32Value(2))
+		require.Error(t, err,
+			"add after seal succeeded")
 	}
-	if err := index.Add(1, Int32Value(2)); err == nil {
-		t.Fatal("add after seal succeeded")
-	}
+
 	stringIndex, err := NewInvertedIndex(Field{Name: "text", Kind: ValueString, Filterable: true, Indexed: true})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := stringIndex.Add(0, StringValue(string([]byte{0xff})))
+		require.Error(t, err,
+			"invalid UTF-8 string succeeded")
 	}
-	if err := stringIndex.Add(0, StringValue(string([]byte{0xff}))); err == nil {
-		t.Fatal("invalid UTF-8 string succeeded")
-	}
+
 	predicate, err := NewComparisonPredicate(PredicateEQ, Int32Value(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var wait sync.WaitGroup
 	for worker := 0; worker < 16; worker++ {
 		wait.Add(1)
@@ -302,8 +296,10 @@ func TestInvertedIndexLifecycleAndConcurrentSearch(t *testing.T) {
 			defer wait.Done()
 			for iteration := 0; iteration < 100; iteration++ {
 				result, searchErr := index.Search(predicate)
-				if searchErr != nil || result.Bitmap.Count() != 1 {
-					t.Errorf("concurrent search count=%d error=%v", result.Bitmap.Count(), searchErr)
+				if !assert.NoError(t, searchErr) {
+					return
+				}
+				if !assert.Equal(t, uint64(1), result.Bitmap.Count()) {
 					return
 				}
 			}
@@ -330,55 +326,52 @@ func FuzzInvertedLikeCandidate(f *testing.F) {
 		field := Field{Name: "text", Kind: ValueString, Filterable: true, Indexed: true, ExtendedWildcard: true}
 		index := mustInvertedIndex(t, field, StringValue(text))
 		result, err := index.Search(predicate)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		if !result.Supported {
 			return
 		}
 		truth, err := predicate.Evaluate(StringValue(text))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Bitmap.Contains(0) != truth.Match() {
-			t.Fatalf("indexed LIKE mismatch: text=%q pattern=%q bitmap=%t truth=%s", text, pattern, result.Bitmap.Contains(0), truth)
-		}
+		require.NoError(t, err)
+		require.Equal(t, truth.Match(), result.Bitmap.Contains(0))
 	})
 }
 
 func mustInvertedIndex(t *testing.T, field Field, values ...Value) *InvertedIndex {
 	t.Helper()
 	index, err := NewInvertedIndex(field)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for row, value := range values {
-		if err := index.Add(uint64(row), value); err != nil {
-			t.Fatal(err)
+		{
+			err := index.Add(uint64(row), value)
+			require.NoError(t, err)
 		}
 	}
-	if err := index.Seal(); err != nil {
-		t.Fatal(err)
+	{
+		err := index.Seal()
+		require.NoError(t, err)
 	}
+
 	return index
 }
 
 func mustNullValue(t *testing.T, kind ValueKind, array bool) Value {
 	t.Helper()
 	value, err := NullValue(kind, array)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return value
 }
 
 func assertInvertedResult(t *testing.T, result InvertedResult, want []uint64, strategy InvertedStrategy, terms int) {
 	t.Helper()
-	if !result.Supported || result.Strategy != strategy || result.Terms != terms {
-		t.Fatalf("result = supported=%t strategy=%s terms=%d; want true %s %d", result.Supported, result.Strategy, result.Terms, strategy, terms)
-	}
-	if got := bitmapBits(result.Bitmap); !reflect.DeepEqual(got, want) {
-		t.Fatalf("bitmap = %v, want %v", got, want)
+	require.True(t, result.Supported)
+	require.Equal(t, strategy, result.Strategy)
+	require.Equal(t, terms, result.Terms)
+	{
+		got := bitmapBits(result.Bitmap)
+		require.Equal(t, want, got)
 	}
 }
 

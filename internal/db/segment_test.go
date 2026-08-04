@@ -18,74 +18,78 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"sync"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWriteSegmentSealAndOpen(t *testing.T) {
 	segment, err := NewWriteSegment(7, 100, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	payload := []byte(`{"title":"one"}`)
 	first, err := segment.Append(context.Background(), "one", payload)
-	if err != nil || first.DocID != 100 {
-		t.Fatalf("first append = %#v, %v", first, err)
-	}
+	require.NoError(t, err)
+	require.True(t, first.DocID == 100)
+
 	payload[0] = '['
 	second, err := segment.Append(context.Background(), "two", nil)
-	if err != nil || second.DocID != 101 {
-		t.Fatalf("second append = %#v, %v", second, err)
-	}
+	require.NoError(t, err)
+	require.True(t, second.DocID == 101)
+
 	third, err := segment.Append(context.Background(), "one", []byte("replacement"))
-	if err != nil || third.DocID != 102 {
-		t.Fatalf("duplicate-key append = %#v, %v", third, err)
+	require.NoError(t, err)
+	require.True(t, third.DocID == 102)
+	{
+		_, err := segment.Append(context.Background(), "four", nil)
+		require.ErrorIs(t, err, ErrSegmentFull)
 	}
-	if _, err := segment.Append(context.Background(), "four", nil); !errors.Is(err, ErrSegmentFull) {
-		t.Fatalf("full append = %v", err)
+	{
+		doc, found := segment.Document(100)
+		require.True(t, found)
+		require.True(t, string(doc.Payload) == `{"title":"one"}`)
 	}
-	if doc, found := segment.Document(100); !found || string(doc.Payload) != `{"title":"one"}` {
-		t.Fatalf("document = %#v, %v", doc, found)
-	}
-	if metadata := segment.Metadata(); metadata.ID != 7 || metadata.MinDocID != 100 || metadata.MaxDocID != 102 || metadata.DocCount != 3 {
-		t.Fatalf("metadata = %#v", metadata)
+	{
+		metadata := segment.Metadata()
+		require.True(t, metadata.ID == 7)
+		require.True(t, metadata.MinDocID == 100)
+		require.True(t, metadata.MaxDocID == 102)
+		require.True(t, metadata.DocCount == 3)
 	}
 
 	dir := t.TempDir()
 	immutable, err := segment.Seal(context.Background(), dir, "segments/7/data.seg")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := segment.Append(context.Background(), "sealed", nil); !errors.Is(err, ErrSegmentSealed) {
-		t.Fatalf("sealed append = %v", err)
-	}
-	metadata := immutable.Metadata()
-	if !reflect.DeepEqual(metadata.Files, []string{"segments/7/data.seg"}) {
-		t.Fatalf("files = %#v", metadata.Files)
-	}
-	metadata.Files[0] = "changed"
-	if immutable.Metadata().Files[0] == "changed" {
-		t.Fatal("metadata shares files")
+	require.NoError(t, err)
+	{
+		_, err := segment.Append(context.Background(), "sealed", nil)
+		require.ErrorIs(t, err, ErrSegmentSealed)
 	}
 
+	metadata := immutable.Metadata()
+	require.Equal(t, []string{"segments/7/data.seg"}, metadata.Files)
+
+	metadata.Files[0] = "changed"
+	require.False(t, immutable.Metadata().Files[0] == "changed",
+		"metadata shares files")
+
 	reopened, err := OpenImmutableSegment(context.Background(), dir, immutable.Metadata())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	docs := reopened.Documents()
-	if len(docs) != 3 || docs[0].DocID != 100 || string(docs[0].Payload) != `{"title":"one"}` {
-		t.Fatalf("reopened docs = %#v", docs)
-	}
+	require.Len(t, docs, 3)
+	require.True(t, docs[0].DocID == 100)
+	require.True(t, string(docs[0].Payload) == `{"title":"one"}`)
+
 	docs[0].Payload[0] = 'X'
-	if doc, _ := reopened.Document(100); doc.Payload[0] == 'X' {
-		t.Fatal("document result shares payload")
+	{
+		doc, _ := reopened.Document(100)
+		require.False(t, doc.Payload[0] == 'X',
+			"document result shares payload")
 	}
 }
 
@@ -94,46 +98,61 @@ func TestWriteSegmentFailedSealRemainsWritable(t *testing.T) {
 	_, _ = segment.Append(context.Background(), "one", nil)
 	dir := t.TempDir()
 	existing := filepath.Join(dir, "segment.seg")
-	if err := os.WriteFile(existing, []byte("existing"), 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(existing, []byte("existing"), 0o600)
+		require.NoError(t, err)
 	}
-	if _, err := segment.Seal(context.Background(), dir, "segment.seg"); !errors.Is(err, os.ErrExist) {
-		t.Fatalf("existing seal error = %v", err)
+	{
+		_, err := segment.Seal(context.Background(), dir, "segment.seg")
+		require.ErrorIs(t, err, os.ErrExist)
 	}
-	if _, err := segment.Append(context.Background(), "two", nil); err != nil {
-		t.Fatalf("append after failed seal: %v", err)
+	{
+		_, err := segment.Append(context.Background(), "two", nil)
+		require.NoError(t, err)
 	}
-	if _, err := segment.Seal(context.Background(), dir, "segment-2.seg"); err != nil {
-		t.Fatalf("second seal: %v", err)
+	{
+		_, err := segment.Seal(context.Background(), dir, "segment-2.seg")
+		require.NoError(t, err)
 	}
 }
 
 func TestSegmentValidationAndCorruption(t *testing.T) {
-	if _, err := NewWriteSegment(1, 0, 0); err == nil {
-		t.Fatal("zero capacity succeeded")
+	{
+		_, err := NewWriteSegment(1, 0, 0)
+		require.Error(t, err,
+			"zero capacity succeeded")
 	}
-	if _, err := NewWriteSegment(1, ^uint64(0), 2); err == nil {
-		t.Fatal("overflow range succeeded")
+	{
+		_, err := NewWriteSegment(1, ^uint64(0), 2)
+		require.Error(t, err,
+			"overflow range succeeded")
 	}
+
 	empty, _ := NewWriteSegment(1, 0, 1)
-	if _, err := empty.Seal(context.Background(), t.TempDir(), "empty.seg"); err == nil {
-		t.Fatal("empty seal succeeded")
+	{
+		_, err := empty.Seal(context.Background(), t.TempDir(), "empty.seg")
+		require.Error(t, err,
+			"empty seal succeeded")
 	}
-	if _, err := empty.Append(context.Background(), "", nil); err == nil {
-		t.Fatal("empty key succeeded")
+	{
+		_, err := empty.Append(context.Background(), "", nil)
+		require.Error(t, err,
+			"empty key succeeded")
 	}
-	if _, err := empty.Append(nil, "key", nil); err == nil {
-		t.Fatal("nil context succeeded")
+	{
+		_, err := empty.Append(nil, "key", nil)
+		require.Error(t, err,
+			"nil context succeeded")
 	}
 
 	metadata, docs := sampleSegmentData()
 	encoded, err := encodeSegment(metadata, docs)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for cut := 0; cut < len(encoded); cut++ {
-		if _, _, err := decodeSegment(context.Background(), encoded[:cut]); err == nil {
-			t.Fatalf("segment truncation at %d succeeded", cut)
+		{
+			_, _, err := decodeSegment(context.Background(), encoded[:cut])
+			require.Error(t, err)
 		}
 	}
 	tests := []func([]byte){
@@ -144,11 +163,12 @@ func TestSegmentValidationAndCorruption(t *testing.T) {
 		func(data []byte) { data[segmentHeaderSize] ^= 1 },
 		func(data []byte) { data[len(data)-1] ^= 1 },
 	}
-	for index, mutate := range tests {
+	for _, mutate := range tests {
 		corrupted := append([]byte(nil), encoded...)
 		mutate(corrupted)
-		if _, _, err := decodeSegment(context.Background(), corrupted); err == nil {
-			t.Fatalf("corruption %d succeeded", index)
+		{
+			_, _, err := decodeSegment(context.Background(), corrupted)
+			require.Error(t, err)
 		}
 	}
 
@@ -158,8 +178,9 @@ func TestSegmentValidationAndCorruption(t *testing.T) {
 	binary.LittleEndian.PutUint32(record[16:20], ailego.CRC32C(badDocID[segmentHeaderSize+segmentRecordHeaderSize:segmentHeaderSize+segmentRecordHeaderSize+len(docs[0].PrimaryKey)+len(docs[0].Payload)]))
 	binary.LittleEndian.PutUint32(badDocID[56:60], ailego.CRC32C(badDocID[segmentHeaderSize:]))
 	binary.LittleEndian.PutUint32(badDocID[60:64], ailego.CRC32C(badDocID[:60]))
-	if _, _, err := decodeSegment(context.Background(), badDocID); !errors.Is(err, ErrSegmentCorrupt) {
-		t.Fatalf("bad document ID = %v", err)
+	{
+		_, _, err := decodeSegment(context.Background(), badDocID)
+		require.ErrorIs(t, err, ErrSegmentCorrupt)
 	}
 }
 
@@ -186,7 +207,7 @@ func TestWriteSegmentConcurrentAppend(t *testing.T) {
 	close(ids)
 	close(errs)
 	for err := range errs {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 	all := make([]uint64, 0, 400)
 	for id := range ids {
@@ -194,27 +215,22 @@ func TestWriteSegmentConcurrentAppend(t *testing.T) {
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i] < all[j] })
 	for index, id := range all {
-		if id != 500+uint64(index) {
-			t.Fatalf("ID[%d] = %d", index, id)
-		}
+		require.Equal(t, 500+uint64(index), id)
 	}
 }
 
 func FuzzDecodeSegment(f *testing.F) {
 	metadata, docs := sampleSegmentData()
 	encoded, err := encodeSegment(metadata, docs)
-	if err != nil {
-		f.Fatal(err)
-	}
+	require.NoError(f, err)
+
 	f.Add(encoded)
 	f.Add(encoded[:segmentHeaderSize])
 	f.Add([]byte("not a segment"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		metadata, docs, err := decodeSegment(context.Background(), data)
 		if err == nil {
-			if metadata.DocCount != uint64(len(docs)) {
-				t.Fatalf("metadata count %d, docs %d", metadata.DocCount, len(docs))
-			}
+			require.Equal(t, uint64(len(docs)), metadata.DocCount)
 		}
 	})
 }
@@ -230,13 +246,11 @@ func sampleSegmentData() (SegmentMetadata, []StoredDocument) {
 func TestSegmentPayloadCRC(t *testing.T) {
 	metadata, docs := sampleSegmentData()
 	encoded, err := encodeSegment(metadata, docs)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		actual, expected := binary.LittleEndian.Uint32(encoded[56:60]), ailego.CRC32C(encoded[segmentHeaderSize:])
+		require.Equal(t, expected, actual)
 	}
-	if actual, expected := binary.LittleEndian.Uint32(encoded[56:60]), ailego.CRC32C(encoded[segmentHeaderSize:]); actual != expected {
-		t.Fatalf("payload CRC = %08x, want %08x", actual, expected)
-	}
-	if bytes.Equal(encoded[:8], make([]byte, 8)) {
-		t.Fatal("segment magic is empty")
-	}
+	require.False(t, bytes.Equal(encoded[:8], make([]byte, 8)),
+		"segment magic is empty")
 }

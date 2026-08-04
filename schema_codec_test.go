@@ -16,8 +16,9 @@ package zvec
 
 import (
 	"bytes"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestCollectionSchemaCodecRoundTripIndexParameters(t *testing.T) {
@@ -37,16 +38,11 @@ func TestCollectionSchemaCodecRoundTripIndexParameters(t *testing.T) {
 				Dimension: dimension, Index: parameters,
 			})
 			encoded, err := marshalCollectionSchema(schema)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			decoded, err := unmarshalCollectionSchema(encoded)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(decoded, schema) {
-				t.Fatalf("decoded schema = %#v, want %#v", decoded, schema)
-			}
+			require.NoError(t, err)
+			require.Equal(t, schema, decoded)
 		})
 	}
 
@@ -55,13 +51,11 @@ func TestCollectionSchemaCodecRoundTripIndexParameters(t *testing.T) {
 		FieldSchema{Name: "text", DataType: DataTypeString, Index: NewFTSIndexParams()},
 	)
 	encoded, err := marshalCollectionSchema(scalar)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	decoded, err := unmarshalCollectionSchema(encoded)
-	if err != nil || !reflect.DeepEqual(decoded, scalar) {
-		t.Fatalf("scalar round trip = %#v, %v", decoded, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, scalar, decoded)
 }
 
 func TestCollectionSchemaCodecLocksDiskANNAndVamanaValues(t *testing.T) {
@@ -70,15 +64,9 @@ func TestCollectionSchemaCodecLocksDiskANNAndVamanaValues(t *testing.T) {
 		FieldSchema{Name: "memory", DataType: DataTypeVectorFP32, Dimension: 8, Index: NewVamanaIndexParams(MetricTypeL2)},
 	)
 	encoded, err := marshalCollectionSchema(schema)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(encoded, []byte(`"name":"disk","data_type":23,"nullable":false,"dimension":8,"index_type":5`)) {
-		t.Fatalf("DiskANN mapping missing from %s", encoded)
-	}
-	if !bytes.Contains(encoded, []byte(`"name":"memory","data_type":23,"nullable":false,"dimension":8,"index_type":6`)) {
-		t.Fatalf("Vamana mapping missing from %s", encoded)
-	}
+	require.NoError(t, err)
+	require.True(t, bytes.Contains(encoded, []byte(`"name":"disk","data_type":23,"nullable":false,"dimension":8,"index_type":5`)))
+	require.True(t, bytes.Contains(encoded, []byte(`"name":"memory","data_type":23,"nullable":false,"dimension":8,"index_type":6`)))
 }
 
 func TestCollectionSchemaCodecRejectsUnknownOrDamagedData(t *testing.T) {
@@ -89,8 +77,9 @@ func TestCollectionSchemaCodecRejectsUnknownOrDamagedData(t *testing.T) {
 		[]byte(`{"codec_version":1,"name":"bad","fields":[{"name":"v","data_type":23,"dimension":2,"index_type":3}],"max_docs_per_segment":1000}`),
 	}
 	for _, encoded := range tests {
-		if _, err := unmarshalCollectionSchema(encoded); err == nil {
-			t.Fatalf("damaged schema succeeded: %s", encoded)
+		{
+			_, err := unmarshalCollectionSchema(encoded)
+			require.Error(t, err)
 		}
 	}
 }
@@ -101,9 +90,8 @@ func FuzzCollectionSchemaCodec(f *testing.F) {
 		Index: NewFlatIndexParams(MetricTypeCosine),
 	})
 	encoded, err := marshalCollectionSchema(schema)
-	if err != nil {
-		f.Fatal(err)
-	}
+	require.NoError(f, err)
+
 	f.Add(encoded)
 	f.Add([]byte(`{"codec_version":1}`))
 	f.Fuzz(func(t *testing.T, input []byte) {
@@ -111,15 +99,16 @@ func FuzzCollectionSchemaCodec(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if err := decoded.Validate(); err != nil {
-			t.Fatalf("successful decode produced invalid schema: %v", err)
+		{
+			err := decoded.Validate()
+			require.NoError(t, err)
 		}
+
 		reencoded, err := marshalCollectionSchema(decoded)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := unmarshalCollectionSchema(reencoded); err != nil {
-			t.Fatalf("re-encoded schema failed: %v", err)
+		require.NoError(t, err)
+		{
+			_, err := unmarshalCollectionSchema(reencoded)
+			require.NoError(t, err)
 		}
 	})
 }

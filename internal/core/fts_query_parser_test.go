@@ -20,10 +20,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type ftsQueryParserFixture struct {
@@ -50,31 +52,50 @@ type ftsQueryParserFixture struct {
 
 func TestFTSQueryParserBaselineFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/fts_query_parser_58375ff.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var fixture ftsQueryParserFixture
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(data, &fixture)
+		require.NoError(t, err)
 	}
-	if fixture.BaselineCommit != "58375ff7b8fdd0d6fc7d234e47567b179777883b" ||
-		fixture.LexerSHA256 != "73d93e4311af4a74a76f8db964441ceefb8ac20f2ac2fb6470b0c2163a3b8d8d" ||
-		fixture.ParserSHA256 != "9d4bca5dba6040da755c6d4af25e54c963df34542c0d0ff7e4b4b7fef7760bf5" ||
-		fixture.ASTSHA256 != "6f0e03452b3d1df98d557d239dc2969cec80a5de45eae2ade7a25ed200481d85" ||
-		fixture.ParserSourceHash != "3e63b894375a0c58283accd1b642d765b2cbf97020b69687c3ad478aa1ef825a" ||
-		fixture.ParserTestsHash != "45a6a5af0bb2b38abb81554bf7f857e931c9cee3f29b4975280ce6febcc24b09" ||
-		fixture.RewriterHash != "178d7c625c755f4de250f832569a1354544c034f760d7da18555a864ad6411f7" ||
-		fixture.TermIteratorHash != "842080ba9bce4bacdb102705da18e9bc36a029138d4b8f269caeab4681f0f2c8" ||
-		fixture.AndIteratorHash != "a524cd701608563f13fda44c2838772cb979b8f6af7195b19bfe527956cef59c" ||
-		fixture.OrIteratorHash != "6645478f1ae200077f4686d076214aa8a70e81ddbee1bf9397403fcac011684d" ||
-		fixture.PhraseIteratorHash != "6316f87dab229ba02fbb588f0047f23a9b988aab584d0d87fb9987896dd565f7" {
-		t.Fatal("baseline identity drift")
-	}
+	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+
+		"baseline identity drift")
+	require.True(t, fixture.LexerSHA256 == "73d93e4311af4a74a76f8db964441ceefb8ac20f2ac2fb6470b0c2163a3b8d8d",
+
+		"baseline identity drift")
+	require.True(t, fixture.ParserSHA256 == "9d4bca5dba6040da755c6d4af25e54c963df34542c0d0ff7e4b4b7fef7760bf5",
+
+		"baseline identity drift")
+	require.True(t, fixture.ASTSHA256 == "6f0e03452b3d1df98d557d239dc2969cec80a5de45eae2ade7a25ed200481d85",
+
+		"baseline identity drift")
+	require.True(t, fixture.ParserSourceHash == "3e63b894375a0c58283accd1b642d765b2cbf97020b69687c3ad478aa1ef825a",
+
+		"baseline identity drift")
+	require.True(t, fixture.ParserTestsHash == "45a6a5af0bb2b38abb81554bf7f857e931c9cee3f29b4975280ce6febcc24b09",
+
+		"baseline identity drift")
+	require.True(t, fixture.RewriterHash == "178d7c625c755f4de250f832569a1354544c034f760d7da18555a864ad6411f7",
+
+		"baseline identity drift")
+	require.True(t, fixture.TermIteratorHash == "842080ba9bce4bacdb102705da18e9bc36a029138d4b8f269caeab4681f0f2c8",
+
+		"baseline identity drift")
+	require.True(t, fixture.AndIteratorHash == "a524cd701608563f13fda44c2838772cb979b8f6af7195b19bfe527956cef59c",
+
+		"baseline identity drift")
+	require.True(t, fixture.OrIteratorHash == "6645478f1ae200077f4686d076214aa8a70e81ddbee1bf9397403fcac011684d",
+
+		"baseline identity drift")
+	require.True(t, fixture.PhraseIteratorHash == "6316f87dab229ba02fbb588f0047f23a9b988aab584d0d87fb9987896dd565f7",
+		"baseline identity drift")
+
 	standard := newFTSStandardTestPipeline(t)
 	whitespace, err := NewFTSTokenizerPipeline(NewWhitespaceTokenizer())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for _, test := range fixture.Cases {
 		t.Run(test.Name, func(t *testing.T) {
 			analyzer := FTSAnalyzer(standard)
@@ -82,21 +103,20 @@ func TestFTSQueryParserBaselineFixture(t *testing.T) {
 				analyzer = whitespace
 			}
 			defaultOperator, err := ParseFTSDefaultOperator(test.Default)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			node, err := ParseFTSQuery(context.Background(), test.Query, analyzer, defaultOperator)
 			if test.Error != "" {
-				if node != nil || err == nil || !strings.Contains(err.Error(), test.Error) {
-					t.Fatalf("Parse = %#v, %v, want error containing %q", node, err, test.Error)
-				}
+				require.Nil(t, node)
+				require.Error(t, err)
+				require.Contains(t, err.Error(), test.Error)
+
 				return
 			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := node.String(); got != test.Want {
-				t.Fatalf("AST = %q, want %q", got, test.Want)
+			require.NoError(t, err)
+			{
+				got := node.String()
+				require.Equal(t, test.Want, got)
 			}
 		})
 	}
@@ -105,9 +125,8 @@ func TestFTSQueryParserBaselineFixture(t *testing.T) {
 func TestLexFTSQueryLongestMatchAndLocations(t *testing.T) {
 	query := "or AND Not ORbit 12 1.5 1. full-text C\\+\\+\n\"a \\\"b\\\"\" 中文 😀"
 	tokens, err := LexFTSQuery(context.Background(), query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	wantTypes := []FTSQueryTokenType{
 		FTSQueryTokenOR, FTSQueryTokenAND, FTSQueryTokenNOT,
 		FTSQueryTokenRegularID, FTSQueryTokenNumber, FTSQueryTokenNumber,
@@ -119,23 +138,19 @@ func TestLexFTSQueryLongestMatchAndLocations(t *testing.T) {
 		"or", "AND", "Not", "ORbit", "12", "1.5", "1.", "full-text",
 		`C\+\+`, `"a \"b\""`, "中文", "😀", "",
 	}
-	if len(tokens) != len(wantTypes) {
-		t.Fatalf("token count = %d: %#v", len(tokens), tokens)
-	}
+	require.Len(t, tokens, len(wantTypes))
+
 	for index, token := range tokens {
-		if token.Type != wantTypes[index] || token.Text != wantTexts[index] {
-			t.Errorf("token %d = %s %q, want %s %q", index, token.Type, token.Text, wantTypes[index], wantTexts[index])
-		}
-		if token.End < token.Offset || index > 0 && token.Offset < tokens[index-1].End {
-			t.Errorf("token %d has invalid offsets [%d,%d)", index, token.Offset, token.End)
-		}
+		assert.False(t, token.Type != wantTypes[index] || token.Text != wantTexts[index])
+		assert.False(t, token.End < token.Offset || index > 0 && token.Offset < tokens[index-1].End)
 	}
 	phrase := tokens[9]
-	if phrase.Line != 2 || phrase.Column != 0 {
-		t.Fatalf("phrase location = %d:%d", phrase.Line, phrase.Column)
-	}
-	if eof := tokens[len(tokens)-1]; eof.Offset != uint32(len(query)) || eof.End != uint32(len(query)) {
-		t.Fatalf("EOF = %#v", eof)
+	require.True(t, phrase.Line == 2)
+	require.True(t, phrase.Column == 0)
+	{
+		eof := tokens[len(tokens)-1]
+		require.Equal(t, uint32(len(query)), eof.Offset)
+		require.Equal(t, uint32(len(query)), eof.End)
 	}
 }
 
@@ -153,55 +168,45 @@ func TestLexFTSQueryGrammarEdges(t *testing.T) {
 	for _, test := range tests {
 		t.Run(fmt.Sprintf("%x", test.input), func(t *testing.T) {
 			tokens, err := LexFTSQuery(context.Background(), test.input)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			got := make([]string, 0, len(tokens)-1)
 			for _, token := range tokens[:len(tokens)-1] {
 				got = append(got, token.Type.String()+":"+token.Text)
 			}
-			if !reflect.DeepEqual(got, test.want) {
-				t.Fatalf("tokens = %#v, want %#v", got, test.want)
-			}
+			require.Equal(t, test.want, got)
 		})
 	}
 	for _, character := range []byte(`-+=&|!(){}[]^"~*?:\/`) {
 		query := "x\\" + string(character)
 		tokens, err := LexFTSQuery(context.Background(), query)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(tokens) != 2 || tokens[0].Type != FTSQueryTokenTerm || tokens[0].Text != query {
-			t.Errorf("escaped %q tokens = %#v", character, tokens)
-		}
+		require.NoError(t, err)
+		assert.False(t, len(tokens) != 2 || tokens[0].Type != FTSQueryTokenTerm || tokens[0].Text != query)
 	}
 }
 
 func TestFTSTokenizerPipeline(t *testing.T) {
 	tokenizer, err := NewStandardTokenizer(DefaultStandardTokenizerOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	filters := []TokenFilter{NewLowercaseTokenFilter(), NewASCIIFoldingTokenFilter()}
 	pipeline, err := NewFTSTokenizerPipeline(tokenizer, filters...)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	filters[0] = nil
-	if pipeline.TokenizerName() != "standard" || !reflect.DeepEqual(pipeline.FilterNames(), []string{"lowercase", "ascii_folding"}) {
-		t.Fatalf("pipeline metadata = %q %#v", pipeline.TokenizerName(), pipeline.FilterNames())
-	}
+	require.True(t, pipeline.TokenizerName() == "standard")
+	require.Equal(t, []string{"lowercase", "ascii_folding"}, pipeline.FilterNames())
+
 	names := pipeline.FilterNames()
 	names[0] = "changed"
-	if pipeline.FilterNames()[0] != "lowercase" {
-		t.Fatal("FilterNames aliases pipeline state")
-	}
+	require.True(t, pipeline.FilterNames()[0] == "lowercase",
+		"FilterNames aliases pipeline state")
+
 	tokens, err := pipeline.Analyze(context.Background(), "CAFÉ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []Token{{Text: "cafe", Offset: 0, Position: 0}}; !reflect.DeepEqual(tokens, want) {
-		t.Fatalf("Analyze = %#v, want %#v", tokens, want)
+	require.NoError(t, err)
+	{
+		want := []Token{{Text: "cafe", Offset: 0, Position: 0}}
+		require.Equal(t, want, tokens)
 	}
 }
 
@@ -221,27 +226,35 @@ func (*nilFTSTestFilter) Filter(context.Context, []Token) ([]Token, error) {
 
 func TestFTSTokenizerPipelineInvalidAndCancellation(t *testing.T) {
 	var tokenizer *nilFTSTestTokenizer
-	if pipeline, err := NewFTSTokenizerPipeline(tokenizer); pipeline != nil || !errors.Is(err, ErrInvalidFTSAnalyzer) {
-		t.Fatalf("typed nil tokenizer = %#v, %v", pipeline, err)
+	{
+		pipeline, err := NewFTSTokenizerPipeline(tokenizer)
+		require.Nil(t, pipeline)
+		require.ErrorIs(t, err, ErrInvalidFTSAnalyzer)
 	}
+
 	var filter *nilFTSTestFilter
-	if pipeline, err := NewFTSTokenizerPipeline(NewWhitespaceTokenizer(), filter); pipeline != nil || !errors.Is(err, ErrInvalidFTSAnalyzer) {
-		t.Fatalf("typed nil filter = %#v, %v", pipeline, err)
+	{
+		pipeline, err := NewFTSTokenizerPipeline(NewWhitespaceTokenizer(), filter)
+		require.Nil(t, pipeline)
+		require.ErrorIs(t, err, ErrInvalidFTSAnalyzer)
 	}
+
 	pipeline, err := NewFTSTokenizerPipeline(NewWhitespaceTokenizer())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := pipeline.Analyze(nil, "text")
+		require.ErrorIs(t, err, ErrInvalidFTSAnalyzer)
 	}
-	if _, err := pipeline.Analyze(nil, "text"); !errors.Is(err, ErrInvalidFTSAnalyzer) {
-		t.Fatalf("nil context = %v", err)
-	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := pipeline.Analyze(canceled, "text"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled = %v", err)
+	{
+		_, err := pipeline.Analyze(canceled, "text")
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := (FTSAnalyzerFunc)(nil).Analyze(context.Background(), "text"); !errors.Is(err, ErrInvalidFTSAnalyzer) {
-		t.Fatalf("nil analyzer function = %v", err)
+	{
+		_, err := (FTSAnalyzerFunc)(nil).Analyze(context.Background(), "text")
+		require.ErrorIs(t, err, ErrInvalidFTSAnalyzer)
 	}
 }
 
@@ -273,23 +286,20 @@ func TestParseFTSQueryASTAndModifiers(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.query+"/"+test.op.String(), func(t *testing.T) {
 			node, err := ParseFTSQuery(context.Background(), test.query, pipeline, test.op)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if node.Type() != test.type_ || node.String() != test.want {
-				t.Fatalf("AST = %s %q, want %s %q", node.Type(), node.String(), test.type_, test.want)
-			}
+			require.NoError(t, err)
+			require.Equal(t, test.type_, node.Type())
+			require.Equal(t, test.want, node.String())
 		})
 	}
 
 	node, err := ParseFTSQuery(context.Background(), `+"exact phrase"`, pipeline, FTSDefaultOperatorOR)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	phrase, ok := node.(*FTSPhraseQueryNode)
-	if !ok || !phrase.Flags.Must || phrase.Flags.MustNot || !reflect.DeepEqual(phrase.Terms, []string{"exact", "phrase"}) {
-		t.Fatalf("phrase = %#v", node)
-	}
+	require.True(t, ok)
+	require.True(t, phrase.Flags.Must)
+	require.False(t, phrase.Flags.MustNot)
+	require.Equal(t, []string{"exact", "phrase"}, phrase.Terms)
 }
 
 func TestAnalyzeFTSMatchQuery(t *testing.T) {
@@ -302,33 +312,43 @@ func TestAnalyzeFTSMatchQuery(t *testing.T) {
 		{FTSDefaultOperatorAND, "AND(apple and banana)"},
 	} {
 		node, err := AnalyzeFTSMatchQuery(context.Background(), "Apple AND banana", pipeline, test.op)
-		if err != nil || node.String() != test.want {
-			t.Errorf("Analyze(%s) = %#v, %v", test.op, node, err)
-		}
+		assert.False(t, err != nil || node.String() != test.want)
 	}
-	if node, err := AnalyzeFTSMatchQuery(context.Background(), "!!!", pipeline, FTSDefaultOperatorOR); err != nil || node.Type() != FTSQueryNodeEmpty {
-		t.Fatalf("empty match = %#v, %v", node, err)
+	{
+		node, err := AnalyzeFTSMatchQuery(context.Background(), "!!!", pipeline, FTSDefaultOperatorOR)
+		require.NoError(t, err)
+		require.Equal(t, FTSQueryNodeEmpty, node.Type())
 	}
-	if node, err := AnalyzeFTSMatchQuery(nil, "apple", pipeline, FTSDefaultOperatorOR); node != nil || !errors.Is(err, ErrInvalidFTSQuery) {
-		t.Fatalf("nil context = %#v, %v", node, err)
+	{
+		node, err := AnalyzeFTSMatchQuery(nil, "apple", pipeline, FTSDefaultOperatorOR)
+		require.Nil(t, node)
+		require.ErrorIs(t, err, ErrInvalidFTSQuery)
 	}
-	if node, err := AnalyzeFTSMatchQuery(context.Background(), "apple", nil, FTSDefaultOperatorOR); node != nil || !errors.Is(err, ErrInvalidFTSQuery) {
-		t.Fatalf("nil analyzer = %#v, %v", node, err)
+	{
+		node, err := AnalyzeFTSMatchQuery(context.Background(), "apple", nil, FTSDefaultOperatorOR)
+		require.Nil(t, node)
+		require.ErrorIs(t, err, ErrInvalidFTSQuery)
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := AnalyzeFTSMatchQuery(canceled, "apple", pipeline, FTSDefaultOperatorOR); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled = %v", err)
+	{
+		_, err := AnalyzeFTSMatchQuery(canceled, "apple", pipeline, FTSDefaultOperatorOR)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	sentinel := errors.New("match analysis failed")
 	failed := FTSAnalyzerFunc(func(context.Context, string) ([]Token, error) { return nil, sentinel })
-	if _, err := AnalyzeFTSMatchQuery(context.Background(), "apple", failed, FTSDefaultOperatorOR); !errors.Is(err, sentinel) {
-		t.Fatalf("analysis error = %v", err)
+	{
+		_, err := AnalyzeFTSMatchQuery(context.Background(), "apple", failed, FTSDefaultOperatorOR)
+		require.ErrorIs(t, err, sentinel)
 	}
+
 	oversized := make([]Token, MaxFTSQueryTokens+1)
 	tooMany := FTSAnalyzerFunc(func(context.Context, string) ([]Token, error) { return oversized, nil })
-	if _, err := AnalyzeFTSMatchQuery(context.Background(), "apple", tooMany, FTSDefaultOperatorOR); !errors.Is(err, ErrFTSQueryTooComplex) {
-		t.Fatalf("oversized analysis = %v", err)
+	{
+		_, err := AnalyzeFTSMatchQuery(context.Background(), "apple", tooMany, FTSDefaultOperatorOR)
+		require.ErrorIs(t, err, ErrFTSQueryTooComplex)
 	}
 }
 
@@ -337,26 +357,34 @@ func TestFTSQueryASTDebugText(t *testing.T) {
 		Flags: FTSQueryModifier{Must: true, MustNot: true, Should: true, Boost: 2},
 		Term:  "vector",
 	}
-	if got := term.String(); got != "+vector^2.000000" {
-		t.Fatalf("term text = %q", got)
+	{
+		got := term.String()
+		require.True(t, got == "+vector^2.000000")
 	}
+
 	phrase := &FTSPhraseQueryNode{
 		Flags: FTSQueryModifier{MustNot: true, Boost: 0.5},
 		Terms: []string{"exact", "phrase"},
 	}
-	if got := phrase.String(); got != `-"exact phrase"^0.500000` {
-		t.Fatalf("phrase text = %q", got)
+	{
+		got := phrase.String()
+		require.True(t, got == `-"exact phrase"^0.500000`)
 	}
+
 	composite := &FTSAndQueryNode{
 		Flags:    FTSQueryModifier{Should: true, Boost: 3},
 		Children: []FTSQueryNode{term, phrase},
 	}
-	if got := composite.String(); got != `?AND(+vector^2.000000 -"exact phrase"^0.500000)` {
-		t.Fatalf("composite text = %q", got)
+	{
+		got := composite.String()
+		require.True(t, got == `?AND(+vector^2.000000 -"exact phrase"^0.500000)`)
 	}
-	if FTSQueryNodeType(99).String() != "UNKNOWN(99)" || FTSQueryTokenType(99).String() != "UNKNOWN(99)" || FTSDefaultOperator(99).String() != "UNKNOWN(99)" {
-		t.Fatal("unknown enum text differs")
-	}
+	require.True(t, FTSQueryNodeType(99).String() == "UNKNOWN(99)",
+		"unknown enum text differs")
+	require.True(t, FTSQueryTokenType(99).String() == "UNKNOWN(99)",
+		"unknown enum text differs")
+	require.True(t, FTSDefaultOperator(99).String() == "UNKNOWN(99)",
+		"unknown enum text differs")
 }
 
 func TestParseFTSQueryAnalysisAndEscapes(t *testing.T) {
@@ -369,18 +397,13 @@ func TestParseFTSQueryAnalysisAndEscapes(t *testing.T) {
 	}
 	for query, want := range tests {
 		node, err := ParseFTSQuery(context.Background(), query, standard, FTSDefaultOperatorOR)
-		if err != nil {
-			t.Fatalf("Parse(%q): %v", query, err)
-		}
-		if node.String() != want {
-			t.Errorf("Parse(%q) = %q, want %q", query, node.String(), want)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, want, node.String())
 	}
 
 	whitespace, err := NewFTSTokenizerPipeline(NewWhitespaceTokenizer())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	escaped := map[string]string{
 		`C\+\+`:             "C++",
 		`a\-b`:              "a-b",
@@ -390,12 +413,8 @@ func TestParseFTSQueryAnalysisAndEscapes(t *testing.T) {
 	}
 	for query, want := range escaped {
 		node, err := ParseFTSQuery(context.Background(), query, whitespace, FTSDefaultOperatorOR)
-		if err != nil {
-			t.Fatalf("Parse(%q): %v", query, err)
-		}
-		if node.String() != want {
-			t.Errorf("Parse(%q) = %q, want %q", query, node.String(), want)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, want, node.String())
 	}
 }
 
@@ -421,86 +440,118 @@ func TestParseFTSQueryErrorsAndLocations(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.query, func(t *testing.T) {
 			node, err := ParseFTSQuery(context.Background(), test.query, pipeline, FTSDefaultOperatorOR)
-			if node != nil || !errors.Is(err, test.kind) || !strings.Contains(err.Error(), test.message) {
-				t.Fatalf("Parse = %#v, %v", node, err)
-			}
+			require.Nil(t, node)
+			require.ErrorIs(t, err, test.kind)
+			require.Contains(t, err.Error(), test.message)
+
 			var parseError *FTSQueryParseError
-			if !errors.As(err, &parseError) || parseError.Offset != test.offset || parseError.Line != 1 {
-				t.Fatalf("parse error = %#v", parseError)
-			}
+			require.ErrorAs(t, err, &parseError)
+			require.Equal(t, test.offset, parseError.Offset)
+			require.True(t, parseError.Line == 1)
 		})
 	}
 	node, err := ParseFTSQuery(context.Background(), "中文 OR\n)", pipeline, FTSDefaultOperatorOR)
 	var parseError *FTSQueryParseError
-	if node != nil || !errors.As(err, &parseError) || parseError.Offset != 10 || parseError.Line != 2 || parseError.Column != 0 {
-		t.Fatalf("multiline error = %#v, %v", parseError, err)
-	}
+	require.Nil(t, node)
+	require.ErrorAs(t, err, &parseError)
+	require.True(t, parseError.Offset == 10)
+	require.True(t, parseError.Line == 2)
+	require.True(t, parseError.Column == 0)
 }
 
 func TestParseFTSQueryInvalidConfigurationCancellationAndDepth(t *testing.T) {
 	pipeline := newFTSStandardTestPipeline(t)
-	if node, err := ParseFTSQuery(nil, "a", pipeline, FTSDefaultOperatorOR); node != nil || !errors.Is(err, ErrInvalidFTSQuery) {
-		t.Fatalf("nil context = %#v, %v", node, err)
+	{
+		node, err := ParseFTSQuery(nil, "a", pipeline, FTSDefaultOperatorOR)
+		require.Nil(t, node)
+		require.ErrorIs(t, err, ErrInvalidFTSQuery)
 	}
+
 	var analyzer *FTSTokenizerPipeline
-	if node, err := ParseFTSQuery(context.Background(), "a", analyzer, FTSDefaultOperatorOR); node != nil || !errors.Is(err, ErrInvalidFTSQuery) {
-		t.Fatalf("nil analyzer = %#v, %v", node, err)
+	{
+		node, err := ParseFTSQuery(context.Background(), "a", analyzer, FTSDefaultOperatorOR)
+		require.Nil(t, node)
+		require.ErrorIs(t, err, ErrInvalidFTSQuery)
 	}
-	if node, err := ParseFTSQuery(context.Background(), "a", FTSAnalyzerFunc(nil), FTSDefaultOperatorOR); node != nil || !errors.Is(err, ErrInvalidFTSQuery) {
-		t.Fatalf("nil analyzer function = %#v, %v", node, err)
+	{
+		node, err := ParseFTSQuery(context.Background(), "a", FTSAnalyzerFunc(nil), FTSDefaultOperatorOR)
+		require.Nil(t, node)
+		require.ErrorIs(t, err, ErrInvalidFTSQuery)
 	}
-	if node, err := ParseFTSQuery(context.Background(), "a", pipeline, 99); node != nil || !errors.Is(err, ErrInvalidFTSQuery) {
-		t.Fatalf("invalid operator = %#v, %v", node, err)
+	{
+		node, err := ParseFTSQuery(context.Background(), "a", pipeline, 99)
+		require.Nil(t, node)
+		require.ErrorIs(t, err, ErrInvalidFTSQuery)
 	}
+
 	for input, want := range map[string]FTSDefaultOperator{"": FTSDefaultOperatorOR, "or": FTSDefaultOperatorOR, "AnD": FTSDefaultOperatorAND} {
-		if got, err := ParseFTSDefaultOperator(input); err != nil || got != want {
-			t.Errorf("ParseFTSDefaultOperator(%q) = %v, %v", input, got, err)
+		{
+			got, err := ParseFTSDefaultOperator(input)
+			assert.False(t, err != nil || got != want)
 		}
 	}
-	if _, err := ParseFTSDefaultOperator("XOR"); !errors.Is(err, ErrInvalidFTSQuery) {
-		t.Fatalf("invalid default operator = %v", err)
+	{
+		_, err := ParseFTSDefaultOperator("XOR")
+		require.ErrorIs(t, err, ErrInvalidFTSQuery)
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := LexFTSQuery(canceled, "a"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled lexer = %v", err)
+	{
+		_, err := LexFTSQuery(canceled, "a")
+		require.ErrorIs(t, err, context.Canceled)
 	}
-	if _, err := ParseFTSQuery(canceled, "a", pipeline, FTSDefaultOperatorOR); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled parser = %v", err)
+	{
+		_, err := ParseFTSQuery(canceled, "a", pipeline, FTSDefaultOperatorOR)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	midway := newCancelAfterChecks(3)
-	if _, err := ParseFTSQuery(midway, strings.Repeat("word ", 5000), pipeline, FTSDefaultOperatorOR); !errors.Is(err, context.Canceled) {
-		t.Fatalf("midway cancellation = %v", err)
+	{
+		_, err := ParseFTSQuery(midway, strings.Repeat("word ", 5000), pipeline, FTSDefaultOperatorOR)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	longTerm := newCancelAfterChecks(4)
-	if _, err := LexFTSQuery(longTerm, strings.Repeat("a", 1<<20)); !errors.Is(err, context.Canceled) {
-		t.Fatalf("long-term cancellation = %v", err)
+	{
+		_, err := LexFTSQuery(longTerm, strings.Repeat("a", 1<<20))
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	longPhrase := newCancelAfterChecks(4)
-	if _, err := LexFTSQuery(longPhrase, `"`+strings.Repeat("a", 1<<20)+`"`); !errors.Is(err, context.Canceled) {
-		t.Fatalf("long-phrase cancellation = %v", err)
+	{
+		_, err := LexFTSQuery(longPhrase, `"`+strings.Repeat("a", 1<<20)+`"`)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 
 	deep := strings.Repeat("(", MaxFTSQueryDepth+1) + "a" + strings.Repeat(")", MaxFTSQueryDepth+1)
-	if _, err := ParseFTSQuery(context.Background(), deep, pipeline, FTSDefaultOperatorOR); !errors.Is(err, ErrFTSQueryTooComplex) {
-		t.Fatalf("deep query = %v", err)
+	{
+		_, err := ParseFTSQuery(context.Background(), deep, pipeline, FTSDefaultOperatorOR)
+		require.ErrorIs(t, err, ErrFTSQueryTooComplex)
 	}
+
 	maximumDepth := strings.Repeat("(", MaxFTSQueryDepth) + "a" + strings.Repeat(")", MaxFTSQueryDepth)
-	if node, err := ParseFTSQuery(context.Background(), maximumDepth, pipeline, FTSDefaultOperatorOR); err != nil || node.String() != "a" {
-		t.Fatalf("maximum-depth query = %#v, %v", node, err)
+	{
+		node, err := ParseFTSQuery(context.Background(), maximumDepth, pipeline, FTSDefaultOperatorOR)
+		require.NoError(t, err)
+		require.True(t, node.String() == "a")
 	}
+
 	tooManyTokens := strings.Repeat("!", MaxFTSQueryTokens+1)
-	if _, err := LexFTSQuery(context.Background(), tooManyTokens); !errors.Is(err, ErrFTSQueryTooComplex) {
-		t.Fatalf("large token stream = %v", err)
+	{
+		_, err := LexFTSQuery(context.Background(), tooManyTokens)
+		require.ErrorIs(t, err, ErrFTSQueryTooComplex)
 	}
+
 	tooManyAnalyzed := make([]Token, MaxFTSQueryTokens+1)
 	oversizedAnalyzer := FTSAnalyzerFunc(func(context.Context, string) ([]Token, error) {
 		return tooManyAnalyzed, nil
 	})
-	if _, err := ParseFTSQuery(context.Background(), "a", oversizedAnalyzer, FTSDefaultOperatorOR); !errors.Is(err, ErrFTSQueryTooComplex) {
-		t.Fatalf("large analyzed stream = %v", err)
+	{
+		_, err := ParseFTSQuery(context.Background(), "a", oversizedAnalyzer, FTSDefaultOperatorOR)
+		require.ErrorIs(t, err, ErrFTSQueryTooComplex)
 	}
+
 	cancellableTokens := make([]Token, 5000)
 	for index := range cancellableTokens {
 		cancellableTokens[index] = Token{Text: "a"}
@@ -508,8 +559,9 @@ func TestParseFTSQueryInvalidConfigurationCancellationAndDepth(t *testing.T) {
 	cancellableAnalyzer := FTSAnalyzerFunc(func(context.Context, string) ([]Token, error) {
 		return cancellableTokens, nil
 	})
-	if _, err := AnalyzeFTSMatchQuery(newCancelAfterChecks(3), "a", cancellableAnalyzer, FTSDefaultOperatorOR); !errors.Is(err, context.Canceled) {
-		t.Fatalf("analyzed AST cancellation = %v", err)
+	{
+		_, err := AnalyzeFTSMatchQuery(newCancelAfterChecks(3), "a", cancellableAnalyzer, FTSDefaultOperatorOR)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
@@ -518,45 +570,47 @@ func TestParseFTSQueryAnalyzerFailureAndOwnership(t *testing.T) {
 	failed := FTSAnalyzerFunc(func(context.Context, string) ([]Token, error) {
 		return nil, sentinel
 	})
-	if node, err := ParseFTSQuery(context.Background(), "term AND", failed, FTSDefaultOperatorOR); node != nil || !errors.Is(err, ErrFTSQuerySyntax) {
-		t.Fatalf("syntax must precede analysis = %#v, %v", node, err)
+	{
+		node, err := ParseFTSQuery(context.Background(), "term AND", failed, FTSDefaultOperatorOR)
+		require.Nil(t, node)
+		require.ErrorIs(t, err, ErrFTSQuerySyntax)
 	}
+
 	analyzed := 0
 	counting := FTSAnalyzerFunc(func(context.Context, string) ([]Token, error) {
 		analyzed++
 		return []Token{{Text: "unexpected"}}, nil
 	})
 	for _, query := range []string{"host:port", "term^2"} {
-		if node, err := ParseFTSQuery(context.Background(), query, counting, FTSDefaultOperatorOR); node != nil || !errors.Is(err, ErrUnsupportedFTSQuery) {
-			t.Fatalf("unsupported %q = %#v, %v", query, node, err)
+		{
+			node, err := ParseFTSQuery(context.Background(), query, counting, FTSDefaultOperatorOR)
+			require.Nil(t, node)
+			require.ErrorIs(t, err, ErrUnsupportedFTSQuery)
 		}
 	}
-	if analyzed != 0 {
-		t.Fatalf("unsupported atoms invoked analyzer %d times", analyzed)
+	require.True(t, analyzed == 0)
+	{
+		node, err := ParseFTSQuery(context.Background(), "term", failed, FTSDefaultOperatorOR)
+		require.Nil(t, node)
+		require.ErrorIs(t, err, sentinel)
 	}
-	if node, err := ParseFTSQuery(context.Background(), "term", failed, FTSDefaultOperatorOR); node != nil || !errors.Is(err, sentinel) {
-		t.Fatalf("analyzer failure = %#v, %v", node, err)
-	}
+
 	shared := []Token{{Text: "owned"}, {Text: "terms"}}
 	analyzer := FTSAnalyzerFunc(func(context.Context, string) ([]Token, error) { return shared, nil })
 	node, err := ParseFTSQuery(context.Background(), `"source"`, analyzer, FTSDefaultOperatorOR)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	shared[0].Text = "changed"
 	phrase := node.(*FTSPhraseQueryNode)
-	if !reflect.DeepEqual(phrase.Terms, []string{"owned", "terms"}) {
-		t.Fatalf("parser aliases analyzer output: %#v", phrase.Terms)
-	}
+	require.Equal(t, []string{"owned", "terms"}, phrase.Terms)
 }
 
 func TestParseFTSQueryConcurrentUse(t *testing.T) {
 	pipeline := newFTSStandardTestPipeline(t)
 	const query = `+Vector -slow "Machine Learning" OR database`
 	wantNode, err := ParseFTSQuery(context.Background(), query, pipeline, FTSDefaultOperatorOR)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := wantNode.String()
 	var wait sync.WaitGroup
 	errorsChannel := make(chan error, 32)
@@ -576,7 +630,7 @@ func TestParseFTSQueryConcurrentUse(t *testing.T) {
 	wait.Wait()
 	close(errorsChannel)
 	for err := range errorsChannel {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 }
 
@@ -589,14 +643,17 @@ func FuzzLexFTSQuery(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if len(tokens) == 0 || tokens[len(tokens)-1].Type != FTSQueryTokenEOF {
-			t.Fatal("missing EOF")
-		}
+		require.False(t, len(tokens) == 0,
+			"missing EOF")
+		require.Equal(t, FTSQueryTokenEOF, tokens[len(tokens)-1].Type,
+			"missing EOF")
+
 		previousEnd := uint32(0)
-		for index, token := range tokens {
-			if token.Offset < previousEnd || token.End < token.Offset || uint64(token.End) > uint64(len(query)) {
-				t.Fatalf("token %d has invalid range %#v", index, token)
-			}
+		for _, token := range tokens {
+			require.True(t, token.Offset >= previousEnd)
+			require.True(t, token.End >= token.Offset)
+			require.True(t, uint64(token.End) <= uint64(len(query)))
+
 			previousEnd = token.End
 		}
 	})
@@ -612,9 +669,11 @@ func FuzzParseFTSQuery(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if node == nil || node.String() == "" {
-			t.Fatal("successful parse returned an empty AST")
-		}
+		require.NotNil(t, node,
+			"successful parse returned an empty AST")
+		require.False(t, node.String() == "",
+			"successful parse returned an empty AST")
+
 		assertValidFTSQueryAST(t, node, 0)
 	})
 }
@@ -625,8 +684,11 @@ func BenchmarkParseFTSQuery(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(int64(len(query)))
 	for b.Loop() {
-		if _, err := ParseFTSQuery(context.Background(), query, pipeline, FTSDefaultOperatorOR); err != nil {
-			b.Fatal(err)
+		{
+			_, err := ParseFTSQuery(context.Background(), query, pipeline, FTSDefaultOperatorOR)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }
@@ -634,31 +696,28 @@ func BenchmarkParseFTSQuery(b *testing.B) {
 func newFTSStandardTestPipeline(t testing.TB) *FTSTokenizerPipeline {
 	t.Helper()
 	tokenizer, err := NewStandardTokenizer(DefaultStandardTokenizerOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	pipeline, err := NewFTSTokenizerPipeline(tokenizer, NewLowercaseTokenFilter())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return pipeline
 }
 
 func assertValidFTSQueryAST(t testing.TB, node FTSQueryNode, depth int) {
 	t.Helper()
-	if node == nil || depth > MaxFTSQueryDepth+2 {
-		t.Fatalf("invalid AST at depth %d", depth)
-	}
+	require.NotNil(t, node)
+	require.True(t, depth <= MaxFTSQueryDepth+2)
+
 	modifier := node.Modifier()
-	if modifier.Boost != 1 {
-		t.Fatalf("parser-produced boost = %v", modifier.Boost)
-	}
+	require.True(t, modifier.Boost == 1)
+
 	switch typed := node.(type) {
 	case *FTSTermQueryNode:
 	case *FTSPhraseQueryNode:
-		if typed.Terms == nil {
-			t.Fatal("phrase terms are nil")
-		}
+		require.NotNil(t, typed.Terms,
+			"phrase terms are nil")
+
 	case *FTSAndQueryNode:
 		for _, child := range typed.Children {
 			assertValidFTSQueryAST(t, child, depth+1)
@@ -669,6 +728,6 @@ func assertValidFTSQueryAST(t testing.TB, node FTSQueryNode, depth int) {
 		}
 	case *FTSEmptyQueryNode:
 	default:
-		t.Fatalf("unknown AST node %T", node)
+		require.FailNowf(t, "unknown AST node", "%T", node)
 	}
 }

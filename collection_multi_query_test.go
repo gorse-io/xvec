@@ -21,11 +21,12 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/core"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type testRerankerFunc func(context.Context, []RerankBatch, int) ([]Document, error)
@@ -44,37 +45,39 @@ func TestCollectionMultiQueryDenseSparseFTSFilterProjectionAndReopen(t *testing.
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "hybrid")
 	collection, err := CreateAndOpen(ctx, path, testMultiQuerySchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := collection.Insert(ctx, testMultiQueryDocuments())
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, testMultiQueryDocuments()); err != nil {
-		t.Fatal(err)
-	}
-	if completeness := collection.Stats().IndexCompleteness["title"]; completeness != 1 {
-		t.Fatalf("FTS completeness = %v", completeness)
+	{
+		completeness := collection.Stats().IndexCompleteness["title"]
+		require.True(t, completeness == 1)
 	}
 
 	assertBatches := func(_ context.Context, batches []RerankBatch, topK int) ([]Document, error) {
-		if topK != 2 || len(batches) != 3 {
-			t.Fatalf("rerank shape = topK %d, batches %d", topK, len(batches))
+		require.True(t, topK == 2)
+		require.Len(t, batches, 3)
+		{
+			got := []string{batches[0].Field.Name, batches[1].Field.Name, batches[2].Field.Name}
+			require.Equal(t, []string{"embedding", "sparse", "title"}, got)
 		}
-		if got := []string{batches[0].Field.Name, batches[1].Field.Name, batches[2].Field.Name}; !reflect.DeepEqual(got, []string{"embedding", "sparse", "title"}) {
-			t.Fatalf("batch fields = %#v", got)
+		{
+			got := documentKeys(batches[0].Documents)
+			require.Equal(t, []string{"a", "b", "d"}, got)
 		}
-		if got := documentKeys(batches[0].Documents); !reflect.DeepEqual(got, []string{"a", "b", "d"}) {
-			t.Fatalf("dense candidates = %#v", got)
+		{
+			got := documentKeys(batches[1].Documents)
+			require.Equal(t, []string{"b", "a"}, got)
 		}
-		if got := documentKeys(batches[1].Documents); !reflect.DeepEqual(got, []string{"b", "a"}) {
-			t.Fatalf("sparse candidates = %#v", got)
+		{
+			got := documentKeys(batches[2].Documents)
+			require.Equal(t, []string{"b", "a"}, got)
 		}
-		if got := documentKeys(batches[2].Documents); !reflect.DeepEqual(got, []string{"b", "a"}) {
-			t.Fatalf("FTS candidates = %#v", got)
-		}
+
 		for _, batch := range batches {
 			for _, document := range batch.Documents {
-				if len(document.Fields) != 1 {
-					t.Fatalf("candidate projection = %#v", document)
-				}
+				require.Len(t, document.Fields, 1)
 			}
 		}
 		first := batches[1].Documents[0]
@@ -94,37 +97,35 @@ func TestCollectionMultiQueryDenseSparseFTSFilterProjectionAndReopen(t *testing.
 		Reranker:   testRerankerFunc(assertBatches),
 	}
 	results, err := collection.MultiQuery(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertHybridResults(t, results)
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
 
 	reopenOptions := NewCollectionOptions()
 	reopenOptions.ReadOnly = true
 	reopened, err := Open(ctx, path, reopenOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer reopened.Close()
 	results, err = reopened.MultiQuery(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	assertHybridResults(t, results)
 }
 
 func TestCollectionMultiQueryFTSExpressionDefaultOperatorAndFilteredBM25(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "fts"), testMultiQuerySchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.Insert(ctx, testMultiQueryDocuments()); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, testMultiQueryDocuments())
+		require.NoError(t, err)
 	}
 
 	params := NewFTSQueryParams()
@@ -136,19 +137,16 @@ func TestCollectionMultiQueryFTSExpressionDefaultOperatorAndFilteredBM25(t *test
 		},
 		TopK: 2,
 		Reranker: testRerankerFunc(func(_ context.Context, batches []RerankBatch, topK int) ([]Document, error) {
-			if topK != 2 || !reflect.DeepEqual(documentKeys(batches[0].Documents), []string{"b"}) {
-				t.Fatalf("phrase batch = %#v", documentKeys(batches[0].Documents))
-			}
-			if !reflect.DeepEqual(documentKeys(batches[1].Documents), []string{"a", "c"}) {
-				t.Fatalf("AND match batch = %#v", documentKeys(batches[1].Documents))
-			}
+			require.True(t, topK == 2)
+			require.Equal(t, []string{"b"}, documentKeys(batches[0].Documents))
+			require.Equal(t, []string{"a", "c"}, documentKeys(batches[1].Documents))
+
 			return []Document{batches[0].Documents[0], batches[1].Documents[0]}, nil
 		}),
 	}
 	results, err := collection.MultiQuery(ctx, query)
-	if err != nil || !reflect.DeepEqual(documentKeys(results), []string{"b", "a"}) {
-		t.Fatalf("FTS multi-query = %#v, %v", results, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "a"}, documentKeys(results))
 
 	var unfilteredScore, filteredScore float32
 	scoreReranker := func(destination *float32) Reranker {
@@ -159,7 +157,7 @@ func TestCollectionMultiQueryFTSExpressionDefaultOperatorAndFilteredBM25(t *test
 					return []Document{document}, nil
 				}
 			}
-			t.Fatal("document a missing from FTS candidates")
+			require.FailNow(t, "document a missing from FTS candidates")
 			return nil, nil
 		})
 	}
@@ -170,29 +168,32 @@ func TestCollectionMultiQueryFTSExpressionDefaultOperatorAndFilteredBM25(t *test
 		},
 		TopK: 1, Reranker: scoreReranker(&unfilteredScore),
 	}
-	if _, err := collection.MultiQuery(ctx, base); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.MultiQuery(ctx, base)
+		require.NoError(t, err)
 	}
+
 	base.Filter = "category = 'keep'"
 	base.Reranker = scoreReranker(&filteredScore)
-	if _, err := collection.MultiQuery(ctx, base); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.MultiQuery(ctx, base)
+		require.NoError(t, err)
 	}
-	if unfilteredScore == 0 || filteredScore != unfilteredScore {
-		t.Fatalf("BM25 score changed under candidate filter: %v -> %v", unfilteredScore, filteredScore)
-	}
+	require.False(t, unfilteredScore == 0)
+	require.Equal(t, unfilteredScore, filteredScore)
 }
 
 func TestCollectionMultiQueryVectorParamsAndEmptySnapshot(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "params"), testMultiQuerySchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.Insert(ctx, testMultiQueryDocuments()); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, testMultiQueryDocuments())
+		require.NoError(t, err)
 	}
+
 	denseParams := NewFlatQueryParams()
 	denseParams.Radius = 0.9
 	sparseParams := NewFlatQueryParams()
@@ -204,39 +205,45 @@ func TestCollectionMultiQueryVectorParamsAndEmptySnapshot(t *testing.T) {
 		},
 		Filter: "category = 'keep'",
 		Reranker: testRerankerFunc(func(_ context.Context, batches []RerankBatch, topK int) ([]Document, error) {
-			if topK != DefaultMultiQueryTopK {
-				t.Fatalf("default TopK = %d", topK)
+			require.Equal(t, DefaultMultiQueryTopK, topK)
+			{
+				got := documentKeys(batches[0].Documents)
+				require.Equal(t, []string{"a"}, got)
 			}
-			if got := documentKeys(batches[0].Documents); !reflect.DeepEqual(got, []string{"a"}) {
-				t.Fatalf("dense radius candidates = %#v", got)
+			{
+				got := documentKeys(batches[1].Documents)
+				require.Equal(t, []string{"b"}, got)
 			}
-			if got := documentKeys(batches[1].Documents); !reflect.DeepEqual(got, []string{"b"}) {
-				t.Fatalf("sparse radius candidates = %#v", got)
-			}
+
 			return []Document{batches[0].Documents[0], batches[1].Documents[0]}, nil
 		}),
 	}
-	if results, err := collection.MultiQuery(ctx, query); err != nil || !reflect.DeepEqual(documentKeys(results), []string{"a", "b"}) {
-		t.Fatalf("parameterized query = %#v, %v", results, err)
+	{
+		results, err := collection.MultiQuery(ctx, query)
+		require.NoError(t, err)
+		require.Equal(t, []string{"a", "b"}, documentKeys(results))
 	}
 
 	empty, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "empty"), testMultiQuerySchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer empty.Close()
 	emptyQuery := query
 	emptyQuery.Filter = ""
 	emptyQuery.Queries[0].Params = nil
 	emptyQuery.Queries[1] = SubQuery{Field: "title", FTS: &FTSClause{Match: "go"}}
 	emptyQuery.Reranker = testRerankerFunc(func(_ context.Context, batches []RerankBatch, topK int) ([]Document, error) {
-		if topK != DefaultMultiQueryTopK || len(batches) != 2 || len(batches[0].Documents) != 0 || len(batches[1].Documents) != 0 {
-			t.Fatalf("empty batches = %#v, topK %d", batches, topK)
-		}
+		require.Equal(t, DefaultMultiQueryTopK, topK)
+		require.Len(t, batches, 2)
+		require.Len(t, batches[0].Documents, 0)
+		require.Len(t, batches[1].Documents, 0)
+
 		return nil, nil
 	})
-	if results, err := empty.MultiQuery(ctx, emptyQuery); err != nil || len(results) != 0 {
-		t.Fatalf("empty query = %#v, %v", results, err)
+	{
+		results, err := empty.MultiQuery(ctx, emptyQuery)
+		require.NoError(t, err)
+		require.Len(t, results, 0)
 	}
 }
 
@@ -278,9 +285,8 @@ func TestCollectionFTSAnalyzerConfiguration(t *testing.T) {
 		},
 	}
 	jiebaDirectory, err := filepath.Abs(filepath.Join("internal", "core", "testdata", "jieba"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	jiebaExtra, _ := json.Marshal(map[string]string{
 		"jieba_dict_dir": jiebaDirectory,
 		"user_dict_path": filepath.Join(jiebaDirectory, "user.dict.utf8"),
@@ -297,47 +303,44 @@ func TestCollectionFTSAnalyzerConfiguration(t *testing.T) {
 	})
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			if err := testCase.params.Validate(); err != nil {
-				t.Fatal(err)
+			{
+				err := testCase.params.Validate()
+				require.NoError(t, err)
 			}
+
 			analyzer, err := newCollectionFTSAnalyzer(ctx, testCase.params)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			tokens, err := analyzer.Analyze(ctx, testCase.text)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			got := make([]string, len(tokens))
 			for index := range tokens {
 				got[index] = tokens[index].Text
 			}
-			if !reflect.DeepEqual(got, testCase.wantTokens) {
-				t.Fatalf("tokens = %#v, want %#v", got, testCase.wantTokens)
-			}
+			require.Equal(t, testCase.wantTokens, got)
 		})
 	}
 
 	defaults, err := newCollectionFTSAnalyzer(ctx, NewFTSIndexParams())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	pipeline, ok := defaults.(*core.FTSTokenizerPipeline)
-	if !ok || pipeline.TokenizerName() != "standard" || !reflect.DeepEqual(pipeline.FilterNames(), []string{"lowercase"}) {
-		t.Fatalf("default pipeline = %#v", defaults)
-	}
+	require.True(t, ok)
+	require.True(t, pipeline.TokenizerName() == "standard")
+	require.Equal(t, []string{"lowercase"}, pipeline.FilterNames())
 }
 
 func TestCollectionMultiQueryValidationAndRerankerBoundaries(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "validation")
 	collection, err := CreateAndOpen(ctx, path, testMultiQuerySchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		_, err := collection.Insert(ctx, testMultiQueryDocuments())
+		require.NoError(t, err)
 	}
-	if _, err := collection.Insert(ctx, testMultiQueryDocuments()); err != nil {
-		t.Fatal(err)
-	}
+
 	validReranker := testRerankerFunc(func(_ context.Context, batches []RerankBatch, topK int) ([]Document, error) {
 		return firstDistinctDocuments(batches, topK), nil
 	})
@@ -376,42 +379,46 @@ func TestCollectionMultiQueryValidationAndRerankerBoundaries(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			query := valid()
 			testCase.mutate(&query)
-			if _, err := collection.MultiQuery(ctx, query); !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("error = %v", err)
+			{
+				_, err := collection.MultiQuery(ctx, query)
+				require.ErrorIs(t, err, ErrInvalidArgument)
 			}
 		})
 	}
-
-	if _, err := collection.MultiQuery(ctx, valid()); err != nil {
-		t.Fatalf("zero defaults should be valid: %v", err)
+	{
+		_, err := collection.MultiQuery(ctx, valid())
+		require.NoError(t, err)
 	}
+
 	explicitRRF := valid()
 	explicitRRF.Reranker = NewRRFReranker()
 	wantRRF, err := collection.MultiQuery(ctx, explicitRRF)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	for name, reranker := range map[string]Reranker{"nil": nil, "typed nil": (*testNilReranker)(nil)} {
 		t.Run(name+" reranker", func(t *testing.T) {
 			query := valid()
 			query.Reranker = reranker
 			got, err := collection.MultiQuery(ctx, query)
-			if err != nil || !reflect.DeepEqual(got, wantRRF) {
-				t.Fatalf("default RRF = %#v, %v; want %#v", got, err, wantRRF)
-			}
+			require.NoError(t, err)
+			require.Equal(t, wantRRF, got)
 		})
 	}
 	var nilCollection *Collection
-	if _, err := nilCollection.MultiQuery(ctx, valid()); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil collection = %v", err)
+	{
+		_, err := nilCollection.MultiQuery(ctx, valid())
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if _, err := collection.MultiQuery(nil, valid()); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil context = %v", err)
+	{
+		_, err := collection.MultiQuery(nil, valid())
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
+
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := collection.MultiQuery(canceled, valid()); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled context = %v", err)
+	{
+		_, err := collection.MultiQuery(canceled, valid())
+		require.ErrorIs(t, err, context.Canceled)
 	}
 
 	foreign := Document{PrimaryKey: "foreign", DocID: math.MaxUint64, Score: 1}
@@ -444,8 +451,9 @@ func TestCollectionMultiQueryValidationAndRerankerBoundaries(t *testing.T) {
 			query.Reranker = testRerankerFunc(func(_ context.Context, batches []RerankBatch, _ int) ([]Document, error) {
 				return testCase.make(batches), nil
 			})
-			if _, err := collection.MultiQuery(ctx, query); !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("error = %v", err)
+			{
+				_, err := collection.MultiQuery(ctx, query)
+				require.ErrorIs(t, err, ErrInvalidArgument)
 			}
 		})
 	}
@@ -455,17 +463,20 @@ func TestCollectionMultiQueryValidationAndRerankerBoundaries(t *testing.T) {
 	errorQuery.Reranker = testRerankerFunc(func(context.Context, []RerankBatch, int) ([]Document, error) {
 		return nil, sentinel
 	})
-	if _, err := collection.MultiQuery(ctx, errorQuery); !errors.Is(err, sentinel) {
-		t.Fatalf("reranker error = %v", err)
+	{
+		_, err := collection.MultiQuery(ctx, errorQuery)
+		require.ErrorIs(t, err, sentinel)
 	}
+
 	cancelContext, cancelDuringRerank := context.WithCancel(ctx)
 	cancelQuery := valid()
 	cancelQuery.Reranker = testRerankerFunc(func(_ context.Context, batches []RerankBatch, _ int) ([]Document, error) {
 		cancelDuringRerank()
 		return batches[0].Documents[:1], nil
 	})
-	if _, err := collection.MultiQuery(cancelContext, cancelQuery); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancellation after rerank = %v", err)
+	{
+		_, err := collection.MultiQuery(cancelContext, cancelQuery)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 
 	// Caller code must run without the Collection read lock: a write from the
@@ -483,28 +494,31 @@ func TestCollectionMultiQueryValidationAndRerankerBoundaries(t *testing.T) {
 		return batches[0].Documents[:1], nil
 	})
 	results, err := collection.MultiQuery(ctx, writeQuery)
-	if err != nil || len(results) != 1 || results[0].PrimaryKey == "later" || collection.Stats().DocumentCount != 5 {
-		t.Fatalf("write during rerank = %#v, %v, stats %#v", results, err, collection.Stats())
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.False(t, results[0].PrimaryKey == "later")
+	require.True(t, collection.Stats().DocumentCount == 5)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
 	}
-
-	if err := collection.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := collection.MultiQuery(ctx, valid()); !errors.Is(err, ErrFailedPrecondition) {
-		t.Fatalf("closed collection = %v", err)
+	{
+		_, err := collection.MultiQuery(ctx, valid())
+		require.ErrorIs(t, err, ErrFailedPrecondition)
 	}
 }
 
 func TestCollectionMultiQueryConcurrentSnapshotSearch(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "concurrent"), testMultiQuerySchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.Insert(ctx, testMultiQueryDocuments()); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, testMultiQueryDocuments())
+		require.NoError(t, err)
 	}
+
 	query := MultiQuery{
 		Queries: []SubQuery{
 			{Field: "embedding", DenseVector: VectorFP32{1, 0}, NumCandidates: 4},
@@ -528,7 +542,7 @@ func TestCollectionMultiQueryConcurrentSnapshotSearch(t *testing.T) {
 					errorsFound <- err
 					return
 				}
-				if got := documentKeys(results); !reflect.DeepEqual(got, []string{"c", "a", "b"}) {
+				if got := documentKeys(results); !assert.Equal(t, []string{"c", "a", "b"}, got) {
 					errorsFound <- errors.New("non-deterministic MultiQuery result")
 					return
 				}
@@ -538,15 +552,14 @@ func TestCollectionMultiQueryConcurrentSnapshotSearch(t *testing.T) {
 	wait.Wait()
 	close(errorsFound)
 	for err := range errorsFound {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 }
 
 func TestMultiQueryPinnedCompatibilityFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/multi_query_58375ff.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var fixture struct {
 		BaselineCommit     string `json:"baseline_commit"`
 		QueryHeaderHash    string `json:"query_header_sha256"`
@@ -558,18 +571,19 @@ func TestMultiQueryPinnedCompatibilityFixture(t *testing.T) {
 		DefaultCandidates  int    `json:"default_num_candidates"`
 		DefaultFTSOperator string `json:"default_fts_operator"`
 	}
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(data, &fixture)
+		require.NoError(t, err)
 	}
-	if fixture.BaselineCommit != "58375ff7b8fdd0d6fc7d234e47567b179777883b" ||
-		fixture.QueryHeaderHash != "2c482b4c9832ffb07086e9789c88a4f7de6bc278c3f7ae901b4091e7acbdd193" ||
-		fixture.CollectionHash != "cf4145fa9cbed9bf8975c440f024ce98359b2c6792f008e630db5da7f6422493" ||
-		fixture.RerankerHeaderHash != "bc1949536968bc27f0cb11026d0ab8633dbb46641365455c20b433367837c7d6" ||
-		fixture.MaxTopK != MaxQueryTopK || fixture.MinimumSubQueries != 2 ||
-		fixture.DefaultTopK != DefaultMultiQueryTopK || fixture.DefaultCandidates != DefaultSubQueryCandidates ||
-		fixture.DefaultFTSOperator != NewFTSQueryParams().DefaultOperator {
-		t.Fatalf("compatibility fixture mismatch: %#v", fixture)
-	}
+	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
+	require.True(t, fixture.QueryHeaderHash == "2c482b4c9832ffb07086e9789c88a4f7de6bc278c3f7ae901b4091e7acbdd193")
+	require.True(t, fixture.CollectionHash == "cf4145fa9cbed9bf8975c440f024ce98359b2c6792f008e630db5da7f6422493")
+	require.True(t, fixture.RerankerHeaderHash == "bc1949536968bc27f0cb11026d0ab8633dbb46641365455c20b433367837c7d6")
+	require.Equal(t, MaxQueryTopK, fixture.MaxTopK)
+	require.True(t, fixture.MinimumSubQueries == 2)
+	require.Equal(t, DefaultMultiQueryTopK, fixture.DefaultTopK)
+	require.Equal(t, DefaultSubQueryCandidates, fixture.DefaultCandidates)
+	require.Equal(t, NewFTSQueryParams().DefaultOperator, fixture.DefaultFTSOperator)
 }
 
 func FuzzMultiQueryTargetKind(f *testing.F) {
@@ -592,9 +606,7 @@ func FuzzMultiQueryTargetKind(f *testing.F) {
 		}
 		_, err := multiQueryTargetKind(query)
 		valid := flags == 1 || flags == 2 || flags == 4
-		if (err == nil) != valid {
-			t.Fatalf("flags %03b: err = %v", flags, err)
-		}
+		require.Equal(t, valid, err == nil)
 	})
 }
 
@@ -603,8 +615,9 @@ func BenchmarkV05HybridMultiQuery(b *testing.B) {
 	schema := testMultiQuerySchema()
 	collection, err := CreateAndOpen(ctx, filepath.Join(b.TempDir(), "benchmark"), schema, NewCollectionOptions())
 	if err != nil {
-		b.Fatal(err)
+		require.NoError(b, err)
 	}
+
 	defer collection.Close()
 	documents := make([]Document, 256)
 	for index := range documents {
@@ -614,9 +627,13 @@ func BenchmarkV05HybridMultiQuery(b *testing.B) {
 			"sparse":    SparseVectorFP32{Indices: []uint32{2}, Values: []float32{float32(index) / 256}},
 		}}
 	}
-	if _, err := collection.Insert(ctx, documents); err != nil {
-		b.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, documents)
+		if err != nil {
+			require.NoError(b, err)
+		}
 	}
+
 	query := MultiQuery{
 		Queries: []SubQuery{
 			{Field: "embedding", DenseVector: VectorFP32{1, 0}, NumCandidates: 20},
@@ -631,8 +648,11 @@ func BenchmarkV05HybridMultiQuery(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for iteration := 0; iteration < b.N; iteration++ {
-		if _, err := collection.MultiQuery(ctx, query); err != nil {
-			b.Fatal(err)
+		{
+			_, err := collection.MultiQuery(ctx, query)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }
@@ -673,16 +693,14 @@ func testMultiQueryDocuments() []Document {
 
 func assertHybridResults(t *testing.T, results []Document) {
 	t.Helper()
-	if got := documentKeys(results); !reflect.DeepEqual(got, []string{"b", "a"}) {
-		t.Fatalf("hybrid keys = %#v", got)
+	{
+		got := documentKeys(results)
+		require.Equal(t, []string{"b", "a"}, got)
 	}
-	if results[0].Score != 42 || results[1].Score != 41 {
-		t.Fatalf("hybrid scores = %v, %v", results[0].Score, results[1].Score)
-	}
-	if !reflect.DeepEqual(results[0].Fields, map[string]any{"title": "Go Go search"}) ||
-		!reflect.DeepEqual(results[1].Fields, map[string]any{"title": "Go database"}) {
-		t.Fatalf("hybrid projection = %#v", results)
-	}
+	require.True(t, results[0].Score == 42)
+	require.True(t, results[1].Score == 41)
+	require.Equal(t, map[string]any{"title": "Go Go search"}, results[0].Fields)
+	require.Equal(t, map[string]any{"title": "Go database"}, results[1].Fields)
 }
 
 func firstDistinctDocuments(batches []RerankBatch, topK int) []Document {

@@ -15,9 +15,10 @@
 package zvec
 
 import (
-	"errors"
 	"math"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestQueryParamsDefaultsValidate(t *testing.T) {
@@ -27,8 +28,9 @@ func TestQueryParamsDefaultsValidate(t *testing.T) {
 		NewFTSQueryParams(),
 	}
 	for _, params := range params {
-		if err := params.Validate(); err != nil {
-			t.Errorf("%T defaults: %v", params, err)
+		{
+			err := params.Validate()
+			assert.NoError(t, err)
 		}
 	}
 }
@@ -60,8 +62,9 @@ func TestQueryParamsRejectInvalidValues(t *testing.T) {
 		FTSQueryParams{DefaultOperator: "XOR"},
 	}
 	for _, params := range params {
-		if err := params.Validate(); !errors.Is(err, ErrInvalidArgument) {
-			t.Errorf("%T invalid error = %v", params, err)
+		{
+			err := params.Validate()
+			assert.ErrorIs(t, err, ErrInvalidArgument)
 		}
 	}
 }

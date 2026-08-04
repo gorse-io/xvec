@@ -15,10 +15,12 @@
 package zvec
 
 import (
-	"errors"
 	"math"
 	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFloat16KnownValues(t *testing.T) {
@@ -35,26 +37,32 @@ func TestFloat16KnownValues(t *testing.T) {
 		{float32(math.Ldexp(1, -24)), 0x0001},
 	}
 	for _, test := range tests {
-		if got := Float16FromFloat32(test.value); got != test.bits {
-			t.Errorf("Float16FromFloat32(%v) = %#04x, want %#04x", test.value, got, test.bits)
+		{
+			got := Float16FromFloat32(test.value)
+			assert.Equal(t, test.bits, got)
 		}
-		if got := test.bits.Float32(); math.Float32bits(got) != math.Float32bits(test.value) {
-			t.Errorf("Float16(%#04x).Float32() = %v, want %v", test.bits, got, test.value)
+		{
+			got := test.bits.Float32()
+			assert.Equal(t, math.Float32bits(test.value), math.Float32bits(got))
 		}
 	}
-	if got := Float16FromFloat32(float32(math.Inf(1))); got != 0x7c00 {
-		t.Fatalf("positive infinity = %#04x", got)
+	{
+		got := Float16FromFloat32(float32(math.Inf(1)))
+		require.True(t, got == 0x7c00)
 	}
-	if got := Float16FromFloat32(float32(math.NaN())); uint16(got)&0x7c00 != 0x7c00 || uint16(got)&0x03ff == 0 {
-		t.Fatalf("NaN = %#04x", got)
+	{
+		got := Float16FromFloat32(float32(math.NaN()))
+		require.True(t, uint16(got)&0x7c00 == 0x7c00)
+		require.False(t, uint16(got)&0x03ff == 0)
 	}
 }
 
 func TestFloat16RoundTripAllBitPatterns(t *testing.T) {
 	for bits := range 1 << 16 {
 		value := Float16(bits)
-		if got := Float16FromFloat32(value.Float32()); got != value {
-			t.Fatalf("round trip %#04x = %#04x", value, got)
+		{
+			got := Float16FromFloat32(value.Float32())
+			require.Equal(t, value, got)
 		}
 	}
 }
@@ -70,15 +78,16 @@ func TestDenseVectorTypes(t *testing.T) {
 		DataTypeVectorInt8, DataTypeVectorInt16,
 	}
 	for index, vector := range vectors {
-		if vector.DataType() != wantTypes[index] || vector.Dimension() != 1 {
-			t.Fatalf("vector %d metadata = (%s, %d)", index, vector.DataType(), vector.Dimension())
-		}
+		require.Equal(t, wantTypes[index], vector.DataType())
+		require.True(t, vector.Dimension() == 1)
 	}
-	if err := (VectorInt4{-8, 0, 7}).Validate(); err != nil {
-		t.Fatal(err)
+	{
+		err := (VectorInt4{-8, 0, 7}).Validate()
+		require.NoError(t, err)
 	}
-	if err := (VectorInt4{8}).Validate(); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("invalid INT4 error = %v", err)
+	{
+		err := (VectorInt4{8}).Validate()
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
 }
 
@@ -88,28 +97,26 @@ func TestSparseVectorCanonical(t *testing.T) {
 		Values:  []float32{0.9, 0.2, 0.5},
 	}
 	canonical, err := vector.Canonical()
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.True(t, slices.Equal(canonical.Indices, []uint32{2, 5, 9}))
+	require.True(t, slices.Equal(canonical.Values, []float32{0.2, 0.5, 0.9}))
+	require.True(t, slices.Equal(vector.Indices, []uint32{9, 2, 5}),
+		"Canonical mutated its input")
+	{
+		err := (SparseVectorFP16{Indices: []uint32{1}, Values: nil}).Validate()
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
-	if !slices.Equal(canonical.Indices, []uint32{2, 5, 9}) ||
-		!slices.Equal(canonical.Values, []float32{0.2, 0.5, 0.9}) {
-		t.Fatalf("canonical vector = %#v", canonical)
-	}
-	if !slices.Equal(vector.Indices, []uint32{9, 2, 5}) {
-		t.Fatal("Canonical mutated its input")
+	{
+		err := (SparseVectorFP32{Indices: []uint32{2, 2}, Values: []float32{1, 2}}).Validate()
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
 
-	if err := (SparseVectorFP16{Indices: []uint32{1}, Values: nil}).Validate(); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("length mismatch error = %v", err)
-	}
-	if err := (SparseVectorFP32{Indices: []uint32{2, 2}, Values: []float32{1, 2}}).Validate(); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("duplicate error = %v", err)
-	}
 	tooLarge := SparseVectorFP32{
 		Indices: make([]uint32, MaxSparseDimensions+1),
 		Values:  make([]float32, MaxSparseDimensions+1),
 	}
-	if err := tooLarge.Validate(); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("coordinate count error = %v", err)
+	{
+		err := tooLarge.Validate()
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
 }

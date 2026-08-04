@@ -21,24 +21,24 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOpenReaderAt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "segment.dat")
 	content := bytes.Repeat([]byte("zvec"), 1024)
-	if err := os.WriteFile(path, content, 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(path, content, 0o600)
+		require.NoError(t, err)
 	}
 
 	for _, useMMap := range []bool{false, true} {
 		t.Run(map[bool]string{false: "read_at", true: "mmap"}[useMMap], func(t *testing.T) {
 			reader, err := OpenReaderAt(path, useMMap)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if reader.Size() != int64(len(content)) {
-				t.Fatalf("size = %d", reader.Size())
-			}
+			require.NoError(t, err)
+			require.Equal(t, int64(len(content)), reader.Size())
 
 			var wg sync.WaitGroup
 			for worker := range 8 {
@@ -47,33 +47,34 @@ func TestOpenReaderAt(t *testing.T) {
 					defer wg.Done()
 					dst := make([]byte, 16)
 					off := int64(worker * 32)
-					if err := ReadFullAt(reader, dst, off); err != nil {
-						t.Error(err)
+					if err := ReadFullAt(reader, dst, off); !assert.NoError(t, err) {
 						return
 					}
-					if !bytes.Equal(dst, content[off:off+16]) {
-						t.Errorf("data at %d differs", off)
-					}
+					assert.True(t, bytes.Equal(dst, content[off:off+16]))
 				}()
 			}
 			wg.Wait()
 
 			tail := make([]byte, 8)
-			if n, err := reader.ReadAt(tail, int64(len(content)-4)); n != 4 || err != io.EOF {
-				t.Fatalf("tail read = (%d, %v)", n, err)
+			{
+				n, err := reader.ReadAt(tail, int64(len(content)-4))
+				require.True(t, n == 4)
+				require.Same(t, io.EOF, err)
 			}
-			if err := reader.Close(); err != nil {
-				t.Fatal(err)
+			{
+				err := reader.Close()
+				require.NoError(t, err)
 			}
+
 			if useMMap {
-				if reader.Size() != int64(len(content)) {
-					t.Fatalf("size after close = %d", reader.Size())
+				require.Equal(t, int64(len(content)), reader.Size())
+				{
+					_, err := reader.ReadAt(make([]byte, 1), 0)
+					require.Same(t, os.ErrClosed, err)
 				}
-				if _, err := reader.ReadAt(make([]byte, 1), 0); err != os.ErrClosed {
-					t.Fatalf("read after close error = %v", err)
-				}
-				if err := reader.Close(); err != nil {
-					t.Fatalf("second close: %v", err)
+				{
+					err := reader.Close()
+					require.NoError(t, err)
 				}
 			}
 		})
@@ -82,15 +83,14 @@ func TestOpenReaderAt(t *testing.T) {
 
 func TestOpenReaderAtEmptyFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "empty")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(path, nil, 0o600)
+		require.NoError(t, err)
 	}
+
 	reader, err := OpenReaderAt(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer reader.Close()
-	if reader.Size() != 0 {
-		t.Fatalf("size = %d", reader.Size())
-	}
+	require.True(t, reader.Size() == 0)
 }

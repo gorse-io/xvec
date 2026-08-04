@@ -23,10 +23,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type jiebaTokenizerFixture struct {
@@ -51,32 +53,30 @@ type jiebaTokenizerFixture struct {
 
 func TestJiebaTokenizerBaselineFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/jieba_tokenizer_58375ff.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var fixture jiebaTokenizerFixture
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(data, &fixture)
+		require.NoError(t, err)
 	}
-	if fixture.BaselineCommit != "58375ff7b8fdd0d6fc7d234e47567b179777883b" ||
-		fixture.SourceSHA256 != "b5092a63528a3bd4faf6e31c156217d5dddccb678cb829569b87cb63e6218edd" ||
-		fixture.CppJiebaCommit != "b3602bef7d1f67521a61788a74fb5801a0e62cd3" ||
-		fixture.DictionarySHA256 != "7c66ea73c84bc8699905422312fbe11045879a270a5b8e0a93cf97e48efed412" ||
-		fixture.ModelSHA256 != "3479bc295e7dd885bcb04098a63731876519fc1c92dbedc1928ec47e1a8bcfc0" ||
-		fixture.UserDictionarySHA256 != "bde317009e581fd0b615e7e8c6a4aad7bcd4be86ee8350f83f87ca75fddc1542" {
-		t.Fatalf("unexpected fixture identity: %#v", fixture)
-	}
+	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
+	require.True(t, fixture.SourceSHA256 == "b5092a63528a3bd4faf6e31c156217d5dddccb678cb829569b87cb63e6218edd")
+	require.True(t, fixture.CppJiebaCommit == "b3602bef7d1f67521a61788a74fb5801a0e62cd3")
+	require.True(t, fixture.DictionarySHA256 == "7c66ea73c84bc8699905422312fbe11045879a270a5b8e0a93cf97e48efed412")
+	require.True(t, fixture.ModelSHA256 == "3479bc295e7dd885bcb04098a63731876519fc1c92dbedc1928ec47e1a8bcfc0")
+	require.True(t, fixture.UserDictionarySHA256 == "bde317009e581fd0b615e7e8c6a4aad7bcd4be86ee8350f83f87ca75fddc1542")
+
 	for path, want := range map[string]string{
 		filepath.Join(jiebaTestDictDir(), jiebaDictionaryFile): "7c66ea73c84bc8699905422312fbe11045879a270a5b8e0a93cf97e48efed412",
 		filepath.Join(jiebaTestDictDir(), jiebaHMMModelFile):   "3479bc295e7dd885bcb04098a63731876519fc1c92dbedc1928ec47e1a8bcfc0",
 		filepath.Join(jiebaTestDictDir(), "user.dict.utf8"):    "bde317009e581fd0b615e7e8c6a4aad7bcd4be86ee8350f83f87ca75fddc1542",
 	} {
 		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != want {
-			t.Fatalf("SHA-256(%s) = %s, want %s", path, got, want)
+		require.NoError(t, err)
+		{
+			got := fmt.Sprintf("%x", sha256.Sum256(data))
+			require.Equal(t, want, got)
 		}
 	}
 	for _, test := range fixture.Cases {
@@ -87,24 +87,20 @@ func TestJiebaTokenizerBaselineFixture(t *testing.T) {
 			}
 			tokenizer := mustJiebaTokenizer(t, options)
 			input, err := hex.DecodeString(test.InputHex)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			got, err := tokenizer.Tokenize(context.Background(), string(input))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			want := make([]Token, len(test.Tokens))
 			for index, token := range test.Tokens {
 				text, err := hex.DecodeString(token.TextHex)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+
 				want[index] = Token{Text: string(text), Offset: token.Offset, Position: token.Position}
 			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("tokens = %#v, want %#v", got, want)
-			}
+			require.Equal(t, want, got)
+
 			assertJiebaTokenRanges(t, string(input), got)
 		})
 	}
@@ -117,40 +113,35 @@ func TestJiebaTokenizerOptionsAndResolution(t *testing.T) {
 	SetDefaultJiebaDictDir("")
 
 	defaults := DefaultJiebaTokenizerOptions()
-	if defaults.CutMode != JiebaCutModeSearch {
-		t.Fatalf("defaults = %#v", defaults)
+	require.Equal(t, JiebaCutModeSearch, defaults.CutMode)
+	{
+		_, err := NewJiebaTokenizer(context.Background(), defaults)
+		require.ErrorIs(t, err, ErrInvalidJiebaTokenizerOptions)
 	}
-	if _, err := NewJiebaTokenizer(context.Background(), defaults); !errors.Is(err, ErrInvalidJiebaTokenizerOptions) {
-		t.Fatalf("missing directory error = %v", err)
-	}
+
 	for _, mode := range []JiebaCutMode{JiebaCutModeSearch, JiebaCutModeMix, JiebaCutModeFull, JiebaCutModeHMM} {
 		tokenizer := mustJiebaTokenizer(t, JiebaTokenizerOptions{DictDir: jiebaTestDictDir(), CutMode: mode})
-		if tokenizer.Name() != "jieba" || tokenizer.CutMode() != mode || tokenizer.DictDir() != jiebaTestDictDir() {
-			t.Fatalf("tokenizer = %#v", tokenizer)
-		}
+		require.True(t, tokenizer.Name() == "jieba")
+		require.Equal(t, mode, tokenizer.CutMode())
+		require.Equal(t, jiebaTestDictDir(), tokenizer.DictDir())
 	}
-	if _, err := NewJiebaTokenizer(context.Background(), JiebaTokenizerOptions{DictDir: jiebaTestDictDir(), CutMode: "unknown"}); !errors.Is(err, ErrInvalidJiebaTokenizerOptions) {
-		t.Fatalf("unknown mode error = %v", err)
+	{
+		_, err := NewJiebaTokenizer(context.Background(), JiebaTokenizerOptions{DictDir: jiebaTestDictDir(), CutMode: "unknown"})
+		require.ErrorIs(t, err, ErrInvalidJiebaTokenizerOptions)
 	}
 
 	SetDefaultJiebaDictDir(jiebaTestDictDir())
 	tokenizer := mustJiebaTokenizer(t, DefaultJiebaTokenizerOptions())
-	if tokenizer.DictDir() != jiebaTestDictDir() {
-		t.Fatalf("global directory = %q", tokenizer.DictDir())
-	}
+	require.Equal(t, jiebaTestDictDir(), tokenizer.DictDir())
 
 	SetDefaultJiebaDictDir("missing-global")
 	t.Setenv("ZVEC_JIEBA_DICT_DIR", jiebaTestDictDir())
 	tokenizer = mustJiebaTokenizer(t, DefaultJiebaTokenizerOptions())
-	if tokenizer.DictDir() != jiebaTestDictDir() {
-		t.Fatalf("environment directory = %q", tokenizer.DictDir())
-	}
+	require.Equal(t, jiebaTestDictDir(), tokenizer.DictDir())
 
 	t.Setenv("ZVEC_JIEBA_DICT_DIR", "missing-environment")
 	tokenizer = mustJiebaTokenizer(t, JiebaTokenizerOptions{DictDir: jiebaTestDictDir(), CutMode: JiebaCutModeSearch})
-	if tokenizer.DictDir() != jiebaTestDictDir() {
-		t.Fatalf("explicit directory = %q", tokenizer.DictDir())
-	}
+	require.Equal(t, jiebaTestDictDir(), tokenizer.DictDir())
 }
 
 func TestJiebaTokenizerModeResourceRequirements(t *testing.T) {
@@ -159,9 +150,7 @@ func TestJiebaTokenizerModeResourceRequirements(t *testing.T) {
 	mustJiebaTokenizer(t, JiebaTokenizerOptions{DictDir: dictionaryOnly, CutMode: JiebaCutModeFull})
 	for _, mode := range []JiebaCutMode{JiebaCutModeSearch, JiebaCutModeMix, JiebaCutModeHMM} {
 		_, err := NewJiebaTokenizer(context.Background(), JiebaTokenizerOptions{DictDir: dictionaryOnly, CutMode: mode})
-		if !errors.Is(err, ErrInvalidJiebaTokenizerOptions) {
-			t.Fatalf("dictionary-only mode %q error = %v", mode, err)
-		}
+		require.ErrorIs(t, err, ErrInvalidJiebaTokenizerOptions)
 	}
 
 	modelOnly := t.TempDir()
@@ -169,9 +158,7 @@ func TestJiebaTokenizerModeResourceRequirements(t *testing.T) {
 	mustJiebaTokenizer(t, JiebaTokenizerOptions{DictDir: modelOnly, CutMode: JiebaCutModeHMM})
 	for _, mode := range []JiebaCutMode{JiebaCutModeSearch, JiebaCutModeMix, JiebaCutModeFull} {
 		_, err := NewJiebaTokenizer(context.Background(), JiebaTokenizerOptions{DictDir: modelOnly, CutMode: mode})
-		if !errors.Is(err, ErrInvalidJiebaTokenizerOptions) {
-			t.Fatalf("model-only mode %q error = %v", mode, err)
-		}
+		require.ErrorIs(t, err, ErrInvalidJiebaTokenizerOptions)
 	}
 }
 
@@ -181,18 +168,17 @@ func TestJiebaTokenizerUserDictionaryIsolation(t *testing.T) {
 	})
 	withoutUser := mustJiebaTokenizer(t, JiebaTokenizerOptions{DictDir: jiebaTestDictDir(), CutMode: JiebaCutModeMix})
 	withTokens, err := withUser.Tokenize(context.Background(), "甲乙")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	withoutTokens, err := withoutUser.Tokenize(context.Background(), "甲乙")
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		want := []string{"甲", "乙"}
+		require.Equal(t, want, jiebaTokenTexts(withTokens))
 	}
-	if want := []string{"甲", "乙"}; !reflect.DeepEqual(jiebaTokenTexts(withTokens), want) {
-		t.Fatalf("user tokens = %#v, want %#v", jiebaTokenTexts(withTokens), want)
-	}
-	if want := []string{"甲乙"}; !reflect.DeepEqual(jiebaTokenTexts(withoutTokens), want) {
-		t.Fatalf("base tokens = %#v, want %#v", jiebaTokenTexts(withoutTokens), want)
+	{
+		want := []string{"甲乙"}
+		require.Equal(t, want, jiebaTokenTexts(withoutTokens))
 	}
 }
 
@@ -208,71 +194,79 @@ func TestJiebaTokenizerPinnedDecoderAndASCII(t *testing.T) {
 	}
 	for _, test := range tests {
 		tokens, err := tokenizer.Tokenize(context.Background(), test.input)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if texts := jiebaTokenTexts(tokens); !reflect.DeepEqual(texts, test.want) {
-			t.Fatalf("Tokenize(%x) = %#v, want %#v", test.input, texts, test.want)
+		require.NoError(t, err)
+		{
+			texts := jiebaTokenTexts(tokens)
+			require.Equal(t, test.want, texts)
 		}
 	}
 	for _, input := range []string{string([]byte{'a', 0xc2}), string([]byte{0xf8, 'a'})} {
-		if _, err := tokenizer.Tokenize(context.Background(), input); !errors.Is(err, ErrInvalidJiebaUTF8) {
-			t.Fatalf("invalid input %x error = %v", input, err)
+		{
+			_, err := tokenizer.Tokenize(context.Background(), input)
+			require.ErrorIs(t, err, ErrInvalidJiebaUTF8)
 		}
 	}
 	empty, err := tokenizer.Tokenize(context.Background(), "")
-	if err != nil || empty == nil || len(empty) != 0 {
-		t.Fatalf("empty = %#v, %v", empty, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, empty)
+	require.Len(t, empty, 0)
 }
 
 func TestJiebaTokenizerInvalidResources(t *testing.T) {
 	badDictionary := t.TempDir()
-	if err := os.WriteFile(filepath.Join(badDictionary, jiebaDictionaryFile), []byte("bad line\n"), 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(filepath.Join(badDictionary, jiebaDictionaryFile), []byte("bad line\n"), 0o600)
+		require.NoError(t, err)
 	}
+
 	_, err := NewJiebaTokenizer(context.Background(), JiebaTokenizerOptions{DictDir: badDictionary, CutMode: JiebaCutModeFull})
-	if !errors.Is(err, ErrInvalidJiebaTokenizerOptions) {
-		t.Fatalf("bad dictionary error = %v", err)
-	}
+	require.ErrorIs(t, err, ErrInvalidJiebaTokenizerOptions)
 
 	badModel := t.TempDir()
-	if err := os.WriteFile(filepath.Join(badModel, jiebaHMMModelFile), []byte("0 0\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err = NewJiebaTokenizer(context.Background(), JiebaTokenizerOptions{DictDir: badModel, CutMode: JiebaCutModeHMM})
-	if !errors.Is(err, ErrInvalidJiebaTokenizerOptions) {
-		t.Fatalf("bad model error = %v", err)
+	{
+		err := os.WriteFile(filepath.Join(badModel, jiebaHMMModelFile), []byte("0 0\n"), 0o600)
+		require.NoError(t, err)
 	}
 
+	_, err = NewJiebaTokenizer(context.Background(), JiebaTokenizerOptions{DictDir: badModel, CutMode: JiebaCutModeHMM})
+	require.ErrorIs(t, err, ErrInvalidJiebaTokenizerOptions)
+
 	badUser := filepath.Join(t.TempDir(), "user.dict")
-	if err := os.WriteFile(badUser, []byte("word not-a-frequency tag\n"), 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(badUser, []byte("word not-a-frequency tag\n"), 0o600)
+		require.NoError(t, err)
 	}
+
 	_, err = NewJiebaTokenizer(context.Background(), JiebaTokenizerOptions{
 		DictDir: jiebaTestDictDir(), UserDictPath: badUser, CutMode: JiebaCutModeFull,
 	})
-	if !errors.Is(err, ErrInvalidJiebaTokenizerOptions) {
-		t.Fatalf("bad user dictionary error = %v", err)
-	}
+	require.ErrorIs(t, err, ErrInvalidJiebaTokenizerOptions)
 }
 
 func TestJiebaTokenizerContextCancellation(t *testing.T) {
 	options := JiebaTokenizerOptions{DictDir: jiebaTestDictDir(), CutMode: JiebaCutModeSearch}
-	if _, err := NewJiebaTokenizer(nil, options); err == nil {
-		t.Fatal("nil construction context succeeded")
+	{
+		_, err := NewJiebaTokenizer(nil, options)
+		require.Error(t, err,
+			"nil construction context succeeded")
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := NewJiebaTokenizer(canceled, options); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pre-canceled construction error = %v", err)
+	{
+		_, err := NewJiebaTokenizer(canceled, options)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	tokenizer := mustJiebaTokenizer(t, options)
-	if _, err := tokenizer.Tokenize(nil, "中文"); err == nil {
-		t.Fatal("nil tokenization context succeeded")
+	{
+		_, err := tokenizer.Tokenize(nil, "中文")
+		require.Error(t, err,
+			"nil tokenization context succeeded")
 	}
-	if _, err := tokenizer.Tokenize(canceled, "中文"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pre-canceled tokenization error = %v", err)
+	{
+		_, err := tokenizer.Tokenize(canceled, "中文")
+		require.ErrorIs(t, err, context.Canceled)
 	}
 
 	largeDir := t.TempDir()
@@ -280,28 +274,25 @@ func TestJiebaTokenizerContextCancellation(t *testing.T) {
 	for index := 0; index < 5000; index++ {
 		fmt.Fprintf(&dictionary, "词%d %d n\n", index, index+1)
 	}
-	if err := os.WriteFile(filepath.Join(largeDir, jiebaDictionaryFile), []byte(dictionary.String()), 0o600); err != nil {
-		t.Fatal(err)
+	{
+		err := os.WriteFile(filepath.Join(largeDir, jiebaDictionaryFile), []byte(dictionary.String()), 0o600)
+		require.NoError(t, err)
 	}
+
 	midLoad := newCancelAfterChecks(3)
 	_, err := NewJiebaTokenizer(midLoad, JiebaTokenizerOptions{DictDir: largeDir, CutMode: JiebaCutModeFull})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-load cancellation error = %v", err)
-	}
+	require.ErrorIs(t, err, context.Canceled)
 
 	midTokenize := newCancelAfterChecks(4)
 	_, err = tokenizer.Tokenize(midTokenize, strings.Repeat("中华人民共和国自然语言处理", 5000))
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("mid-tokenization cancellation error = %v", err)
-	}
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestJiebaTokenizerConcurrentUse(t *testing.T) {
 	tokenizer := mustJiebaTokenizer(t, JiebaTokenizerOptions{DictDir: jiebaTestDictDir(), CutMode: JiebaCutModeSearch})
 	want, err := tokenizer.Tokenize(context.Background(), "中华人民共和国成立 abc1.2")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var wait sync.WaitGroup
 	errorsChannel := make(chan error, 32)
 	for worker := 0; worker < 32; worker++ {
@@ -314,7 +305,7 @@ func TestJiebaTokenizerConcurrentUse(t *testing.T) {
 					errorsChannel <- err
 					return
 				}
-				if !reflect.DeepEqual(got, want) {
+				if !assert.Equal(t, want, got) {
 					errorsChannel <- errors.New("concurrent result differs")
 					return
 				}
@@ -324,7 +315,7 @@ func TestJiebaTokenizerConcurrentUse(t *testing.T) {
 	wait.Wait()
 	close(errorsChannel)
 	for err := range errorsChannel {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 }
 
@@ -336,9 +327,8 @@ func FuzzJiebaTokenizer(f *testing.F) {
 	f.Fuzz(func(t *testing.T, input string) {
 		tokens, err := tokenizer.Tokenize(context.Background(), input)
 		if err != nil {
-			if !errors.Is(err, ErrInvalidJiebaUTF8) {
-				t.Fatal(err)
-			}
+			require.ErrorIs(t, err, ErrInvalidJiebaUTF8)
+
 			return
 		}
 		assertJiebaTokenRanges(t, input, tokens)
@@ -351,8 +341,11 @@ func BenchmarkJiebaTokenizer(b *testing.B) {
 	b.SetBytes(int64(len(text)))
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := tokenizer.Tokenize(context.Background(), text); err != nil {
-			b.Fatal(err)
+		{
+			_, err := tokenizer.Tokenize(context.Background(), text)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }
@@ -362,20 +355,18 @@ func jiebaTestDictDir() string { return filepath.Join("testdata", "jieba") }
 func mustJiebaTokenizer(tb testing.TB, options JiebaTokenizerOptions) *JiebaTokenizer {
 	tb.Helper()
 	tokenizer, err := NewJiebaTokenizer(context.Background(), options)
-	if err != nil {
-		tb.Fatal(err)
-	}
+	require.NoError(tb, err)
+
 	return tokenizer
 }
 
 func copyJiebaTestFile(t testing.TB, source, target string) {
 	t.Helper()
 	data, err := os.ReadFile(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(target, data, 0o600); err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		err := os.WriteFile(target, data, 0o600)
+		require.NoError(t, err)
 	}
 }
 
@@ -392,11 +383,10 @@ func assertJiebaTokenRanges(t testing.TB, input string, tokens []Token) {
 	for position, token := range tokens {
 		start := int(token.Offset)
 		end := start + len(token.Text)
-		if token.Position != uint32(position) || token.Text == "" {
-			t.Fatalf("token %d metadata = %#v", position, token)
-		}
-		if start < 0 || end > len(input) || input[start:end] != token.Text {
-			t.Fatalf("token %d source range = %#v for %x", position, token, input)
-		}
+		require.Equal(t, uint32(position), token.Position)
+		require.False(t, token.Text == "")
+		require.True(t, start >= 0)
+		require.True(t, end <= len(input))
+		require.Equal(t, token.Text, input[start:end])
 	}
 }

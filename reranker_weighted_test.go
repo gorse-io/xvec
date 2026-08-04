@@ -21,9 +21,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWeightedRerankerPinnedMetricNormalization(t *testing.T) {
@@ -45,13 +47,13 @@ func TestWeightedRerankerPinnedMetricNormalization(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			got, err := normalizeWeightedScore(testCase.score, testCase.field)
-			if err != nil || math.Abs(got-testCase.want) > 1e-12 {
-				t.Fatalf("normalize = %.15g, %v; want %.15g", got, err, testCase.want)
-			}
+			require.NoError(t, err)
+			require.InDelta(t, testCase.want, got, 1e-12)
 		})
 	}
-	if _, err := normalizeWeightedScore(1, weightedVectorField("mips", MetricTypeMIPSL2)); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("MIPS-L2 normalization = %v", err)
+	{
+		_, err := normalizeWeightedScore(1, weightedVectorField("mips", MetricTypeMIPSL2))
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
 }
 
@@ -59,9 +61,8 @@ func TestWeightedRerankerMixedFieldsScoresAndOwnership(t *testing.T) {
 	sourceWeights := []float64{0.5, 0.5}
 	reranker := NewWeightedReranker(sourceWeights...)
 	sourceWeights[0] = 9
-	if !reflect.DeepEqual(reranker.Weights, []float64{0.5, 0.5}) {
-		t.Fatalf("owned weights = %#v", reranker.Weights)
-	}
+	require.Equal(t, []float64{0.5, 0.5}, reranker.Weights)
+
 	batches := []RerankBatch{
 		{Field: weightedVectorField("l2", MetricTypeL2), Documents: []Document{
 			{PrimaryKey: "a", DocID: 1, Score: 0.5, Fields: map[string]any{"source": "first"}},
@@ -73,25 +74,24 @@ func TestWeightedRerankerMixedFieldsScoresAndOwnership(t *testing.T) {
 		}},
 	}
 	results, err := reranker.Rerank(context.Background(), batches, 10)
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		got := documentKeys(results)
+		require.Equal(t, []string{"a", "b", "c"}, got)
 	}
-	if got := documentKeys(results); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
-		t.Fatalf("weighted keys = %#v", got)
-	}
+
 	wantA := float32((1-2*math.Atan(0.5)/math.Pi)*0.5 + (1-0.4/2)*0.5)
 	wantB := float32((1 - 2*math.Atan(0.3)/math.Pi) * 0.5)
 	wantC := float32((1 - 0.6/2) * 0.5)
-	if results[0].Score != wantA || results[1].Score != wantB || results[2].Score != wantC {
-		t.Fatalf("weighted scores = %#v; want %v, %v, %v", results, wantA, wantB, wantC)
-	}
-	if !reflect.DeepEqual(results[0].Fields, map[string]any{"source": "first"}) || batches[0].Documents[0].Score != 0.5 {
-		t.Fatalf("weighted ownership/input mutation = %#v / %#v", results[0], batches[0].Documents[0])
-	}
+	require.Equal(t, wantA, results[0].Score)
+	require.Equal(t, wantB, results[1].Score)
+	require.Equal(t, wantC, results[2].Score)
+	require.Equal(t, map[string]any{"source": "first"}, results[0].Fields)
+	require.True(t, batches[0].Documents[0].Score == 0.5)
+
 	top, err := reranker.Rerank(context.Background(), batches, 2)
-	if err != nil || !reflect.DeepEqual(documentKeys(top), []string{"a", "b"}) {
-		t.Fatalf("weighted topK = %#v, %v", top, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, documentKeys(top))
 }
 
 func TestWeightedRerankerValidationZeroNegativeAndContext(t *testing.T) {
@@ -101,13 +101,14 @@ func TestWeightedRerankerValidationZeroNegativeAndContext(t *testing.T) {
 		{PrimaryKey: "a", DocID: 1, Score: 2},
 	}}}
 	zero, err := NewWeightedReranker(0).Rerank(context.Background(), batches, 10)
-	if err != nil || !reflect.DeepEqual(documentKeys(zero), []string{"a", "b"}) || zero[0].Score != 0 || zero[1].Score != 0 {
-		t.Fatalf("zero weights = %#v, %v", zero, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, documentKeys(zero))
+	require.True(t, zero[0].Score == 0)
+	require.True(t, zero[1].Score == 0)
+
 	negative, err := NewWeightedReranker(-1).Rerank(context.Background(), batches, 10)
-	if err != nil || !reflect.DeepEqual(documentKeys(negative), []string{"b", "a"}) {
-		t.Fatalf("negative weight = %#v, %v", negative, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "a"}, documentKeys(negative))
 
 	tests := []struct {
 		name     string
@@ -125,35 +126,41 @@ func TestWeightedRerankerValidationZeroNegativeAndContext(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			if _, err := testCase.reranker.Rerank(context.Background(), testCase.batches, 10); !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("error = %v", err)
+			{
+				_, err := testCase.reranker.Rerank(context.Background(), testCase.batches, 10)
+				require.ErrorIs(t, err, ErrInvalidArgument)
 			}
 		})
 	}
-	if _, err := NewWeightedReranker(1).Rerank(nil, batches, 1); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("nil context = %v", err)
+	{
+		_, err := NewWeightedReranker(1).Rerank(nil, batches, 1)
+		require.ErrorIs(t, err, ErrInvalidArgument)
 	}
+
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := NewWeightedReranker(1).Rerank(canceled, batches, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled context = %v", err)
+	{
+		_, err := NewWeightedReranker(1).Rerank(canceled, batches, 1)
+		require.ErrorIs(t, err, context.Canceled)
 	}
+
 	empty, err := NewWeightedReranker().Rerank(context.Background(), nil, 10)
-	if err != nil || empty == nil || len(empty) != 0 {
-		t.Fatalf("empty = %#v, %v", empty, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, empty)
+	require.Len(t, empty, 0)
 }
 
 func TestCollectionMultiQueryWeightedReranker(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "weighted"), testMultiQuerySchema(), NewCollectionOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	defer collection.Close()
-	if _, err := collection.Insert(ctx, testMultiQueryDocuments()); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.Insert(ctx, testMultiQueryDocuments())
+		require.NoError(t, err)
 	}
+
 	query := MultiQuery{
 		Queries: []SubQuery{
 			{Field: "embedding", DenseVector: VectorFP32{1, 0}, NumCandidates: 4},
@@ -167,26 +174,22 @@ func TestCollectionMultiQueryWeightedReranker(t *testing.T) {
 		captured = batches
 		return firstDistinctDocuments(batches, topK), nil
 	})
-	if _, err := collection.MultiQuery(ctx, query); err != nil {
-		t.Fatal(err)
+	{
+		_, err := collection.MultiQuery(ctx, query)
+		require.NoError(t, err)
 	}
+
 	weighted := NewWeightedReranker(0.25, 0.75)
 	want, err := weighted.Rerank(ctx, captured, query.TopK)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	query.Reranker = weighted
 	got, err := collection.MultiQuery(ctx, query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Collection weighted = %#v, want %#v", got, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+
 	for _, document := range got {
-		if len(document.Fields) != 1 {
-			t.Fatalf("weighted projection = %#v", document)
-		}
+		require.Len(t, document.Fields, 1)
 	}
 }
 
@@ -204,9 +207,8 @@ func TestWeightedRerankerConcurrentDeterminism(t *testing.T) {
 	}
 	reranker := NewWeightedReranker(0.2, 0.3, 0.5)
 	want, err := reranker.Rerank(context.Background(), batches, 40)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var wait sync.WaitGroup
 	errorsFound := make(chan error, 8)
 	for worker := 0; worker < 8; worker++ {
@@ -219,7 +221,7 @@ func TestWeightedRerankerConcurrentDeterminism(t *testing.T) {
 					errorsFound <- err
 					return
 				}
-				if !reflect.DeepEqual(got, want) {
+				if !assert.Equal(t, want, got) {
 					errorsFound <- errors.New("non-deterministic weighted result")
 					return
 				}
@@ -229,15 +231,14 @@ func TestWeightedRerankerConcurrentDeterminism(t *testing.T) {
 	wait.Wait()
 	close(errorsFound)
 	for err := range errorsFound {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 }
 
 func TestWeightedRerankerCompatibilityFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/weighted_reranker_58375ff.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	var fixture struct {
 		BaselineCommit string            `json:"baseline_commit"`
 		HeaderHash     string            `json:"header_sha256"`
@@ -245,20 +246,20 @@ func TestWeightedRerankerCompatibilityFixture(t *testing.T) {
 		TestsHash      string            `json:"tests_sha256"`
 		Formulas       map[string]string `json:"formulas"`
 	}
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatal(err)
+	{
+		err := json.Unmarshal(data, &fixture)
+		require.NoError(t, err)
 	}
+
 	wantFormulas := map[string]string{
 		"FTS": "2*atan(score)/pi", "L2": "1-2*atan(score)/pi",
 		"IP": "0.5+atan(score)/pi", "COSINE": "1-score/2",
 	}
-	if fixture.BaselineCommit != "58375ff7b8fdd0d6fc7d234e47567b179777883b" ||
-		fixture.HeaderHash != "bc1949536968bc27f0cb11026d0ab8633dbb46641365455c20b433367837c7d6" ||
-		fixture.SourceHash != "3c93edc12303898af52911589c46c720072f9470446858fc36a61206d538aa1e" ||
-		fixture.TestsHash != "05a03cacf74e7615661cec3153b2d2307f6a991510018386f6650f2625cb9a7d" ||
-		!reflect.DeepEqual(fixture.Formulas, wantFormulas) {
-		t.Fatalf("weighted compatibility fixture mismatch: %#v", fixture)
-	}
+	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
+	require.True(t, fixture.HeaderHash == "bc1949536968bc27f0cb11026d0ab8633dbb46641365455c20b433367837c7d6")
+	require.True(t, fixture.SourceHash == "3c93edc12303898af52911589c46c720072f9470446858fc36a61206d538aa1e")
+	require.True(t, fixture.TestsHash == "05a03cacf74e7615661cec3153b2d2307f6a991510018386f6650f2625cb9a7d")
+	require.Equal(t, wantFormulas, fixture.Formulas)
 }
 
 func FuzzWeightedReranker(f *testing.F) {
@@ -282,28 +283,24 @@ func FuzzWeightedReranker(f *testing.F) {
 		topK := int(topKByte % 40)
 		reranker := NewWeightedReranker(-0.25, 0.5, 1.25)
 		first, err := reranker.Rerank(context.Background(), batches, topK)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		second, err := reranker.Rerank(context.Background(), batches, topK)
-		if err != nil || !reflect.DeepEqual(first, second) {
-			t.Fatalf("non-deterministic output: %#v / %#v, %v", first, second, err)
-		}
-		if len(first) > topK {
-			t.Fatalf("result length %d exceeds %d", len(first), topK)
-		}
+		require.NoError(t, err)
+		require.Equal(t, first, second)
+		require.True(t, len(first) <= topK)
+
 		seen := make(map[string]struct{}, len(first))
 		for index, document := range first {
-			if _, found := seen[document.PrimaryKey]; found {
-				t.Fatalf("duplicate primary key %q", document.PrimaryKey)
+			{
+				_, found := seen[document.PrimaryKey]
+				require.False(t, found)
 			}
+
 			seen[document.PrimaryKey] = struct{}{}
-			if math.IsNaN(float64(document.Score)) || math.IsInf(float64(document.Score), 0) {
-				t.Fatalf("invalid score %v", document.Score)
-			}
-			if index > 0 && first[index-1].Score < document.Score {
-				t.Fatalf("scores are not descending: %#v", first)
-			}
+			require.False(t, math.IsNaN(float64(document.Score)))
+			require.False(t, math.IsInf(float64(document.Score), 0))
+			require.False(t, index > 0 && first[index-1].Score < document.Score)
 		}
 	})
 }
@@ -326,8 +323,11 @@ func BenchmarkWeightedReranker(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for iteration := 0; iteration < b.N; iteration++ {
-		if _, err := reranker.Rerank(context.Background(), batches, 100); err != nil {
-			b.Fatal(err)
+		{
+			_, err := reranker.Rerank(context.Background(), batches, 100)
+			if err != nil {
+				require.NoError(b, err)
+			}
 		}
 	}
 }

@@ -15,10 +15,11 @@
 package sql
 
 import (
-	"errors"
-	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func testFilterSchema(t *testing.T) Schema {
@@ -38,9 +39,8 @@ func testFilterSchema(t *testing.T) Schema {
 		{Name: "blobs", Kind: ValueBinary, Array: true, Filterable: true},
 		{Name: "embedding", Filterable: false},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return schema
 }
 
@@ -55,19 +55,18 @@ func rowResolver(values map[string]Value) Resolver {
 
 func TestBuildPlanRewritesEqualitySetsAndEvaluatesLogic(t *testing.T) {
 	plan, err := BuildPlan("i32=1 OR name='x' OR i32 IN (2, 3) OR i32=4", testFilterSchema(t))
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	{
+		got, want := plan.Normalized(), "(i32 IN (1, 2, 3, 4) OR name = 'x')"
+		require.Equal(t, want, got)
 	}
-	if got, want := plan.Normalized(), "(i32 IN (1, 2, 3, 4) OR name = 'x')"; got != want {
-		t.Fatalf("normalized = %q, want %q", got, want)
-	}
-	if plan.Stats().EqualitySets != 1 {
-		t.Fatalf("stats = %#v", plan.Stats())
-	}
+	require.True(t, plan.Stats().EqualitySets == 1)
+
 	fields := plan.Fields()
-	if len(fields) != 2 || fields[0].Name != "i32" || fields[1].Name != "name" {
-		t.Fatalf("fields = %#v", fields)
-	}
+	require.Len(t, fields, 2)
+	require.True(t, fields[0].Name == "i32")
+	require.True(t, fields[1].Name == "name")
+
 	for _, testCase := range []struct {
 		values map[string]Value
 		want   Truth
@@ -77,29 +76,25 @@ func TestBuildPlanRewritesEqualitySetsAndEvaluatesLogic(t *testing.T) {
 		{map[string]Value{"i32": Int32Value(8), "name": StringValue("no")}, TruthFalse},
 	} {
 		got, evalErr := plan.Evaluate(rowResolver(testCase.values))
-		if evalErr != nil || got != testCase.want {
-			t.Fatalf("Evaluate(%v) = %s, %v; want %s", testCase.values, got, evalErr, testCase.want)
-		}
+		require.NoError(t, evalErr)
+		require.Equal(t, testCase.want, got)
 	}
 }
 
 func TestRewriteFilterDoesNotChangeInequalityOR(t *testing.T) {
 	expression, err := ParseFilter("i32 != 1 OR i32 != 2")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	rewritten, stats := RewriteFilter(expression)
-	if stats.EqualitySets != 0 || Format(rewritten) != "(i32 != 1 OR i32 != 2)" {
-		t.Fatalf("rewrite = %q stats=%#v", Format(rewritten), stats)
-	}
+	require.True(t, stats.EqualitySets == 0)
+	require.True(t, Format(rewritten) == "(i32 != 1 OR i32 != 2)")
+
 	plan, err := BuildPlan("i32 != 1 OR i32 != 2", testFilterSchema(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	matched, err := plan.Match(rowResolver(map[string]Value{"i32": Int32Value(1)}))
-	if err != nil || !matched {
-		t.Fatalf("semantics-changing inequality rewrite: matched=%t error=%v", matched, err)
-	}
+	require.NoError(t, err)
+	require.True(t, matched)
 }
 
 func TestBuildPlanContainEmptyRewritesAndConstantFolding(t *testing.T) {
@@ -118,60 +113,47 @@ func TestBuildPlanContainEmptyRewritesAndConstantFolding(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		plan, err := BuildPlan(testCase.filter, testFilterSchema(t))
-		if err != nil {
-			t.Fatalf("BuildPlan(%q): %v", testCase.filter, err)
-		}
-		if plan.Explain() != testCase.explain {
-			t.Errorf("Explain(%q) = %q, want %q", testCase.filter, plan.Explain(), testCase.explain)
-		}
-		if plan.Stats() != testCase.stats {
-			t.Errorf("Stats(%q) = %#v, want %#v", testCase.filter, plan.Stats(), testCase.stats)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, testCase.explain, plan.Explain())
+		assert.Equal(t, testCase.stats, plan.Stats())
+
 		got, evalErr := plan.Evaluate(rowResolver(testCase.values))
-		if evalErr != nil || got != testCase.want {
-			t.Errorf("Evaluate(%q) = %s, %v; want %s", testCase.filter, got, evalErr, testCase.want)
-		}
+		assert.False(t, evalErr != nil || got != testCase.want)
 	}
 }
 
 func mustArray(t *testing.T, kind ValueKind, values ...Value) Value {
 	t.Helper()
 	value, err := ArrayValue(kind, values...)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	return value
 }
 
 func TestBuildPlanArrayLengthAndNull(t *testing.T) {
 	plan, err := BuildPlan("array_length(numbers) >= 2 AND name IS NULL", testFilterSchema(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.Explain() != "(array_length(numbers) >= 2 AND name IS NULL)" {
-		t.Fatalf("explain = %q", plan.Explain())
-	}
+	require.NoError(t, err)
+	require.True(t, plan.Explain() == "(array_length(numbers) >= 2 AND name IS NULL)")
+
 	values := map[string]Value{
 		"numbers": mustArray(t, ValueInt32, Int32Value(1), Int32Value(2)),
 	}
 	got, err := plan.Evaluate(rowResolver(values))
-	if err != nil || got != TruthTrue {
-		t.Fatalf("array_length plan = %s, %v", got, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, TruthTrue, got)
+
 	nullArray, _ := NullValue(ValueInt32, true)
 	values["numbers"] = nullArray
 	got, err = plan.Evaluate(rowResolver(values))
-	if err != nil || got != TruthUnknown {
-		t.Fatalf("NULL array_length plan = %s, %v", got, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, TruthUnknown, got)
 }
 
 func TestBuildPlanBindsNumericBoundaries(t *testing.T) {
 	filter := "i32=-2147483648 AND i64=-9223372036854775808 AND u32=4294967295 AND u64=18446744073709551615 AND f32=1.5F AND f64=2D"
 	plan, err := BuildPlan(filter, testFilterSchema(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	f32, _ := Float32Value(1.5)
 	f64, _ := Float64Value(2)
 	values := map[string]Value{
@@ -180,9 +162,8 @@ func TestBuildPlanBindsNumericBoundaries(t *testing.T) {
 		"f32": f32, "f64": f64,
 	}
 	matched, err := plan.Match(rowResolver(values))
-	if err != nil || !matched {
-		t.Fatalf("boundary plan matched=%t error=%v", matched, err)
-	}
+	require.NoError(t, err)
+	require.True(t, matched)
 }
 
 func TestBuildPlanRejectsSemanticErrorsWithPosition(t *testing.T) {
@@ -208,36 +189,31 @@ func TestBuildPlanRejectsSemanticErrorsWithPosition(t *testing.T) {
 		t.Run(testCase.filter, func(t *testing.T) {
 			_, err := BuildPlan(testCase.filter, testFilterSchema(t))
 			var analysisErr *AnalysisError
-			if !errors.As(err, &analysisErr) {
-				t.Fatalf("error = %T %v", err, err)
-			}
-			if analysisErr.Position.Line < 1 || analysisErr.Position.Column < 1 || !strings.Contains(analysisErr.Message, testCase.message) {
-				t.Fatalf("analysis error = %#v", analysisErr)
-			}
+			require.ErrorAs(t, err, &analysisErr)
+			require.True(t, analysisErr.Position.Line >= 1)
+			require.True(t, analysisErr.Position.Column >= 1)
+			require.Contains(t, analysisErr.Message, testCase.message)
 		})
 	}
 }
 
 func TestBuildPlanBinarySetsAndContain(t *testing.T) {
 	plan, err := BuildPlan("data IN ('x', 'y') AND blobs CONTAIN_ALL ('x', 'z')", testFilterSchema(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	values := map[string]Value{
 		"data":  BinaryValue([]byte("y")),
 		"blobs": mustArray(t, ValueBinary, BinaryValue([]byte("x")), BinaryValue([]byte("z"))),
 	}
 	matched, err := plan.Match(rowResolver(values))
-	if err != nil || !matched {
-		t.Fatalf("binary set/contain matched=%t error=%v", matched, err)
-	}
+	require.NoError(t, err)
+	require.True(t, matched)
 }
 
 func TestPlanIsSafeForConcurrentEvaluation(t *testing.T) {
 	plan, err := BuildPlan("name LIKE 'user-_%' AND i32 IN (1, 2, 3)", testFilterSchema(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	resolver := rowResolver(map[string]Value{"name": StringValue("user-22"), "i32": Int32Value(2)})
 	var wait sync.WaitGroup
 	for index := 0; index < 32; index++ {
@@ -246,8 +222,10 @@ func TestPlanIsSafeForConcurrentEvaluation(t *testing.T) {
 			defer wait.Done()
 			for iteration := 0; iteration < 100; iteration++ {
 				matched, evalErr := plan.Match(resolver)
-				if evalErr != nil || !matched {
-					t.Errorf("concurrent evaluation matched=%t error=%v", matched, evalErr)
+				if !assert.NoError(t, evalErr) {
+					return
+				}
+				if !assert.True(t, matched) {
 					return
 				}
 			}
@@ -257,27 +235,34 @@ func TestPlanIsSafeForConcurrentEvaluation(t *testing.T) {
 }
 
 func TestNewSchemaValidationAndPlanDefensiveFields(t *testing.T) {
-	if _, err := NewSchema([]Field{{Name: "", Kind: ValueString, Filterable: true}}); err == nil {
-		t.Fatal("empty field name succeeded")
+	{
+		_, err := NewSchema([]Field{{Name: "", Kind: ValueString, Filterable: true}})
+		require.Error(t, err,
+			"empty field name succeeded")
 	}
-	if _, err := NewSchema([]Field{{Name: "a"}, {Name: "a"}}); err == nil {
-		t.Fatal("duplicate field succeeded")
+	{
+		_, err := NewSchema([]Field{{Name: "a"}, {Name: "a"}})
+		require.Error(t, err,
+			"duplicate field succeeded")
 	}
-	if _, err := NewSchema([]Field{{Name: "a", Filterable: true}}); err == nil {
-		t.Fatal("filterable invalid kind succeeded")
+	{
+		_, err := NewSchema([]Field{{Name: "a", Filterable: true}})
+		require.Error(t, err,
+			"filterable invalid kind succeeded")
 	}
-	if _, err := NewSchema([]Field{{Name: "a", Kind: ValueString, Indexed: true}}); err == nil {
-		t.Fatal("unfilterable indexed field succeeded")
+	{
+		_, err := NewSchema([]Field{{Name: "a", Kind: ValueString, Indexed: true}})
+		require.Error(t, err,
+			"unfilterable indexed field succeeded")
 	}
+
 	plan, err := BuildPlan("i32=1", testFilterSchema(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	fields := plan.Fields()
 	fields[0].Name = "changed"
-	if plan.Fields()[0].Name != "i32" {
-		t.Fatal("plan fields were not defensively copied")
-	}
+	require.True(t, plan.Fields()[0].Name == "i32",
+		"plan fields were not defensively copied")
 }
 
 func FuzzBuildPlan(f *testing.F) {
@@ -286,9 +271,8 @@ func FuzzBuildPlan(f *testing.F) {
 		{Name: "name", Kind: ValueString, Nullable: true, Filterable: true},
 		{Name: "tags", Kind: ValueString, Array: true, Nullable: true, Filterable: true},
 	})
-	if err != nil {
-		f.Fatal(err)
-	}
+	require.NoError(f, err)
+
 	for _, seed := range []string{
 		"i32=1 OR i32=2", "name LIKE 'user-_%'", "tags CONTAIN_ALL ('a')",
 		"array_length(tags) >= 1", "tags CONTAIN_ANY () OR name IS NULL",
@@ -301,15 +285,14 @@ func FuzzBuildPlan(f *testing.F) {
 			return
 		}
 		tags, err := ArrayValue(ValueString, StringValue("a"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		values := map[string]Value{"i32": Int32Value(1), "name": StringValue("user-a"), "tags": tags}
-		if _, err := plan.Evaluate(rowResolver(values)); err != nil {
-			t.Fatalf("successful plan evaluation failed: input=%q plan=%q error=%v", input, plan.Explain(), err)
+		{
+			_, err := plan.Evaluate(rowResolver(values))
+			require.NoError(t, err)
 		}
-		if plan.Explain() == "" {
-			t.Fatal("successful plan has empty explanation")
-		}
+		require.False(t, plan.Explain() == "",
+			"successful plan has empty explanation")
 	})
 }

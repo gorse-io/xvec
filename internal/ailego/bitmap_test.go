@@ -18,55 +18,63 @@ import (
 	"slices"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBitmap(t *testing.T) {
 	bitmap := NewBitmap(1)
 	for _, bit := range []uint64{130, 1, 64} {
-		if !bitmap.Set(bit) {
-			t.Fatalf("Set(%d) did not change the bit", bit)
-		}
+		require.True(t, bitmap.Set(bit))
 	}
-	if bitmap.Set(64) {
-		t.Fatal("setting an existing bit reported a change")
-	}
-	if !bitmap.Contains(130) || bitmap.Contains(129) || bitmap.Count() != 3 {
-		t.Fatal("bitmap membership or count is incorrect")
-	}
+	require.False(t, bitmap.Set(64),
+		"setting an existing bit reported a change")
+	require.True(t, bitmap.Contains(130),
+		"bitmap membership or count is incorrect")
+	require.False(t, bitmap.Contains(129),
+		"bitmap membership or count is incorrect")
+	require.True(t, bitmap.Count() == 3,
+		"bitmap membership or count is incorrect")
 
 	var got []uint64
 	bitmap.Range(func(bit uint64) bool {
 		got = append(got, bit)
 		return true
 	})
-	if want := []uint64{1, 64, 130}; !slices.Equal(got, want) {
-		t.Fatalf("Range = %v, want %v", got, want)
+	{
+		want := []uint64{1, 64, 130}
+		require.True(t, slices.Equal(got, want))
 	}
 
 	other := NewBitmap(0)
 	other.Set(2)
 	other.Set(64)
 	bitmap.Or(other)
-	if bitmap.Count() != 4 {
-		t.Fatalf("count after Or = %d", bitmap.Count())
-	}
+	require.True(t, bitmap.Count() == 4)
+
 	bitmap.AndNot(other)
-	if bitmap.Contains(2) || bitmap.Contains(64) || bitmap.Count() != 2 {
-		t.Fatal("AndNot result is incorrect")
-	}
+	require.False(t, bitmap.Contains(2),
+		"AndNot result is incorrect")
+	require.False(t, bitmap.Contains(64),
+		"AndNot result is incorrect")
+	require.True(t, bitmap.Count() == 2,
+		"AndNot result is incorrect")
+
 	clone := bitmap.Clone()
 	clone.Set(9)
-	if bitmap.Contains(9) {
-		t.Fatal("Clone shares mutable storage")
-	}
+	require.False(t, bitmap.Contains(9),
+		"Clone shares mutable storage")
+
 	clone.And(bitmap)
-	if clone.Contains(9) || clone.Count() != bitmap.Count() {
-		t.Fatal("And result is incorrect")
-	}
+	require.False(t, clone.Contains(9),
+		"And result is incorrect")
+	require.Equal(t, bitmap.Count(), clone.Count(),
+		"And result is incorrect")
+
 	clone.And(nil)
-	if clone.Count() != 0 {
-		t.Fatal("And(nil) did not clear the bitmap")
-	}
+	require.True(t, clone.Count() == 0,
+		"And(nil) did not clear the bitmap")
 }
 
 func TestBitmapConcurrentAccess(t *testing.T) {
@@ -77,13 +85,9 @@ func TestBitmapConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			bitmap.Set(uint64(bit))
-			if !bitmap.Contains(uint64(bit)) {
-				t.Errorf("bit %d was not set", bit)
-			}
+			assert.True(t, bitmap.Contains(uint64(bit)))
 		}()
 	}
 	wg.Wait()
-	if bitmap.Count() != 1000 {
-		t.Fatalf("count = %d", bitmap.Count())
-	}
+	require.True(t, bitmap.Count() == 1000)
 }

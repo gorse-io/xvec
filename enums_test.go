@@ -14,28 +14,39 @@
 
 package zvec
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestEnumBehavior(t *testing.T) {
-	if got := IndexTypeDiskANN.String(); got != "DISKANN" {
-		t.Fatalf("IndexTypeDiskANN.String() = %q", got)
+	{
+		got := IndexTypeDiskANN.String()
+		require.True(t, got == "DISKANN")
 	}
-	if !IndexTypeDiskANN.Valid() || IndexType(9).Valid() {
-		t.Fatal("IndexType.Valid returned an incorrect result")
+	require.True(t, IndexTypeDiskANN.Valid(),
+		"IndexType.Valid returned an incorrect result")
+	require.False(t, IndexType(9).Valid(),
+		"IndexType.Valid returned an incorrect result")
+	{
+		got := IndexType(9).String()
+		require.True(t, got == "IndexType(9)")
 	}
-	if got := IndexType(9).String(); got != "IndexType(9)" {
-		t.Fatalf("unknown IndexType.String() = %q", got)
-	}
-	if !IndexTypeHNSWRaBitQ.IsVector() || IndexTypeInvert.IsVector() {
-		t.Fatal("IndexType.IsVector returned an incorrect result")
-	}
-	if !DataTypeVectorFP32.IsDenseVector() || DataTypeSparseVectorFP32.IsDenseVector() {
-		t.Fatal("DataType.IsDenseVector returned an incorrect result")
-	}
-	if !DataTypeSparseVectorFP16.IsSparseVector() || DataTypeFloat.IsSparseVector() {
-		t.Fatal("DataType.IsSparseVector returned an incorrect result")
-	}
-	if !DataTypeArrayString.IsArray() || DataTypeString.IsArray() {
-		t.Fatal("DataType.IsArray returned an incorrect result")
-	}
+	require.True(t, IndexTypeHNSWRaBitQ.IsVector(),
+		"IndexType.IsVector returned an incorrect result")
+	require.False(t, IndexTypeInvert.IsVector(),
+		"IndexType.IsVector returned an incorrect result")
+	require.True(t, DataTypeVectorFP32.IsDenseVector(),
+		"DataType.IsDenseVector returned an incorrect result")
+	require.False(t, DataTypeSparseVectorFP32.IsDenseVector(),
+		"DataType.IsDenseVector returned an incorrect result")
+	require.True(t, DataTypeSparseVectorFP16.IsSparseVector(),
+		"DataType.IsSparseVector returned an incorrect result")
+	require.False(t, DataTypeFloat.IsSparseVector(),
+		"DataType.IsSparseVector returned an incorrect result")
+	require.True(t, DataTypeArrayString.IsArray(),
+		"DataType.IsArray returned an incorrect result")
+	require.False(t, DataTypeString.IsArray(),
+		"DataType.IsArray returned an incorrect result")
 }

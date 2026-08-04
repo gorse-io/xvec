@@ -15,9 +15,10 @@
 package ailego
 
 import (
-	"errors"
 	"math"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestDenseMetricsMatchPinnedBaseline(t *testing.T) {
@@ -52,16 +53,13 @@ func TestDenseMetricsMatchPinnedBaseline(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			actual, err := testCase.compute(testCase.left, testCase.right)
-			if err != nil {
-				t.Fatalf("compute: %v", err)
-			}
+			require.NoError(t, err)
+
 			tolerance := testCase.tolerance
 			if tolerance == 0 {
 				tolerance = 1e-7
 			}
-			if difference := float32(math.Abs(float64(actual - testCase.expected))); difference > tolerance {
-				t.Fatalf("score = %g, want %g (difference %g)", actual, testCase.expected, difference)
-			}
+			require.InDelta(t, testCase.expected, actual, float64(tolerance))
 		})
 	}
 }
@@ -93,24 +91,29 @@ func TestDenseMetricValidation(t *testing.T) {
 	}
 	for _, metric := range metrics {
 		t.Run(metric.name, func(t *testing.T) {
-			if _, err := metric.compute([]float32{1}, []float32{1, 2}); !errors.Is(err, ErrDimensionMismatch) {
-				t.Fatalf("dimension error = %v", err)
+			{
+				_, err := metric.compute([]float32{1}, []float32{1, 2})
+				require.ErrorIs(t, err, ErrDimensionMismatch)
 			}
-			if _, err := metric.compute(nil, nil); !errors.Is(err, ErrEmptyVector) {
-				t.Fatalf("empty error = %v", err)
+			{
+				_, err := metric.compute(nil, nil)
+				require.ErrorIs(t, err, ErrEmptyVector)
 			}
-			if _, err := metric.compute([]float32{float32(math.NaN())}, []float32{1}); !errors.Is(err, ErrNonFiniteVector) {
-				t.Fatalf("NaN error = %v", err)
+			{
+				_, err := metric.compute([]float32{float32(math.NaN())}, []float32{1})
+				require.ErrorIs(t, err, ErrNonFiniteVector)
 			}
-			if _, err := metric.compute([]float32{1}, []float32{float32(math.Inf(1))}); !errors.Is(err, ErrNonFiniteVector) {
-				t.Fatalf("infinity error = %v", err)
+			{
+				_, err := metric.compute([]float32{1}, []float32{float32(math.Inf(1))})
+				require.ErrorIs(t, err, ErrNonFiniteVector)
 			}
 		})
 	}
 
 	large := []float32{math.MaxFloat32, math.MaxFloat32}
-	if _, err := InnerProduct(large, large); !errors.Is(err, ErrNonFiniteVector) {
-		t.Fatalf("overflow error = %v", err)
+	{
+		_, err := InnerProduct(large, large)
+		require.ErrorIs(t, err, ErrNonFiniteVector)
 	}
 }
 
@@ -121,27 +124,28 @@ func TestSparseInnerProduct(t *testing.T) {
 		[]uint32{1, 3, 7}, []float32{2, 4, -1},
 		[]uint32{0, 3, 7, 9}, []float32{8, 3, 5, 2},
 	)
-	if err != nil {
-		t.Fatalf("compute sparse inner product: %v", err)
+	require.NoError(t, err)
+	require.True(t, score == 7)
+	{
+		score, err = SparseInnerProduct(nil, nil, nil, nil)
+		require.NoError(t, err)
+		require.True(t, score == 0)
 	}
-	if score != 7 {
-		t.Fatalf("score = %g, want 7", score)
+	{
+		_, err = SparseInnerProduct([]uint32{1}, nil, nil, nil)
+		require.ErrorIs(t, err, ErrDimensionMismatch)
 	}
-
-	if score, err = SparseInnerProduct(nil, nil, nil, nil); err != nil || score != 0 {
-		t.Fatalf("empty sparse score = %g, error = %v", score, err)
+	{
+		_, err = SparseInnerProduct([]uint32{1, 1}, []float32{1, 2}, nil, nil)
+		require.ErrorIs(t, err, ErrInvalidSparseOrder)
 	}
-	if _, err = SparseInnerProduct([]uint32{1}, nil, nil, nil); !errors.Is(err, ErrDimensionMismatch) {
-		t.Fatalf("dimension error = %v", err)
+	{
+		_, err = SparseInnerProduct([]uint32{2, 1}, []float32{1, 2}, nil, nil)
+		require.ErrorIs(t, err, ErrInvalidSparseOrder)
 	}
-	if _, err = SparseInnerProduct([]uint32{1, 1}, []float32{1, 2}, nil, nil); !errors.Is(err, ErrInvalidSparseOrder) {
-		t.Fatalf("duplicate index error = %v", err)
-	}
-	if _, err = SparseInnerProduct([]uint32{2, 1}, []float32{1, 2}, nil, nil); !errors.Is(err, ErrInvalidSparseOrder) {
-		t.Fatalf("descending index error = %v", err)
-	}
-	if _, err = SparseInnerProduct([]uint32{1}, []float32{float32(math.NaN())}, nil, nil); !errors.Is(err, ErrNonFiniteVector) {
-		t.Fatalf("non-finite error = %v", err)
+	{
+		_, err = SparseInnerProduct([]uint32{1}, []float32{float32(math.NaN())}, nil, nil)
+		require.ErrorIs(t, err, ErrNonFiniteVector)
 	}
 }
 
@@ -153,10 +157,6 @@ func assertScore(
 ) {
 	t.Helper()
 	score, err := compute(left, right)
-	if err != nil {
-		t.Fatalf("compute: %v", err)
-	}
-	if score != expected {
-		t.Fatalf("score = %g, want %g", score, expected)
-	}
+	require.NoError(t, err)
+	require.Equal(t, expected, score)
 }
