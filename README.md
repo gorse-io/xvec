@@ -17,8 +17,9 @@ The implementation is being developed from the storage primitives upward. The
 v0.3 milestone includes versioned storage, WAL recovery, CRUD, SQL filtering,
 atomic DDL/compaction, FP16/INT8/INT4 scalar quantization, deterministic
 rotation and refinement, k-means, IVF, and dense/sparse HNSW. Collection
-queries route those implemented indexes with explicit ANN controls. RaBitQ,
-disk indexes, full-text search, and hybrid retrieval remain later milestones.
+queries route those implemented indexes with explicit ANN controls.
+HNSW-RaBitQ execution, disk indexes, full-text search, and hybrid retrieval
+remain later milestones.
 
 ## Module
 
@@ -93,6 +94,14 @@ HNSW cache warming, Linear execution, and exact original-vector refinement are
 connected end to end. Until segment-native ANN artifacts are integrated, the
 collection rebuilds these runtime indexes from its durable live snapshot for
 each query and DDL validation.
+
+v0.4 work has begun with a portable internal RaBitQ trainer, split-code
+converter, and one-bit/full-bit distance estimator for L2, IP, and cosine. It
+supports the pinned 1–9 total-bit and 64–4095 dimension ranges, deterministic
+centroid/rotation/scale state, cancellation-aware batch conversion, model
+mismatch detection, and the baseline probabilistic pruning envelope. The code
+layout is native Go rather than the C++ AVX layout. Public HNSW-RaBitQ query
+execution remains `ErrNotSupported` until graph integration is complete.
 
 The current library version is `v0.3.0`; its exact support boundary is recorded
 in the [v0.3 capability matrix](docs/v0.3.md) and [changelog](CHANGELOG.md).
@@ -176,6 +185,7 @@ are exercised by `go test ./...`.
 - [Sparse HNSW persistence and reopen](docs/hnsw-sparse-persistence.md)
 - [Sparse HNSW incremental writes](docs/hnsw-sparse-incremental.md)
 - [ANN collection query integration](docs/ann-query-integration.md)
+- [RaBitQ training and distance estimation](docs/rabitq.md)
 
 ## License
 

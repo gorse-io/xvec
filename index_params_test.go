@@ -53,9 +53,12 @@ func TestIndexParamsRejectInvalidValues(t *testing.T) {
 	rotated.Quantizer.EnableRotate = true
 	rabitq := NewFlatIndexParams(MetricTypeL2)
 	rabitq.Quantize = QuantizeTypeRaBitQ
+	rabitqBits := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	rabitqBits.TotalBits = MaxRaBitQTotalBits + 1
 
 	params := []IndexParams{
 		FlatIndexParams{}, hnsw, hnswLarge, ivf, diskANN, vamana, rotated, rabitq,
+		rabitqBits,
 		HNSWRaBitQIndexParams{Metric: MetricTypeL2, TotalBits: 7, NumClusters: 16, M: 10, EFConstruction: 9},
 	}
 	for _, params := range params {

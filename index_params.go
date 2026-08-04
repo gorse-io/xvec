@@ -36,6 +36,7 @@ const (
 
 	DefaultRaBitQTotalBits   = 7
 	DefaultRaBitQNumClusters = 16
+	MaxRaBitQTotalBits       = 9
 
 	DefaultDiskANNMaxDegree = 100
 	DefaultDiskANNListSize  = 50
@@ -173,8 +174,8 @@ func (p HNSWRaBitQIndexParams) Validate() error {
 	if p.M <= 0 || p.M > MaxHNSWM || p.EFConstruction < p.M {
 		return invalidArgument("validate HNSW RaBitQ index params", "M must be in [1, %d] and EFConstruction must be at least M", MaxHNSWM)
 	}
-	if p.TotalBits <= 0 {
-		return invalidArgument("validate HNSW RaBitQ index params", "TotalBits must be positive")
+	if p.TotalBits <= 0 || p.TotalBits > MaxRaBitQTotalBits {
+		return invalidArgument("validate HNSW RaBitQ index params", "TotalBits must be in [1, %d]", MaxRaBitQTotalBits)
 	}
 	if p.NumClusters <= 0 {
 		return invalidArgument("validate HNSW RaBitQ index params", "NumClusters must be positive")

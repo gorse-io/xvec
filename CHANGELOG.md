@@ -6,6 +6,11 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added deterministic RaBitQ centroid, rotation, and expected-scale training;
+  portable 1–9 bit split-code conversion; one-bit and full-bit L2/IP/cosine
+  estimation with the baseline probabilistic pruning envelope; restorable
+  immutable model state; pinned-library fixtures; fuzzing; and benchmarks.
+
 ## v0.3.0 - 2026-08-04
 
 - Added baseline-layout FP16, per-vector INT8, and packed INT4 scalar
