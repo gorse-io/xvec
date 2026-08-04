@@ -185,6 +185,27 @@ func ExampleWeightedReranker_Rerank() {
 	// a 0.750
 }
 
+func ExampleCallbackReranker_Rerank() {
+	reranker := zvec.NewCallbackReranker(func(_ context.Context, batches []zvec.RerankBatch, topK int) ([]zvec.Document, error) {
+		result := []zvec.Document{batches[1].Documents[0], batches[0].Documents[0]}
+		if len(result) > topK {
+			result = result[:topK]
+		}
+		return result, nil
+	})
+	results, err := reranker.Rerank(context.Background(), []zvec.RerankBatch{
+		{Documents: []zvec.Document{{PrimaryKey: "vector", Score: 0.8}}},
+		{Documents: []zvec.Document{{PrimaryKey: "keyword", Score: 2.1}}},
+	}, 1)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(results[0].PrimaryKey)
+
+	// Output:
+	// keyword
+}
+
 func ExampleCollection_DeleteByFilter() {
 	ctx := context.Background()
 	directory, err := os.MkdirTemp("", "zvec-delete-example-")

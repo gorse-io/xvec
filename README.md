@@ -161,8 +161,10 @@ independent of scalar candidate filtering, validates reranker output, and
 returns durable reopen-identical results. Baseline-compatible
 [`RRFReranker`](docs/rrf-reranker.md) now provides score-independent fusion and
 is the nil/default MultiQuery strategy. [`WeightedReranker`](docs/weighted-reranker.md)
-adds pinned metric-specific normalization and per-branch weighting; the
-callback adapter remains a separate v0.5 unit. None requires CGO.
+adds pinned metric-specific normalization and per-branch weighting.
+[`CallbackReranker`](docs/callback-reranker.md) supplies a context-aware custom
+fusion adapter with panic containment and strict Collection output validation.
+None requires CGO.
 
 The current library version is `v0.4.0`; its exact support boundary is recorded
 in the [v0.4 capability matrix](docs/v0.4.md) and [changelog](CHANGELOG.md).

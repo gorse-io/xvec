@@ -74,9 +74,6 @@ type Reranker interface {
 // MultiQuery combines vector, sparse-vector, and full-text candidate lists
 // through a Reranker. Nil selects NewRRFReranker. At least two sub-queries are
 // required. Zero TopK selects DefaultMultiQueryTopK.
-//
-// Weighted and callback adapters are introduced as separate compatibility
-// units.
 type MultiQuery struct {
 	Queries    []SubQuery
 	TopK       int

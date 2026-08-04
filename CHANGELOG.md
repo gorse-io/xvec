@@ -6,6 +6,11 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added a baseline-compatible callback reranker adapter with ordered batches
+  and field schemas, exact top-k forwarding, context and error propagation,
+  nil validation, panic containment as structured internal errors, lock-free
+  Collection invocation, output-boundary integration, a pinned source fixture,
+  concurrency coverage, fuzzing, an example, and a benchmark.
 - Added baseline-compatible weighted score fusion for L2, inner product,
   cosine distance, sparse inner product, and BM25, with exact pinned
   normalization formulas, finite weight/score validation, explicit MIPS-L2
@@ -23,8 +28,8 @@ subject to compatible migration work throughout the 0.x series.
   complete tokenizer/filter configuration routing, projection-safe reranker
   batches, strict untrusted-output validation, lock-free caller reranking,
   reopen/concurrency coverage, a pinned compatibility fixture, fuzzing, an
-  example, and a benchmark. The generic `Reranker` contract is public; the
-  callback adapter remains a separate v0.5 unit.
+  example, and a benchmark. The generic `Reranker` contract and built-in RRF,
+  weighted, and callback strategies are public.
 - Added immutable baseline-compatible BM25 scoring with deletion-aware
   cross-segment statistics, scored exact term/phrase/boolean iterators,
   deterministic bounded top-k search, and streaming native FTS dictionary
