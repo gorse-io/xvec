@@ -19,12 +19,24 @@ package db
 import (
 	"errors"
 	"os"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
 
 func atomicReplaceFile(source, destination string) error {
-	return moveFile(source, destination, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+	var err error
+	for range 100 {
+		err = moveFile(source, destination, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, windows.ERROR_ACCESS_DENIED) && !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+			return err
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return err
 }
 
 func installFileNoReplace(source, destination string) error {

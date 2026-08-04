@@ -39,9 +39,7 @@ func TestIVFPersistenceRoundTripAndReplace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("artifact mode = %o, want private", info.Mode().Perm())
-	}
+	assertPrivateFileMode(t, info.Mode())
 
 	opened, err := OpenIVFIndex(context.Background(), path)
 	if err != nil {
