@@ -47,6 +47,8 @@ func TestIndexParamsRejectInvalidValues(t *testing.T) {
 	ivf.NList = 0
 	diskANN := NewDiskANNIndexParams(MetricTypeL2)
 	diskANN.PQChunks = -1
+	diskANNDegree := NewDiskANNIndexParams(MetricTypeL2)
+	diskANNDegree.MaxDegree = MaxVamanaMaxDegree + 1
 	vamana := NewVamanaIndexParams(MetricTypeL2)
 	vamana.SearchListSize = vamana.MaxDegree - 1
 	vamanaOcclusion := NewVamanaIndexParams(MetricTypeL2)
@@ -59,7 +61,7 @@ func TestIndexParamsRejectInvalidValues(t *testing.T) {
 	rabitqBits.TotalBits = MaxRaBitQTotalBits + 1
 
 	params := []IndexParams{
-		FlatIndexParams{}, hnsw, hnswLarge, ivf, diskANN, vamana, vamanaOcclusion, rotated, rabitq,
+		FlatIndexParams{}, hnsw, hnswLarge, ivf, diskANN, diskANNDegree, vamana, vamanaOcclusion, rotated, rabitq,
 		rabitqBits,
 		HNSWRaBitQIndexParams{Metric: MetricTypeL2, TotalBits: 7, NumClusters: 16, M: 10, EFConstruction: 9},
 	}

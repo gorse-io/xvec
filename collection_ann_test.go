@@ -303,6 +303,158 @@ func TestCollectionVamanaQueryCreateIndexQuantizeOptimizeAndReopen(t *testing.T)
 	}
 }
 
+func TestCollectionDiskANNQueryCreateIndexRefineOptimizeAndReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "diskann")
+	schema := NewCollectionSchema("diskann_collection",
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Index: NewFlatIndexParams(MetricTypeL2)},
+		FieldSchema{Name: "rating", DataType: DataTypeInt32},
+	)
+	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	documents := annDenseDocuments(320)
+	if _, err := collection.Insert(ctx, documents); err != nil {
+		t.Fatal(err)
+	}
+	queryVector := documents[217].Fields["embedding"].(VectorFP32)
+
+	indexParams := NewDiskANNIndexParams(MetricTypeL2)
+	indexParams.MaxDegree = 12
+	indexParams.ListSize = 60
+	indexParams.PQChunks = 2
+	if err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3}); err != nil {
+		t.Fatal(err)
+	}
+	defaulted, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 5})
+	if err != nil || len(defaulted) != 5 {
+		t.Fatalf("default DiskANN query = %#v, %v", defaulted, err)
+	}
+	params := NewDiskANNQueryParams()
+	params.ListSize = 100
+	query := VectorQuery{
+		Field: "embedding", DenseVector: queryVector, TopK: 15,
+		Filter: "rating >= 1", Params: params,
+	}
+	approximate, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approximate) != 15 {
+		t.Fatalf("DiskANN returned %d documents", len(approximate))
+	}
+	for _, document := range approximate {
+		if document.Fields["rating"].(int32) < 1 {
+			t.Fatalf("DiskANN filter admitted %#v", document)
+		}
+	}
+
+	params.UseRefiner = true
+	query.Params = params
+	refined, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := make(map[string]Document, len(documents))
+	for _, document := range documents {
+		byKey[document.PrimaryKey] = document
+	}
+	for _, document := range refined {
+		original := byKey[document.PrimaryKey].Fields["embedding"].(VectorFP32)
+		want, err := core.MetricL2.Compute(queryVector, original)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if document.Score != want {
+			t.Fatalf("refined score for %q = %v, want %v", document.PrimaryKey, document.Score, want)
+		}
+	}
+
+	params.UseRefiner = false
+	params.Radius = approximate[len(approximate)-1].Score
+	query.Params = params
+	bounded, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, document := range bounded {
+		if document.Score > params.Radius {
+			t.Fatalf("DiskANN radius admitted %#v", document)
+		}
+	}
+	params.Linear = true
+	params.Radius = 0
+	query.Params = params
+	linear, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(linear) != 15 {
+		t.Fatalf("linear DiskANN returned %d documents", len(linear))
+	}
+	if recall := documentRecall(approximate, linear); recall < .80 {
+		t.Fatalf("collection DiskANN recall@15 = %.3f", recall)
+	}
+	if got := collection.Stats().IndexCompleteness["embedding"]; got != 1 {
+		t.Fatalf("DiskANN completeness = %v", got)
+	}
+	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := collection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer collection.Close()
+	reopened, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reopened, linear) {
+		t.Fatal("reopened DiskANN query differs")
+	}
+	field, _ := collection.Schema().Field("embedding")
+	if field.IndexType() != IndexTypeDiskANN || collection.Stats().IndexCompleteness["embedding"] != 1 {
+		t.Fatalf("reopened DiskANN state = %#v, %#v", field, collection.Stats())
+	}
+}
+
+func TestCollectionDiskANNDirectFP16SchemaDefaults(t *testing.T) {
+	ctx := context.Background()
+	params := NewDiskANNIndexParams(MetricTypeL2)
+	params.MaxDegree, params.ListSize, params.PQChunks = 4, 8, 1
+	schema := NewCollectionSchema("diskann_direct",
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP16, Dimension: 2, Index: params},
+	)
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "direct"), schema, NewCollectionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer collection.Close()
+	if _, err := collection.Insert(ctx, []Document{
+		{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(0), Float16FromFloat32(0)}}},
+		{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(1), Float16FromFloat32(0)}}},
+		{PrimaryKey: "c", Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(3), Float16FromFloat32(0)}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := collection.Query(ctx, VectorQuery{
+		Field:       "embedding",
+		DenseVector: VectorFP16{Float16FromFloat32(0.9), Float16FromFloat32(0)},
+		TopK:        2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(documentKeys(results), []string{"b", "a"}) || collection.Stats().IndexCompleteness["embedding"] != 1 {
+		t.Fatalf("direct DiskANN = %v, stats %#v", documentKeys(results), collection.Stats())
+	}
+}
+
 func TestCollectionQuantizedIVFRefinementCreateIndexAndReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "ivf")

@@ -148,8 +148,8 @@ func (p DiskANNQueryParams) Validate() error {
 	if err := p.QueryOptions.validate("validate DiskANN query params"); err != nil {
 		return err
 	}
-	if p.ListSize <= 0 {
-		return invalidArgument("validate DiskANN query params", "ListSize must be positive")
+	if p.ListSize <= 0 || uint64(p.ListSize) > math.MaxUint32 {
+		return invalidArgument("validate DiskANN query params", "ListSize must fit uint32")
 	}
 	return nil
 }

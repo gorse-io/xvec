@@ -1,7 +1,7 @@
 # Product quantization
 
-The v0.4 PQ component is the pure-Go codebook and distance-table layer needed
-by the later DiskANN index. Its behavioral baseline is zvec commit 58375ff;
+The v0.4 PQ component is the pure-Go codebook and distance-table layer used by
+the native DiskANN index. Its behavioral baseline is zvec commit 58375ff;
 its model representation is native Go and is not a C++ artifact reader.
 
 ## Training and layout
@@ -52,10 +52,11 @@ the public metric score between the query and the PQ-reconstructed vector,
 apart from normal floating-point rounding. LookupBatch evaluates many codes
 concurrently in stable input order.
 
-The low-level PQ model deliberately accepts only L2 and inner product. Cosine
-and MIPS-L2 DiskANN paths require their metric-specific normalization or
-augmentation before PQ and will be connected in the DiskANN unit. Calling PQ
-directly with those metrics returns an explicit unsupported-metric error.
+The low-level PQ model deliberately accepts only L2 and inner product.
+DiskANN normalizes cosine inputs into an L2 traversal space and derives a
+MIPS-L2 estimate from PQ L2 plus each reconstructed code norm. Final expanded
+nodes are still scored with the original public metric. Calling PQ directly
+with cosine or MIPS-L2 returns an explicit unsupported-metric error.
 
 ## Verification
 

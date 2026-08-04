@@ -46,6 +46,8 @@ func TestQueryParamsRejectInvalidValues(t *testing.T) {
 	flat.Radius = -1
 	diskANN := NewDiskANNQueryParams()
 	diskANN.ListSize = 0
+	diskANNLarge := NewDiskANNQueryParams()
+	diskANNLarge.ListSize = int(uint64(math.MaxUint32) + 1)
 	vamana := NewVamanaQueryParams()
 	vamana.EFSearch = 0
 	vamanaLarge := NewVamanaQueryParams()
@@ -54,7 +56,7 @@ func TestQueryParamsRejectInvalidValues(t *testing.T) {
 	nan.ScaleFactor = float32(math.NaN())
 
 	params := []QueryParams{
-		hnsw, hnswLarge, rabitqLarge, ivf, flat, diskANN, vamana, vamanaLarge, nan,
+		hnsw, hnswLarge, rabitqLarge, ivf, flat, diskANN, diskANNLarge, vamana, vamanaLarge, nan,
 		FTSQueryParams{DefaultOperator: "XOR"},
 	}
 	for _, params := range params {

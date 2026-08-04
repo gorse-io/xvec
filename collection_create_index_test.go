@@ -170,6 +170,8 @@ func TestCreateIndexValidationAndRollback(t *testing.T) {
 	}
 	var typedNil *InvertIndexParams
 	invalidFlat := NewFlatIndexParams(MetricTypeUndefined)
+	quantizedDiskANN := NewDiskANNIndexParams(MetricTypeIP)
+	quantizedDiskANN.Quantize = QuantizeTypeFP16
 	tests := []struct {
 		name    string
 		column  string
@@ -185,7 +187,7 @@ func TestCreateIndexValidationAndRollback(t *testing.T) {
 		{"invert-vector", "embedding", NewInvertIndexParams(), CreateIndexOptions{}, ErrInvalidArgument},
 		{"flat-scalar", "text", NewFlatIndexParams(MetricTypeIP), CreateIndexOptions{}, ErrInvalidArgument},
 		{"fts-unimplemented", "text", NewFTSIndexParams(), CreateIndexOptions{}, ErrNotSupported},
-		{"diskann-unimplemented", "embedding", NewDiskANNIndexParams(MetricTypeIP), CreateIndexOptions{}, ErrNotSupported},
+		{"diskann-scalar-quantization-unimplemented", "embedding", quantizedDiskANN, CreateIndexOptions{}, ErrNotSupported},
 		{"binary-invert-unimplemented", "binary", NewInvertIndexParams(), CreateIndexOptions{}, ErrNotSupported},
 		{"scalar-index-conflict", "already_fts", NewInvertIndexParams(), CreateIndexOptions{}, ErrNotSupported},
 		{"invalid-index-params", "embedding", invalidFlat, CreateIndexOptions{}, ErrInvalidArgument},

@@ -283,12 +283,14 @@ func TestOptimizeValidationUnsupportedIndexesAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	quantizedDiskANN := NewDiskANNIndexParams(MetricTypeIP)
+	quantizedDiskANN.Quantize = QuantizeTypeFP16
 	unsupported := []struct {
 		name  string
 		field FieldSchema
 		value any
 	}{
-		{name: "DiskANN", field: FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: NewDiskANNIndexParams(MetricTypeIP)}, value: VectorFP32{1, 0}},
+		{name: "DiskANN scalar quantization", field: FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: quantizedDiskANN}, value: VectorFP32{1, 0}},
 		{name: "FTS", field: FieldSchema{Name: "text", DataType: DataTypeString, Index: NewFTSIndexParams()}, value: "alpha"},
 		{name: "binary INVERT", field: FieldSchema{Name: "data", DataType: DataTypeBinary, Index: NewInvertIndexParams()}, value: Binary{1, 2}},
 	}

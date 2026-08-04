@@ -252,8 +252,11 @@ func (p DiskANNIndexParams) Validate() error {
 	if err := validateVectorIndexParams(p.IndexType(), p.vectorConfig()); err != nil {
 		return err
 	}
-	if p.MaxDegree <= 0 || p.ListSize <= 0 {
-		return invalidArgument("validate DiskANN index params", "MaxDegree and ListSize must be positive")
+	if p.MaxDegree <= 0 || p.MaxDegree > MaxVamanaMaxDegree {
+		return invalidArgument("validate DiskANN index params", "MaxDegree must be in [1, %d]", MaxVamanaMaxDegree)
+	}
+	if p.ListSize <= 0 || uint64(p.ListSize) > math.MaxUint32 {
+		return invalidArgument("validate DiskANN index params", "ListSize must fit uint32")
 	}
 	if p.PQChunks < 0 {
 		return invalidArgument("validate DiskANN index params", "PQChunks cannot be negative")

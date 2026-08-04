@@ -35,6 +35,7 @@ type collectionVectorIndex struct {
 	hnsw      HNSWIndexParams
 	rabitq    HNSWRaBitQIndexParams
 	ivf       IVFIndexParams
+	diskann   DiskANNIndexParams
 	vamana    VamanaIndexParams
 }
 
@@ -43,6 +44,7 @@ type collectionQueryConfig struct {
 	scaleFactor    float32
 	ef             int
 	nprobe         int
+	listSize       int
 	prefetchOffset uint32
 	prefetchLines  uint32
 }
@@ -85,6 +87,13 @@ func resolveCollectionVectorIndex(field FieldSchema, op, path string) (collectio
 			return collectionVectorIndex{}, invalidArgument(op, "field %q has nil IVF index parameters", field.Name)
 		}
 		spec.ivf = *value
+	case DiskANNIndexParams:
+		spec.diskann = value
+	case *DiskANNIndexParams:
+		if value == nil {
+			return collectionVectorIndex{}, invalidArgument(op, "field %q has nil DiskANN index parameters", field.Name)
+		}
+		spec.diskann = *value
 	case VamanaIndexParams:
 		spec.vamana = value
 	case *VamanaIndexParams:
@@ -112,6 +121,14 @@ func resolveCollectionVectorIndex(field FieldSchema, op, path string) (collectio
 			return collectionVectorIndex{}, notSupported(op, path, fmt.Sprintf("IVF SOAR layout on field %q is not implemented", field.Name))
 		}
 		metric, spec.quantize, spec.rotate = spec.ivf.Metric, spec.ivf.Quantize, spec.ivf.Quantizer.EnableRotate
+	case IndexTypeDiskANN:
+		if field.DataType.IsSparseVector() {
+			return collectionVectorIndex{}, invalidArgument(op, "sparse field %q cannot use DiskANN", field.Name)
+		}
+		metric, spec.quantize, spec.rotate = spec.diskann.Metric, spec.diskann.Quantize, spec.diskann.Quantizer.EnableRotate
+		if spec.quantize != QuantizeTypeUndefined {
+			return collectionVectorIndex{}, notSupported(op, path, fmt.Sprintf("%s scalar quantization on DiskANN field %q is not implemented", spec.quantize, field.Name))
+		}
 	case IndexTypeVamana:
 		if field.DataType.IsSparseVector() {
 			return collectionVectorIndex{}, invalidArgument(op, "sparse field %q cannot use Vamana", field.Name)
@@ -145,6 +162,9 @@ func collectionQueryParams(params QueryParams, spec collectionVectorIndex) (coll
 			params = value
 		case IndexTypeIVF:
 			value := NewIVFQueryParams()
+			params = value
+		case IndexTypeDiskANN:
+			value := NewDiskANNQueryParams()
 			params = value
 		case IndexTypeVamana:
 			value := NewVamanaQueryParams()
@@ -194,6 +214,16 @@ func collectionQueryParams(params QueryParams, spec collectionVectorIndex) (coll
 				options: value.QueryOptions, scaleFactor: value.ScaleFactor, nprobe: value.NProbe,
 			}, nil
 		}
+	case DiskANNQueryParams:
+		return collectionQueryConfig{
+			options: value.QueryOptions, scaleFactor: DefaultRefinerScaleFactor, listSize: value.ListSize,
+		}, nil
+	case *DiskANNQueryParams:
+		if value != nil {
+			return collectionQueryConfig{
+				options: value.QueryOptions, scaleFactor: DefaultRefinerScaleFactor, listSize: value.ListSize,
+			}, nil
+		}
 	case VamanaQueryParams:
 		return collectionQueryConfig{
 			options: value.QueryOptions, scaleFactor: 1, ef: value.EFSearch,
@@ -228,6 +258,11 @@ type collectionIVFIndex interface {
 type collectionVamanaIndex interface {
 	collectionDenseIndex
 	SearchVamana(ctx context.Context, query []float32, options core.VamanaSearchOptions) ([]core.Result, error)
+}
+
+type collectionDiskANNIndex interface {
+	collectionDenseIndex
+	SearchDiskANN(ctx context.Context, query []float32, options core.DiskANNSearchOptions) ([]core.Result, error)
 }
 
 func searchCollectionDense(
@@ -282,6 +317,17 @@ func searchCollectionDense(
 		return executeCollectionDenseSearch(ctx, index, query, final, config.options.UseRefiner, config.scaleFactor,
 			func(options core.SearchOptions) ([]core.Result, error) {
 				return index.SearchIVF(ctx, query, core.IVFSearchOptions{SearchOptions: options, NProbe: config.nprobe})
+			})
+	case IndexTypeDiskANN:
+		index, err := buildCollectionDenseDiskANN(ctx, field, documents, spec, 0)
+		if err != nil {
+			return nil, err
+		}
+		return executeCollectionDenseSearch(ctx, index, query, final, config.options.UseRefiner, config.scaleFactor,
+			func(options core.SearchOptions) ([]core.Result, error) {
+				return index.SearchDiskANN(ctx, query, core.DiskANNSearchOptions{
+					SearchOptions: options, ListSize: config.listSize, Linear: config.options.Linear,
+				})
 			})
 	case IndexTypeVamana:
 		index, err := buildCollectionDenseVamana(ctx, schemaName, field, documents, spec)
@@ -520,6 +566,35 @@ func buildCollectionDenseVamana(
 		return nil, err
 	}
 	return core.NewScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
+}
+
+func buildCollectionDenseDiskANN(
+	ctx context.Context,
+	field FieldSchema,
+	documents []Document,
+	spec collectionVectorIndex,
+	workers int,
+) (collectionDiskANNIndex, error) {
+	candidates, err := collectionDenseCandidates(ctx, field, documents)
+	if err != nil {
+		return nil, err
+	}
+	options := core.DefaultDiskANNBuildOptions(spec.metric)
+	options.MaxDegree = spec.diskann.MaxDegree
+	options.ListSize = spec.diskann.ListSize
+	options.PQChunks = spec.diskann.PQChunks
+	options.Workers = workers
+	options.CacheCapacity = min(len(candidates), core.DefaultDiskANNCacheNodes)
+	builder, err := core.NewDiskANNBuilder(int(field.Dimension), options)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range candidates {
+		if err := builder.Add(ctx, candidate.Key, candidate.Vector); err != nil {
+			return nil, err
+		}
+	}
+	return builder.Build(ctx)
 }
 
 func buildCollectionSparseIndex(

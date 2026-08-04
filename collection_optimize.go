@@ -79,7 +79,7 @@ func optimizableField(field FieldSchema, path string) error {
 		return nil
 	}
 	switch index.IndexType() {
-	case IndexTypeFlat, IndexTypeHNSW, IndexTypeHNSWRaBitQ, IndexTypeIVF, IndexTypeVamana:
+	case IndexTypeFlat, IndexTypeHNSW, IndexTypeHNSWRaBitQ, IndexTypeIVF, IndexTypeDiskANN, IndexTypeVamana:
 		if !field.DataType.IsVector() {
 			return invalidArgument("optimize collection", "scalar field %q cannot use %s", field.Name, index.IndexType())
 		}

@@ -25,9 +25,9 @@ in-memory schema and CURRENT manifest unchanged. Scalar INVERT/FTS definitions
 and later vector definitions can be removed because no replacement artifact is
 needed.
 
-Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, and INVERT collection runtime structures
+Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, DiskANN, and INVERT collection runtime structures
 are reconstructed from the live snapshot, so dropping metadata does not
 delete a separate collection index file. The schema transition is nevertheless
 durable without Flush and remains in effect after Close/reopen. Standalone
-native HNSW, HNSW-RaBitQ, IVF, and Vamana artifacts are independent of
+native HNSW, HNSW-RaBitQ, IVF, Vamana, and DiskANN artifacts are independent of
 collection ownership.

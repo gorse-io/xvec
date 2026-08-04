@@ -236,7 +236,7 @@ func supportedCreateIndex(nextField FieldSchema, index IndexParams, path string)
 			return notSupported(op, path, fmt.Sprintf("INVERT is not implemented for %s field %q", nextField.DataType, nextField.Name))
 		}
 		return nil
-	case IndexTypeFlat, IndexTypeHNSW, IndexTypeHNSWRaBitQ, IndexTypeIVF, IndexTypeVamana:
+	case IndexTypeFlat, IndexTypeHNSW, IndexTypeHNSWRaBitQ, IndexTypeIVF, IndexTypeDiskANN, IndexTypeVamana:
 		if !nextField.DataType.IsVector() {
 			return invalidArgument(op, "scalar field %q cannot use %s", nextField.Name, index.IndexType())
 		}
@@ -286,7 +286,7 @@ func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field Fiel
 			return err
 		}
 		return index.Seal()
-	case IndexTypeFlat, IndexTypeHNSW, IndexTypeHNSWRaBitQ, IndexTypeIVF, IndexTypeVamana:
+	case IndexTypeFlat, IndexTypeHNSW, IndexTypeHNSWRaBitQ, IndexTypeIVF, IndexTypeDiskANN, IndexTypeVamana:
 		spec, err := resolveCollectionVectorIndex(field, "create index", c.path)
 		if err != nil {
 			return err
@@ -301,6 +301,8 @@ func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field Fiel
 				_, err = buildCollectionDenseHNSWRaBitQ(ctx, field, documents, spec, workers)
 			case IndexTypeIVF:
 				_, err = buildCollectionDenseIVF(ctx, c.schema.Name, field, documents, spec, workers)
+			case IndexTypeDiskANN:
+				_, err = buildCollectionDenseDiskANN(ctx, field, documents, spec, workers)
 			case IndexTypeVamana:
 				_, err = buildCollectionDenseVamana(ctx, c.schema.Name, field, documents, spec)
 			}

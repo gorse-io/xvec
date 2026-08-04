@@ -1,7 +1,7 @@
 # DiskANN storage and I/O
 
-This v0.4 unit provides the pure-Go random-access storage foundation for the
-later DiskANN builder and searcher. It follows the sector behavior of zvec
+This v0.4 component provides the pure-Go random-access storage foundation for
+the DiskANN builder and searcher. It follows the sector behavior of zvec
 commit 58375ff but uses a new native Go format; it does not read C++ DiskANN
 segments.
 
@@ -54,9 +54,9 @@ available as snapshots. The cache is intentionally independent of the later
 BFS cache-selection policy, so the searcher can preload entry-point regions
 or rely on demand caching without changing storage semantics.
 
-The public Collection DiskANN path remains NotSupported in this unit. The next
-unit will connect graph construction, PQ codes, search, exact refinement, and
-complete index persistence to this storage foundation.
+The complete index container embeds this node artifact on a 4 KiB boundary.
+See [DiskANN index](diskann.md) for graph construction, PQ traversal, exact
+candidate scoring, persistence, and Collection integration.
 
 ## Verification
 

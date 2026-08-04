@@ -28,6 +28,11 @@ subject to compatible migration work throughout the 0.x series.
   packed and multi-sector records, whole-section and per-node CRC32C,
   portable parallel ReaderAt batching, exact short-read handling, request
   deduplication, and a concurrency-safe bounded LRU node cache.
+- Added native DiskANN graph construction, PQ-ordered batched traversal,
+  metric-specific cosine and MIPS-L2 PQ preparation, exact expanded-node
+  scoring and original-vector refinement, cache preloading, atomic complete
+  index persistence, corruption detection, and Collection query/DDL/Optimize
+  integration on every supported Go platform.
 
 ## v0.3.0 - 2026-08-04
 

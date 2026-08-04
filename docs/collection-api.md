@@ -1,6 +1,6 @@
 # Collection API
 
-The root `zvec` package exposes the v0.3 native collection milestone. It is a
+The root `zvec` package exposes the current native collection API. It is a
 pure-Go embedded database: every I/O, write, and query method accepts a
 `context.Context`; schema, options, path, and in-memory statistics getters do
 not.
@@ -35,8 +35,8 @@ fields select all scalar fields, an empty non-nil slice selects none, and
 `IncludeVectors` controls all vector fields.
 
 `Query` accepts either an explicit dense or sparse vector matching the target
-field. Flat search is exact. Dense HNSW, HNSW-RaBitQ, IVF, and Vamana plus
-sparse inner-product HNSW use their matching native Go runtimes; an explicit
+field. Flat search is exact. Dense HNSW, HNSW-RaBitQ, IVF, Vamana, and DiskANN
+plus sparse inner-product HNSW use their matching native Go runtimes; an explicit
 `Linear` query scans the matching representation for truth comparisons. Query
 parameters expose EF or NProbe, metric-aware radius, SQL scalar filters,
 projection, and bounded graph cache warming. Dense FP16, INT8, INT4, and RaBitQ
@@ -50,22 +50,23 @@ quantized or refined group-by remains unsupported. The library never silently
 substitutes a different algorithm.
 
 `CreateIndex` atomically publishes implemented Flat, HNSW, HNSW-RaBitQ, IVF,
-Vamana, and INVERT parameters after full-snapshot validation. `DropIndex` atomically clears scalar
-metadata or restores vector fields to Flat/IP. `AddColumn` atomically installs
+Vamana, DiskANN, and INVERT parameters after full-snapshot validation.
+`DropIndex` atomically clears scalar metadata or restores vector fields to
+Flat/IP. `AddColumn` atomically installs
 supported numeric fields and backfills the live snapshot. `AlterColumn`
 atomically renames or replaces basic numeric fields, and `DropColumn`
 atomically removes them. `Optimize` atomically rewrites the current live
 snapshot, compacts contiguous document-ID runs up to the schema segment limit,
 reclaims deleted and superseded versions, and prunes obsolete native segment,
 WAL, and snapshot files. It accepts the implemented Flat/HNSW/HNSW-RaBitQ/IVF,
-Vamana, and scalar INVERT definitions, including quantized and rotated vector
-definitions.
+Vamana/DiskANN, and scalar INVERT definitions. Scalar quantization and rotation
+apply to the supported in-memory indexes; DiskANN uses its separate internal PQ.
 
 Collection ANN indexes are currently rebuilt from the durable live snapshot
 for each query and DDL validation. The standalone checksummed IVF, HNSW,
-HNSW-RaBitQ, and Vamana formats are not yet collection-segment artifacts. This
-preserves deterministic reopen behavior but makes runtime index construction
-part of current query latency.
+HNSW-RaBitQ, Vamana, and DiskANN formats are not yet collection-segment
+artifacts. This preserves deterministic reopen behavior but makes runtime
+index construction part of current query latency.
 
 WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
 publishes an immutable segment and rotates the WAL. `Open` can acquire either

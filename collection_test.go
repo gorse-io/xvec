@@ -216,13 +216,15 @@ func TestCollectionDenseSparseRadiusProjectionAndGroupBy(t *testing.T) {
 	}
 }
 
-func TestCollectionUnsupportedIndexesReturnNotSupported(t *testing.T) {
+func TestCollectionUnsupportedIndexConfigurationsReturnNotSupported(t *testing.T) {
 	ctx := context.Background()
+	diskANN := NewDiskANNIndexParams(MetricTypeIP)
+	diskANN.Quantize = QuantizeTypeFP16
 	tests := []struct {
 		name  string
 		index IndexParams
 	}{
-		{name: "DiskANN", index: NewDiskANNIndexParams(MetricTypeIP)},
+		{name: "DiskANN scalar quantization", index: diskANN},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {

@@ -166,6 +166,9 @@ func (f FieldSchema) validateVectorField() error {
 			return invalidArgument("validate field schema", "HNSW_RABITQ supports only L2, IP, and COSINE")
 		}
 	}
+	if indexType == IndexTypeDiskANN && f.DataType != DataTypeVectorFP32 && f.DataType != DataTypeVectorFP16 {
+		return invalidArgument("validate field schema", "DiskANN requires VECTOR_FP32 or VECTOR_FP16")
+	}
 
 	if !quantizationSupported(f.DataType, vectorConfig.quantize) {
 		return invalidArgument(
@@ -186,8 +189,13 @@ func (f FieldSchema) validateVectorField() error {
 		f.DataType != DataTypeVectorFP16 && f.DataType != DataTypeVectorFP32 {
 		return invalidArgument("validate field schema", "COSINE requires VECTOR_FP16 or VECTOR_FP32")
 	}
-	if chunks, ok := diskANNPQChunks(f.Index); ok && chunks > int(f.Dimension) {
-		return invalidArgument("validate field schema", "DiskANN PQChunks cannot exceed vector dimension")
+	if chunks, ok := diskANNPQChunks(f.Index); ok {
+		if chunks > int(f.Dimension) {
+			return invalidArgument("validate field schema", "DiskANN PQChunks cannot exceed vector dimension")
+		}
+		if chunks == 0 && f.Dimension < 2 {
+			return invalidArgument("validate field schema", "DiskANN automatic PQChunks requires dimension at least 2")
+		}
 	}
 	return nil
 }

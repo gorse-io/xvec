@@ -18,8 +18,8 @@ v0.3 milestone includes versioned storage, WAL recovery, CRUD, SQL filtering,
 atomic DDL/compaction, FP16/INT8/INT4 scalar quantization, deterministic
 rotation and refinement, k-means, IVF, and dense/sparse HNSW. Collection
 queries route those implemented indexes with explicit ANN controls. v0.4 work
-adds HNSW-RaBitQ execution; disk indexes, full-text search, and hybrid retrieval
-remain later milestones.
+adds HNSW-RaBitQ, Vamana, product quantization, and native DiskANN execution;
+full-text search and hybrid retrieval remain later milestones.
 
 ## Module
 
@@ -87,8 +87,8 @@ behavior plus EF, filtering, radius, and deterministic approximate results. A
 checksummed native sparse format preserves CSR data and topology across reopen.
 Built and reopened sparse graphs accept atomic incremental additions while
 concurrent search and persistence retain a complete CSR/topology generation.
-Collection queries now route Flat, dense/sparse HNSW, dense IVF, and Vamana
-parameters without fallback. Dense FP16/INT8/INT4 scalar-code scoring,
+Collection queries now route Flat, dense/sparse HNSW, dense IVF, Vamana, and
+DiskANN parameters without fallback. Dense FP16/INT8/INT4 scalar-code scoring,
 deterministic optional rotation, EF/NProbe, metric-aware radius, scalar
 filters, bounded graph cache warming, Linear execution, and exact
 original-vector refinement are connected end to end. Until segment-native ANN
@@ -120,17 +120,19 @@ The native PQ component trains 8-bit, 256-entry codebooks over contiguous
 dimension chunks, encodes one byte per chunk, reconstructs vectors, and builds
 chunk-major L2 or inner-product query tables for constant-time code lookup.
 Its immutable state uses the baseline full-pivot layout and can be cloned or
-restored for the forthcoming DiskANN format. Auto chunking, 12 training
-iterations, the 200,000-vector training cap, deterministic prefix sampling,
+restored by the DiskANN format. Auto chunking, 12 training iterations, the
+200,000-vector training cap, deterministic prefix sampling,
 batch encoding, and batch lookup are covered without CGO.
 
-DiskANN's native storage foundation now defines versioned 4 KiB headers and
-sector-aligned node records, including packed small nodes and multi-sector
-large nodes. Whole node sections and individual records carry CRC32C checks;
-portable parallel ReaderAt batches handle partial and short reads without
-platform-specific async APIs, while a bounded concurrent LRU avoids repeated
-node I/O. Graph construction and query execution remain explicit
-NotSupported paths until the next DiskANN unit connects this storage layer.
+Native DiskANN now builds a Vamana-derived bounded graph, trains 8-bit PQ
+codes for frontier ordering, and reads original vectors and adjacency from
+versioned 4 KiB sector records. Portable parallel ReaderAt batches, a bounded
+concurrent LRU, exact expanded-node scoring, filters, radius, Linear truth
+queries, original-vector refinement, cache preloading, and a complete atomic
+single-file format work without CGO on Linux, macOS, and Windows. Collection
+routes DiskANN query, CreateIndex, Optimize, Stats, and reopen behavior from
+its durable live snapshot; public scalar quantization on DiskANN remains an
+explicit NotSupported combination because internal PQ has separate semantics.
 
 The current library version is `v0.3.0`; its exact support boundary is recorded
 in the [v0.3 capability matrix](docs/v0.3.md) and [changelog](CHANGELOG.md).
@@ -219,6 +221,7 @@ are exercised by `go test ./...`.
 - [Vamana index](docs/vamana.md)
 - [Product quantization](docs/pq.md)
 - [DiskANN storage and I/O](docs/diskann-storage.md)
+- [DiskANN index](docs/diskann.md)
 
 ## License
 
