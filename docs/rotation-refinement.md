@@ -2,8 +2,8 @@
 
 The second v0.3 implementation unit adds two independent `internal/core`
 building blocks used by quantized and approximate indexes: a reversible random
-rotation preprocessor and an exact original-vector candidate refiner. They do
-not enable an ANN collection index by themselves.
+rotation preprocessor and an exact original-vector candidate refiner. The ANN
+integration unit now uses both for collection Flat, IVF, and HNSW queries.
 
 ## FHT/Kac rotation
 

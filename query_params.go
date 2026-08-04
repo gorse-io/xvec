@@ -81,8 +81,8 @@ func (p HNSWQueryParams) Validate() error {
 	if err := p.QueryOptions.validate("validate HNSW query params"); err != nil {
 		return err
 	}
-	if p.EF <= 0 {
-		return invalidArgument("validate HNSW query params", "EF must be positive")
+	if p.EF <= 0 || p.EF > MaxGraphEFSearch {
+		return invalidArgument("validate HNSW query params", "EF must be in [1, %d]", MaxGraphEFSearch)
 	}
 	return nil
 }
@@ -103,8 +103,8 @@ func (p HNSWRaBitQQueryParams) Validate() error {
 	if err := p.QueryOptions.validate("validate HNSW RaBitQ query params"); err != nil {
 		return err
 	}
-	if p.EF <= 0 {
-		return invalidArgument("validate HNSW RaBitQ query params", "EF must be positive")
+	if p.EF <= 0 || p.EF > MaxGraphEFSearch {
+		return invalidArgument("validate HNSW RaBitQ query params", "EF must be in [1, %d]", MaxGraphEFSearch)
 	}
 	return nil
 }
@@ -176,8 +176,8 @@ func (p VamanaQueryParams) Validate() error {
 	if err := p.QueryOptions.validate("validate Vamana query params"); err != nil {
 		return err
 	}
-	if p.EFSearch <= 0 {
-		return invalidArgument("validate Vamana query params", "EFSearch must be positive")
+	if p.EFSearch <= 0 || p.EFSearch > MaxGraphEFSearch {
+		return invalidArgument("validate Vamana query params", "EFSearch must be in [1, %d]", MaxGraphEFSearch)
 	}
 	return nil
 }

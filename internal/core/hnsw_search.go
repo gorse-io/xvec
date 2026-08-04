@@ -27,6 +27,8 @@ const (
 	DefaultHNSWEFSearch            = 300
 	MaxHNSWEFSearch                = 2048
 	DefaultHNSWBruteForceThreshold = 1000
+	DefaultHNSWPrefetchOffset      = 8
+	MaxHNSWPrefetchLines           = 256
 )
 
 var ErrInvalidHNSWEF = errors.New("core: HNSW EF must be in [1, 2048]")
@@ -35,7 +37,9 @@ var ErrInvalidHNSWEF = errors.New("core: HNSW EF must be in [1, 2048]")
 // exploration width.
 type HNSWSearchOptions struct {
 	SearchOptions
-	EF int
+	EF             int
+	PrefetchOffset uint32
+	PrefetchLines  uint32
 }
 
 // Validate checks top-k, radius, and graph exploration invariants.
@@ -53,16 +57,18 @@ func (o HNSWSearchOptions) Validate() error {
 // consistency with the common DenseSearcher contract.
 func (i *HNSWIndex) Search(ctx context.Context, query []float32, k int) ([]Result, error) {
 	return i.searchHNSW(ctx, query, HNSWSearchOptions{
-		SearchOptions: SearchOptions{TopK: k},
-		EF:            DefaultHNSWEFSearch,
+		SearchOptions:  SearchOptions{TopK: k},
+		EF:             DefaultHNSWEFSearch,
+		PrefetchOffset: DefaultHNSWPrefetchOffset,
 	}, false)
 }
 
 // SearchWithOptions applies common filter and radius controls with default EF.
 func (i *HNSWIndex) SearchWithOptions(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {
 	return i.searchHNSW(ctx, query, HNSWSearchOptions{
-		SearchOptions: options,
-		EF:            DefaultHNSWEFSearch,
+		SearchOptions:  options,
+		EF:             DefaultHNSWEFSearch,
+		PrefetchOffset: DefaultHNSWPrefetchOffset,
 	}, true)
 }
 
@@ -126,7 +132,7 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 		}
 	}
 	capacity := max(options.EF, options.TopK)
-	candidates, err := i.searchHNSWBase(ctx, query, entry, capacity, options.SearchOptions)
+	candidates, err := i.searchHNSWBase(ctx, query, entry, capacity, options)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +146,7 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 	return results, nil
 }
 
-func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, entry, capacity int, options SearchOptions) ([]hnswScoredNode, error) {
+func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, entry, capacity int, options HNSWSearchOptions) ([]hnswScoredNode, error) {
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(i.options.Metric, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.hnswResultNodeBetter(right, left) }
 	frontier := ailego.NewHeap(better)
@@ -154,7 +160,7 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, entry, 
 	start := hnswScoredNode{position: entry, score: score}
 	visited[entry] = true
 	frontier.Push(start)
-	if i.acceptHNSWResult(start, options) {
+	if i.acceptHNSWResult(start, options.SearchOptions) {
 		accepted.Push(start)
 	}
 
@@ -167,7 +173,9 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, entry, 
 		if accepted.Len() >= capacity && hasWorst && i.options.Metric.Better(worst.score, current.score) {
 			break
 		}
-		for _, neighbor := range i.neighbors[current.position][0] {
+		neighbors := i.neighbors[current.position][0]
+		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
+		for _, neighbor := range neighbors {
 			if visited[neighbor] {
 				continue
 			}
@@ -180,7 +188,7 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, entry, 
 			worst, hasWorst = accepted.Peek()
 			if accepted.Len() < capacity || !hasWorst || !i.options.Metric.Better(worst.score, node.score) {
 				frontier.Push(node)
-				if i.acceptHNSWResult(node, options) {
+				if i.acceptHNSWResult(node, options.SearchOptions) {
 					accepted.Push(node)
 					if accepted.Len() > capacity {
 						_, _ = accepted.Pop()

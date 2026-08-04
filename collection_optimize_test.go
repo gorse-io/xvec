@@ -288,8 +288,7 @@ func TestOptimizeValidationUnsupportedIndexesAndRollback(t *testing.T) {
 		field FieldSchema
 		value any
 	}{
-		{name: "HNSW", field: FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: NewHNSWIndexParams(MetricTypeIP)}, value: VectorFP32{1, 0}},
-		{name: "quantized Flat", field: quantizedOptimizeField(), value: VectorFP32{1, 0}},
+		{name: "Vamana", field: FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: NewVamanaIndexParams(MetricTypeIP)}, value: VectorFP32{1, 0}},
 		{name: "FTS", field: FieldSchema{Name: "text", DataType: DataTypeString, Index: NewFTSIndexParams()}, value: "alpha"},
 		{name: "binary INVERT", field: FieldSchema{Name: "data", DataType: DataTypeBinary, Index: NewInvertIndexParams()}, value: Binary{1, 2}},
 	}
@@ -314,12 +313,6 @@ func TestOptimizeValidationUnsupportedIndexesAndRollback(t *testing.T) {
 			}
 		})
 	}
-}
-
-func quantizedOptimizeField() FieldSchema {
-	params := NewFlatIndexParams(MetricTypeIP)
-	params.Quantize = QuantizeTypeFP16
-	return FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: params}
 }
 
 func assertOptimizeDocumentIDs(t *testing.T, ctx context.Context, collection *Collection, want map[string]uint64) {

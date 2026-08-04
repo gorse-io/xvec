@@ -26,6 +26,8 @@ const (
 	DefaultHNSWM              = 50
 	DefaultHNSWEFConstruction = 500
 	DefaultHNSWEFSearch       = 300
+	MaxHNSWM                  = 32767
+	MaxGraphEFSearch          = 2048
 	DefaultPrefetchOffset     = 8
 	DefaultPrefetchLines      = 0
 
@@ -127,8 +129,8 @@ func (p HNSWIndexParams) Validate() error {
 	if err := validateVectorIndexParams(p.IndexType(), p.vectorConfig()); err != nil {
 		return err
 	}
-	if p.M <= 0 {
-		return invalidArgument("validate HNSW index params", "M must be positive")
+	if p.M <= 0 || p.M > MaxHNSWM {
+		return invalidArgument("validate HNSW index params", "M must be in [1, %d]", MaxHNSWM)
 	}
 	if p.EFConstruction < p.M {
 		return invalidArgument("validate HNSW index params", "EFConstruction must be at least M")
@@ -168,8 +170,8 @@ func (p HNSWRaBitQIndexParams) Validate() error {
 	); err != nil {
 		return err
 	}
-	if p.M <= 0 || p.EFConstruction < p.M {
-		return invalidArgument("validate HNSW RaBitQ index params", "M must be positive and EFConstruction must be at least M")
+	if p.M <= 0 || p.M > MaxHNSWM || p.EFConstruction < p.M {
+		return invalidArgument("validate HNSW RaBitQ index params", "M must be in [1, %d] and EFConstruction must be at least M", MaxHNSWM)
 	}
 	if p.TotalBits <= 0 {
 		return invalidArgument("validate HNSW RaBitQ index params", "TotalBits must be positive")

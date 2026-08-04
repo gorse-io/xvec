@@ -170,8 +170,6 @@ func TestCreateIndexValidationAndRollback(t *testing.T) {
 	}
 	var typedNil *InvertIndexParams
 	invalidFlat := NewFlatIndexParams(MetricTypeUndefined)
-	quantizedFlat := NewFlatIndexParams(MetricTypeIP)
-	quantizedFlat.Quantize = QuantizeTypeFP16
 	tests := []struct {
 		name    string
 		column  string
@@ -187,8 +185,7 @@ func TestCreateIndexValidationAndRollback(t *testing.T) {
 		{"invert-vector", "embedding", NewInvertIndexParams(), CreateIndexOptions{}, ErrInvalidArgument},
 		{"flat-scalar", "text", NewFlatIndexParams(MetricTypeIP), CreateIndexOptions{}, ErrInvalidArgument},
 		{"fts-unimplemented", "text", NewFTSIndexParams(), CreateIndexOptions{}, ErrNotSupported},
-		{"hnsw-unimplemented", "embedding", NewHNSWIndexParams(MetricTypeIP), CreateIndexOptions{}, ErrNotSupported},
-		{"quantized-flat-unimplemented", "embedding", quantizedFlat, CreateIndexOptions{}, ErrNotSupported},
+		{"vamana-unimplemented", "embedding", NewVamanaIndexParams(MetricTypeIP), CreateIndexOptions{}, ErrNotSupported},
 		{"binary-invert-unimplemented", "binary", NewInvertIndexParams(), CreateIndexOptions{}, ErrNotSupported},
 		{"scalar-index-conflict", "already_fts", NewInvertIndexParams(), CreateIndexOptions{}, ErrNotSupported},
 		{"invalid-index-params", "embedding", invalidFlat, CreateIndexOptions{}, ErrInvalidArgument},

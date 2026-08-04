@@ -40,6 +40,9 @@ func TestIndexParamsDefaultsValidate(t *testing.T) {
 func TestIndexParamsRejectInvalidValues(t *testing.T) {
 	hnsw := NewHNSWIndexParams(MetricTypeL2)
 	hnsw.EFConstruction = hnsw.M - 1
+	hnswLarge := NewHNSWIndexParams(MetricTypeL2)
+	hnswLarge.M = MaxHNSWM + 1
+	hnswLarge.EFConstruction = hnswLarge.M
 	ivf := NewIVFIndexParams(MetricTypeL2)
 	ivf.NList = 0
 	diskANN := NewDiskANNIndexParams(MetricTypeL2)
@@ -52,7 +55,7 @@ func TestIndexParamsRejectInvalidValues(t *testing.T) {
 	rabitq.Quantize = QuantizeTypeRaBitQ
 
 	params := []IndexParams{
-		FlatIndexParams{}, hnsw, ivf, diskANN, vamana, rotated, rabitq,
+		FlatIndexParams{}, hnsw, hnswLarge, ivf, diskANN, vamana, rotated, rabitq,
 		HNSWRaBitQIndexParams{Metric: MetricTypeL2, TotalBits: 7, NumClusters: 16, M: 10, EFConstruction: 9},
 	}
 	for _, params := range params {

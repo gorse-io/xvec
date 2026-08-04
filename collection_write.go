@@ -130,6 +130,9 @@ func (c *Collection) prepareWriteDocumentLocked(ctx context.Context, operator Op
 		if err := clone.Validate(c.schema); err != nil {
 			return Document{}, err
 		}
+		if err := validateCollectionVectorRepresentations(ctx, c.schema, clone); err != nil {
+			return Document{}, err
+		}
 		return clone, nil
 	case OperatorUpsert, OperatorUpdate:
 		if err := validateDocumentAgainstSchema(clone, c.schema, true); err != nil {
@@ -146,6 +149,9 @@ func (c *Collection) prepareWriteDocumentLocked(ctx context.Context, operator Op
 			if err := clone.Validate(c.schema); err != nil {
 				return Document{}, err
 			}
+			if err := validateCollectionVectorRepresentations(ctx, c.schema, clone); err != nil {
+				return Document{}, err
+			}
 			return clone, nil
 		}
 		for name, value := range clone.Fields {
@@ -154,6 +160,9 @@ func (c *Collection) prepareWriteDocumentLocked(ctx context.Context, operator Op
 		current.Score = 0
 		current.DocID = 0
 		if err := current.Validate(c.schema); err != nil {
+			return Document{}, err
+		}
+		if err := validateCollectionVectorRepresentations(ctx, c.schema, current); err != nil {
 			return Document{}, err
 		}
 		return current, nil

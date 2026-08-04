@@ -73,9 +73,7 @@ refinement, and deterministic k-means training for the forthcoming v0.3
 indexes. Deterministic unquantized IVF construction, list assignment,
 metric-aware NProbe search, a versioned checksummed native IVF artifact with
 atomic save/reopen, and concurrency-safe incremental assignment are also
-present internally. IVF remains intentionally unexposed as a collection
-execution path until query controls, filtering, refinement, and lifecycle
-orchestration are integrated without fallback.
+present internally.
 Deterministic dense HNSW level assignment, bounded construction search,
 diversity pruning, reverse-edge maintenance, and topology inspection are now
 present internally. Metric-aware graph search adds the baseline exact
@@ -90,6 +88,13 @@ behavior plus EF, filtering, radius, and deterministic approximate results. A
 checksummed native sparse format preserves CSR data and topology across reopen.
 Built and reopened sparse graphs accept atomic incremental additions while
 concurrent search and persistence retain a complete CSR/topology generation.
+Collection queries now route Flat, dense/sparse HNSW, and dense IVF parameters
+without fallback. Dense FP16/INT8/INT4 scalar-code scoring, deterministic
+optional rotation, EF/NProbe, metric-aware radius, scalar filters, bounded
+HNSW cache warming, Linear execution, and exact original-vector refinement are
+connected end to end. Until segment-native ANN artifacts are integrated, the
+collection rebuilds these runtime indexes from its durable live snapshot for
+each query and DDL validation.
 
 The current library version is `v0.2.0`; its exact support boundary is recorded
 in the [v0.2 capability matrix](docs/v0.2.md) and [changelog](CHANGELOG.md).
@@ -171,6 +176,7 @@ are exercised by `go test ./...`.
 - [Sparse HNSW search](docs/hnsw-sparse-search.md)
 - [Sparse HNSW persistence and reopen](docs/hnsw-sparse-persistence.md)
 - [Sparse HNSW incremental writes](docs/hnsw-sparse-incremental.md)
+- [ANN collection query integration](docs/ann-query-integration.md)
 
 ## License
 

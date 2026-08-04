@@ -2,8 +2,7 @@
 
 This independently gated v0.3 unit makes built and reopened sparse HNSW
 indexes implement the common `SparseStreamer` contract. Collection routing is
-still a separate integration unit, so public collection requests do not yet
-select sparse HNSW.
+implemented by the following integration unit.
 
 ## Input and deterministic topology
 

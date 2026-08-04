@@ -66,6 +66,51 @@ func ExampleCollection_Query() {
 	// go: The Go Programming Language (1.0)
 }
 
+func ExampleCollection_Query_ann() {
+	ctx := context.Background()
+	directory, err := os.MkdirTemp("", "zvec-ann-example-")
+	if err != nil {
+		panic(err)
+	}
+	path := filepath.Join(directory, "items")
+	index := zvec.NewHNSWIndexParams(zvec.MetricTypeL2)
+	index.M = 8
+	index.EFConstruction = 32
+	index.Quantize = zvec.QuantizeTypeInt8
+	index.Quantizer.EnableRotate = true
+	schema := zvec.NewCollectionSchema("items", zvec.FieldSchema{
+		Name: "embedding", DataType: zvec.DataTypeVectorFP32, Dimension: 4, Index: index,
+	})
+	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	if err != nil {
+		panic(err)
+	}
+	_, err = collection.Insert(ctx, []zvec.Document{
+		{PrimaryKey: "nearest", Fields: map[string]any{"embedding": zvec.VectorFP32{1, 2, 3, 4}}},
+		{PrimaryKey: "farther", Fields: map[string]any{"embedding": zvec.VectorFP32{4, 3, 2, 1}}},
+	})
+	if err != nil {
+		panic(err)
+	}
+	params := zvec.NewHNSWQueryParams()
+	params.EF = 32
+	params.UseRefiner = true
+	results, err := collection.Query(ctx, zvec.VectorQuery{
+		Field: "embedding", DenseVector: zvec.VectorFP32{1, 2, 3, 4}, TopK: 1, Params: params,
+	})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("%s %.1f\n", results[0].PrimaryKey, results[0].Score)
+	if err := collection.Destroy(ctx); err != nil {
+		panic(err)
+	}
+	_ = os.Remove(directory)
+
+	// Output:
+	// nearest 0.0
+}
+
 func ExampleCollection_DeleteByFilter() {
 	ctx := context.Background()
 	directory, err := os.MkdirTemp("", "zvec-delete-example-")

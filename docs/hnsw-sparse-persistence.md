@@ -2,8 +2,7 @@
 
 This independently gated v0.3 unit gives sparse HNSW a native Go disk format.
 It is intentionally incompatible with the C++ collection layout. Incremental
-writes are implemented by the following unit; collection routing remains
-separate.
+writes and collection query routing are implemented by following units.
 
 ## File contract
 

@@ -222,8 +222,8 @@ func TestCollectionUnsupportedIndexesReturnNotSupported(t *testing.T) {
 		name  string
 		index IndexParams
 	}{
-		{name: "HNSW", index: NewHNSWIndexParams(MetricTypeIP)},
-		{name: "quantized Flat", index: FlatIndexParams{Metric: MetricTypeIP, Quantize: QuantizeTypeFP16}},
+		{name: "Vamana", index: NewVamanaIndexParams(MetricTypeIP)},
+		{name: "DiskANN", index: NewDiskANNIndexParams(MetricTypeIP)},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {

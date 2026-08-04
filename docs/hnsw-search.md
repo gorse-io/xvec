@@ -2,9 +2,8 @@
 
 This v0.3 unit makes the deterministic dense HNSW graph searchable through the
 common `DenseSearcher` and `DenseQuerySearcher` contracts. Persistence/reopen
-and incremental writes are now implemented by subsequent units; collection
-orchestration remains separate, so public HNSW collection queries are still
-explicitly unsupported.
+and incremental writes are now implemented by subsequent units, as is
+collection orchestration.
 
 ## Query controls
 
@@ -15,8 +14,7 @@ execution raises the retained candidate capacity to TopK rather than silently
 underfilling the request.
 
 `Search` and `SearchWithOptions` use default EF. `SearchHNSW` accepts the
-explicit value that later collection orchestration will obtain from
-`HNSWQueryParams`.
+explicit value that collection orchestration obtains from `HNSWQueryParams`.
 
 ## Execution
 

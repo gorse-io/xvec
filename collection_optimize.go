@@ -23,7 +23,7 @@ import (
 
 // Optimize atomically compacts the current live snapshot into maximally sized
 // contiguous-ID segments, reclaims superseded/deleted versions, rebuilds the
-// implemented Flat/INVERT runtime state, and removes obsolete storage files.
+// implemented vector/INVERT runtime state, and removes obsolete storage files.
 func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) error {
 	const op = "optimize collection"
 	if c == nil {
@@ -79,11 +79,11 @@ func optimizableField(field FieldSchema, path string) error {
 		return nil
 	}
 	switch index.IndexType() {
-	case IndexTypeFlat:
+	case IndexTypeFlat, IndexTypeHNSW, IndexTypeIVF:
 		if !field.DataType.IsVector() {
-			return invalidArgument("optimize collection", "scalar field %q cannot use FLAT", field.Name)
+			return invalidArgument("optimize collection", "scalar field %q cannot use %s", field.Name, index.IndexType())
 		}
-		_, err := requireFlatField(field, "optimize collection", path)
+		_, err := resolveCollectionVectorIndex(field, "optimize collection", path)
 		return err
 	case IndexTypeInvert:
 		if field.DataType.IsVector() {

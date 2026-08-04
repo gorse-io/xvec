@@ -56,8 +56,9 @@ type GroupResult struct {
 	Documents []Document
 }
 
-// Query executes exact Flat search over the current live document versions.
-// Filter is parsed and schema-bound before its candidate mask is applied.
+// Query executes the field's exact or ANN search over the current live
+// document versions. Filter is parsed and schema-bound before its candidate
+// mask is applied.
 func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, error) {
 	const op = "query"
 	if c == nil {
@@ -81,11 +82,11 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err := query.Projection.Validate(c.schema); err != nil {
 		return nil, err
 	}
-	flatIndex, err := requireFlatField(field, op, c.path)
+	vectorIndex, err := resolveCollectionVectorIndex(field, op, c.path)
 	if err != nil {
 		return nil, err
 	}
-	params, err := flatQueryParams(query.Params)
+	params, err := collectionQueryParams(query.Params, vectorIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -101,10 +102,6 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err != nil {
 		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}
-	metric, err := toCoreMetric(flatIndex.Metric)
-	if err != nil {
-		return nil, err
-	}
 	var results []core.Result
 	if field.DataType.IsDenseVector() {
 		if query.SparseVector != nil {
@@ -114,13 +111,9 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 		if err != nil {
 			return nil, err
 		}
-		index, err := buildDenseFlatIndex(ctx, field, metric, documents)
-		if err != nil {
-			return nil, wrapCollectionError(op, c.path, err)
-		}
-		results, err = index.SearchWithOptions(ctx, queryVector, core.SearchOptions{
-			TopK: query.TopK, Radius: params.Radius, Filter: candidateFilter,
-		})
+		results, err = searchCollectionDense(
+			ctx, c.schema.Name, field, documents, queryVector, query.TopK, candidateFilter, vectorIndex, params,
+		)
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}
@@ -132,13 +125,32 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 		if err != nil {
 			return nil, err
 		}
-		index, err := buildSparseFlatIndex(ctx, field, documents)
+		if err := validateSparseRefiner(params, field); err != nil {
+			return nil, err
+		}
+		if vectorIndex.quantize == QuantizeTypeFP16 {
+			queryVector, err = sparseFP16Vector(queryVector)
+			if err != nil {
+				return nil, wrapCollectionError(op, c.path, err)
+			}
+		}
+		index, err := buildCollectionSparseIndex(ctx, field, documents, vectorIndex, params.options.Linear)
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}
-		results, err = index.SearchSparseWithOptions(ctx, queryVector, core.SearchOptions{
-			TopK: query.TopK, Radius: params.Radius, Filter: candidateFilter,
-		})
+		searchOptions := core.SearchOptions{TopK: query.TopK, Radius: params.options.Radius, Filter: candidateFilter}
+		if vectorIndex.indexType == IndexTypeHNSW && !params.options.Linear {
+			hnsw, ok := index.(*core.SparseHNSWIndex)
+			if !ok {
+				return nil, &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "sparse HNSW builder returned an incompatible index"}
+			}
+			results, err = hnsw.SearchSparseHNSW(ctx, queryVector, core.HNSWSearchOptions{
+				SearchOptions: searchOptions, EF: params.ef,
+				PrefetchOffset: params.prefetchOffset, PrefetchLines: params.prefetchLines,
+			})
+		} else {
+			results, err = index.SearchSparseWithOptions(ctx, queryVector, searchOptions)
+		}
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}
@@ -146,8 +158,8 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	return c.materializeResults(documents, results, query.Projection)
 }
 
-// GroupByQuery executes exact Flat group-by search. Groups are selected only
-// after every live candidate has passed scalar and radius filtering.
+// GroupByQuery executes exact supported group-by search. Groups are selected
+// only after every live candidate has passed scalar and radius filtering.
 func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery) ([]GroupResult, error) {
 	const op = "group-by query"
 	if c == nil {
@@ -178,13 +190,22 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	if err := query.Projection.Validate(c.schema); err != nil {
 		return nil, err
 	}
-	flatIndex, err := requireFlatField(field, op, c.path)
+	vectorIndex, err := resolveCollectionVectorIndex(field, op, c.path)
 	if err != nil {
 		return nil, err
 	}
-	params, err := flatQueryParams(query.Params)
+	params, err := collectionQueryParams(query.Params, vectorIndex)
 	if err != nil {
 		return nil, err
+	}
+	if params.options.UseRefiner {
+		return nil, notSupported(op, c.path, "group-by with original-vector refinement is not implemented")
+	}
+	if vectorIndex.indexType != IndexTypeFlat && !params.options.Linear {
+		return nil, notSupported(op, c.path, fmt.Sprintf("group-by with %s requires Linear until ANN group traversal is implemented", vectorIndex.indexType))
+	}
+	if vectorIndex.quantize != QuantizeTypeUndefined {
+		return nil, notSupported(op, c.path, "group-by over scalar-quantized vectors is not implemented")
 	}
 	filterPlan, err := buildFilterPlan(query.Filter, c.schema)
 	if err != nil {
@@ -212,12 +233,9 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	}
 	options := core.GroupByOptions{
 		GroupCount: query.GroupCount, TopKPerGroup: query.TopKPerGroup,
-		Radius: params.Radius, Filter: candidateFilter, Resolve: resolve,
+		Radius: params.options.Radius, Filter: candidateFilter, Resolve: resolve,
 	}
-	metric, err := toCoreMetric(flatIndex.Metric)
-	if err != nil {
-		return nil, err
-	}
+	metric := vectorIndex.metric
 	var groups []core.GroupResult
 	if field.DataType.IsDenseVector() {
 		if query.SparseVector != nil {
@@ -420,45 +438,6 @@ func (c *Collection) materializeGroups(documents []Document, groups []core.Group
 	return output, nil
 }
 
-func requireFlatField(field FieldSchema, op, path string) (FlatIndexParams, error) {
-	index := field.EffectiveIndex()
-	var flat FlatIndexParams
-	switch value := index.(type) {
-	case FlatIndexParams:
-		flat = value
-	case *FlatIndexParams:
-		if value == nil {
-			return FlatIndexParams{}, invalidArgument(op, "field %q has nil Flat index parameters", field.Name)
-		}
-		flat = *value
-	default:
-		return FlatIndexParams{}, notSupported(op, path, fmt.Sprintf("index %s on field %q is not implemented", index.IndexType(), field.Name))
-	}
-	if flat.Quantize != QuantizeTypeUndefined || flat.Quantizer.EnableRotate {
-		return FlatIndexParams{}, notSupported(op, path, fmt.Sprintf("quantized Flat index on field %q is not implemented", field.Name))
-	}
-	return flat, nil
-}
-
-func flatQueryParams(params QueryParams) (FlatQueryParams, error) {
-	if params == nil || isNilInterface(params) {
-		value := NewFlatQueryParams()
-		return value, nil
-	}
-	if err := params.Validate(); err != nil {
-		return FlatQueryParams{}, err
-	}
-	switch value := params.(type) {
-	case FlatQueryParams:
-		return value, nil
-	case *FlatQueryParams:
-		if value != nil {
-			return *value, nil
-		}
-	}
-	return FlatQueryParams{}, notSupported("query", "", fmt.Sprintf("query parameters for %s are not implemented", params.IndexType()))
-}
-
 func toCoreMetric(metric MetricType) (core.Metric, error) {
 	switch metric {
 	case MetricTypeL2:
@@ -474,11 +453,11 @@ func toCoreMetric(metric MetricType) (core.Metric, error) {
 	}
 }
 
-func flatFieldSupported(field FieldSchema) bool {
+func collectionVectorFieldSupported(field FieldSchema) bool {
 	if !field.DataType.IsVector() {
 		return false
 	}
-	_, err := requireFlatField(field, "stats", "")
+	_, err := resolveCollectionVectorIndex(field, "stats", "")
 	return err == nil
 }
 

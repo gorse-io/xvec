@@ -3,8 +3,7 @@
 This independently gated v0.3 unit makes the CSR-backed sparse HNSW graph
 searchable through the common `SparseSearcher` and `SparseQuerySearcher`
 contracts. Persistence/reopen is now implemented by the next unit;
-incremental writes are also implemented, while collection routing remains
-separate.
+incremental writes and collection routing are also implemented by later units.
 
 ## Query controls
 

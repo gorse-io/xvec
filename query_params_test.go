@@ -36,6 +36,10 @@ func TestQueryParamsDefaultsValidate(t *testing.T) {
 func TestQueryParamsRejectInvalidValues(t *testing.T) {
 	hnsw := NewHNSWQueryParams()
 	hnsw.EF = 0
+	hnswLarge := NewHNSWQueryParams()
+	hnswLarge.EF = MaxGraphEFSearch + 1
+	rabitqLarge := NewHNSWRaBitQQueryParams()
+	rabitqLarge.EF = MaxGraphEFSearch + 1
 	ivf := NewIVFQueryParams()
 	ivf.NProbe = 0
 	flat := NewFlatQueryParams()
@@ -44,11 +48,14 @@ func TestQueryParamsRejectInvalidValues(t *testing.T) {
 	diskANN.ListSize = 0
 	vamana := NewVamanaQueryParams()
 	vamana.EFSearch = 0
+	vamanaLarge := NewVamanaQueryParams()
+	vamanaLarge.EFSearch = MaxGraphEFSearch + 1
 	nan := NewFlatQueryParams()
 	nan.ScaleFactor = float32(math.NaN())
 
 	params := []QueryParams{
-		hnsw, ivf, flat, diskANN, vamana, nan, FTSQueryParams{DefaultOperator: "XOR"},
+		hnsw, hnswLarge, rabitqLarge, ivf, flat, diskANN, vamana, vamanaLarge, nan,
+		FTSQueryParams{DefaultOperator: "XOR"},
 	}
 	for _, params := range params {
 		if err := params.Validate(); !errors.Is(err, ErrInvalidArgument) {

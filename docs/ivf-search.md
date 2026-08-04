@@ -1,9 +1,8 @@
 # IVF search
 
 This independently gated v0.3 unit makes the IVF layout searchable.
-Persistence/reopen and incremental writes are now available in later units,
-but the index remains internal until collection orchestration is complete, so
-collection queries never substitute an incomplete IVF execution path.
+Persistence/reopen, incremental writes, and collection orchestration are now
+available in later units.
 
 ## Query flow
 
@@ -35,7 +34,7 @@ With `NProbe == NList`, every stored vector is scanned exactly once and results
 must match Flat byte-for-byte for all four metrics. With fewer probes, IVF is
 approximate only because unselected lists are absent; vectors inside selected
 lists still receive exact original-vector scores. Quantized list scoring and
-optional original-vector refinement are connected in the later v0.3
+optional original-vector refinement are connected by the later v0.3
 integration unit.
 
 Tests cover nearest-list selection, probe capping, partial-list results,

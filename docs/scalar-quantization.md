@@ -1,11 +1,9 @@
 # Scalar vector quantization
 
 The first v0.3 implementation unit provides dependency-free FP16, INT8, and
-INT4 scalar quantization primitives in `internal/core`. They are shared by the
-later IVF and HNSW builders, searchers, streamers, and persistence codecs. This
-unit does not silently enable quantized collection indexes: collection DDL and
-query execution continue to return `ErrNotSupported` until the corresponding
-index integration unit is installed.
+INT4 scalar quantization primitives in `internal/core`. The later ANN
+integration unit connects them to dense Flat, IVF, and HNSW collection query
+paths while retaining original vectors for optional refinement.
 
 ## Encodings
 

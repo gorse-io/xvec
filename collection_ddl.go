@@ -21,15 +21,15 @@ import (
 	"reflect"
 
 	"github.com/gorse-io/zvec/internal/ailego"
-	"github.com/gorse-io/zvec/internal/core"
 	"github.com/gorse-io/zvec/internal/db"
 	dbsql "github.com/gorse-io/zvec/internal/db/sql"
 )
 
 // CreateIndex validates and backfills a currently implemented index, then
 // atomically publishes the new schema in a manifest generation. At this stage
-// Flat and INVERT are snapshot-local runtime indexes, so backfill validates the
-// complete live snapshot and publication persists only their parameters.
+// Vector and INVERT indexes are snapshot-local runtime indexes, so backfill
+// validates the complete live snapshot and publication persists their
+// parameters.
 func (c *Collection) CreateIndex(ctx context.Context, column string, index IndexParams, options CreateIndexOptions) error {
 	const op = "create index"
 	if c == nil {
@@ -236,11 +236,11 @@ func supportedCreateIndex(nextField FieldSchema, index IndexParams, path string)
 			return notSupported(op, path, fmt.Sprintf("INVERT is not implemented for %s field %q", nextField.DataType, nextField.Name))
 		}
 		return nil
-	case IndexTypeFlat:
+	case IndexTypeFlat, IndexTypeHNSW, IndexTypeIVF:
 		if !nextField.DataType.IsVector() {
-			return invalidArgument(op, "scalar field %q cannot use FLAT", nextField.Name)
+			return invalidArgument(op, "scalar field %q cannot use %s", nextField.Name, index.IndexType())
 		}
-		_, err := requireFlatField(nextField, op, path)
+		_, err := resolveCollectionVectorIndex(nextField, op, path)
 		return err
 	default:
 		return notSupported(op, path, fmt.Sprintf("index %s on field %q is not implemented", index.IndexType(), nextField.Name))
@@ -286,49 +286,24 @@ func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field Fiel
 			return err
 		}
 		return index.Seal()
-	case IndexTypeFlat:
-		flat, err := requireFlatField(field, "create index", c.path)
-		if err != nil {
-			return err
-		}
-		metric, err := toCoreMetric(flat.Metric)
+	case IndexTypeFlat, IndexTypeHNSW, IndexTypeIVF:
+		spec, err := resolveCollectionVectorIndex(field, "create index", c.path)
 		if err != nil {
 			return err
 		}
 		if field.DataType.IsDenseVector() {
-			index, err := core.NewDenseFlatIndex(int(field.Dimension), metric)
-			if err != nil {
-				return err
+			switch spec.indexType {
+			case IndexTypeFlat:
+				_, err = buildCollectionDenseFlat(ctx, c.schema.Name, field, documents, spec)
+			case IndexTypeHNSW:
+				_, err = buildCollectionDenseHNSW(ctx, c.schema.Name, field, documents, spec)
+			case IndexTypeIVF:
+				_, err = buildCollectionDenseIVF(ctx, c.schema.Name, field, documents, spec, workers)
 			}
-			return ailego.ParallelFor(ctx, len(documents), workers, func(ctx context.Context, position int) error {
-				document := &documents[position]
-				raw, found := document.Fields[field.Name]
-				if !found || raw == nil {
-					return nil
-				}
-				vector, err := denseValueToFloat32(raw)
-				if err != nil {
-					return fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, err)
-				}
-				return index.Add(ctx, document.DocID, vector)
-			})
-		}
-		index, err := core.NewSparseFlatIndex(metric)
-		if err != nil {
 			return err
 		}
-		return ailego.ParallelFor(ctx, len(documents), workers, func(ctx context.Context, position int) error {
-			document := &documents[position]
-			raw, found := document.Fields[field.Name]
-			if !found || raw == nil {
-				return nil
-			}
-			vector, err := sparseValueToCore(raw)
-			if err != nil {
-				return fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, err)
-			}
-			return index.AddSparse(ctx, document.DocID, vector)
-		})
+		_, err = buildCollectionSparseIndex(ctx, field, documents, spec, false)
+		return err
 	default:
 		return fmt.Errorf("unsupported index type %s", field.Index.IndexType())
 	}

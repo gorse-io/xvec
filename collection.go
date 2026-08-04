@@ -186,7 +186,7 @@ func (c *Collection) Stats() CollectionStats {
 			continue
 		}
 		completeness := float32(0)
-		if flatFieldSupported(field) {
+		if collectionVectorFieldSupported(field) {
 			completeness = 1
 		}
 		stats.IndexCompleteness[field.Name] = completeness

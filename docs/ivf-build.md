@@ -2,9 +2,8 @@
 
 This v0.3 unit adds deterministic, unquantized IVF construction to
 `internal/core`. Search, persistence/reopen, and incremental writes are now
-implemented by later independently gated units; collection orchestration
-remains. The collection layer therefore continues returning `ErrNotSupported`
-for IVF rather than substituting Flat.
+implemented by later independently gated units, as is collection
+orchestration.
 
 ## Build contract
 

@@ -27,8 +27,9 @@ import (
 // result for consistency with the common SparseSearcher contract.
 func (i *SparseHNSWIndex) SearchSparse(ctx context.Context, query SparseVector, k int) ([]Result, error) {
 	return i.searchSparseHNSW(ctx, query, HNSWSearchOptions{
-		SearchOptions: SearchOptions{TopK: k},
-		EF:            DefaultHNSWEFSearch,
+		SearchOptions:  SearchOptions{TopK: k},
+		EF:             DefaultHNSWEFSearch,
+		PrefetchOffset: DefaultHNSWPrefetchOffset,
 	}, false)
 }
 
@@ -36,8 +37,9 @@ func (i *SparseHNSWIndex) SearchSparse(ctx context.Context, query SparseVector, 
 // pinned default EF.
 func (i *SparseHNSWIndex) SearchSparseWithOptions(ctx context.Context, query SparseVector, options SearchOptions) ([]Result, error) {
 	return i.searchSparseHNSW(ctx, query, HNSWSearchOptions{
-		SearchOptions: options,
-		EF:            DefaultHNSWEFSearch,
+		SearchOptions:  options,
+		EF:             DefaultHNSWEFSearch,
+		PrefetchOffset: DefaultHNSWPrefetchOffset,
 	}, true)
 }
 
@@ -95,7 +97,7 @@ func (i *SparseHNSWIndex) searchSparseHNSW(ctx context.Context, query SparseVect
 		}
 	}
 	capacity := max(options.EF, options.TopK)
-	candidates, err := i.searchBase(ctx, query, entry, capacity, options.SearchOptions)
+	candidates, err := i.searchBase(ctx, query, entry, capacity, options)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +111,7 @@ func (i *SparseHNSWIndex) searchSparseHNSW(ctx context.Context, query SparseVect
 	return results, nil
 }
 
-func (i *SparseHNSWIndex) searchBase(ctx context.Context, query SparseVector, entry, capacity int, options SearchOptions) ([]hnswScoredNode, error) {
+func (i *SparseHNSWIndex) searchBase(ctx context.Context, query SparseVector, entry, capacity int, options HNSWSearchOptions) ([]hnswScoredNode, error) {
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(MetricIP, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.resultNodeBetter(right, left) }
 	frontier := ailego.NewHeap(better)
@@ -123,7 +125,7 @@ func (i *SparseHNSWIndex) searchBase(ctx context.Context, query SparseVector, en
 	start := hnswScoredNode{position: entry, score: score}
 	visited[entry] = true
 	frontier.Push(start)
-	if i.acceptResult(start, options) {
+	if i.acceptResult(start, options.SearchOptions) {
 		accepted.Push(start)
 	}
 
@@ -136,7 +138,9 @@ func (i *SparseHNSWIndex) searchBase(ctx context.Context, query SparseVector, en
 		if accepted.Len() >= capacity && hasWorst && worst.score > current.score {
 			break
 		}
-		for _, neighbor := range i.neighbors[current.position][0] {
+		neighbors := i.neighbors[current.position][0]
+		prefetchSparseHNSWNeighbors(i.offsets, i.indices, i.values, neighbors, options.PrefetchOffset, options.PrefetchLines)
+		for _, neighbor := range neighbors {
 			if visited[neighbor] {
 				continue
 			}
@@ -149,7 +153,7 @@ func (i *SparseHNSWIndex) searchBase(ctx context.Context, query SparseVector, en
 			worst, hasWorst = accepted.Peek()
 			if accepted.Len() < capacity || !hasWorst || node.score >= worst.score {
 				frontier.Push(node)
-				if i.acceptResult(node, options) {
+				if i.acceptResult(node, options.SearchOptions) {
 					accepted.Push(node)
 					if accepted.Len() > capacity {
 						_, _ = accepted.Pop()
