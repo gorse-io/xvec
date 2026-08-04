@@ -1,6 +1,6 @@
 # Collection API
 
-The root `zvec` package exposes the v0.2 native collection milestone. It is a
+The root `zvec` package exposes the v0.3 native collection milestone. It is a
 pure-Go embedded database: every I/O, write, and query method accepts a
 `context.Context`; schema, options, path, and in-memory statistics getters do
 not.
@@ -35,23 +35,35 @@ fields select all scalar fields, an empty non-nil slice selects none, and
 `IncludeVectors` controls all vector fields.
 
 `Query` accepts either an explicit dense or sparse vector matching the target
-field. Flat search is exact, including metric-aware radius limits,
-schema-analyzed SQL scalar filters, and deterministic document-ID tie breaking.
+field. Flat search is exact. Dense HNSW and IVF and sparse inner-product HNSW
+use their matching native Go runtimes; an explicit `Linear` query scans the
+matching Flat representation for truth comparisons. Query parameters expose
+EF or NProbe, metric-aware radius, SQL scalar filters, projection, and bounded
+HNSW cache warming. Dense FP16, INT8, and INT4 scalar-code scoring and optional
+INT8/INT4 rotation are supported where schema validation permits them. Dense
+queries can rerank retained candidates with original vectors. Sparse refinement
+and IVF SOAR return `ErrNotSupported`.
+
 `GroupByQuery` retains a top-k per filtered scalar group and ranks groups by
-their best document. ANN and quantized indexes return `ErrNotSupported` until
-their stated milestones; the library never silently substitutes a different
-algorithm. `CreateIndex` is the first installed DDL operation: it atomically
-publishes implemented Flat and INVERT parameters, while later index algorithms
-still return `ErrNotSupported`. `DropIndex` atomically clears scalar metadata
-or restores vector fields to Flat/IP. `AddColumn` atomically installs supported
-numeric fields and backfills the live snapshot. `AlterColumn` atomically
-renames or replaces basic numeric fields, and `DropColumn` atomically removes
-them. `Optimize` atomically rewrites the current live snapshot, compacts
-contiguous document-ID runs up to the schema segment limit, reclaims deleted
-and superseded versions, and prunes obsolete native segment, WAL, and snapshot
-files. This v0.2 implementation rebuilds unquantized Flat and scalar INVERT
-runtime state; a collection that actually needs compaction returns
-`ErrNotSupported` when it contains a later index algorithm.
+their best document. HNSW/IVF group-by currently requires explicit `Linear`;
+quantized or refined group-by remains unsupported. The library never silently
+substitutes a different algorithm.
+
+`CreateIndex` atomically publishes implemented Flat, HNSW, IVF, and INVERT
+parameters after full-snapshot validation. `DropIndex` atomically clears scalar
+metadata or restores vector fields to Flat/IP. `AddColumn` atomically installs
+supported numeric fields and backfills the live snapshot. `AlterColumn`
+atomically renames or replaces basic numeric fields, and `DropColumn`
+atomically removes them. `Optimize` atomically rewrites the current live
+snapshot, compacts contiguous document-ID runs up to the schema segment limit,
+reclaims deleted and superseded versions, and prunes obsolete native segment,
+WAL, and snapshot files. It accepts the implemented Flat/HNSW/IVF and scalar
+INVERT definitions, including scalar-quantized and rotated vector definitions.
+
+Collection ANN indexes are currently rebuilt from the durable live snapshot
+for each query and DDL validation. The standalone checksummed IVF/HNSW formats
+are not yet collection-segment artifacts. This preserves deterministic reopen
+behavior but makes runtime index construction part of current query latency.
 
 WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
 publishes an immutable segment and rotates the WAL. `Open` can acquire either

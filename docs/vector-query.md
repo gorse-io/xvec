@@ -1,5 +1,9 @@
 # Exact vector query semantics
 
+These semantics describe Flat execution and an ANN query with explicit
+`Linear` enabled. HNSW and partial-probe IVF use the same score, radius,
+filter, and tie rules, but their candidate set is approximate.
+
 The core query layer applies the same controls to dense and sparse indexes.
 `TopK` is required and positive. A zero radius disables range filtering;
 otherwise L2, cosine, and MIPS-L2 retain scores less than or equal to the

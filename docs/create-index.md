@@ -8,20 +8,26 @@ writes cannot cross the schema commit point.
 
 The currently executable index types are:
 
-- unquantized `FlatIndexParams` on supported dense or sparse vector fields;
+- `FlatIndexParams` and `HNSWIndexParams` on supported dense or sparse vector
+  fields;
+- `IVFIndexParams` on supported dense vector fields;
 - `InvertIndexParams` on filterable scalar and array fields other than BINARY.
 
-ANN, quantized Flat, and FTS parameters return `ErrNotSupported` until their
-algorithm milestone. A vector index on a scalar field, scalar index on a vector
-field, invalid metric/type combination, nil parameters, or negative concurrency
-returns `ErrInvalidArgument`. A missing column returns `ErrNotFound`. Different
-non-vector index types cannot coexist on one column.
+Dense Flat/HNSW/IVF definitions may use FP16, INT8, or INT4 scalar codes where
+the vector data type permits them; INT8/INT4 may enable rotation. Sparse
+Flat/HNSW supports unquantized or FP16-rounded values. RaBitQ,
+HNSW-RaBitQ, Vamana, DiskANN, FTS, and IVF SOAR return `ErrNotSupported` until
+their algorithm milestone. A vector index on a scalar field, scalar index on a
+vector field, invalid metric/type combination, nil parameters, or negative
+concurrency returns `ErrInvalidArgument`. A missing column returns
+`ErrNotFound`. Different non-vector index types cannot coexist on one column.
 
-`CreateIndexOptions.Concurrency` bounds concurrent backfill validation. Zero
-uses the runtime's default worker count. The operation is idempotent when the
-column already has equal parameters; no new manifest is published in that
-case. Supplying different parameters of the same implemented type rebuilds and
-atomically replaces the definition.
+`CreateIndexOptions.Concurrency` bounds parallel work in backfills that expose
+it, including IVF training and assignment. Zero uses the runtime's default
+worker count. The operation is idempotent when the column already has equal
+parameters; no new manifest is published in that case. Supplying different
+parameters of the same implemented type rebuilds and atomically replaces the
+definition.
 
 ```go
 params := zvec.NewInvertIndexParams()
@@ -31,11 +37,14 @@ err := collection.CreateIndex(ctx, "title", params,
 )
 ```
 
-The native v0.2 Flat and INVERT search structures remain snapshot-local: query
-execution reconstructs them from live documents. CreateIndex persists their
-validated parameters, not a C++-compatible index artifact. Existing WAL data,
-new writes, Close/reopen, and later Flush all use the newly published schema.
-If backfill, encoding, cancellation, or pre-commit manifest publication fails,
+The native v0.3 Flat, HNSW, IVF, and INVERT collection search structures remain
+snapshot-local: query execution reconstructs them from live documents.
+CreateIndex persists validated parameters, not a C++-compatible or
+segment-attached standalone index artifact. Backfill constructs the requested
+runtime representation, including quantization overflow and rotation checks;
+IVF also completes deterministic training. Existing WAL data, new writes,
+Close/reopen, and later Flush all use the newly published schema. If backfill,
+encoding, training, cancellation, or pre-commit manifest publication fails,
 the previous in-memory and on-disk schema remains active. An error after the
 atomic CURRENT replacement is reported, but the committed schema remains the
 source of truth.

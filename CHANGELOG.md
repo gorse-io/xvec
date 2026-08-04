@@ -6,6 +6,8 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+## v0.3.0 - 2026-08-04
+
 - Added baseline-layout FP16, per-vector INT8, and packed INT4 scalar
   quantization primitives, including batch conversion, decoded-equivalent L2,
   IP, cosine, and MIPS-L2 kernels, strict finite/range validation, and even
@@ -26,6 +28,26 @@ subject to compatible migration work throughout the 0.x series.
   probing, exact original-vector list scans, filters, metric-specific radius,
   deterministic top-k, empty-index behavior, and full-probe equivalence to
   Flat across all four dense metrics.
+- Added a versioned checksummed IVF artifact with atomic save/reopen,
+  corruption detection, immutable topology inspection, and concurrency-safe
+  incremental assignment for built and reopened indexes.
+- Added deterministic dense HNSW construction, diversity pruning, metric-aware
+  EF search, filtering, radius, stable ranking, and recall gates across L2, IP,
+  cosine, and MIPS-L2.
+- Added versioned checksummed dense HNSW persistence and atomic incremental
+  graph generations for concurrent search, save, and reopen.
+- Added CSR-backed sparse inner-product HNSW construction and search with exact
+  small-graph behavior, deterministic approximate traversal, recall gates,
+  checksummed persistence, and atomic incremental generations.
+- Connected Collection Flat, dense/sparse HNSW, and dense IVF execution without
+  fallback, including FP16/INT8/INT4 scoring, deterministic rotation,
+  EF/NProbe/Linear controls, filters, radius, bounded cache warming, exact dense
+  refinement, CreateIndex/Optimize/Stats integration, write validation, and
+  deterministic reopen.
+- Added a shared Flat/IVF/HNSW/INT8-HNSW benchmark with latency, allocation,
+  and recall reporting, plus a deterministic partial-probe IVF recall floor.
+
+See [the v0.3 capability matrix](docs/v0.3.md) for exact support boundaries.
 
 ## v0.2.0 - 2026-08-04
 

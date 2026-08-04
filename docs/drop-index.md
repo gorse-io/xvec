@@ -22,10 +22,11 @@ publication finish. When restoring a vector field to Flat/IP, DropIndex
 backfills the complete live snapshot before the commit point. A backfill,
 encoding, cancellation, or pre-commit publication failure leaves both the
 in-memory schema and CURRENT manifest unchanged. Scalar INVERT/FTS definitions
-and not-yet-executable vector definitions can be removed because no replacement
-artifact is needed.
+and later vector definitions can be removed because no replacement artifact is
+needed.
 
-At this v0.2 stage, Flat and INVERT runtime structures are reconstructed from
-the live snapshot, so dropping metadata does not delete a separate Go index
-file. The schema transition is nevertheless durable without Flush and remains
-in effect after Close/reopen.
+At this v0.3 stage, Flat, HNSW, IVF, and INVERT collection runtime structures
+are reconstructed from the live snapshot, so dropping metadata does not delete
+a separate collection index file. The schema transition is nevertheless
+durable without Flush and remains in effect after Close/reopen. Standalone
+native HNSW/IVF artifacts are independent of collection ownership.

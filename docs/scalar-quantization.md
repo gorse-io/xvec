@@ -1,9 +1,9 @@
 # Scalar vector quantization
 
 The first v0.3 implementation unit provides dependency-free FP16, INT8, and
-INT4 scalar quantization primitives in `internal/core`. The later ANN
-integration unit connects them to dense Flat, IVF, and HNSW collection query
-paths while retaining original vectors for optional refinement.
+INT4 scalar quantization primitives in `internal/core`. The completed v0.3 ANN
+integration connects them to dense Flat, IVF, and HNSW collection query paths
+while retaining original vectors for optional refinement.
 
 ## Encodings
 

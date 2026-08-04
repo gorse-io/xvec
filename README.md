@@ -14,12 +14,11 @@ A pure Go, embedded vector database.
 - Linux, macOS, and Windows support.
 
 The implementation is being developed from the storage primitives upward. The
-v0.2 milestone covers versioned storage, WAL recovery, CRUD, exact Flat vector
-search, SQL filtering, scalar inverted candidates, atomic DDL, and compaction.
-The v0.3 work includes baseline-layout FP16, per-vector INT8, and packed INT4
-scalar quantization primitives. IVF is implemented internally through
-incremental assignment, and dense HNSW construction is now the next active
-integration layer.
+v0.3 milestone includes versioned storage, WAL recovery, CRUD, SQL filtering,
+atomic DDL/compaction, FP16/INT8/INT4 scalar quantization, deterministic
+rotation and refinement, k-means, IVF, and dense/sparse HNSW. Collection
+queries route those implemented indexes with explicit ANN controls. RaBitQ,
+disk indexes, full-text search, and hybrid retrieval remain later milestones.
 
 ## Module
 
@@ -67,10 +66,9 @@ contiguous-DocID segments, reclaims deleted and superseded versions, rotates
 the WAL and snapshots, and conservatively prunes obsolete native artifacts.
 Public APIs and on-disk formats are not stable before v1.0.
 
-The current development branch also contains internal scalar-quantization
-kernels, reversible FHT/Kac rotation, exact original-vector candidate
-refinement, and deterministic k-means training for the forthcoming v0.3
-indexes. Deterministic unquantized IVF construction, list assignment,
+The v0.3 release contains internal scalar-quantization kernels, reversible
+FHT/Kac rotation, exact original-vector candidate refinement, and deterministic
+k-means training. Deterministic unquantized IVF construction, list assignment,
 metric-aware NProbe search, a versioned checksummed native IVF artifact with
 atomic save/reopen, and concurrency-safe incremental assignment are also
 present internally.
@@ -96,8 +94,8 @@ connected end to end. Until segment-native ANN artifacts are integrated, the
 collection rebuilds these runtime indexes from its durable live snapshot for
 each query and DDL validation.
 
-The current library version is `v0.2.0`; its exact support boundary is recorded
-in the [v0.2 capability matrix](docs/v0.2.md) and [changelog](CHANGELOG.md).
+The current library version is `v0.3.0`; its exact support boundary is recorded
+in the [v0.3 capability matrix](docs/v0.3.md) and [changelog](CHANGELOG.md).
 
 ## Schema example
 
@@ -116,10 +114,10 @@ if err := schema.Validate(); err != nil {
 }
 ```
 
-Index parameters for later milestones can be declared and validated now. An
-accepted schema does not imply that its ANN or FTS implementation has shipped;
-operations must return `ErrNotSupported` until the corresponding milestone is
-implemented.
+Some index parameters for later milestones can be declared and validated now.
+An accepted schema does not imply that every configured algorithm is
+executable; operations return `ErrNotSupported` until the corresponding
+milestone is implemented.
 
 ## Architecture
 
@@ -144,6 +142,7 @@ are exercised by `go test ./...`.
 ## Documentation
 
 - [Collection API](docs/collection-api.md)
+- [v0.3 capability matrix](docs/v0.3.md)
 - [v0.2 capability matrix](docs/v0.2.md)
 - [Native Go disk format](docs/disk-format.md)
 - [Documents and projection](docs/document-projection.md)

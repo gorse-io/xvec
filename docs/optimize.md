@@ -19,13 +19,15 @@ the same live documents before and after optimization. A fully deleted
 collection is rewritten with no immutable segments but still retains its next
 document ID.
 
-The v0.2 implementation supports fields with unquantized Flat vector indexes,
-scalar INVERT indexes whose value type is implemented by the filter runtime,
-and fields without indexes. If compaction is required and the schema contains
-HNSW, IVF, RaBitQ, Vamana, DiskANN, FTS, quantized/rotated Flat, or binary
-INVERT state, Optimize returns `ErrNotSupported` before publishing anything.
-Those algorithms are enabled by their later milestones rather than silently
-rebuilt as a different index.
+The v0.3 implementation supports Flat, HNSW, and IVF vector definitions,
+including implemented scalar quantization and rotation, scalar INVERT indexes
+whose value type is implemented by the filter runtime, and fields without
+indexes. The collection runtime reconstructs those indexes from the compacted
+live snapshot when queried. If compaction is required and the schema contains
+RaBitQ, HNSW-RaBitQ, Vamana, DiskANN, FTS, IVF SOAR, or binary INVERT state,
+Optimize returns `ErrNotSupported` before publishing anything. Those
+algorithms are enabled by later milestones rather than silently rebuilt as a
+different index.
 
 `CURRENT` is the commit point. Failure before publication leaves the old
 manifest, schema, segments, snapshots, and WAL authoritative. Once publication
