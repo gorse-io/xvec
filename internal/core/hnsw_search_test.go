@@ -164,6 +164,39 @@ func TestHNSWResultTieBreaksByKey(t *testing.T) {
 	}
 }
 
+func TestHNSWSearchTraversesEqualScoreCandidates(t *testing.T) {
+	t.Parallel()
+	const count = DefaultHNSWBruteForceThreshold + 1
+	index := &HNSWIndex{
+		dimension:  1,
+		options:    HNSWBuildOptions{Metric: MetricIP, M: 1, EFConstruction: 1},
+		keys:       make([]uint64, count),
+		vectors:    make([]float32, count),
+		levels:     make([]int, count),
+		neighbors:  make([][][]int, count),
+		entryPoint: 0,
+		maxLevel:   0,
+	}
+	for position := range count {
+		index.keys[position] = uint64(position + 100)
+		index.vectors[position] = 1
+		index.neighbors[position] = make([][]int, 1)
+	}
+	index.keys[0], index.keys[1], index.keys[2] = 100, 200, 1
+	index.neighbors[0][0] = []int{1}
+	index.neighbors[1][0] = []int{2}
+
+	results, err := index.SearchHNSW(context.Background(), []float32{1}, HNSWSearchOptions{
+		SearchOptions: SearchOptions{TopK: 1}, EF: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(results, []Result{{Key: 1, Score: 1}}) {
+		t.Fatalf("equal-score traversal results = %#v", results)
+	}
+}
+
 func TestHNSWSearchValidation(t *testing.T) {
 	t.Parallel()
 	index := buildSearchHNSW(t, MetricL2, hnswBuildInputs(4), 2, 4)

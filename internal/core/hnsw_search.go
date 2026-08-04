@@ -164,7 +164,7 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, entry, 
 		}
 		current, _ := frontier.Pop()
 		worst, hasWorst := accepted.Peek()
-		if accepted.Len() >= capacity && hasWorst && i.hnswResultNodeBetter(worst, current) {
+		if accepted.Len() >= capacity && hasWorst && i.options.Metric.Better(worst.score, current.score) {
 			break
 		}
 		for _, neighbor := range i.neighbors[current.position][0] {
@@ -178,7 +178,7 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, entry, 
 			}
 			node := hnswScoredNode{position: neighbor, score: score}
 			worst, hasWorst = accepted.Peek()
-			if accepted.Len() < capacity || !hasWorst || i.hnswResultNodeBetter(node, worst) {
+			if accepted.Len() < capacity || !hasWorst || !i.options.Metric.Better(worst.score, node.score) {
 				frontier.Push(node)
 				if i.acceptHNSWResult(node, options) {
 					accepted.Push(node)
