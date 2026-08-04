@@ -18,10 +18,461 @@ import (
 	"context"
 	"math"
 	"strconv"
+	"sync"
 	"testing"
 
+	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDenseFlatSearchMetrics(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		metric Metric
+		want   []Result
+	}{
+		{MetricL2, []Result{{Key: 30, Score: 0}, {Key: 5, Score: 1}, {Key: 10, Score: 1}}},
+		{MetricIP, []Result{{Key: 5, Score: 2}, {Key: 10, Score: 2}, {Key: 30, Score: 1}}},
+		{MetricCosine, []Result{{Key: 5, Score: 0}, {Key: 10, Score: 0}, {Key: 30, Score: 0}}},
+		{MetricMIPSL2, []Result{{Key: 30, Score: 0}, {Key: 5, Score: 1}, {Key: 10, Score: 1}}},
+	}
+	for _, testCase := range tests {
+		index, err := NewDenseFlatIndex(2, testCase.metric)
+		require.NoError(t, err)
+
+		for _, candidate := range exactCandidates {
+			{
+				err := index.Add(context.Background(), candidate.Key, candidate.Vector)
+				require.NoError(t, err)
+			}
+		}
+		got, err := index.Search(context.Background(), []float32{1, 0}, 3)
+		require.NoError(t, err)
+		require.Equal(t, testCase.want, got)
+	}
+}
+
+func TestDenseFlatProviderAndInputOwnership(t *testing.T) {
+	index, err := NewDenseFlatIndex(2, MetricIP)
+	require.NoError(t, err)
+
+	vector := []float32{1, 2}
+	{
+		err := index.Add(context.Background(), 42, vector)
+		require.NoError(t, err)
+	}
+
+	vector[0] = 99
+	stored, found := index.Vector(42)
+	require.True(t, found)
+	require.Equal(t, []float32{1, 2}, stored)
+
+	stored[0] = 88
+	again, found := index.Vector(42)
+	require.True(t, found)
+	require.Equal(t, []float32{1, 2}, again)
+	{
+		_, found := index.Vector(7)
+		require.False(t, found,
+			"missing key was found")
+	}
+	require.True(t, index.Dimension() == 2)
+	require.Equal(t, MetricIP, index.Metric())
+	require.True(t, index.Len() == 1)
+}
+
+func TestDenseFlatValidation(t *testing.T) {
+	{
+		_, err := NewDenseFlatIndex(0, MetricL2)
+		require.ErrorIs(t, err, ErrInvalidDimension)
+	}
+	{
+		_, err := NewDenseFlatIndex(2, Metric(99))
+		require.Error(t, err,
+			"invalid metric succeeded")
+	}
+
+	index, err := NewDenseFlatIndex(2, MetricL2)
+	require.NoError(t, err)
+	{
+		err := index.Add(context.Background(), 1, []float32{1})
+		require.ErrorIs(t, err, ErrInvalidDimension)
+	}
+	{
+		err := index.Add(context.Background(), 1, []float32{1, float32(math.NaN())})
+		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+	}
+	{
+		err := index.Add(context.Background(), 1, []float32{1, 2})
+		require.NoError(t, err)
+	}
+	{
+		err := index.Add(context.Background(), 1, []float32{3, 4})
+		require.ErrorIs(t, err, ErrDuplicateKey)
+	}
+	{
+		_, err := index.Search(context.Background(), []float32{1}, 1)
+		require.ErrorIs(t, err, ErrInvalidDimension)
+	}
+	{
+		_, err := index.Search(context.Background(), []float32{1, 2}, -1)
+		require.Error(t, err,
+			"negative top-k succeeded")
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	{
+		err := index.Add(canceled, 2, []float32{1, 2})
+		require.ErrorIs(t, err, context.Canceled)
+	}
+	{
+		_, err := index.Search(canceled, []float32{1, 2}, 1)
+		require.ErrorIs(t, err, context.Canceled)
+	}
+
+	var nilIndex *DenseFlatIndex
+	{
+		err := nilIndex.Add(context.Background(), 1, []float32{1})
+		require.Error(t, err,
+			"nil index add succeeded")
+	}
+	{
+		_, err := nilIndex.Search(context.Background(), []float32{1}, 1)
+		require.Error(t, err,
+			"nil index search succeeded")
+	}
+}
+
+func TestDenseFlatBuilderLifecycle(t *testing.T) {
+	builder, err := NewDenseFlatBuilder(2, MetricIP)
+	require.NoError(t, err)
+	{
+		err := builder.Add(context.Background(), 2, []float32{2, 0})
+		require.NoError(t, err)
+	}
+	{
+		err := builder.Add(context.Background(), 1, []float32{1, 0})
+		require.NoError(t, err)
+	}
+
+	index, err := builder.Build(context.Background())
+	require.NoError(t, err)
+	{
+		err := builder.Add(context.Background(), 3, []float32{3, 0})
+		require.ErrorIs(t, err, ErrBuilderClosed)
+	}
+	{
+		_, err := builder.Build(context.Background())
+		require.ErrorIs(t, err, ErrBuilderClosed)
+	}
+	{
+		err := index.Add(context.Background(), 3, []float32{3, 0})
+		require.NoError(t, err)
+	}
+
+	results, err := index.Search(context.Background(), []float32{1, 0}, 3)
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 3, Score: 3}, {Key: 2, Score: 2}, {Key: 1, Score: 1}}, results)
+
+	var nilBuilder *DenseFlatIndexBuilder
+	{
+		err := nilBuilder.Add(context.Background(), 1, []float32{1})
+		require.Error(t, err,
+			"nil builder add succeeded")
+	}
+	{
+		_, err := nilBuilder.Build(context.Background())
+		require.Error(t, err,
+			"nil builder build succeeded")
+	}
+}
+
+func TestDenseFlatConcurrentStreamingAndSearch(t *testing.T) {
+	index, err := NewDenseFlatIndex(2, MetricL2)
+	require.NoError(t, err)
+
+	const count = 128
+	var wait sync.WaitGroup
+	for key := range count {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			value := float32(key)
+			{
+				err := index.Add(context.Background(), uint64(key), []float32{value, value})
+				assert.NoError(t, err)
+			}
+			{
+				_, err := index.Search(context.Background(), []float32{0, 0}, 10)
+				assert.NoError(t, err)
+			}
+		}()
+	}
+	wait.Wait()
+	require.Equal(t, count, index.Len())
+
+	results, err := index.Search(context.Background(), []float32{0, 0}, 3)
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 0, Score: 0}, {Key: 1, Score: 2}, {Key: 2, Score: 8}}, results)
+}
+
+func BenchmarkDenseFlatSearch(b *testing.B) {
+	index, err := NewDenseFlatIndex(32, MetricL2)
+	if err != nil {
+		require.NoError(b, err)
+	}
+
+	for key := range 10_000 {
+		vector := make([]float32, 32)
+		for dimension := range vector {
+			vector[dimension] = float32(key+dimension) / 10_000
+		}
+		{
+			err := index.Add(context.Background(), uint64(key), vector)
+			if err != nil {
+				require.NoError(b, err)
+			}
+		}
+	}
+	query := make([]float32, 32)
+	b.ResetTimer()
+	for range b.N {
+		{
+			_, err := index.Search(context.Background(), query, 10)
+			if err != nil {
+				require.NoError(b, err)
+			}
+		}
+	}
+}
+
+func TestSparseFlatExactSearch(t *testing.T) {
+	index, err := NewSparseFlatIndex(MetricIP)
+	require.NoError(t, err)
+
+	vectors := []struct {
+		key    uint64
+		vector SparseVector
+	}{
+		{30, SparseVector{Indices: []uint32{1, 4}, Values: []float32{1, 1}}},
+		{10, SparseVector{Indices: []uint32{1, 3}, Values: []float32{2, 3}}},
+		{5, SparseVector{Indices: []uint32{1, 9}, Values: []float32{2, 8}}},
+		{20, SparseVector{Indices: []uint32{2}, Values: []float32{7}}},
+	}
+	for _, item := range vectors {
+		{
+			err := index.AddSparse(context.Background(), item.key, item.vector)
+			require.NoError(t, err)
+		}
+	}
+	results, err := index.SearchSparse(context.Background(), SparseVector{
+		Indices: []uint32{1, 3}, Values: []float32{1, 1},
+	}, 3)
+	require.NoError(t, err)
+
+	want := []Result{{Key: 10, Score: 5}, {Key: 5, Score: 2}, {Key: 30, Score: 1}}
+	require.Equal(t, want, results)
+
+	emptyQuery, err := index.SearchSparse(context.Background(), SparseVector{}, 4)
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 5}, {Key: 10}, {Key: 20}, {Key: 30}}, emptyQuery)
+}
+
+func TestSparseFlatProviderOwnsInput(t *testing.T) {
+	index, err := NewSparseFlatIndex(MetricIP)
+	require.NoError(t, err)
+
+	vector := SparseVector{Indices: []uint32{1, 3}, Values: []float32{2, 4}}
+	{
+		err := index.AddSparse(context.Background(), 7, vector)
+		require.NoError(t, err)
+	}
+
+	vector.Indices[0], vector.Values[0] = 99, 99
+	stored, found := index.SparseVector(7)
+	require.True(t, found)
+	require.Equal(t, SparseVector{Indices: []uint32{1, 3}, Values: []float32{2, 4}}, stored)
+
+	stored.Indices[0], stored.Values[0] = 88, 88
+	again, found := index.SparseVector(7)
+	require.True(t, found)
+	require.True(t, again.Indices[0] == 1)
+	require.True(t, again.Values[0] == 2)
+	{
+		_, found := index.SparseVector(8)
+		require.False(t, found,
+			"missing sparse vector was found")
+	}
+}
+
+func TestSparseFlatValidation(t *testing.T) {
+	{
+		_, err := NewSparseFlatIndex(MetricL2)
+		require.Error(t, err,
+			"sparse L2 succeeded")
+	}
+
+	index, err := NewSparseFlatIndex(MetricIP)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name   string
+		vector SparseVector
+		want   error
+	}{
+		{"length", SparseVector{Indices: []uint32{1}, Values: nil}, ailego.ErrDimensionMismatch},
+		{"order", SparseVector{Indices: []uint32{2, 1}, Values: []float32{1, 2}}, ailego.ErrInvalidSparseOrder},
+		{"duplicate", SparseVector{Indices: []uint32{1, 1}, Values: []float32{1, 2}}, ailego.ErrInvalidSparseOrder},
+		{"non-finite", SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.Inf(1))}}, ailego.ErrNonFiniteVector},
+	}
+	for _, testCase := range tests {
+		{
+			err := index.AddSparse(context.Background(), 1, testCase.vector)
+			require.ErrorIs(t, err, testCase.want)
+		}
+	}
+	{
+		err := index.AddSparse(context.Background(), 1, SparseVector{})
+		require.NoError(t, err)
+	}
+	{
+		err := index.AddSparse(context.Background(), 1, SparseVector{})
+		require.ErrorIs(t, err, ErrDuplicateKey)
+	}
+	{
+		err := index.AddSparse(context.Background(), 2, SparseVector{Indices: []uint32{1}, Values: []float32{math.MaxFloat32}})
+		require.NoError(t, err)
+	}
+	{
+		_, err := index.SearchSparse(context.Background(), SparseVector{Indices: []uint32{2, 1}, Values: []float32{1, 1}}, 1)
+		require.ErrorIs(t, err, ailego.ErrInvalidSparseOrder)
+	}
+	{
+		_, err := index.SearchSparse(context.Background(), SparseVector{}, -1)
+		require.Error(t, err,
+			"negative top-k succeeded")
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	{
+		err := index.AddSparse(canceled, 2, SparseVector{})
+		require.ErrorIs(t, err, context.Canceled)
+	}
+	{
+		_, err := index.SearchSparse(canceled, SparseVector{}, 1)
+		require.ErrorIs(t, err, context.Canceled)
+	}
+
+	var nilIndex *SparseFlatIndex
+	{
+		err := nilIndex.AddSparse(context.Background(), 1, SparseVector{})
+		require.Error(t, err,
+			"nil add succeeded")
+	}
+	{
+		_, err := nilIndex.SearchSparse(context.Background(), SparseVector{}, 1)
+		require.Error(t, err,
+			"nil search succeeded")
+	}
+}
+
+func TestSparseFlatBuilderAndStreaming(t *testing.T) {
+	builder, err := NewSparseFlatBuilder(MetricIP)
+	require.NoError(t, err)
+	{
+		err := builder.AddSparse(context.Background(), 1, SparseVector{Indices: []uint32{1}, Values: []float32{1}})
+		require.NoError(t, err)
+	}
+
+	index, err := builder.Build(context.Background())
+	require.NoError(t, err)
+	{
+		err := builder.AddSparse(context.Background(), 2, SparseVector{})
+		require.ErrorIs(t, err, ErrBuilderClosed)
+	}
+	{
+		_, err := builder.Build(context.Background())
+		require.ErrorIs(t, err, ErrBuilderClosed)
+	}
+	{
+		err := index.AddSparse(context.Background(), 2, SparseVector{Indices: []uint32{1}, Values: []float32{2}})
+		require.NoError(t, err)
+	}
+
+	results, err := index.SearchSparse(context.Background(), SparseVector{Indices: []uint32{1}, Values: []float32{1}}, 2)
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 2, Score: 2}, {Key: 1, Score: 1}}, results)
+
+	var nilBuilder *SparseFlatIndexBuilder
+	{
+		err := nilBuilder.AddSparse(context.Background(), 1, SparseVector{})
+		require.Error(t, err,
+			"nil builder add succeeded")
+	}
+	{
+		_, err := nilBuilder.Build(context.Background())
+		require.Error(t, err,
+			"nil builder build succeeded")
+	}
+}
+
+func TestSparseFlatConcurrentStreamingAndSearch(t *testing.T) {
+	index, err := NewSparseFlatIndex(MetricIP)
+	require.NoError(t, err)
+
+	const count = 128
+	var wait sync.WaitGroup
+	for key := range count {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			vector := SparseVector{Indices: []uint32{uint32(key)}, Values: []float32{float32(key)}}
+			{
+				err := index.AddSparse(context.Background(), uint64(key), vector)
+				assert.NoError(t, err)
+			}
+			{
+				_, err := index.SearchSparse(context.Background(), SparseVector{Indices: []uint32{1}, Values: []float32{1}}, 10)
+				assert.NoError(t, err)
+			}
+		}()
+	}
+	wait.Wait()
+	require.Equal(t, count, index.Len())
+}
+
+func BenchmarkSparseFlatSearch(b *testing.B) {
+	index, err := NewSparseFlatIndex(MetricIP)
+	if err != nil {
+		require.NoError(b, err)
+	}
+
+	for key := range 10_000 {
+		vector := SparseVector{
+			Indices: []uint32{uint32(key % 100), uint32(100 + key%100)},
+			Values:  []float32{1, 2},
+		}
+		{
+			err := index.AddSparse(context.Background(), uint64(key), vector)
+			if err != nil {
+				require.NoError(b, err)
+			}
+		}
+	}
+	query := SparseVector{Indices: []uint32{1, 101}, Values: []float32{1, 1}}
+	b.ResetTimer()
+	for range b.N {
+		{
+			_, err := index.SearchSparse(context.Background(), query, 10)
+			if err != nil {
+				require.NoError(b, err)
+			}
+		}
+	}
+}
 
 func TestGroupByOptionsValidation(t *testing.T) {
 	resolver := func(uint64) (string, bool) { return "group", true }

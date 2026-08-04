@@ -23,8 +23,772 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
+	"sync"
 
 	"github.com/gorse-io/zvec/internal/ailego"
+)
+
+const (
+	DefaultDiskANNMaxDegree    = 100
+	DefaultDiskANNBuildList    = 50
+	DefaultDiskANNQueryList    = 300
+	DefaultDiskANNCacheNodes   = 1024
+	DefaultDiskANNMaxOcclusion = 750
+)
+
+var (
+	ErrInvalidDiskANNOptions = errors.New("core: invalid DiskANN options")
+	ErrDiskANNKeyNotFound    = errors.New("core: DiskANN key not found")
+	ErrDiskANNClosed         = errors.New("core: DiskANN index is closed")
+	ErrDiskANNCapacity       = errors.New("core: DiskANN index capacity exceeded")
+)
+
+// DiskANNBuildOptions configures graph construction, product quantization,
+// random-read concurrency, and the demand cache.
+type DiskANNBuildOptions struct {
+	Metric        Metric
+	MaxDegree     int
+	ListSize      int
+	PQChunks      int
+	Workers       int
+	CacheCapacity int
+}
+
+// DefaultDiskANNBuildOptions returns the pinned public construction defaults.
+func DefaultDiskANNBuildOptions(metric Metric) DiskANNBuildOptions {
+	return DiskANNBuildOptions{
+		Metric: metric, MaxDegree: DefaultDiskANNMaxDegree,
+		ListSize: DefaultDiskANNBuildList, CacheCapacity: DefaultDiskANNCacheNodes,
+	}
+}
+
+// Validate checks invariants that do not depend on vector dimension.
+func (o DiskANNBuildOptions) Validate() error {
+	if !o.Metric.valid() {
+		return fmt.Errorf("%w: invalid metric", ErrInvalidDiskANNOptions)
+	}
+	if o.MaxDegree <= 0 || o.MaxDegree > MaxVamanaDegree {
+		return fmt.Errorf("%w: MaxDegree must be in [1,%d]", ErrInvalidDiskANNOptions, MaxVamanaDegree)
+	}
+	if o.ListSize <= 0 || uint64(o.ListSize) > math.MaxUint32 {
+		return fmt.Errorf("%w: ListSize must fit uint32", ErrInvalidDiskANNOptions)
+	}
+	if o.PQChunks < 0 {
+		return fmt.Errorf("%w: PQChunks cannot be negative", ErrInvalidDiskANNOptions)
+	}
+	if o.Workers < 0 || o.CacheCapacity < 0 {
+		return fmt.Errorf("%w: Workers and CacheCapacity cannot be negative", ErrInvalidDiskANNOptions)
+	}
+	return nil
+}
+
+// DiskANNBuilder collects original vectors for one immutable disk graph.
+type DiskANNBuilder struct {
+	mu        sync.Mutex
+	dimension int
+	options   DiskANNBuildOptions
+	keys      []uint64
+	vectors   []float32
+	positions map[uint64]int
+	built     bool
+}
+
+func NewDiskANNBuilder(dimension int, options DiskANNBuildOptions) (*DiskANNBuilder, error) {
+	if dimension <= 0 || dimension > MaxRotationDimension {
+		return nil, fmt.Errorf("%w: got %d", ErrInvalidDimension, dimension)
+	}
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
+	if options.PQChunks > dimension {
+		return nil, fmt.Errorf("%w: PQChunks cannot exceed dimension", ErrInvalidDiskANNOptions)
+	}
+	return &DiskANNBuilder{dimension: dimension, options: options, positions: make(map[uint64]int)}, nil
+}
+
+// Add validates and clones one unique original vector.
+func (b *DiskANNBuilder) Add(ctx context.Context, key uint64, vector []float32) error {
+	if b == nil {
+		return errors.New("core: nil DiskANN builder")
+	}
+	if ctx == nil {
+		return errors.New("core: nil DiskANN add context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateTrainingVector(vector, b.dimension); err != nil {
+		return fmt.Errorf("core: validate DiskANN vector: %w", err)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if b.built {
+		return ErrBuilderClosed
+	}
+	if _, found := b.positions[key]; found {
+		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
+	}
+	if uint64(len(b.keys)) >= math.MaxUint32 || len(b.vectors) > maxPlatformInt()-b.dimension {
+		return ErrDiskANNCapacity
+	}
+	b.positions[key] = len(b.keys)
+	b.keys = append(b.keys, key)
+	b.vectors = append(b.vectors, vector...)
+	return nil
+}
+
+// Build constructs a Vamana topology, trains PQ traversal codes, and converts
+// the graph to the native sector layout. The returned in-memory ReaderAt index
+// has identical search semantics to an index reopened from disk.
+func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
+	if b == nil {
+		return nil, errors.New("core: nil DiskANN builder")
+	}
+	if ctx == nil {
+		return nil, errors.New("core: nil DiskANN build context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.built {
+		return nil, ErrBuilderClosed
+	}
+
+	graphOptions := DefaultVamanaBuildOptions(b.options.Metric)
+	graphOptions.MaxDegree = b.options.MaxDegree
+	graphOptions.SearchListSize = max(b.options.ListSize, b.options.MaxDegree)
+	graphOptions.MaxOcclusionSize = DefaultDiskANNMaxOcclusion
+	graphBuilder, err := NewVamanaBuilder(b.dimension, graphOptions)
+	if err != nil {
+		return nil, err
+	}
+	vectors := make([][]float32, len(b.keys))
+	for position, key := range b.keys {
+		if position&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		start := position * b.dimension
+		vectors[position] = b.vectors[start : start+b.dimension]
+		if err := graphBuilder.Add(ctx, key, vectors[position]); err != nil {
+			return nil, fmt.Errorf("core: add DiskANN graph vector %d: %w", position, err)
+		}
+	}
+	graph, err := graphBuilder.Build(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("core: build DiskANN graph: %w", err)
+	}
+
+	layout, err := NewDiskANNLayout(b.options.Metric, len(b.keys), b.dimension, b.options.MaxDegree)
+	if err != nil {
+		return nil, err
+	}
+	nodes := make([]DiskANNNode, len(b.keys))
+	for position := range nodes {
+		if position&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		nodes[position] = DiskANNNode{ID: uint32(position), Vector: slices.Clone(vectors[position])}
+		nodes[position].Neighbors = make([]uint32, len(graph.neighbors[position]))
+		for offset, neighbor := range graph.neighbors[position] {
+			nodes[position].Neighbors[offset] = uint32(neighbor)
+		}
+	}
+	nodeArtifact, err := encodeDiskANNNodeFile(ctx, layout, nodes)
+	if err != nil {
+		return nil, err
+	}
+	nodeReader, err := OpenDiskANNNodeReader(
+		ctx, bytes.NewReader(nodeArtifact), int64(len(nodeArtifact)), b.options.CacheCapacity, b.options.Workers,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	index := &DiskANNIndex{
+		dimension: b.dimension, metric: b.options.Metric, options: b.options,
+		keys: slices.Clone(b.keys), positions: cloneUint64Positions(b.positions), entryPoint: graph.entryPoint,
+		nodes: nodeReader,
+	}
+	index.traversalMetric = diskANNTraversalMetric(b.options.Metric)
+	if len(vectors) != 0 {
+		prepared, traversalMetric, err := prepareDiskANNPQVectors(ctx, vectors, b.options.Metric)
+		if err != nil {
+			return nil, err
+		}
+		pqOptions := DefaultPQOptions(traversalMetric)
+		pqOptions.Chunks, pqOptions.Workers = b.options.PQChunks, b.options.Workers
+		model, err := TrainPQ(ctx, prepared, pqOptions)
+		if err != nil {
+			return nil, fmt.Errorf("core: train DiskANN PQ: %w", err)
+		}
+		codes, err := model.EncodeBatch(ctx, prepared, b.options.Workers)
+		if err != nil {
+			return nil, fmt.Errorf("core: encode DiskANN PQ: %w", err)
+		}
+		index.pq, index.traversalMetric = model, traversalMetric
+		index.codes = make([]byte, len(codes)*model.Chunks())
+		for position, code := range codes {
+			copy(index.codes[position*model.Chunks():], code.codes)
+		}
+		if b.options.Metric == MetricMIPSL2 {
+			index.codeNorms, err = diskANNPQCodeNorms(ctx, model, index.codes, len(codes))
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := validateDiskANNIndex(ctx, index); err != nil {
+		return nil, err
+	}
+	b.built = true
+	b.keys, b.vectors, b.positions = nil, nil, nil
+	return index, nil
+}
+
+func prepareDiskANNPQVectors(ctx context.Context, vectors [][]float32, metric Metric) ([][]float32, Metric, error) {
+	prepared := make([][]float32, len(vectors))
+	traversalMetric := diskANNTraversalMetric(metric)
+	for position, vector := range vectors {
+		if position&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, 0, err
+			}
+		}
+		prepared[position] = slices.Clone(vector)
+		if metric == MetricCosine {
+			normalizeRaBitQVector(prepared[position])
+		}
+	}
+	return prepared, traversalMetric, nil
+}
+
+func diskANNTraversalMetric(metric Metric) Metric {
+	if metric == MetricCosine || metric == MetricMIPSL2 {
+		return MetricL2
+	}
+	return metric
+}
+
+func prepareDiskANNPQQuery(query []float32, metric Metric) []float32 {
+	prepared := slices.Clone(query)
+	if metric == MetricCosine {
+		normalizeRaBitQVector(prepared)
+	}
+	return prepared
+}
+
+func diskANNPQCodeNorms(ctx context.Context, model *PQModel, raw []byte, count int) ([]float32, error) {
+	if ctx == nil {
+		return nil, errors.New("core: nil DiskANN PQ norm context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if model == nil || model.Chunks() == 0 || count < 0 ||
+		uint64(count)*uint64(model.Chunks()) > uint64(maxPlatformInt()) ||
+		len(raw) != int(uint64(count)*uint64(model.Chunks())) {
+		return nil, ErrInvalidPQModel
+	}
+	norms := make([]float32, count)
+	for position := range norms {
+		if position&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		var norm float64
+		code := raw[position*model.Chunks() : (position+1)*model.Chunks()]
+		for chunk, centroid := range code {
+			start, end := model.chunkOffsets[chunk], model.chunkOffsets[chunk+1]
+			pivot := int(centroid)*model.dimension + start
+			for component, value := range model.pivots[pivot : pivot+end-start] {
+				if component&4095 == 0 {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+				}
+				norm += float64(value) * float64(value)
+			}
+		}
+		norms[position] = float32(norm)
+	}
+	return norms, nil
+}
+
+var ErrInvalidDiskANNListSize = errors.New("core: invalid DiskANN list size")
+
+// DiskANNSearchOptions combines common result controls with the graph
+// candidate-list width. Linear is an exact disk scan used for diagnostics and
+// query fallback.
+type DiskANNSearchOptions struct {
+	SearchOptions
+	ListSize int
+	Linear   bool
+}
+
+func (o DiskANNSearchOptions) Validate() error {
+	if err := o.SearchOptions.Validate(); err != nil {
+		return err
+	}
+	if o.ListSize <= 0 || uint64(o.ListSize) > math.MaxUint32 {
+		return ErrInvalidDiskANNListSize
+	}
+	return nil
+}
+
+// DiskANNIndex owns immutable key/PQ metadata and serves graph nodes through
+// a sector-aware ReaderAt. An opened index owns its file until Close.
+type DiskANNIndex struct {
+	closeMu         sync.RWMutex
+	closed          bool
+	closer          io.Closer
+	dimension       int
+	metric          Metric
+	traversalMetric Metric
+	options         DiskANNBuildOptions
+	keys            []uint64
+	positions       map[uint64]int
+	entryPoint      int
+	pq              *PQModel
+	codes           []byte
+	codeNorms       []float32
+	nodes           *DiskANNNodeReader
+}
+
+func (i *DiskANNIndex) Dimension() int {
+	if i == nil {
+		return 0
+	}
+	return i.dimension
+}
+
+func (i *DiskANNIndex) Metric() Metric {
+	if i == nil {
+		return 0
+	}
+	return i.metric
+}
+
+func (i *DiskANNIndex) Len() int {
+	if i == nil {
+		return 0
+	}
+	return len(i.keys)
+}
+
+func (i *DiskANNIndex) BuildOptions() DiskANNBuildOptions {
+	if i == nil {
+		return DiskANNBuildOptions{}
+	}
+	return i.options
+}
+
+func (i *DiskANNIndex) PQChunks() int {
+	if i == nil || i.pq == nil {
+		return 0
+	}
+	return i.pq.Chunks()
+}
+
+func (i *DiskANNIndex) EntryPoint() (uint64, bool) {
+	if i == nil || i.entryPoint < 0 || i.entryPoint >= len(i.keys) {
+		return 0, false
+	}
+	return i.keys[i.entryPoint], true
+}
+
+func (i *DiskANNIndex) CacheStats() DiskANNCacheStats {
+	if i == nil || i.nodes == nil {
+		return DiskANNCacheStats{}
+	}
+	return i.nodes.CacheStats()
+}
+
+// Vector reads and clones one original FP32 vector by external key.
+func (i *DiskANNIndex) Vector(key uint64) ([]float32, bool) {
+	if i == nil {
+		return nil, false
+	}
+	i.closeMu.RLock()
+	defer i.closeMu.RUnlock()
+	if i.closed || i.nodes == nil {
+		return nil, false
+	}
+	position, found := i.positions[key]
+	if !found {
+		return nil, false
+	}
+	node, err := i.nodes.ReadNode(context.Background(), uint32(position))
+	if err != nil {
+		return nil, false
+	}
+	return node.Vector, true
+}
+
+// Close releases an opened artifact. It is idempotent and waits for active
+// searches that hold the immutable file generation.
+func (i *DiskANNIndex) Close() error {
+	if i == nil {
+		return nil
+	}
+	i.closeMu.Lock()
+	defer i.closeMu.Unlock()
+	if i.closed {
+		return nil
+	}
+	i.closed = true
+	if i.closer != nil {
+		return i.closer.Close()
+	}
+	return nil
+}
+
+func (i *DiskANNIndex) Search(ctx context.Context, query []float32, k int) ([]Result, error) {
+	return i.searchDiskANN(ctx, query, DiskANNSearchOptions{
+		SearchOptions: SearchOptions{TopK: k}, ListSize: DefaultDiskANNQueryList,
+	}, false)
+}
+
+func (i *DiskANNIndex) SearchWithOptions(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {
+	return i.searchDiskANN(ctx, query, DiskANNSearchOptions{
+		SearchOptions: options, ListSize: DefaultDiskANNQueryList,
+	}, true)
+}
+
+// SearchDiskANN performs a bounded best-first traversal. PQ scores order the
+// frontier; every expanded node is read from the node artifact and receives
+// its exact public score before filter, radius, and top-k selection.
+func (i *DiskANNIndex) SearchDiskANN(ctx context.Context, query []float32, options DiskANNSearchOptions) ([]Result, error) {
+	return i.searchDiskANN(ctx, query, options, true)
+}
+
+func (i *DiskANNIndex) searchDiskANN(
+	ctx context.Context,
+	query []float32,
+	options DiskANNSearchOptions,
+	requirePositiveTopK bool,
+) ([]Result, error) {
+	if i == nil {
+		return nil, errors.New("core: nil DiskANN index")
+	}
+	if ctx == nil {
+		return nil, errors.New("core: nil DiskANN search context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if options.ListSize <= 0 || uint64(options.ListSize) > math.MaxUint32 {
+		return nil, ErrInvalidDiskANNListSize
+	}
+	if requirePositiveTopK {
+		if err := options.SearchOptions.Validate(); err != nil {
+			return nil, err
+		}
+	} else {
+		if options.TopK < 0 {
+			return nil, errors.New("core: negative DiskANN top-k")
+		}
+		if options.Radius < 0 || math.IsNaN(float64(options.Radius)) || math.IsInf(float64(options.Radius), 0) {
+			return nil, ErrInvalidRadius
+		}
+	}
+	if len(query) != i.dimension {
+		return nil, fmt.Errorf("%w: query has %d, want %d", ErrInvalidDimension, len(query), i.dimension)
+	}
+	if _, err := i.metric.Compute(query, query); err != nil {
+		return nil, fmt.Errorf("core: validate DiskANN query: %w", err)
+	}
+
+	i.closeMu.RLock()
+	defer i.closeMu.RUnlock()
+	if i.closed {
+		return nil, ErrDiskANNClosed
+	}
+	if options.TopK == 0 || len(i.keys) == 0 {
+		return []Result{}, nil
+	}
+	if options.Linear {
+		return i.searchDiskANNLinear(ctx, query, options.SearchOptions)
+	}
+	return i.searchDiskANNGraph(ctx, query, options)
+}
+
+func (i *DiskANNIndex) searchDiskANNLinear(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {
+	collector := newDiskANNResultCollector(i.metric, options)
+	batchSize := i.diskANNReadBatchSize()
+	for start := 0; start < len(i.keys); start += batchSize {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		end := min(len(i.keys), start+batchSize)
+		ids := make([]uint32, end-start)
+		for offset := range ids {
+			ids[offset] = uint32(start + offset)
+		}
+		nodes, err := i.nodes.ReadNodes(ctx, ids)
+		if err != nil {
+			return nil, fmt.Errorf("core: linear DiskANN node read: %w", err)
+		}
+		for _, node := range nodes {
+			score, err := i.metric.Compute(query, node.Vector)
+			if err != nil {
+				return nil, err
+			}
+			collector.Add(Result{Key: i.keys[node.ID], Score: score})
+		}
+	}
+	return collector.Results(), nil
+}
+
+type diskANNQueueNode struct {
+	id    uint32
+	score float32
+}
+
+func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, options DiskANNSearchOptions) ([]Result, error) {
+	if i.pq == nil || i.entryPoint < 0 || len(i.codes) == 0 {
+		return nil, errors.New("core: inconsistent non-empty DiskANN traversal state")
+	}
+	prepared := prepareDiskANNPQQuery(query, i.metric)
+	table, err := i.pq.DistanceTable(prepared)
+	if err != nil {
+		return nil, fmt.Errorf("core: build DiskANN PQ distance table: %w", err)
+	}
+	queryNorm := diskANNVectorNormSquared(prepared)
+	capacity := min(len(i.keys), max(options.TopK, options.ListSize))
+	better := func(left, right diskANNQueueNode) bool {
+		if left.score == right.score {
+			return left.id < right.id
+		}
+		return i.traversalMetric.Better(left.score, right.score)
+	}
+	worse := func(left, right diskANNQueueNode) bool { return better(right, left) }
+	frontier := ailego.NewHeap(better)
+	retained := ailego.NewHeap(worse)
+	visited := make([]bool, len(i.keys))
+	retainedMember := make([]bool, len(i.keys))
+	expanded := make([]bool, len(i.keys))
+	entry := uint32(i.entryPoint)
+	entryScore, err := i.diskANNApproximateScore(table, entry, queryNorm)
+	if err != nil {
+		return nil, err
+	}
+	start := diskANNQueueNode{id: entry, score: entryScore}
+	frontier.Push(start)
+	retained.Push(start)
+	visited[entry], retainedMember[entry] = true, true
+	collector := newDiskANNResultCollector(i.metric, options.SearchOptions)
+	beam := i.diskANNReadBatchSize()
+
+	for frontier.Len() != 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		batch := make([]diskANNQueueNode, 0, beam)
+		for frontier.Len() != 0 && len(batch) < cap(batch) {
+			candidate, _ := frontier.Pop()
+			if !retainedMember[candidate.id] || expanded[candidate.id] {
+				continue
+			}
+			expanded[candidate.id] = true
+			batch = append(batch, candidate)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		ids := make([]uint32, len(batch))
+		for position := range batch {
+			ids[position] = batch[position].id
+		}
+		nodes, err := i.nodes.ReadNodes(ctx, ids)
+		if err != nil {
+			return nil, fmt.Errorf("core: DiskANN graph node read: %w", err)
+		}
+		for _, node := range nodes {
+			exact, err := i.metric.Compute(query, node.Vector)
+			if err != nil {
+				return nil, fmt.Errorf("core: score DiskANN node %d: %w", node.ID, err)
+			}
+			collector.Add(Result{Key: i.keys[node.ID], Score: exact})
+			for _, neighbor := range node.Neighbors {
+				if visited[neighbor] {
+					continue
+				}
+				visited[neighbor] = true
+				score, err := i.diskANNApproximateScore(table, neighbor, queryNorm)
+				if err != nil {
+					return nil, fmt.Errorf("core: score DiskANN PQ node %d: %w", neighbor, err)
+				}
+				candidate := diskANNQueueNode{id: neighbor, score: score}
+				if retained.Len() < capacity {
+					retained.Push(candidate)
+					retainedMember[neighbor] = true
+					frontier.Push(candidate)
+					continue
+				}
+				worstNode, _ := retained.Peek()
+				if better(candidate, worstNode) {
+					replaced, _ := retained.Replace(candidate)
+					retainedMember[replaced.id] = false
+					retainedMember[neighbor] = true
+					frontier.Push(candidate)
+				}
+			}
+		}
+	}
+	return collector.Results(), nil
+}
+
+func (i *DiskANNIndex) diskANNApproximateScore(table *PQDistanceTable, id uint32, queryNorm float64) (float32, error) {
+	chunks := i.pq.Chunks()
+	start := int(id) * chunks
+	code := PQCode{modelFingerprint: i.pq.fingerprint, codes: i.codes[start : start+chunks]}
+	score, err := table.Lookup(code)
+	if err != nil {
+		return 0, err
+	}
+	if i.metric != MetricMIPSL2 {
+		return score, nil
+	}
+	candidateNorm := float64(i.codeNorms[id])
+	inner := (queryNorm + candidateNorm - float64(score)) / 2
+	denominator := max(queryNorm, candidateNorm)
+	if denominator == 0 {
+		return 0, nil
+	}
+	converted := 2 - 2*inner/denominator
+	if math.IsNaN(converted) || math.IsInf(converted, 0) || converted > math.MaxFloat32 || converted < -math.MaxFloat32 {
+		return 0, ErrPQScoreOverflow
+	}
+	return float32(converted), nil
+}
+
+func diskANNVectorNormSquared(vector []float32) float64 {
+	var norm float64
+	for _, value := range vector {
+		norm += float64(value) * float64(value)
+	}
+	return norm
+}
+
+func (i *DiskANNIndex) diskANNReadBatchSize() int {
+	sectors := 1
+	if i != nil && i.nodes != nil {
+		sectors = max(1, i.nodes.layout.sectorsPerNode)
+	}
+	return max(1, MaxDiskANNReadSectors/sectors)
+}
+
+type diskANNResultCollector struct {
+	metric  Metric
+	options SearchOptions
+	heap    *ailego.Heap[Result]
+}
+
+func newDiskANNResultCollector(metric Metric, options SearchOptions) *diskANNResultCollector {
+	worse := func(left, right Result) bool {
+		if left.Score == right.Score {
+			return left.Key > right.Key
+		}
+		return metric.Better(right.Score, left.Score)
+	}
+	return &diskANNResultCollector{metric: metric, options: options, heap: ailego.NewHeap(worse)}
+}
+
+func (c *diskANNResultCollector) Add(result Result) {
+	if (c.options.Filter != nil && !c.options.Filter(result.Key)) || !scoreWithinRadius(c.metric, result.Score, c.options.Radius) {
+		return
+	}
+	if c.heap.Len() < c.options.TopK {
+		c.heap.Push(result)
+		return
+	}
+	worst, _ := c.heap.Peek()
+	if resultBetter(c.metric, result, worst) {
+		c.heap.Replace(result)
+	}
+}
+
+func (c *diskANNResultCollector) Results() []Result {
+	results := c.heap.Values()
+	slices.SortFunc(results, func(left, right Result) int {
+		if resultBetter(c.metric, left, right) {
+			return -1
+		}
+		if resultBetter(c.metric, right, left) {
+			return 1
+		}
+		return 0
+	})
+	if results == nil {
+		return []Result{}
+	}
+	return results
+}
+
+// WarmCache follows graph edges breadth-first from the medoid and reads up to
+// count nodes. The effective count never exceeds cache capacity.
+func (i *DiskANNIndex) WarmCache(ctx context.Context, count int) (int, error) {
+	if i == nil {
+		return 0, errors.New("core: nil DiskANN index")
+	}
+	if ctx == nil {
+		return 0, errors.New("core: nil DiskANN cache context")
+	}
+	if count < 0 {
+		return 0, fmt.Errorf("%w: negative cache warm count", ErrInvalidDiskANNOptions)
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	i.closeMu.RLock()
+	defer i.closeMu.RUnlock()
+	if i.closed {
+		return 0, ErrDiskANNClosed
+	}
+	target := min(count, i.nodes.cache.Capacity(), len(i.keys))
+	if target == 0 {
+		return 0, nil
+	}
+	visited := make([]bool, len(i.keys))
+	queue := []uint32{uint32(i.entryPoint)}
+	visited[i.entryPoint] = true
+	warmed := 0
+	for len(queue) != 0 && warmed < target {
+		batchCount := min(i.diskANNReadBatchSize(), target-warmed, len(queue))
+		ids := slices.Clone(queue[:batchCount])
+		queue = queue[batchCount:]
+		nodes, err := i.nodes.ReadNodes(ctx, ids)
+		if err != nil {
+			return warmed, err
+		}
+		warmed += len(nodes)
+		for _, node := range nodes {
+			for _, neighbor := range node.Neighbors {
+				if !visited[neighbor] {
+					visited[neighbor] = true
+					queue = append(queue, neighbor)
+				}
+			}
+		}
+	}
+	return warmed, nil
+}
+
+var (
+	_ DenseProvider      = (*DiskANNIndex)(nil)
+	_ DenseSearcher      = (*DiskANNIndex)(nil)
+	_ DenseQuerySearcher = (*DiskANNIndex)(nil)
 )
 
 const (
