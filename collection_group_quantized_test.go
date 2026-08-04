@@ -240,6 +240,177 @@ func TestCollectionSparseFP16LinearGroupByAndRefinement(t *testing.T) {
 	}
 }
 
+func TestCollectionNativeDenseHNSWGroupBy(t *testing.T) {
+	hnsw := NewHNSWIndexParams(MetricTypeL2)
+	hnsw.M, hnsw.EFConstruction = 4, 16
+	quantized := hnsw
+	quantized.Quantize = QuantizeTypeInt8
+	quantized.Quantizer.EnableRotate = true
+	rabitq := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	rabitq.TotalBits, rabitq.NumClusters, rabitq.SampleCount = 5, 1, 8
+	rabitq.M, rabitq.EFConstruction = 4, 16
+
+	tests := []struct {
+		name   string
+		index  IndexParams
+		params func(linear bool) QueryParams
+	}{
+		{
+			name: "HNSW", index: hnsw,
+			params: func(linear bool) QueryParams {
+				params := NewHNSWQueryParams()
+				params.EF, params.Linear = 4, linear
+				return params
+			},
+		},
+		{
+			name: "HNSW INT8", index: quantized,
+			params: func(linear bool) QueryParams {
+				params := NewHNSWQueryParams()
+				params.EF, params.Linear = 4, linear
+				return params
+			},
+		},
+		{
+			name: "HNSW RaBitQ", index: rabitq,
+			params: func(linear bool) QueryParams {
+				params := NewHNSWRaBitQQueryParams()
+				params.EF, params.Linear = 4, linear
+				return params
+			},
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "collection")
+			schema := NewCollectionSchema("native_dense_groups",
+				FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 64, Index: testCase.index},
+				FieldSchema{Name: "group", DataType: DataTypeString},
+			)
+			collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			documents := make([]Document, 8)
+			for position := range documents {
+				value, group := float32(position)/10, "near"
+				if position == 6 {
+					value, group = 10, "middle"
+				} else if position == 7 {
+					value, group = 20, "far"
+				}
+				vector := make(VectorFP32, 64)
+				for dimension := range vector {
+					vector[dimension] = value + float32(dimension%3)/1000
+				}
+				documents[position] = Document{PrimaryKey: fmt.Sprintf("d%d", position), Fields: map[string]any{
+					"embedding": vector, "group": group,
+				}}
+			}
+			if _, err := collection.Insert(ctx, documents); err != nil {
+				t.Fatal(err)
+			}
+			query := GroupByVectorQuery{
+				Field: "embedding", DenseVector: make(VectorFP32, 64),
+				GroupByField: "group", GroupCount: 3, TopKPerGroup: 1,
+			}
+			query.Params = testCase.params(false)
+			native, err := collection.GroupByQuery(ctx, query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			query.Params = testCase.params(true)
+			linear, err := collection.GroupByQuery(ctx, query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(native, linear) {
+				t.Fatalf("native groups = %#v, linear groups = %#v", native, linear)
+			}
+			if err := collection.Close(); err != nil {
+				t.Fatal(err)
+			}
+			collection, err = Open(ctx, path, NewCollectionOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer collection.Close()
+			query.Params = testCase.params(false)
+			reopened, err := collection.GroupByQuery(ctx, query)
+			if err != nil || !reflect.DeepEqual(reopened, native) {
+				t.Fatalf("reopened native groups = %#v, %v; before %#v", reopened, err, native)
+			}
+		})
+	}
+}
+
+func TestCollectionNativeSparseHNSWGroupBy(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "collection")
+	index := NewHNSWIndexParams(MetricTypeIP)
+	index.M, index.EFConstruction, index.Quantize = 4, 16, QuantizeTypeFP16
+	schema := NewCollectionSchema("native_sparse_groups",
+		FieldSchema{Name: "sparse", DataType: DataTypeSparseVectorFP32, Index: index},
+		FieldSchema{Name: "group", DataType: DataTypeString},
+	)
+	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	documents := make([]Document, 8)
+	for position := range documents {
+		value, group := float32(10-position)+.1234, "hot"
+		if position == 6 {
+			value, group = 2.1234, "warm"
+		} else if position == 7 {
+			value, group = 1.1234, "cold"
+		}
+		documents[position] = Document{PrimaryKey: fmt.Sprintf("s%d", position), Fields: map[string]any{
+			"sparse": SparseVectorFP32{Indices: []uint32{0, 3}, Values: []float32{value, value / 2}},
+			"group":  group,
+		}}
+	}
+	if _, err := collection.Insert(ctx, documents); err != nil {
+		t.Fatal(err)
+	}
+	query := GroupByVectorQuery{
+		Field: "sparse", SparseVector: SparseVectorFP32{Indices: []uint32{0, 3}, Values: []float32{1, .5}},
+		GroupByField: "group", GroupCount: 3, TopKPerGroup: 1,
+	}
+	params := NewHNSWQueryParams()
+	params.EF = 4
+	query.Params = params
+	native, err := collection.GroupByQuery(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.Linear = true
+	query.Params = params
+	linear, err := collection.GroupByQuery(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(native, linear) {
+		t.Fatalf("native sparse groups = %#v, linear groups = %#v", native, linear)
+	}
+	if err := collection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer collection.Close()
+	params.Linear = false
+	query.Params = params
+	reopened, err := collection.GroupByQuery(ctx, query)
+	if err != nil || !reflect.DeepEqual(reopened, native) {
+		t.Fatalf("reopened native sparse groups = %#v, %v; before %#v", reopened, err, native)
+	}
+}
+
 func assertCollectionGroupsMatchResults(
 	t testing.TB,
 	got []GroupResult,

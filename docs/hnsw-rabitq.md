@@ -48,9 +48,11 @@ to provide deterministic small-collection behavior.
 Collection maps `HNSWRaBitQQueryParams.EF`, `QueryOptions.Linear`, and
 `QueryOptions.UseRefiner` directly to these controls. CreateIndex validates a
 concurrent snapshot backfill before the schema version is published; Optimize,
-Stats, filters, radius, and reopen use the same index semantics. Group-by over
-RaBitQ codes is available with explicit Linear execution, and `UseRefiner`
-switches that full scan to exact original-vector group scores.
+Stats, filters, radius, and reopen use the same index semantics. Non-Linear
+group-by traverses the HNSW graph with RaBitQ estimates and expands level zero
+when the initial grouped candidates lack enough distinct values. Explicit
+Linear group-by scans every RaBitQ code, and `UseRefiner` switches that full
+scan to exact original-vector group scores.
 
 ## Native persistence
 

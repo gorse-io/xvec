@@ -27,6 +27,7 @@ import (
 var (
 	ErrInvalidGroupCount = errors.New("core: group count must be positive")
 	ErrInvalidGroupTopK  = errors.New("core: per-group top-k must be positive")
+	ErrGroupSizeOverflow = errors.New("core: group candidate count overflows int")
 	ErrNilGroupResolver  = errors.New("core: nil group resolver")
 )
 

@@ -33,11 +33,12 @@ collection segments is a later lifecycle optimization.
 DiskANN accepts public FP16, INT8, and INT4 `Quantize` settings on FP32 fields.
 The scalar representation supplies graph-build vectors and public first-stage
 scores, while its required internal PQ remains controlled independently by
-`PQChunks`; optional refinement reads retained original vectors. ANN group-by
-traversal is still deferred: an HNSW, HNSW-RaBitQ, IVF, Vamana, or DiskANN
-group query must set `Linear`. Flat and explicit Linear group-by honor the
-configured scalar/RaBitQ representation or exact original-vector refinement.
-IVF's
+`PQChunks`; optional refinement reads retained original vectors. Dense,
+scalar-quantized, sparse, and RaBitQ HNSW indexes execute native non-Linear
+group traversal. IVF, Vamana, and DiskANN reject non-Linear group-by, matching
+the pinned baseline; callers can request their explicit `Linear` full scan.
+Flat and explicit Linear group-by honor the configured scalar/RaBitQ
+representation or exact original-vector refinement. IVF's
 alternate SOAR memory layout is also rejected explicitly; the current IVF
 runtime uses its native row-major layout. HNSW's contiguous-memory request is
 satisfied by the Go flat backing slice.
@@ -58,6 +59,13 @@ the implementation performs deterministic synchronous cache-line touches.
 Automatic line count uses the vector footprint, and explicit or automatic
 counts are capped at 256 lines, matching the pinned baseline bound. These
 performance hints cannot change results.
+
+Native HNSW group-by first retains `GroupCount * TopKPerGroup` graph
+candidates. If those candidates do not cover enough distinct groups, a second
+best-first level-zero expansion continues from them until it reaches the group
+limit or exhausts the connected component. Candidate filters and radius use
+the configured first-stage representation, rejected nodes remain traversal
+bridges, and equal scores use document keys for deterministic ordering.
 
 For Flat/HNSW/IVF/Vamana/DiskANN, setting `Linear` builds the matching Flat
 representation and scans it instead of entering the graph or lists.
@@ -88,6 +96,8 @@ the same no-scale-factor candidate behavior as dense HNSW; both recompute exact
 inner products from retained original sparse vectors. Query and MultiQuery use
 this path. Flat or explicit Linear group-by scans all live candidates and
 therefore can apply exact dense or sparse refinement without losing groups.
+Non-Linear HNSW group-by rejects `UseRefiner`, as in the pinned baseline;
+setting `Linear` makes the requested original-vector refinement explicit.
 DiskANN uses `floor(TopK*10)` candidates when `UseRefiner` is enabled, then
 reads its original FP32 vectors for exact final metric scoring.
 
@@ -106,5 +116,6 @@ Tests cover parameter mismatch and upper bounds, filtered/radius HNSW,
 HNSW-RaBitQ, Vamana, and DiskANN recall against explicit Linear truth,
 prefetch result invariance, full-probe IVF, FP16/INT8/INT4 and RaBitQ scoring,
 deterministic rotation, exact refinement, sparse FP16 HNSW parity below the
-exact threshold, sparse FP16 original-vector refinement, DDL rollback,
-Optimize, Stats, reopen, and explicit unsupported group paths.
+exact threshold, sparse FP16 original-vector refinement, native HNSW group
+expansion across original/scalar/sparse/RaBitQ representations, DDL rollback,
+Optimize, Stats, reopen, and baseline-compatible unsupported group paths.

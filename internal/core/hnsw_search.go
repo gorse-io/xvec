@@ -79,6 +79,77 @@ func (i *HNSWIndex) SearchHNSW(ctx context.Context, query []float32, options HNS
 	return i.searchHNSW(ctx, query, options, true)
 }
 
+// SearchHNSWGroups performs native HNSW group traversal. It retains an
+// initial groupCount*topKPerGroup candidate set and expands level zero when
+// those candidates do not contain enough distinct groups.
+func (i *HNSWIndex) SearchHNSWGroups(
+	ctx context.Context,
+	query []float32,
+	options HNSWGroupSearchOptions,
+) ([]GroupResult, error) {
+	if i == nil {
+		return nil, errors.New("core: nil HNSW index")
+	}
+	if ctx == nil {
+		return nil, errors.New("core: nil HNSW group-by context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(query) != i.dimension {
+		return nil, fmt.Errorf("%w: query has %d, want %d", ErrInvalidDimension, len(query), i.dimension)
+	}
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
+	if _, err := i.options.Metric.Compute(query, query); err != nil {
+		return nil, fmt.Errorf("core: validate HNSW group-by query: %w", err)
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if len(i.keys) == 0 {
+		return []GroupResult{}, nil
+	}
+	candidateCount, err := hnswGroupCandidateCount(options.GroupByOptions)
+	if err != nil {
+		return nil, err
+	}
+	entry := i.entryPoint
+	for level := i.maxLevel; level > 0; level-- {
+		nearest, err := i.searchHNSWLayer(ctx, query, []int{entry}, 1, level)
+		if err != nil {
+			return nil, fmt.Errorf("core: descend HNSW group-by level %d: %w", level, err)
+		}
+		if len(nearest) != 0 {
+			entry = nearest[0].position
+		}
+	}
+	searchOptions := HNSWSearchOptions{
+		SearchOptions: SearchOptions{
+			TopK: candidateCount, Radius: options.Radius, Filter: options.Filter,
+		},
+		EF: options.EF, PrefetchOffset: options.PrefetchOffset, PrefetchLines: options.PrefetchLines,
+	}
+	initial, err := i.searchHNSWBase(ctx, query, entry, max(options.EF, candidateCount), searchOptions)
+	if err != nil {
+		return nil, err
+	}
+	if len(initial) > candidateCount {
+		initial = initial[:candidateCount]
+	}
+	scoreAt := func(position int) (float32, error) {
+		return i.options.Metric.Compute(query, i.vectorAt(position))
+	}
+	prefetch := func(neighbors []int) {
+		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
+	}
+	return expandHNSWGroups(
+		ctx, i.options.Metric, i.keys, i.neighbors, initial, options.GroupByOptions,
+		scoreAt, func(score float32) float32 { return score }, groupNodeBetter(i.options.Metric, i.keys), prefetch,
+	)
+}
+
 func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNSWSearchOptions, requirePositiveTopK bool) ([]Result, error) {
 	if i == nil {
 		return nil, errors.New("core: nil HNSW index")

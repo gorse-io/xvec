@@ -974,11 +974,20 @@ func TestCollectionANNValidationAndBackfillRollback(t *testing.T) {
 	}); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("oversized HNSW EF error = %v", err)
 	}
-	if _, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
+	groups, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 2, 3, 4},
 		GroupByField: "group", GroupCount: 1, TopKPerGroup: 1,
+	})
+	if err != nil || len(groups) != 1 || groups[0].Value != "g" {
+		t.Fatalf("HNSW group-by = %#v, %v", groups, err)
+	}
+	refined := NewHNSWQueryParams()
+	refined.UseRefiner = true
+	if _, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
+		Field: "embedding", DenseVector: VectorFP32{1, 2, 3, 4}, Params: refined,
+		GroupByField: "group", GroupCount: 1, TopKPerGroup: 1,
 	}); !errors.Is(err, ErrNotSupported) {
-		t.Fatalf("ANN group-by error = %v", err)
+		t.Fatalf("refined HNSW group-by error = %v", err)
 	}
 	linear := NewHNSWQueryParams()
 	linear.Linear = true
@@ -987,6 +996,72 @@ func TestCollectionANNValidationAndBackfillRollback(t *testing.T) {
 		GroupByField: "group", GroupCount: 1, TopKPerGroup: 1,
 	}); err != nil {
 		t.Fatalf("linear ANN group-by = %v", err)
+	}
+}
+
+func TestCollectionGroupByPreservesUnsupportedANNBoundary(t *testing.T) {
+	tests := []struct {
+		name   string
+		index  IndexParams
+		params func(linear bool) QueryParams
+	}{
+		{
+			name: "IVF", index: NewIVFIndexParams(MetricTypeL2),
+			params: func(linear bool) QueryParams {
+				params := NewIVFQueryParams()
+				params.Linear = linear
+				return params
+			},
+		},
+		{
+			name: "Vamana", index: NewVamanaIndexParams(MetricTypeL2),
+			params: func(linear bool) QueryParams {
+				params := NewVamanaQueryParams()
+				params.Linear = linear
+				return params
+			},
+		},
+		{
+			name: "DiskANN", index: NewDiskANNIndexParams(MetricTypeL2),
+			params: func(linear bool) QueryParams {
+				params := NewDiskANNQueryParams()
+				params.Linear = linear
+				return params
+			},
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := context.Background()
+			schema := NewCollectionSchema("unsupported_native_group",
+				FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Index: testCase.index},
+				FieldSchema{Name: "group", DataType: DataTypeString},
+			)
+			collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "collection"), schema, NewCollectionOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer collection.Close()
+			if _, err := collection.Insert(ctx, []Document{
+				{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{0, 0, 0, 0}, "group": "a"}},
+				{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{1, 1, 1, 1}, "group": "b"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			query := GroupByVectorQuery{
+				Field: "embedding", DenseVector: VectorFP32{0, 0, 0, 0},
+				GroupByField: "group", GroupCount: 2, TopKPerGroup: 1,
+				Params: testCase.params(false),
+			}
+			if _, err := collection.GroupByQuery(ctx, query); !errors.Is(err, ErrNotSupported) {
+				t.Fatalf("native group-by error = %v", err)
+			}
+			query.Params = testCase.params(true)
+			groups, err := collection.GroupByQuery(ctx, query)
+			if err != nil || len(groups) != 2 {
+				t.Fatalf("Linear group-by = %#v, %v", groups, err)
+			}
+		})
 	}
 }
 

@@ -1,10 +1,11 @@
 # Group-by vector query
 
 Dense and sparse Flat indexes can retain the best documents from several
-distinct scalar groups in one query. Collection fields configured with an ANN
-index expose the same complete scan when query parameters explicitly set
-`Linear`; non-Linear ANN group traversal remains a separate unsupported
-operation. Group-by scans every eligible candidate and does not first take a
+distinct scalar groups in one query. Dense, scalar-quantized, sparse, and
+RaBitQ HNSW indexes also support native non-Linear group traversal. IVF,
+Vamana, and DiskANN preserve the pinned baseline's non-Linear group-by
+rejection, while explicit `Linear` parameters request their complete scan.
+Flat and Linear group-by scan every eligible candidate and do not first take a
 global top-k, which could hide all but one group.
 
 `core.GroupByOptions` has the following controls:
@@ -21,6 +22,15 @@ Groups are ordered by their best document. Documents within each group are
 ordered by the vector metric, with ascending document keys breaking equal
 scores. Segment-local results are merged before the global group limit is
 applied, and output is deterministic regardless of segment order.
+
+Native HNSW grouping uses the baseline's two-stage policy. Its first graph
+search retains `GroupCount * TopKPerGroup` candidates with the requested EF.
+If they contain fewer than `GroupCount` distinct values, a best-first
+level-zero expansion continues from those candidates until enough groups are
+found or the component is exhausted. Filter- or radius-rejected nodes remain
+available as traversal bridges. Core callers use `SearchHNSWGroups`,
+`SearchSparseHNSWGroups`, or `SearchHNSWRaBitQGroups` with
+`HNSWGroupSearchOptions`.
 
 ```go
 groups, err := index.SearchGroups(ctx, query, core.GroupByOptions{
@@ -44,5 +54,7 @@ FP16/INT8/INT4 scalar codes and optional rotation for dense vectors, RaBitQ
 codes for HNSW-RaBitQ, FP16-rounded sparse values, or original values when no
 quantizer is configured. With `UseRefiner`, the complete Linear scan instead
 scores retained original dense or sparse vectors before radius admission and
-group retention. Optimize and reopen deterministically reconstruct the same
+group retention. Non-Linear HNSW group-by rejects `UseRefiner` to match the
+pinned baseline; set `Linear` when exact original-vector group scores are
+required. Optimize and reopen deterministically reconstruct the same
 representation and results.

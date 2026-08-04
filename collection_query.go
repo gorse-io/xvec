@@ -237,9 +237,9 @@ func (c *Collection) searchVectorSnapshotResolved(
 	return results, nil
 }
 
-// GroupByQuery executes Flat or explicit Linear group-by search. Groups are
-// selected only after every live candidate has passed scalar and radius
-// filtering.
+// GroupByQuery executes complete Flat/Linear grouping or native HNSW grouping.
+// IVF, Vamana, and DiskANN group traversal remain unsupported to match the
+// pinned native baseline.
 func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery) ([]GroupResult, error) {
 	const op = "group-by query"
 	if c == nil {
@@ -283,9 +283,6 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	if err != nil {
 		return nil, err
 	}
-	if vectorIndex.indexType != IndexTypeFlat && !params.options.Linear {
-		return nil, notSupported(op, c.path, fmt.Sprintf("group-by with %s requires Linear until ANN group traversal is implemented", vectorIndex.indexType))
-	}
 	filterPlan, err := buildFilterPlan(query.Filter, c.schema)
 	if err != nil {
 		return nil, invalidArgument(op, "invalid filter: %v", err)
@@ -301,6 +298,14 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	}
 	if candidateFilter.useBruteForce(runtimeConfig.BruteForceByKeysRatio) {
 		params.options.Linear = true
+	}
+	if !params.options.Linear && vectorIndex.indexType != IndexTypeFlat {
+		if params.options.UseRefiner {
+			return nil, notSupported(op, c.path, "HNSW group-by with a refiner requires Linear")
+		}
+		if vectorIndex.indexType != IndexTypeHNSW && vectorIndex.indexType != IndexTypeHNSWRaBitQ {
+			return nil, notSupported(op, c.path, fmt.Sprintf("group-by is not supported for %s graph traversal", vectorIndex.indexType))
+		}
 	}
 	groupValues := make(map[uint64]string, len(documents))
 	for _, document := range documents {
@@ -332,7 +337,31 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 		if params.options.UseRefiner {
 			searcher, err = buildDenseFlatIndex(ctx, field, metric, documents)
 		} else if vectorIndex.indexType == IndexTypeHNSWRaBitQ {
-			searcher, err = buildCollectionDenseHNSWRaBitQ(ctx, field, documents, vectorIndex, c.queryWorkers())
+			var index *core.HNSWRaBitQIndex
+			index, err = buildCollectionDenseHNSWRaBitQ(ctx, field, documents, vectorIndex, c.queryWorkers())
+			if err == nil {
+				if params.options.Linear {
+					groups, err = index.SearchGroups(ctx, queryVector, options)
+				} else {
+					groups, err = index.SearchHNSWRaBitQGroups(ctx, queryVector, core.HNSWGroupSearchOptions{
+						GroupByOptions: options, EF: params.ef,
+					})
+				}
+			}
+		} else if vectorIndex.indexType == IndexTypeHNSW && !params.options.Linear {
+			var index collectionHNSWIndex
+			index, err = buildCollectionDenseHNSW(ctx, c.schema.Name, field, documents, vectorIndex)
+			if err == nil {
+				groupIndex, compatible := index.(collectionHNSWGroupIndex)
+				if !compatible {
+					err = fmt.Errorf("dense HNSW builder returned an incompatible group searcher")
+				} else {
+					groups, err = groupIndex.SearchHNSWGroups(ctx, queryVector, core.HNSWGroupSearchOptions{
+						GroupByOptions: options, EF: params.ef,
+						PrefetchOffset: params.prefetchOffset, PrefetchLines: params.prefetchLines,
+					})
+				}
+			}
 		} else {
 			var index collectionDenseIndex
 			index, err = buildCollectionDenseFlat(ctx, c.schema.Name, field, documents, vectorIndex)
@@ -347,9 +376,11 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}
-		groups, err = searcher.SearchGroups(ctx, queryVector, options)
-		if err != nil {
-			return nil, wrapCollectionError(op, c.path, err)
+		if searcher != nil {
+			groups, err = searcher.SearchGroups(ctx, queryVector, options)
+			if err != nil {
+				return nil, wrapCollectionError(op, c.path, err)
+			}
 		}
 	} else {
 		if query.DenseVector != nil {
@@ -368,12 +399,24 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 			}
 			if err == nil {
 				var index core.SparseQuerySearcher
-				index, err = buildCollectionSparseIndex(ctx, field, documents, vectorIndex, true)
+				index, err = buildCollectionSparseIndex(ctx, field, documents, vectorIndex, params.options.Linear)
 				if err == nil {
-					var compatible bool
-					searcher, compatible = index.(core.SparseGroupSearcher)
-					if !compatible {
-						err = fmt.Errorf("sparse Flat builder returned an incompatible group searcher")
+					if !params.options.Linear {
+						hnsw, compatible := index.(*core.SparseHNSWIndex)
+						if !compatible {
+							err = fmt.Errorf("sparse HNSW builder returned an incompatible group searcher")
+						} else {
+							groups, err = hnsw.SearchSparseHNSWGroups(ctx, queryVector, core.HNSWGroupSearchOptions{
+								GroupByOptions: options, EF: params.ef,
+								PrefetchOffset: params.prefetchOffset, PrefetchLines: params.prefetchLines,
+							})
+						}
+					} else {
+						var compatible bool
+						searcher, compatible = index.(core.SparseGroupSearcher)
+						if !compatible {
+							err = fmt.Errorf("sparse Flat builder returned an incompatible group searcher")
+						}
 					}
 				}
 			}
@@ -381,9 +424,11 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}
-		groups, err = searcher.SearchSparseGroups(ctx, queryVector, options)
-		if err != nil {
-			return nil, wrapCollectionError(op, c.path, err)
+		if searcher != nil {
+			groups, err = searcher.SearchSparseGroups(ctx, queryVector, options)
+			if err != nil {
+				return nil, wrapCollectionError(op, c.path, err)
+			}
 		}
 	}
 	return c.materializeGroups(documents, groups, query.Projection)

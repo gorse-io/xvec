@@ -118,6 +118,71 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSW(ctx context.Context, query []float
 	return i.search(ctx, query, options, true)
 }
 
+// SearchHNSWGroups traverses the HNSW topology with scalar-code scores and
+// expands level zero when the first candidate set lacks enough groups.
+func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
+	ctx context.Context,
+	query []float32,
+	options HNSWGroupSearchOptions,
+) ([]GroupResult, error) {
+	if i == nil || i.base == nil || i.vectors == nil {
+		return nil, errors.New("core: nil scalar-quantized HNSW index")
+	}
+	if ctx == nil {
+		return nil, errors.New("core: nil scalar-quantized HNSW group-by context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
+	queryCode, err := i.vectors.quantizedQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	if len(i.vectors.keys) == 0 {
+		return []GroupResult{}, nil
+	}
+	candidateCount, err := hnswGroupCandidateCount(options.GroupByOptions)
+	if err != nil {
+		return nil, err
+	}
+	scoreAt := func(position int) (float32, error) {
+		return QuantizedDistance(i.vectors.metric, i.vectors.codes[position], queryCode)
+	}
+	entry := i.base.entryPoint
+	for level := i.base.maxLevel; level > 0; level-- {
+		nearest, err := i.searchLayer(ctx, []int{entry}, 1, level, scoreAt)
+		if err != nil {
+			return nil, fmt.Errorf("core: descend scalar-quantized HNSW group-by level %d: %w", level, err)
+		}
+		if len(nearest) != 0 {
+			entry = nearest[0].position
+		}
+	}
+	searchOptions := HNSWSearchOptions{
+		SearchOptions: SearchOptions{
+			TopK: candidateCount, Radius: options.Radius, Filter: options.Filter,
+		},
+		EF: options.EF, PrefetchOffset: options.PrefetchOffset, PrefetchLines: options.PrefetchLines,
+	}
+	initial, err := i.searchBase(ctx, entry, max(options.EF, candidateCount), searchOptions, scoreAt)
+	if err != nil {
+		return nil, err
+	}
+	if len(initial) > candidateCount {
+		initial = initial[:candidateCount]
+	}
+	prefetch := func(neighbors []int) {
+		prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
+	}
+	return expandHNSWGroups(
+		ctx, i.vectors.metric, i.vectors.keys, i.base.neighbors, initial, options.GroupByOptions,
+		scoreAt, func(score float32) float32 { return score }, groupNodeBetter(i.vectors.metric, i.vectors.keys), prefetch,
+	)
+}
+
 func (i *ScalarQuantizedHNSWIndex) search(
 	ctx context.Context,
 	query []float32,

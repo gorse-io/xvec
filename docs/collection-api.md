@@ -48,9 +48,12 @@ unquantized candidates with retained original sparse vectors. IVF SOAR returns
 
 `GroupByQuery` retains a top-k per filtered scalar group and ranks groups by
 their best document. Flat and explicit `Linear` queries support configured
-dense scalar codes, RaBitQ, sparse FP16, and original-vector refinement. ANN
-group-by without `Linear` remains unsupported; the library never silently
-substitutes a full scan for graph traversal.
+dense scalar codes, RaBitQ, sparse FP16, and original-vector refinement. Dense,
+scalar-quantized, sparse, and RaBitQ HNSW fields also support native non-Linear
+group traversal. IVF, Vamana, and DiskANN preserve the pinned baseline's
+non-Linear group-by rejection; the library never silently substitutes a full
+scan for those algorithms. HNSW group-by with `UseRefiner` requires explicit
+`Linear` execution.
 
 `MultiQuery` evaluates two or more dense-vector, sparse-vector, or FTS
 branches over one immutable live snapshot with a shared SQL filter. A nil

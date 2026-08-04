@@ -6,6 +6,12 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added native dense, scalar-quantized, sparse, and RaBitQ HNSW GroupByQuery
+  traversal with baseline-compatible candidate sizing and level-zero expansion
+  for missing groups, including EF/prefetch controls, filters, radius,
+  deterministic ties, Linear truth parity, cancellation, and reopen coverage.
+  IVF, Vamana, and DiskANN retain the pinned baseline's explicit non-Linear
+  group-by rejection.
 - Enabled scalar-quantized and original-vector-refined GroupByQuery execution
   for Flat indexes and explicit Linear ANN queries, including FP16/INT8/INT4,
   RaBitQ, sparse FP16, filters, radius, deterministic grouping, Optimize, and

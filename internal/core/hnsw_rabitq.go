@@ -402,6 +402,78 @@ func (i *HNSWRaBitQIndex) SearchHNSWRaBitQ(ctx context.Context, query []float32,
 	return i.search(ctx, query, options, true)
 }
 
+// SearchHNSWRaBitQGroups performs native HNSW traversal with RaBitQ estimates
+// and expands level zero when the initial candidates lack enough groups.
+func (i *HNSWRaBitQIndex) SearchHNSWRaBitQGroups(
+	ctx context.Context,
+	vector []float32,
+	options HNSWGroupSearchOptions,
+) ([]GroupResult, error) {
+	if i == nil {
+		return nil, errors.New("core: nil HNSW-RaBitQ index")
+	}
+	if ctx == nil {
+		return nil, errors.New("core: nil HNSW-RaBitQ group-by context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if err := validateHNSWRaBitQGeneration(i); err != nil {
+		return nil, err
+	}
+	query, err := i.model.PrepareQuery(vector)
+	if err != nil {
+		return nil, fmt.Errorf("core: prepare HNSW-RaBitQ group-by query: %w", err)
+	}
+	if len(i.codes) == 0 {
+		return []GroupResult{}, nil
+	}
+	candidateCount, err := hnswGroupCandidateCount(options.GroupByOptions)
+	if err != nil {
+		return nil, err
+	}
+	entry := i.base.entryPoint
+	for level := i.base.maxLevel; level > 0; level-- {
+		entry, err = i.searchRaBitQLayer(ctx, query, entry, level)
+		if err != nil {
+			return nil, fmt.Errorf("core: descend HNSW-RaBitQ group-by level %d: %w", level, err)
+		}
+	}
+	searchOptions := SearchOptions{
+		TopK: candidateCount, Radius: options.Radius, Filter: options.Filter,
+	}
+	initial, err := i.searchRaBitQBase(ctx, query, entry, max(options.EF, candidateCount), searchOptions)
+	if err != nil {
+		return nil, err
+	}
+	if len(initial) > candidateCount {
+		initial = initial[:candidateCount]
+	}
+	scoreAt := func(position int) (float32, error) {
+		estimate, err := query.Estimate(i.codes[position])
+		if err != nil {
+			return 0, err
+		}
+		return estimate.Distance, nil
+	}
+	better := func(left, right hnswScoredNode) bool {
+		if left.score == right.score {
+			return i.base.keys[left.position] < i.base.keys[right.position]
+		}
+		return left.score < right.score
+	}
+	return expandHNSWGroups(
+		ctx, i.options.Metric, i.base.keys, i.base.neighbors, initial, options.GroupByOptions,
+		scoreAt, i.publicRaBitQScore, better, nil,
+	)
+}
+
 // SearchGroups performs an exact scan over the immutable RaBitQ codes and
 // groups the resulting public approximation scores.
 func (i *HNSWRaBitQIndex) SearchGroups(

@@ -247,6 +247,11 @@ type collectionHNSWIndex interface {
 	SearchHNSW(ctx context.Context, query []float32, options core.HNSWSearchOptions) ([]core.Result, error)
 }
 
+type collectionHNSWGroupIndex interface {
+	collectionHNSWIndex
+	SearchHNSWGroups(ctx context.Context, query []float32, options core.HNSWGroupSearchOptions) ([]core.GroupResult, error)
+}
+
 type collectionIVFIndex interface {
 	collectionDenseIndex
 	SearchIVF(ctx context.Context, query []float32, options core.IVFSearchOptions) ([]core.Result, error)

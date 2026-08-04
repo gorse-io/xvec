@@ -49,6 +49,73 @@ func (i *SparseHNSWIndex) SearchSparseHNSW(ctx context.Context, query SparseVect
 	return i.searchSparseHNSW(ctx, query, options, true)
 }
 
+// SearchSparseHNSWGroups performs native sparse HNSW group traversal and
+// expands level zero when the initial candidates do not cover enough groups.
+func (i *SparseHNSWIndex) SearchSparseHNSWGroups(
+	ctx context.Context,
+	query SparseVector,
+	options HNSWGroupSearchOptions,
+) ([]GroupResult, error) {
+	if i == nil {
+		return nil, errors.New("core: nil sparse HNSW index")
+	}
+	if ctx == nil {
+		return nil, errors.New("core: nil sparse HNSW group-by context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
+	if _, err := sparseHNSWScore(query, SparseVector{}); err != nil {
+		return nil, fmt.Errorf("core: validate sparse HNSW group-by query: %w", err)
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if len(i.keys) == 0 {
+		return []GroupResult{}, nil
+	}
+	candidateCount, err := hnswGroupCandidateCount(options.GroupByOptions)
+	if err != nil {
+		return nil, err
+	}
+	entry := i.entryPoint
+	for level := i.maxLevel; level > 0; level-- {
+		nearest, err := i.searchLayer(ctx, query, []int{entry}, 1, level)
+		if err != nil {
+			return nil, fmt.Errorf("core: descend sparse HNSW group-by level %d: %w", level, err)
+		}
+		if len(nearest) != 0 {
+			entry = nearest[0].position
+		}
+	}
+	searchOptions := HNSWSearchOptions{
+		SearchOptions: SearchOptions{
+			TopK: candidateCount, Radius: options.Radius, Filter: options.Filter,
+		},
+		EF: options.EF, PrefetchOffset: options.PrefetchOffset, PrefetchLines: options.PrefetchLines,
+	}
+	initial, err := i.searchBase(ctx, query, entry, max(options.EF, candidateCount), searchOptions)
+	if err != nil {
+		return nil, err
+	}
+	if len(initial) > candidateCount {
+		initial = initial[:candidateCount]
+	}
+	scoreAt := func(position int) (float32, error) {
+		return sparseHNSWScore(query, i.sparseVectorAt(position))
+	}
+	prefetch := func(neighbors []int) {
+		prefetchSparseHNSWNeighbors(i.offsets, i.indices, i.values, neighbors, options.PrefetchOffset, options.PrefetchLines)
+	}
+	return expandHNSWGroups(
+		ctx, MetricIP, i.keys, i.neighbors, initial, options.GroupByOptions,
+		scoreAt, func(score float32) float32 { return score }, groupNodeBetter(MetricIP, i.keys), prefetch,
+	)
+}
+
 func (i *SparseHNSWIndex) searchSparseHNSW(ctx context.Context, query SparseVector, options HNSWSearchOptions, requirePositiveTopK bool) ([]Result, error) {
 	if i == nil {
 		return nil, errors.New("core: nil sparse HNSW index")
