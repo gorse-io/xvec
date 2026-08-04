@@ -1,10 +1,10 @@
 # Dense HNSW construction
 
 This independently gated v0.3 unit adds deterministic dense HNSW graph
-construction to `internal/core`. It deliberately exposes topology and original
-vector providers only. Graph search, persistence/reopen, incremental writes,
-and collection orchestration remain separate units, so the public collection
-layer continues returning `ErrNotSupported` for HNSW.
+construction to `internal/core`. Graph search is now implemented by the next
+unit; persistence/reopen, incremental writes, and collection orchestration
+remain separate, so the public collection layer continues returning
+`ErrNotSupported` for HNSW.
 
 ## Build contract
 
@@ -50,7 +50,7 @@ entry point only when it introduces a strictly higher level.
 `HNSWIndex` retains originals contiguously and currently implements
 `DenseProvider`. `Vector`, `Level`, `EntryPoint`, `MaxLevel`, and `Neighbors`
 allow tests and later codecs to inspect the graph without exposing mutable
-storage. Search methods are intentionally absent until the next unit.
+storage. The separately documented search unit traverses this topology.
 
 Tests cover all dense metrics, defaults and invalid parameters, empty and
 single-node graphs, entry/level/degree/reference invariants, duplicate and

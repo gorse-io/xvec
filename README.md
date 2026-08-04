@@ -78,7 +78,9 @@ execution path until query controls, filtering, refinement, and lifecycle
 orchestration are integrated without fallback.
 Deterministic dense HNSW level assignment, bounded construction search,
 diversity pruning, reverse-edge maintenance, and topology inspection are now
-present as the first independently gated HNSW unit.
+present internally. Metric-aware graph search adds the baseline exact
+small-segment threshold, configurable EF, selective filtering, radius, and
+deterministic result ordering.
 
 The current library version is `v0.2.0`; its exact support boundary is recorded
 in the [v0.2 capability matrix](docs/v0.2.md) and [changelog](CHANGELOG.md).
@@ -153,6 +155,7 @@ are exercised by `go test ./...`.
 - [IVF persistence and reopen](docs/ivf-persistence.md)
 - [IVF incremental writes](docs/ivf-incremental.md)
 - [Dense HNSW construction](docs/hnsw-build.md)
+- [Dense HNSW search](docs/hnsw-search.md)
 
 ## License
 
