@@ -77,6 +77,8 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 	if i == nil {
 		return nil, errors.New("core: nil HNSW index")
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	if ctx == nil {
 		return nil, errors.New("core: nil HNSW search context")
 	}

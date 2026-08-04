@@ -2,9 +2,9 @@
 
 This independently gated v0.3 unit gives the dense HNSW graph its native Go
 disk format. The artifact is intentionally incompatible with the C++
-collection layout. Incremental graph writes and collection-level HNSW routing
-remain separate units, so the public collection API still reports HNSW as
-unsupported.
+collection layout. Incremental graph writes are now implemented by the next
+unit; collection-level HNSW routing remains separate, so the public collection
+API still reports HNSW as unsupported.
 
 ## File contract
 

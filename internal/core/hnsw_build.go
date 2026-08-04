@@ -192,8 +192,11 @@ func (b *HNSWBuilder) Build(ctx context.Context) (*HNSWIndex, error) {
 }
 
 // HNSWIndex stores original FP32 vectors and a bounded multi-layer proximity
-// graph. Search, persistence, and streaming are attached in later units.
+// graph. Readers share one immutable generation while additions publish a
+// complete copy-on-write generation.
 type HNSWIndex struct {
+	streamMu      sync.Mutex
+	mu            sync.RWMutex
 	dimension     int
 	options       HNSWBuildOptions
 	keys          []uint64
@@ -227,6 +230,8 @@ func (i *HNSWIndex) Len() int {
 	if i == nil {
 		return 0
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	return len(i.keys)
 }
 
@@ -243,6 +248,8 @@ func (i *HNSWIndex) Vector(key uint64) ([]float32, bool) {
 	if i == nil {
 		return nil, false
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	position, found := i.positions[key]
 	if !found {
 		return nil, false
@@ -256,12 +263,19 @@ func (i *HNSWIndex) MaxLevel() int {
 	if i == nil {
 		return -1
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	return i.maxLevel
 }
 
 // EntryPoint returns the current top-layer entry key.
 func (i *HNSWIndex) EntryPoint() (uint64, bool) {
-	if i == nil || i.entryPoint < 0 {
+	if i == nil {
+		return 0, false
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.entryPoint < 0 {
 		return 0, false
 	}
 	return i.keys[i.entryPoint], true
@@ -272,6 +286,8 @@ func (i *HNSWIndex) Level(key uint64) (int, bool) {
 	if i == nil {
 		return 0, false
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	position, found := i.positions[key]
 	if !found {
 		return 0, false
@@ -284,6 +300,8 @@ func (i *HNSWIndex) Neighbors(key uint64, level int) ([]uint64, error) {
 	if i == nil {
 		return nil, errors.New("core: nil HNSW index")
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	position, found := i.positions[key]
 	if !found {
 		return nil, fmt.Errorf("%w: %d", ErrHNSWKeyNotFound, key)

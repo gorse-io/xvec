@@ -62,7 +62,11 @@ func (i *HNSWIndex) Save(ctx context.Context, path string) error {
 	if path == "" {
 		return fmt.Errorf("%w: empty path", ErrInvalidHNSWFile)
 	}
-	encoded, err := encodeHNSWIndex(ctx, i)
+	snapshot, err := i.persistenceSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	encoded, err := encodeHNSWIndex(ctx, snapshot)
 	if err != nil {
 		return err
 	}
@@ -70,6 +74,15 @@ func (i *HNSWIndex) Save(ctx context.Context, path string) error {
 		return fmt.Errorf("core: save HNSW file: %w", err)
 	}
 	return nil
+}
+
+func (i *HNSWIndex) persistenceSnapshot(ctx context.Context) (*HNSWIndex, error) {
+	if i == nil {
+		return nil, fmt.Errorf("%w: nil index", ErrInvalidHNSWFile)
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return cloneHNSWIndex(ctx, i)
 }
 
 // OpenHNSWIndex reads and fully verifies a native Go HNSW artifact. The
@@ -298,7 +311,10 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 			if !hnswPayloadAvailable(payload, offset, degree*4) {
 				return nil, fmt.Errorf("%w: truncated neighbor positions", ErrInvalidHNSWFile)
 			}
-			neighbors := make([]int, degree)
+			var neighbors []int
+			if degree != 0 {
+				neighbors = make([]int, degree)
+			}
 			seen := make(map[int]struct{}, degree)
 			for neighborIndex := range neighbors {
 				neighbor64 := uint64(binary.LittleEndian.Uint32(payload[offset : offset+4]))
