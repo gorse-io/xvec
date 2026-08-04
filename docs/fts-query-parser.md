@@ -129,9 +129,10 @@ boolean set semantics, repeated-term phrase positions, missing terms, exact
 error priority, ownership, deletion snapshots, seek behavior, cancellation,
 concurrency, fuzzing, and resource bounds.
 
-This iterator intentionally emits matches without scores. BM25 and block-max
-scoring, physical FTS index merging, and Collection integration remain
-subsequent v0.5 units.
+`NewFTSQueryIterator` intentionally remains score-free;
+`NewFTSScoredQueryIterator`, BM25 top-k search, and physical FTS index merging
+are documented separately. Block-max pruning and Collection integration remain
+subsequent v0.5 work.
 
 ```sh
 go test ./internal/core -run '^Test(FTSQuery|LexFTS|ParseFTS|AnalyzeFTS|FTSTokenizer)'

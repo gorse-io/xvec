@@ -149,7 +149,9 @@ deletion-aware cross-segment statistics. A baseline-compatible lexer and
 two-phase parser build analyzed term, phrase, AND, OR, and empty query ASTs
 with source-located errors; an owned canonicalization pass and lazy posting
 iterators execute term, exact-phrase, AND, OR, must, must-not, and deletion
-semantics. None requires CGO.
+semantics. Immutable deletion-aware BM25 scorers provide stable top-k results,
+and streaming native dictionary compaction removes tombstones while preserving
+positions and densely remapping document IDs. None requires CGO.
 
 The current library version is `v0.4.0`; its exact support boundary is recorded
 in the [v0.4 capability matrix](docs/v0.4.md) and [changelog](CHANGELOG.md).
@@ -249,6 +251,7 @@ are exercised by `go test ./...`.
 - [Stemmer token filter](docs/stemmer-token-filter.md)
 - [FTS dictionary, postings, and statistics](docs/fts-postings.md)
 - [FTS query parser and boolean execution](docs/fts-query-parser.md)
+- [BM25 scoring and FTS segment merging](docs/fts-bm25-merge.md)
 
 ## License
 

@@ -36,12 +36,14 @@ type FTSQueryExecutionOptions struct {
 }
 
 // FTSQueryIterator lazily emits exact matching segment-local document IDs in
-// ascending order. This unit intentionally has no score method; BM25 is the
-// next independent FTS unit.
+// ascending order. Iterators built with NewFTSScoredQueryIterator also expose
+// the current document's BM25 score.
 type FTSQueryIterator struct {
 	root         ftsDocumentIterator
 	deletedWords []uint64
+	scorer       *BM25Scorer
 	documentID   uint32
+	score        float32
 	valid        bool
 	err          error
 }
@@ -49,6 +51,26 @@ type FTSQueryIterator struct {
 // NewFTSQueryIterator snapshots and simplifies node, then builds a lazy term,
 // phrase, and boolean iterator tree over dictionary.
 func NewFTSQueryIterator(ctx context.Context, dictionary *FTSTermDictionary, node FTSQueryNode, options FTSQueryExecutionOptions) (*FTSQueryIterator, error) {
+	return newFTSQueryIterator(ctx, dictionary, node, nil, options)
+}
+
+// NewFTSScoredQueryIterator builds an exact iterator whose Score method uses
+// scorer's immutable corpus snapshot. The scorer may describe multiple
+// segments so every segment uses the same live IDF and average length.
+func NewFTSScoredQueryIterator(ctx context.Context, dictionary *FTSTermDictionary, node FTSQueryNode, scorer *BM25Scorer, options FTSQueryExecutionOptions) (*FTSQueryIterator, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("%w: nil context", ErrInvalidFTSQueryExecution)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if scorer == nil {
+		return nil, fmt.Errorf("%w: BM25 scorer is nil", ErrInvalidFTSQueryExecution)
+	}
+	return newFTSQueryIterator(ctx, dictionary, node, scorer, options)
+}
+
+func newFTSQueryIterator(ctx context.Context, dictionary *FTSTermDictionary, node FTSQueryNode, scorer *BM25Scorer, options FTSQueryExecutionOptions) (*FTSQueryIterator, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: nil context", ErrInvalidFTSQueryExecution)
 	}
@@ -69,11 +91,11 @@ func NewFTSQueryIterator(ctx context.Context, dictionary *FTSTermDictionary, nod
 			return nil, fmt.Errorf("%w: deletion is outside the document domain", ErrInvalidFTSQueryExecution)
 		}
 	}
-	iterator := &FTSQueryIterator{deletedWords: deletedWords}
+	iterator := &FTSQueryIterator{deletedWords: deletedWords, scorer: scorer}
 	if simplified.Modifier().MustNot {
 		return iterator, nil
 	}
-	iterator.root, err = buildFTSDocumentIterator(ctx, dictionary, simplified)
+	iterator.root, err = buildFTSDocumentIterator(ctx, dictionary, simplified, scorer)
 	if err != nil {
 		return nil, err
 	}
@@ -92,11 +114,17 @@ func (i *FTSQueryIterator) Next(ctx context.Context) bool {
 			return false
 		}
 		if !ok {
-			i.valid = false
+			i.valid, i.score = false, 0
 			return false
 		}
 		if !ftsDeleted(i.deletedWords, documentID) {
+			score, err := i.root.score(ctx)
+			if err != nil {
+				i.fail(err)
+				return false
+			}
 			i.documentID, i.valid = documentID, true
+			i.score = score
 			return true
 		}
 	}
@@ -118,15 +146,21 @@ func (i *FTSQueryIterator) Advance(ctx context.Context, target uint32) bool {
 			return false
 		}
 		if !ok {
-			i.valid = false
+			i.valid, i.score = false, 0
 			return false
 		}
 		if !ftsDeleted(i.deletedWords, documentID) {
+			score, err := i.root.score(ctx)
+			if err != nil {
+				i.fail(err)
+				return false
+			}
 			i.documentID, i.valid = documentID, true
+			i.score = score
 			return true
 		}
 		if documentID == math.MaxUint32 {
-			i.valid = false
+			i.valid, i.score = false, 0
 			return false
 		}
 		target = documentID + 1
@@ -142,6 +176,15 @@ func (i *FTSQueryIterator) DocumentID() uint32 {
 		return 0
 	}
 	return i.documentID
+}
+
+// Score returns the current BM25 score, or zero for an invalid or unscored
+// iterator.
+func (i *FTSQueryIterator) Score() float32 {
+	if !i.Valid() || i.scorer == nil {
+		return 0
+	}
+	return i.score
 }
 
 // Cost returns the posting-based match-work estimate before deletions.
@@ -183,6 +226,7 @@ func (i *FTSQueryIterator) fail(err error) {
 		i.err = err
 	}
 	i.valid = false
+	i.score = 0
 }
 
 type ftsDocumentIterator interface {
@@ -190,10 +234,14 @@ type ftsDocumentIterator interface {
 	advance(context.Context, uint32) (uint32, bool, error)
 	current() (uint32, bool)
 	cost() uint64
+	score(context.Context) (float32, error)
 }
 
 type ftsTermDocumentIterator struct {
 	posting *FTSPostingIterator
+	scorer  *BM25Scorer
+	idf     float32
+	boost   float32
 }
 
 func (i *ftsTermDocumentIterator) next(ctx context.Context) (uint32, bool, error) {
@@ -230,6 +278,16 @@ func (i *ftsTermDocumentIterator) cost() uint64 {
 	return uint64(i.posting.list.DocumentFrequency())
 }
 
+func (i *ftsTermDocumentIterator) score(ctx context.Context) (float32, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if i == nil || i.scorer == nil || i.posting == nil || !i.posting.Valid() {
+		return 0, nil
+	}
+	return i.scorer.ScoreWithIDFAndBoost(i.idf, i.posting.TermFrequency(), i.posting.DocumentLength(), i.boost), nil
+}
+
 func (i *ftsTermDocumentIterator) positions(ctx context.Context) ([]uint32, error) {
 	if i == nil || i.posting == nil || !i.posting.Valid() {
 		return nil, nil
@@ -242,13 +300,14 @@ func (i *ftsTermDocumentIterator) positions(ctx context.Context) ([]uint32, erro
 type ftsAndDocumentIterator struct {
 	must            []ftsDocumentIterator
 	mustNot         []ftsDocumentIterator
+	should          []ftsDocumentIterator
 	currentDocument uint32
 	valid           bool
 }
 
-func newFTSAndDocumentIterator(must, mustNot []ftsDocumentIterator) *ftsAndDocumentIterator {
+func newFTSAndDocumentIterator(must, mustNot, should []ftsDocumentIterator) *ftsAndDocumentIterator {
 	sort.SliceStable(must, func(left, right int) bool { return must[left].cost() < must[right].cost() })
-	return &ftsAndDocumentIterator{must: must, mustNot: mustNot}
+	return &ftsAndDocumentIterator{must: must, mustNot: mustNot, should: should}
 }
 
 func (i *ftsAndDocumentIterator) next(ctx context.Context) (uint32, bool, error) {
@@ -347,6 +406,35 @@ func (i *ftsAndDocumentIterator) cost() uint64 {
 	return i.must[0].cost()
 }
 
+func (i *ftsAndDocumentIterator) score(ctx context.Context) (float32, error) {
+	if i == nil || !i.valid {
+		return 0, nil
+	}
+	var total float32
+	for _, iterator := range i.must {
+		score, err := iterator.score(ctx)
+		if err != nil {
+			return 0, err
+		}
+		total += score
+	}
+	for _, iterator := range i.should {
+		documentID, ok, err := iterator.advance(ctx, i.currentDocument)
+		if err != nil {
+			return 0, err
+		}
+		if !ok || documentID != i.currentDocument {
+			continue
+		}
+		score, err := iterator.score(ctx)
+		if err != nil {
+			return 0, err
+		}
+		total += score
+	}
+	return total, nil
+}
+
 type ftsOrDocumentIterator struct {
 	children        []ftsDocumentIterator
 	started         bool
@@ -422,6 +510,25 @@ func (i *ftsOrDocumentIterator) cost() uint64 {
 		total += cost
 	}
 	return total
+}
+
+func (i *ftsOrDocumentIterator) score(ctx context.Context) (float32, error) {
+	if i == nil || !i.valid {
+		return 0, nil
+	}
+	var total float32
+	for _, child := range i.children {
+		documentID, ok := child.current()
+		if !ok || documentID != i.currentDocument {
+			continue
+		}
+		score, err := child.score(ctx)
+		if err != nil {
+			return 0, err
+		}
+		total += score
+	}
+	return total, nil
 }
 
 type ftsPhraseTermIterator struct {
@@ -551,7 +658,14 @@ func (i *ftsPhraseDocumentIterator) cost() uint64 {
 	return i.conjunction.cost()
 }
 
-func buildFTSDocumentIterator(ctx context.Context, dictionary *FTSTermDictionary, node FTSQueryNode) (ftsDocumentIterator, error) {
+func (i *ftsPhraseDocumentIterator) score(ctx context.Context) (float32, error) {
+	if i == nil || !i.valid || i.conjunction == nil {
+		return 0, nil
+	}
+	return i.conjunction.score(ctx)
+}
+
+func buildFTSDocumentIterator(ctx context.Context, dictionary *FTSTermDictionary, node FTSQueryNode, scorer *BM25Scorer) (ftsDocumentIterator, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -561,7 +675,10 @@ func buildFTSDocumentIterator(ctx context.Context, dictionary *FTSTermDictionary
 		if !found {
 			return nil, nil
 		}
-		return &ftsTermDocumentIterator{posting: posting.Iterator()}, nil
+		return &ftsTermDocumentIterator{
+			posting: posting.Iterator(), scorer: scorer,
+			idf: ftsTermIDF(scorer, typed.Term), boost: typed.Flags.Boost,
+		}, nil
 	case *FTSPhraseQueryNode:
 		if len(typed.Terms) == 0 {
 			return nil, nil
@@ -578,16 +695,20 @@ func buildFTSDocumentIterator(ctx context.Context, dictionary *FTSTermDictionary
 			if !found {
 				return nil, nil
 			}
-			iterator := &ftsTermDocumentIterator{posting: posting.Iterator()}
+			iterator := &ftsTermDocumentIterator{
+				posting: posting.Iterator(), scorer: scorer,
+				idf: ftsTermIDF(scorer, term), boost: typed.Flags.Boost,
+			}
 			terms[index] = ftsPhraseTermIterator{term: term, iterator: iterator}
 			must[index] = iterator
 		}
-		return &ftsPhraseDocumentIterator{conjunction: newFTSAndDocumentIterator(must, nil), terms: terms}, nil
+		return &ftsPhraseDocumentIterator{conjunction: newFTSAndDocumentIterator(must, nil, nil), terms: terms}, nil
 	case *FTSAndQueryNode:
 		must := make([]ftsDocumentIterator, 0, len(typed.Children))
 		mustNot := make([]ftsDocumentIterator, 0)
+		should := make([]ftsDocumentIterator, 0)
 		for _, child := range typed.Children {
-			iterator, err := buildFTSDocumentIterator(ctx, dictionary, child)
+			iterator, err := buildFTSDocumentIterator(ctx, dictionary, child, scorer)
 			if err != nil {
 				return nil, err
 			}
@@ -600,17 +721,21 @@ func buildFTSDocumentIterator(ctx context.Context, dictionary *FTSTermDictionary
 			}
 			if modifier.MustNot {
 				mustNot = append(mustNot, iterator)
-			} else if !modifier.Should {
+			} else if modifier.Should {
+				if scorer != nil {
+					should = append(should, iterator)
+				}
+			} else {
 				must = append(must, iterator)
 			}
 		}
 		if len(must) == 0 {
 			return nil, nil
 		}
-		if len(must) == 1 && len(mustNot) == 0 {
+		if len(must) == 1 && len(mustNot) == 0 && len(should) == 0 {
 			return must[0], nil
 		}
-		return newFTSAndDocumentIterator(must, mustNot), nil
+		return newFTSAndDocumentIterator(must, mustNot, should), nil
 	case *FTSOrQueryNode:
 		children := make([]ftsDocumentIterator, 0, len(typed.Children))
 		for _, child := range typed.Children {
@@ -618,7 +743,7 @@ func buildFTSDocumentIterator(ctx context.Context, dictionary *FTSTermDictionary
 			if modifier.Must || modifier.MustNot {
 				return nil, fmt.Errorf("%w: non-canonical OR occurrence modifier", ErrInvalidFTSQueryExecution)
 			}
-			iterator, err := buildFTSDocumentIterator(ctx, dictionary, child)
+			iterator, err := buildFTSDocumentIterator(ctx, dictionary, child, scorer)
 			if err != nil {
 				return nil, err
 			}
@@ -639,4 +764,11 @@ func buildFTSDocumentIterator(ctx context.Context, dictionary *FTSTermDictionary
 	default:
 		return nil, fmt.Errorf("%w: unknown node type %T", ErrInvalidFTSQueryExecution, node)
 	}
+}
+
+func ftsTermIDF(scorer *BM25Scorer, term string) float32 {
+	if scorer == nil {
+		return 0
+	}
+	return scorer.TermIDF(term)
 }

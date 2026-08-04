@@ -1,0 +1,36 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "bm25_header_sha256": "eb1a0a292fb8eddb3854b8256b6a0c7ad4920aabaa31a65b53e8fadde0ef0f8a",
+  "bm25_source_sha256": "73a6090ad0f22c7cc67a57dd4b794a00b8a38a1fe80d51d4700833acc1990389",
+  "reducer_header_sha256": "b87f60888e230f39268dea6614d7aadca60f8945bc3bc0862f2fa026d1aeb43b",
+  "reducer_source_sha256": "7bebfd9d410c598e2970c0d3b7331b9623e2b481b28466b2eae7543af7d58b2e",
+  "bm25_cases": [
+    {
+      "name": "frequent-term-long-document",
+      "total_documents": 3,
+      "total_tokens": 8,
+      "document_frequency": 2,
+      "term_frequency": 2,
+      "document_length": 3,
+      "idf": 0.470003629246,
+      "score": 0.624306707526
+    },
+    {
+      "name": "rare-term-short-document",
+      "total_documents": 3,
+      "total_tokens": 8,
+      "document_frequency": 1,
+      "term_frequency": 1,
+      "document_length": 1,
+      "idf": 0.980829253012,
+      "score": 1.317755332291
+    }
+  ],
+  "merge_case": {
+    "source_document_counts": [3, 2],
+    "deleted_document_ids": [[1], [0]],
+    "output_document_count": 3,
+    "output_total_tokens": 6,
+    "output_terms": ["apple", "banana"]
+  }
+}

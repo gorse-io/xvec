@@ -6,6 +6,13 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added immutable baseline-compatible BM25 scoring with deletion-aware
+  cross-segment statistics, scored exact term/phrase/boolean iterators,
+  deterministic bounded top-k search, and streaming native FTS dictionary
+  compaction that removes tombstones, densely remaps document IDs, preserves
+  positions, recomputes maximum tf and statistics, and supports immediate
+  encode/reopen, with compatibility fixtures, fuzzing, race tests, and
+  benchmarks.
 - Added a pure-Go FTS lexer, tokenizer/filter analysis pipeline, and two-phase
   parser for term, phrase, natural-match, explicit and implicit boolean expressions,
   modifiers, grouping, and escapes, with analyzed AST nodes, source-located

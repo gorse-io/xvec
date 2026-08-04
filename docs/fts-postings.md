@@ -85,10 +85,10 @@ tests cover 128-document boundaries, skip seeks, snapshot ownership,
 front-coding, deletion-aware multi-segment totals, concurrent readers,
 structural corruption with repaired checksums, fuzzing, and benchmarks.
 
-BM25 scoring and block-max bounds, physical segment merging, and Collection
-integration remain later v0.5 units. Query lexing, AST canonicalization, and
-term/phrase/boolean execution are documented separately. No placeholder score
-is stored in this format.
+BM25 scoring and native physical segment merging are documented separately.
+Block-max bounds and Collection integration remain later v0.5 work. Query
+lexing, AST canonicalization, and term/phrase/boolean execution are also
+documented separately. No placeholder score is stored in this format.
 
 ```sh
 go test ./internal/core -run '^TestFTS|^TestAggregateFTS'
