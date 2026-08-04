@@ -6,6 +6,11 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added a pure-Go Snowball 3.1.1 stemmer token filter with all 36 pinned
+  algorithms and 115 case-sensitive libstemmer names and aliases, exact
+  cross-language fixtures, explicit invalid-language errors, metadata and
+  ownership preservation, cancellation, concurrency, fuzz, benchmark, and
+  BSD-3-Clause attribution coverage.
 - Added a context-aware ASCII-folding token filter with pinned Unicode 17 NFKD
   mappings, the complete baseline supplemental fold table, byte-preserving
   malformed-UTF-8 fallback, empty-token removal, exhaustive source/effective
