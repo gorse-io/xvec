@@ -1,0 +1,59 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "source_sha256": "1b0962633ddcd1d703d7d86cd5257566b4ebafee8a8c546ba0b4eed4cb151307",
+  "header_sha256": "d1b9d6cd964d2d7bceb538424ce022c3e676784ff47c02400942e00367fc9454",
+  "utf8proc_commit": "e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78",
+  "utf8proc_data_sha256": "950e549dbfc853c4304425f3af1875e72fa9fc9697c273c763400c2da4e380a7",
+  "nfkd_pairs_sha256": "049564e35ef35becd34f82abc578733fc2cacfcaa84960659c741173cc7f5907",
+  "extra_folds_sha256": "b30b3076dea67303cc3e5d2fbdd16097c7deeba255200b63fd41b335346947fd",
+  "effective_pairs_sha256": "d4255c7dfe10844f0d464b8a82a3adc556f7bb42a5c0c39775e8b3516f3a4636",
+  "effective_mapping_count": 2120,
+  "cases": [
+    {
+      "name": "ascii_passthrough",
+      "input_hex": "415343494920313233",
+      "output_hex": "415343494920313233"
+    },
+    {
+      "name": "latin_nfkd",
+      "input_hex": "636166c3a920c39c424552",
+      "output_hex": "636166652055424552"
+    },
+    {
+      "name": "supplementary_folds",
+      "input_hex": "c386c390c398c39ec39fc3a6c3b0c3b8c3be",
+      "output_hex": "4145444f544873736165646f7468"
+    },
+    {
+      "name": "compatibility_decomposition",
+      "input_hex": "efac81efac82efbca1efbc90e291a0e285a3e285a7",
+      "output_hex": "6669666c413031495656494949"
+    },
+    {
+      "name": "unmapped_and_standalone_mark_passthrough",
+      "input_hex": "e4b8ade69687ceac2063616665cc81",
+      "output_hex": "e4b8ade69687ceac2063616665cc81"
+    },
+    {
+      "name": "arrows_and_quotes",
+      "input_hex": "e280b978e280ba20e28690e28692",
+      "output_hex": "3c783e203c2d2d3e"
+    },
+    {
+      "name": "malformed_utf8_byte_fallback",
+      "input_hex": "41c08042e228a143eda08044f490808045f846",
+      "output_hex": "41c08042e228a143eda08044f490808045f846"
+    },
+    {
+      "name": "embedded_nul",
+      "input_hex": "4100c3a942",
+      "output_hex": "41006542"
+    },
+    {
+      "name": "empty_token_removed",
+      "input_hex": "",
+      "output_hex": "",
+      "removed": true
+    }
+  ]
+}

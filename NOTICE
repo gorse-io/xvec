@@ -55,7 +55,8 @@ Homepage: https://www.unicode.org/
 License:  Unicode License V3
 Used in:  internal/core/standard_tokenizer_unicode.go and
           internal/core/ngram_tokenizer_unicode.go and
-          internal/core/lowercase_filter_unicode.go
+          internal/core/lowercase_filter_unicode.go and
+          internal/core/ascii_folding_nfkd.go
 
 The generated standard tokenizer lookup tables are derived from Unicode 17.0.0
 data files: auxiliary/WordBreakProperty.txt, emoji/emoji-data.txt,
@@ -66,6 +67,10 @@ Unicode 17.0.0 data embedded in utf8proc 2.11.3 (commit e5e7992).
 
 The lowercase filter's simple case-mapping ranges are derived from the same
 utf8proc 2.11.3 / Unicode 17.0.0 data.
+
+The ASCII-folding filter's accepted stable NFKD compatibility mappings are
+also derived from that pinned utf8proc / Unicode data. Its supplemental table
+is ported from Apache-licensed zvec source.
 
 Unicode License V3 copyright and permission notice:
 

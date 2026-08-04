@@ -6,6 +6,10 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added a context-aware ASCII-folding token filter with pinned Unicode 17 NFKD
+  mappings, the complete baseline supplemental fold table, byte-preserving
+  malformed-UTF-8 fallback, empty-token removal, exhaustive source/effective
+  mapping identities, concurrency, fuzz, and benchmark coverage.
 - Added a context-aware lowercase token filter with an immutable `TokenFilter`
   contract, exact utf8proc 2.11.3 / Unicode 17 simple mappings, byte-preserving
   malformed-UTF-8 fallback, exhaustive mapping identity, metadata/ownership,
