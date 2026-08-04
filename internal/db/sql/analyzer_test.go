@@ -197,10 +197,8 @@ func TestBuildPlanRejectsSemanticErrorsWithPosition(t *testing.T) {
 		{"u32=-1", "invalid UINT32 literal"},
 		{"active < true", "support"},
 		{"i32 LIKE '1%'", "requires a STRING"},
-		{"data IN ('x')", "does not support BINARY"},
 		{"i32 CONTAIN_ANY (1)", "requires an array"},
 		{"numbers = 1", "supports only"},
-		{"blobs CONTAIN_ALL ('x')", "does not support ARRAY_BINARY"},
 		{"array_length(i32) > 1", "requires an array"},
 		{"array_length(numbers, i32) > 1", "exactly one"},
 		{"array_length(numbers) > '1'", "integer literal"},
@@ -217,6 +215,21 @@ func TestBuildPlanRejectsSemanticErrorsWithPosition(t *testing.T) {
 				t.Fatalf("analysis error = %#v", analysisErr)
 			}
 		})
+	}
+}
+
+func TestBuildPlanBinarySetsAndContain(t *testing.T) {
+	plan, err := BuildPlan("data IN ('x', 'y') AND blobs CONTAIN_ALL ('x', 'z')", testFilterSchema(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]Value{
+		"data":  BinaryValue([]byte("y")),
+		"blobs": mustArray(t, ValueBinary, BinaryValue([]byte("x")), BinaryValue([]byte("z"))),
+	}
+	matched, err := plan.Match(rowResolver(values))
+	if err != nil || !matched {
+		t.Fatalf("binary set/contain matched=%t error=%v", matched, err)
 	}
 }
 

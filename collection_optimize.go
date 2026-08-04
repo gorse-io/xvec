@@ -17,8 +17,6 @@ package zvec
 import (
 	"context"
 	"fmt"
-
-	dbsql "github.com/gorse-io/zvec/internal/db/sql"
 )
 
 // Optimize atomically compacts the current live snapshot into maximally sized
@@ -95,8 +93,8 @@ func optimizableField(field FieldSchema, path string) error {
 		if field.DataType.IsVector() {
 			return invalidArgument("optimize collection", "vector field %q cannot use INVERT", field.Name)
 		}
-		kind, _, supported := filterValueKind(field.DataType)
-		if !supported || kind == dbsql.ValueBinary {
+		_, _, supported := filterValueKind(field.DataType)
+		if !supported {
 			return notSupported("optimize collection", path, fmt.Sprintf("INVERT is not implemented for %s field %q", field.DataType, field.Name))
 		}
 		return nil

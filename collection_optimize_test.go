@@ -291,7 +291,6 @@ func TestOptimizeValidationUnsupportedIndexesAndRollback(t *testing.T) {
 		value any
 	}{
 		{name: "DiskANN scalar quantization", field: FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: quantizedDiskANN}, value: VectorFP32{1, 0}},
-		{name: "binary INVERT", field: FieldSchema{Name: "data", DataType: DataTypeBinary, Index: NewInvertIndexParams()}, value: Binary{1, 2}},
 	}
 	for _, testCase := range unsupported {
 		t.Run(testCase.name, func(t *testing.T) {

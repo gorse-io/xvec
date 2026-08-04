@@ -93,9 +93,6 @@ func NewInvertedIndex(field Field) (*InvertedIndex, error) {
 	if !field.Filterable || !field.Indexed || !field.Kind.valid() {
 		return nil, fmt.Errorf("sql: field %q is not a valid inverted-index field", field.Name)
 	}
-	if field.Kind == ValueBinary {
-		return nil, fmt.Errorf("sql: BINARY inverted indexes are not supported")
-	}
 	return &InvertedIndex{
 		field: field, rows: ailego.NewBitmap(0), nulls: ailego.NewBitmap(0), nonNull: ailego.NewBitmap(0),
 		postings: make(map[scalarKey]*ailego.Bitmap), arrayLength: make(map[uint32]*ailego.Bitmap),

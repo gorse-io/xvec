@@ -265,9 +265,6 @@ func TestInvertedIndexLifecycleAndConcurrentSearch(t *testing.T) {
 	if _, err := NewInvertedIndex(Field{Name: "bad", Kind: ValueInt32, Filterable: true}); err == nil {
 		t.Fatal("unindexed field succeeded")
 	}
-	if _, err := NewInvertedIndex(Field{Name: "binary", Kind: ValueBinary, Filterable: true, Indexed: true}); err == nil {
-		t.Fatal("binary field succeeded")
-	}
 	index, err := NewInvertedIndex(field)
 	if err != nil {
 		t.Fatal(err)

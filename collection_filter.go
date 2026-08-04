@@ -31,7 +31,7 @@ func buildFilterPlan(filter string, schema CollectionSchema) (*dbsql.Plan, error
 	for index, field := range schema.Fields {
 		kind, array, supported := filterValueKind(field.DataType)
 		filterable := supported && field.IndexType() != IndexTypeFTS
-		indexed, rangeOptimized, extendedWildcard := filterIndexOptions(field, kind, filterable)
+		indexed, rangeOptimized, extendedWildcard := filterIndexOptions(field, filterable)
 		fields[index] = dbsql.Field{
 			Name: field.Name, Kind: kind, Array: array, Nullable: field.Nullable, Filterable: filterable,
 			Indexed: indexed, RangeOptimized: rangeOptimized, ExtendedWildcard: extendedWildcard,
@@ -44,8 +44,8 @@ func buildFilterPlan(filter string, schema CollectionSchema) (*dbsql.Plan, error
 	return dbsql.BuildPlan(filter, filterSchema)
 }
 
-func filterIndexOptions(field FieldSchema, kind dbsql.ValueKind, filterable bool) (indexed, rangeOptimized, extendedWildcard bool) {
-	if !filterable || kind == dbsql.ValueBinary || indexParamsNil(field.Index) || field.Index.IndexType() != IndexTypeInvert {
+func filterIndexOptions(field FieldSchema, filterable bool) (indexed, rangeOptimized, extendedWildcard bool) {
+	if !filterable || indexParamsNil(field.Index) || field.Index.IndexType() != IndexTypeInvert {
 		return false, false, false
 	}
 	var params InvertIndexParams

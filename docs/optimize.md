@@ -29,7 +29,7 @@ model, codes, and graph deterministically from original FP32 vectors; Vamana
 rebuilds RobustPrune topology and its medoid, then recreates any configured
 scalar codes. DiskANN rebuilds its graph, PQ model, codes, and sector records
 from original FP32 vectors. If compaction is required and the schema contains
-DiskANN scalar quantization, IVF SOAR, or binary INVERT state, Optimize
+DiskANN scalar quantization or IVF SOAR state, Optimize
 returns `ErrNotSupported` before
 publishing anything. Those algorithms are enabled by later milestones rather
 than silently rebuilt as a different index.

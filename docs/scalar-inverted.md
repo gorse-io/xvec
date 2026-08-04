@@ -7,6 +7,12 @@ Numeric and lexicographic range comparisons use a sorted term dictionary when
 `EnableRangeOptimization` is true (the default); disabling it preserves results
 and selects a full term scan.
 
+BINARY values use byte-exact posting keys and lexicographic byte ordering.
+ARRAY_BINARY supports contain, NULL, and length candidates with the same
+three-valued semantics as forward evaluation. SQL string literals supply the
+bytes for equality, range, `IN`, and contain predicates; no UTF-8 normalization
+is applied to stored binary values.
+
 STRING `LIKE` routing follows the pinned native behavior:
 
 - exact text and `prefix%` use postings without additional options;
@@ -25,7 +31,7 @@ indexed side of `AND` may be used alone as a superset of the final matches.
 Every selected row is then evaluated by the typed forward plan, so index
 routing cannot change SQL three-valued semantics.
 
-At this v0.2 development point, postings are built in memory from the
+Postings are built in memory from the
 collection's consistent live-document snapshot for each filtered query. They
 are not a new on-disk format and require no migration; Flush and reopen produce
 the same results. DDL persists the INVERT parameters in the schema, and

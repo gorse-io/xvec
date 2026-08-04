@@ -242,8 +242,8 @@ func supportedCreateIndex(nextField FieldSchema, index IndexParams, path string)
 		if nextField.DataType.IsVector() {
 			return invalidArgument(op, "vector field %q cannot use INVERT", nextField.Name)
 		}
-		kind, _, supported := filterValueKind(nextField.DataType)
-		if !supported || kind == dbsql.ValueBinary {
+		_, _, supported := filterValueKind(nextField.DataType)
+		if !supported {
 			return notSupported(op, path, fmt.Sprintf("INVERT is not implemented for %s field %q", nextField.DataType, nextField.Name))
 		}
 		return nil

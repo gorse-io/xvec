@@ -15,7 +15,8 @@ The currently executable index types are:
   dimensions and L2, IP, or cosine scoring;
 - `VamanaIndexParams` on supported dense vector fields;
 - `DiskANNIndexParams` on FP32 or FP16 dense vector fields;
-- `InvertIndexParams` on filterable scalar and array fields other than BINARY;
+- `InvertIndexParams` on every filterable scalar and array field, including
+  BINARY and ARRAY_BINARY;
 - `FTSIndexParams` on string fields, with the configured tokenizer and token
   filters validated against the complete live snapshot.
 

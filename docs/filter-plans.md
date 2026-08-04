@@ -12,7 +12,7 @@ overflow, mixed list types, invalid Boolean operators, missing fields, vector
 fields, and FTS fields produce `ErrInvalidArgument` with the source position.
 Binary/string scalars, Booleans, all integer and floating-point scalars, and
 the corresponding arrays are represented. Baseline rules restrict arrays to
-contain or NULL predicates, prohibit binary `IN`/contain sets, and limit
+contain or NULL predicates, support binary `IN`/contain sets, and limit
 contain sets to 32 values.
 
 The supported scalar function is `array_length(array_field)`. It returns a

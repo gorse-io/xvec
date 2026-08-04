@@ -6,6 +6,9 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added exact BINARY and ARRAY_BINARY inverted indexes, including bytewise
+  equality/range/`IN`, array contain/length/NULL candidates, atomic DDL,
+  Optimize, forward-verification parity, and reopen coverage.
 - Enabled atomic `Optimize` compaction for FTS-indexed collections, preserving
   analyzer configuration and hybrid scores while reclaiming deleted and
   superseded versions across durable reopen.

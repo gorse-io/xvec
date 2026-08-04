@@ -98,14 +98,8 @@ func (a *filterAnalyzer) bindPredicate(expression *PredicateExpr) (planNode, err
 		if field.Array {
 			return nil, analysisError(expression.Range.Start, "IN requires a scalar field")
 		}
-		if field.Kind == ValueBinary {
-			return nil, analysisError(expression.Range.Start, "IN does not support BINARY fields")
-		}
 		predicate, err = a.bindSetPredicate(expression, field.Kind)
 	case PredicateContainAll, PredicateContainAny:
-		if field.Kind == ValueBinary {
-			return nil, analysisError(expression.Range.Start, "%s does not support ARRAY_BINARY", operator)
-		}
 		predicate, err = a.bindSetPredicate(expression, field.Kind)
 	case PredicateEQ, PredicateNE, PredicateLT, PredicateLE, PredicateGT, PredicateGE:
 		if field.Array {
