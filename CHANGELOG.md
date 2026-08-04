@@ -6,6 +6,8 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+## v0.5.0 - 2026-08-04
+
 - Added one-shot process runtime configuration with bounded query and
   maintenance admission, context-aware conservative scratch-memory budgeting,
   `slog` severity routing, baseline planner thresholds, worker controls, Jieba
@@ -83,6 +85,12 @@ subject to compatible migration work throughout the 0.x series.
 - Added a context-aware, byte-compatible whitespace tokenizer with owned term
   text, uint32 byte offsets, contiguous positions, arbitrary-byte handling,
   fuzz coverage, and a throughput benchmark.
+- Added v0.5 release gates for dense/sparse/FTS hybrid retrieval across every
+  public reranker, shared filter and projection enforcement, populated resource
+  statistics, value-identical read-only reopen behavior, analyzer and parser
+  fuzzing, and hybrid/resource benchmarks.
+
+See [the v0.5 capability matrix](docs/v0.5.md) for exact support boundaries.
 
 ## v0.4.0 - 2026-08-04
 

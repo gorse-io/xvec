@@ -598,7 +598,7 @@ func FuzzMultiQueryTargetKind(f *testing.F) {
 	})
 }
 
-func BenchmarkCollectionMultiQuery(b *testing.B) {
+func BenchmarkV05HybridMultiQuery(b *testing.B) {
 	ctx := context.Background()
 	schema := testMultiQuerySchema()
 	collection, err := CreateAndOpen(ctx, filepath.Join(b.TempDir(), "benchmark"), schema, NewCollectionOptions())

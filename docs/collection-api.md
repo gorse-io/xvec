@@ -1,6 +1,6 @@
 # Collection API
 
-The root `zvec` package exposes the v0.4 native collection API. It is a
+The root `zvec` package exposes the v0.5 native collection API. It is a
 pure-Go embedded database: every I/O, write, and query method accepts a
 `context.Context`; schema, options, path, and in-memory statistics getters do
 not.
@@ -49,6 +49,14 @@ their best document. ANN group-by currently requires explicit `Linear`;
 quantized or refined group-by remains unsupported. The library never silently
 substitutes a different algorithm.
 
+`MultiQuery` evaluates two or more dense-vector, sparse-vector, or FTS
+branches over one immutable live snapshot with a shared SQL filter. A nil
+reranker selects reciprocal-rank fusion; weighted score fusion and a
+context-aware callback adapter are also available. FTS branches use configured
+tokenizers and filters, exact boolean/phrase execution, and deletion-aware BM25
+statistics. See the [MultiQuery contract](multi-query.md) for candidate,
+projection, and untrusted-reranker output rules.
+
 `CreateIndex` atomically publishes implemented Flat, HNSW, HNSW-RaBitQ, IVF,
 Vamana, DiskANN, and INVERT parameters after full-snapshot validation.
 `DropIndex` atomically clears scalar metadata or restores vector fields to
@@ -73,3 +81,8 @@ publishes an immutable segment and rotates the WAL. `Open` can acquire either
 the sole writer lock or one of multiple read-only locks. `Destroy` is available
 only from a writable handle and removes the collection directory after closing
 its files.
+
+[`RuntimeConfig`](runtime-config.md) installs process-wide query and
+maintenance admission, planner thresholds, conservative scratch-memory
+budgeting, `slog` routing, worker bounds, and Jieba fallback resources. Runtime
+and expanded collection statistics are concurrency-safe point-in-time views.

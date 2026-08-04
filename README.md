@@ -19,8 +19,8 @@ atomic DDL/compaction, FP16/INT8/INT4 scalar quantization, deterministic
 rotation and refinement, k-means, IVF, and dense/sparse HNSW. Collection
 queries route those implemented indexes with explicit ANN controls. v0.4 adds
 HNSW-RaBitQ, Vamana, product quantization, and native DiskANN execution;
-v0.5 full-text primitives and snapshot-level hybrid MultiQuery are now under
-active development.
+v0.5 adds full-text analysis, compressed postings, BM25, snapshot-level hybrid
+MultiQuery, configurable fusion, and process resource governance.
 
 ## Module
 
@@ -135,7 +135,7 @@ routes DiskANN query, CreateIndex, Optimize, Stats, and reopen behavior from
 its durable live snapshot; public scalar quantization on DiskANN remains an
 explicit NotSupported combination because internal PQ has separate semantics.
 
-v0.5 development includes byte-compatible whitespace, Unicode 17 standard,
+The v0.5 release includes byte-compatible whitespace, Unicode 17 standard,
 Unicode 17 codepoint-ngram, and pure-Go Jieba tokenizers. All preserve source
 byte offsets and emit contiguous positions. Standard tokenization implements
 pinned word, script, combining-mark, malformed-UTF-8, and emoji behavior;
@@ -172,8 +172,8 @@ also expose retained segment, mutable-document, deletion, and encoded-memory
 estimates, while `CollectionOptions.MaxBufferSize` bounds the DiskANN node
 cache. None requires CGO.
 
-The current library version is `v0.4.0`; its exact support boundary is recorded
-in the [v0.4 capability matrix](docs/v0.4.md) and [changelog](CHANGELOG.md).
+The current library version is `v0.5.0`; its exact support boundary is recorded
+in the [v0.5 capability matrix](docs/v0.5.md) and [changelog](CHANGELOG.md).
 
 ## Schema example
 
@@ -221,9 +221,11 @@ are exercised by `go test ./...`.
 
 - [Collection API](docs/collection-api.md)
 - [Runtime configuration and resource governance](docs/runtime-config.md)
+- [v0.5 capability matrix](docs/v0.5.md)
 - [v0.4 capability matrix](docs/v0.4.md)
 - [v0.3 capability matrix](docs/v0.3.md)
 - [v0.2 capability matrix](docs/v0.2.md)
+- [v0.1 capability matrix](docs/v0.1.md)
 - [Native Go disk format](docs/disk-format.md)
 - [Documents and projection](docs/document-projection.md)
 - [Exact vector query semantics](docs/vector-query.md)
@@ -272,6 +274,10 @@ are exercised by `go test ./...`.
 - [FTS dictionary, postings, and statistics](docs/fts-postings.md)
 - [FTS query parser and boolean execution](docs/fts-query-parser.md)
 - [BM25 scoring and FTS segment merging](docs/fts-bm25-merge.md)
+- [Hybrid MultiQuery](docs/multi-query.md)
+- [Reciprocal-rank fusion](docs/rrf-reranker.md)
+- [Weighted score fusion](docs/weighted-reranker.md)
+- [Callback reranker adapter](docs/callback-reranker.md)
 
 ## License
 

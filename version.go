@@ -16,7 +16,7 @@ package zvec
 
 const (
 	// Version is the semantic version of this library release.
-	Version = "0.4.0"
+	Version = "0.5.0"
 
 	// NativeDiskFormatVersion identifies the independent Go collection format.
 	NativeDiskFormatVersion uint32 = 1
