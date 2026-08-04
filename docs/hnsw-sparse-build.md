@@ -1,10 +1,10 @@
 # Sparse HNSW construction
 
 This independently gated v0.3 unit adds deterministic sparse HNSW graph
-construction to `internal/core`. It exposes topology and cloned sparse-vector
-providers only. Sparse graph search, persistence/reopen, incremental writes,
-and collection routing remain separate units, so the public collection layer
-continues to report sparse HNSW as unsupported.
+construction to `internal/core`. Sparse graph search is now implemented by the
+next unit; persistence/reopen, incremental writes, and collection routing
+remain separate, so the public collection layer continues to report sparse
+HNSW as unsupported.
 
 ## Input and storage contract
 
