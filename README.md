@@ -135,11 +135,12 @@ its durable live snapshot; public scalar quantization on DiskANN remains an
 explicit NotSupported combination because internal PQ has separate semantics.
 
 v0.5 development includes byte-compatible whitespace, Unicode 17 standard,
-and Unicode 17 codepoint-ngram tokenizers. All preserve source byte offsets and
-emit contiguous positions. Standard tokenization implements pinned word,
-script, combining-mark, malformed-UTF-8, and emoji behavior; ngram tokenization
-adds optional general-category segmentation and single- or adjacent-length
-ranges. Neither requires CGO or runtime Unicode data files.
+Unicode 17 codepoint-ngram, and pure-Go Jieba tokenizers. All preserve source
+byte offsets and emit contiguous positions. Standard tokenization implements
+pinned word, script, combining-mark, malformed-UTF-8, and emoji behavior;
+ngram tokenization adds optional general-category segmentation and single- or
+adjacent-length ranges. Jieba implements baseline search, mixed, full, and HMM
+cut modes using caller-provided cppjieba-format resources. None requires CGO.
 
 The current library version is `v0.4.0`; its exact support boundary is recorded
 in the [v0.4 capability matrix](docs/v0.4.md) and [changelog](CHANGELOG.md).

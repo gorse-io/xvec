@@ -6,6 +6,10 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added a pure-Go Jieba tokenizer with baseline search, mixed, full, and HMM
+  modes; cppjieba resource formats and resolution order; user-dictionary
+  isolation; exact C++ fixtures; explicit invalid-input errors; cancellation,
+  concurrency, fuzz, and benchmark coverage; and MIT attribution.
 - Added a Unicode 17 codepoint ngram tokenizer with single- or adjacent-length
   ranges, baseline general-category filtering, Elasticsearch-compatible
   whitespace exceptions, valid-NUL and malformed-UTF-8 distinctions,

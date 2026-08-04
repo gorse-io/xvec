@@ -13,6 +13,41 @@ Third-Party Components
 ================================================================================
 
 --------------------------------------------------------------------------------
+cppjieba
+--------------------------------------------------------------------------------
+Project: cppjieba
+Homepage: https://github.com/yanyiwu/cppjieba
+License:  MIT
+Used in:  internal/core/jieba_tokenizer.go and
+          internal/core/jieba_segment.go
+
+The Jieba algorithms and resource-format behavior are ported from cppjieba
+5.6.7 at commit b3602bef7d1f67521a61788a74fb5801a0e62cd3. Production dictionary
+and HMM resource data is not redistributed by this project.
+
+    The MIT License (MIT)
+
+    Copyright (c) 2013
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy of
+    this software and associated documentation files (the "Software"), to deal in
+    the Software without restriction, including without limitation the rights to
+    use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+    the Software, and to permit persons to whom the Software is furnished to do so,
+    subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+--------------------------------------------------------------------------------
 Unicode Character Database
 --------------------------------------------------------------------------------
 Project: Unicode Character Database

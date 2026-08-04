@@ -1,0 +1,79 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "source_sha256": "b5092a63528a3bd4faf6e31c156217d5dddccb678cb829569b87cb63e6218edd",
+  "cppjieba_commit": "b3602bef7d1f67521a61788a74fb5801a0e62cd3",
+  "dictionary_sha256": "7c66ea73c84bc8699905422312fbe11045879a270a5b8e0a93cf97e48efed412",
+  "model_sha256": "3479bc295e7dd885bcb04098a63731876519fc1c92dbedc1928ec47e1a8bcfc0",
+  "user_dictionary_sha256": "bde317009e581fd0b615e7e8c6a4aad7bcd4be86ee8350f83f87ca75fddc1542",
+  "cases": [
+    {
+      "name": "search_subwords_and_parent",
+      "mode": "search",
+      "user_dictionary": true,
+      "input_hex": "e4b8ade58d8ee4babae6b091e585b1e5928ce59bbd",
+      "tokens": [
+        {"text_hex": "e4b8ade58d8e", "offset": 0, "position": 0},
+        {"text_hex": "e4babae6b091", "offset": 6, "position": 1},
+        {"text_hex": "e585b1e5928c", "offset": 12, "position": 2},
+        {"text_hex": "e585b1e5928ce59bbd", "offset": 12, "position": 3},
+        {"text_hex": "e4b8ade58d8ee4babae6b091e585b1e5928ce59bbd", "offset": 0, "position": 4}
+      ]
+    },
+    {
+      "name": "mix_longest_path",
+      "mode": "mix",
+      "user_dictionary": true,
+      "input_hex": "e4b8ade58d8ee4babae6b091e585b1e5928ce59bbd",
+      "tokens": [
+        {"text_hex": "e4b8ade58d8ee4babae6b091e585b1e5928ce59bbd", "offset": 0, "position": 0}
+      ]
+    },
+    {
+      "name": "full_overlapping_words",
+      "mode": "full",
+      "user_dictionary": true,
+      "input_hex": "e6b885e58d8ee5a4a7e5ada6",
+      "tokens": [
+        {"text_hex": "e6b885e58d8e", "offset": 0, "position": 0},
+        {"text_hex": "e6b885e58d8ee5a4a7e5ada6", "offset": 0, "position": 1},
+        {"text_hex": "e58d8ee5a4a7", "offset": 3, "position": 2},
+        {"text_hex": "e5a4a7e5ada6", "offset": 6, "position": 3}
+      ]
+    },
+    {
+      "name": "hmm_and_ascii_decimal",
+      "mode": "hmm",
+      "user_dictionary": false,
+      "input_hex": "e69dade7a094616263312e32",
+      "tokens": [
+        {"text_hex": "e69dade7a094", "offset": 0, "position": 0},
+        {"text_hex": "616263312e32", "offset": 6, "position": 1}
+      ]
+    },
+    {
+      "name": "special_separators_are_tokens",
+      "mode": "search",
+      "user_dictionary": true,
+      "input_hex": "e4b8ade6968720e58886e8af8defbc8ce68a80e69cafe38082",
+      "tokens": [
+        {"text_hex": "e4b8ade69687", "offset": 0, "position": 0},
+        {"text_hex": "20", "offset": 6, "position": 1},
+        {"text_hex": "e58886e8af8d", "offset": 7, "position": 2},
+        {"text_hex": "efbc8c", "offset": 13, "position": 3},
+        {"text_hex": "e68a80e69caf", "offset": 16, "position": 4},
+        {"text_hex": "e38082", "offset": 22, "position": 5}
+      ]
+    },
+    {
+      "name": "user_word_and_singletons",
+      "mode": "search",
+      "user_dictionary": true,
+      "input_hex": "e69dade7a094e794b2e4b999",
+      "tokens": [
+        {"text_hex": "e69dade7a094", "offset": 0, "position": 0},
+        {"text_hex": "e794b2", "offset": 6, "position": 1},
+        {"text_hex": "e4b999", "offset": 9, "position": 2}
+      ]
+    }
+  ]
+}
