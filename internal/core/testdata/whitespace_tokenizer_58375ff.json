@@ -1,0 +1,39 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "source": "src/db/index/column/fts_column/tokenizer/whitespace_tokenizer.cc",
+  "locale": "C",
+  "cases": [
+    {
+      "name": "six_ascii_delimiters",
+      "input_hex": "2009610a620b630c640d65",
+      "tokens": [
+        {"text_hex": "61", "offset": 2, "position": 0},
+        {"text_hex": "62", "offset": 4, "position": 1},
+        {"text_hex": "63", "offset": 6, "position": 2},
+        {"text_hex": "64", "offset": 8, "position": 3},
+        {"text_hex": "65", "offset": 10, "position": 4}
+      ]
+    },
+    {
+      "name": "unicode_spaces_are_bytes",
+      "input_hex": "61c2a062e2808363",
+      "tokens": [
+        {"text_hex": "61c2a062e2808363", "offset": 0, "position": 0}
+      ]
+    },
+    {
+      "name": "punctuation_case_and_invalid_utf8",
+      "input_hex": "2b504c555320666f6f2d62617220ff78",
+      "tokens": [
+        {"text_hex": "2b504c5553", "offset": 0, "position": 0},
+        {"text_hex": "666f6f2d626172", "offset": 6, "position": 1},
+        {"text_hex": "ff78", "offset": 14, "position": 2}
+      ]
+    },
+    {
+      "name": "empty",
+      "input_hex": "",
+      "tokens": []
+    }
+  ]
+}

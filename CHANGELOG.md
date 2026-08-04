@@ -6,6 +6,10 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added a context-aware, byte-compatible whitespace tokenizer with owned term
+  text, uint32 byte offsets, contiguous positions, arbitrary-byte handling,
+  fuzz coverage, and a throughput benchmark.
+
 ## v0.4.0 - 2026-08-04
 
 - Added deterministic RaBitQ centroid, rotation, and expected-scale training;

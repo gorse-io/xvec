@@ -12,9 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package core contains vector-index algorithms and their Builder, Searcher,
-// Streamer, Provider, Refiner, and Reformer contracts. It also owns scalar
-// quantization, vector-index distance kernels, and full-text analysis
-// primitives. It may depend on ailego but remains independent from collection
-// lifecycle policy in db.
-package core
+package core_test
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/gorse-io/zvec/internal/core"
+)
+
+func ExampleWhitespaceTokenizer() {
+	tokenizer := core.NewWhitespaceTokenizer()
+	tokens, err := tokenizer.Tokenize(context.Background(), "  Go\t向量 search")
+	if err != nil {
+		panic(err)
+	}
+	for _, token := range tokens {
+		fmt.Printf("%d:%d:%s\n", token.Position, token.Offset, token.Text)
+	}
+	// Output:
+	// 0:2:Go
+	// 1:5:向量
+	// 2:12:search
+}

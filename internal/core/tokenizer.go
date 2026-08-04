@@ -12,9 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package core contains vector-index algorithms and their Builder, Searcher,
-// Streamer, Provider, Refiner, and Reformer contracts. It also owns scalar
-// quantization, vector-index distance kernels, and full-text analysis
-// primitives. It may depend on ailego but remains independent from collection
-// lifecycle policy in db.
 package core
+
+import "context"
+
+// Token is one owned term emitted by a tokenizer. Offset is the byte offset in
+// the original UTF-8 byte sequence, and Position is the contiguous output
+// sequence number starting at zero.
+type Token struct {
+	Text     string
+	Offset   uint32
+	Position uint32
+}
+
+// Tokenizer converts source text into ordered terms for indexing and query
+// analysis. Implementations must return owned token text and byte offsets.
+type Tokenizer interface {
+	Name() string
+	Tokenize(ctx context.Context, text string) ([]Token, error)
+}
+
+var _ Tokenizer = (*WhitespaceTokenizer)(nil)
