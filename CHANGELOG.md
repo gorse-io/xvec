@@ -6,6 +6,10 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added exact original-vector refinement for sparse Flat and HNSW collection
+  queries, including FP16 first-stage scoring, candidate expansion, final
+  filter/radius enforcement, Query and MultiQuery integration, deterministic
+  duplicate handling, Optimize/reopen coverage, and a reusable core refiner.
 - Added public FP16, INT8, and INT4 scalar quantization for collection DiskANN
   fields, with deterministic optional rotation, an independent internal PQ
   traversal layer, scalar-code scoring, original-vector refinement, atomic

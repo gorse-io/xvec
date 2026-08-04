@@ -90,11 +90,12 @@ Built and reopened sparse graphs accept atomic incremental additions while
 concurrent search and persistence retain a complete CSR/topology generation.
 Collection queries now route Flat, dense/sparse HNSW, dense IVF, Vamana, and
 DiskANN parameters without fallback. Dense FP16/INT8/INT4 scalar-code scoring,
-deterministic optional rotation, EF/NProbe, metric-aware radius, scalar
-filters, bounded graph cache warming, Linear execution, and exact
-original-vector refinement are connected end to end. Until segment-native ANN
-artifacts are integrated, the collection rebuilds these runtime indexes from
-its durable live snapshot for each query and DDL validation.
+deterministic optional rotation, sparse FP16 scoring, EF/NProbe, metric-aware
+radius, scalar filters, bounded graph cache warming, Linear execution, and
+exact dense or sparse original-vector refinement are connected end to end.
+Until segment-native ANN artifacts are integrated, the collection rebuilds
+these runtime indexes from its durable live snapshot for each query and DDL
+validation.
 
 The v0.4 release includes a portable RaBitQ trainer, split-code converter, and
 one-bit/full-bit distance estimator for L2, IP, and cosine. HNSW-RaBitQ now

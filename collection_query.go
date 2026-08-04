@@ -184,9 +184,7 @@ func (c *Collection) searchVectorSnapshotResolved(
 	if err != nil {
 		return nil, err
 	}
-	if err := validateSparseRefiner(params, field); err != nil {
-		return nil, err
-	}
+	originalQuery := queryVector
 	if vectorIndex.quantize == QuantizeTypeFP16 {
 		queryVector, err = sparseFP16Vector(queryVector)
 		if err != nil {
@@ -198,6 +196,14 @@ func (c *Collection) searchVectorSnapshotResolved(
 		return nil, wrapCollectionError(op, c.path, err)
 	}
 	searchOptions := core.SearchOptions{TopK: topK, Radius: params.options.Radius, Filter: candidateFilter.predicate}
+	baseOptions := searchOptions
+	if params.options.UseRefiner {
+		candidateCount, countErr := core.RefinementCandidateCount(topK, params.scaleFactor)
+		if countErr != nil {
+			return nil, wrapCollectionError(op, c.path, countErr)
+		}
+		baseOptions = core.SearchOptions{TopK: candidateCount, Filter: candidateFilter.predicate}
+	}
 	var results []core.Result
 	if vectorIndex.indexType == IndexTypeHNSW && !params.options.Linear {
 		hnsw, ok := index.(*core.SparseHNSWIndex)
@@ -205,14 +211,28 @@ func (c *Collection) searchVectorSnapshotResolved(
 			return nil, &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "sparse HNSW builder returned an incompatible index"}
 		}
 		results, err = hnsw.SearchSparseHNSW(ctx, queryVector, core.HNSWSearchOptions{
-			SearchOptions: searchOptions, EF: params.ef,
+			SearchOptions: baseOptions, EF: params.ef,
 			PrefetchOffset: params.prefetchOffset, PrefetchLines: params.prefetchLines,
 		})
 	} else {
-		results, err = index.SearchSparseWithOptions(ctx, queryVector, searchOptions)
+		results, err = index.SearchSparseWithOptions(ctx, queryVector, baseOptions)
 	}
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
+	}
+	if params.options.UseRefiner {
+		originals, err := buildSparseFlatIndex(ctx, field, documents)
+		if err != nil {
+			return nil, wrapCollectionError(op, c.path, err)
+		}
+		refiner, err := core.NewOriginalSparseVectorRefiner(originals)
+		if err != nil {
+			return nil, wrapCollectionError(op, c.path, err)
+		}
+		results, err = refiner.RefineSparse(ctx, originalQuery, results, searchOptions)
+		if err != nil {
+			return nil, wrapCollectionError(op, c.path, err)
+		}
 	}
 	return results, nil
 }

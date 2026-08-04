@@ -82,8 +82,10 @@ pinned baseline and therefore uses 1. HNSW-RaBitQ requests up to
 `max(TopK, EF)` graph candidates, or all candidates for `Linear`, before exact
 reranking. Vamana follows the pinned no-scale-factor behavior and refines its
 returned graph candidates. Missing originals and invalid scale arithmetic are
-errors. Sparse refinement is not yet implemented and returns `NotSupported`
-explicitly.
+errors. Sparse Flat follows its public scale factor, while sparse HNSW follows
+the same no-scale-factor candidate behavior as dense HNSW; both recompute exact
+inner products from retained original sparse vectors. Query and MultiQuery use
+this path, while refined group-by remains a separate unsupported operation.
 DiskANN uses `floor(TopK*10)` candidates when `UseRefiner` is enabled, then
 reads its original FP32 vectors for exact final metric scoring.
 
@@ -102,5 +104,5 @@ Tests cover parameter mismatch and upper bounds, filtered/radius HNSW,
 HNSW-RaBitQ, Vamana, and DiskANN recall against explicit Linear truth,
 prefetch result invariance, full-probe IVF, FP16/INT8/INT4 and RaBitQ scoring,
 deterministic rotation, exact refinement, sparse FP16 HNSW parity below the
-exact threshold, DDL rollback, Optimize, Stats, reopen, and explicit
-unsupported group/refiner paths.
+exact threshold, sparse FP16 original-vector refinement, DDL rollback,
+Optimize, Stats, reopen, and explicit unsupported group paths.

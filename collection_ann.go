@@ -754,13 +754,6 @@ func sparseFP16Vector(vector core.SparseVector) (core.SparseVector, error) {
 	return result, nil
 }
 
-func validateSparseRefiner(config collectionQueryConfig, field FieldSchema) error {
-	if config.options.UseRefiner {
-		return notSupported("query", "", fmt.Sprintf("original-vector refinement is not implemented for sparse field %q", field.Name))
-	}
-	return nil
-}
-
 func validateCollectionVectorRepresentations(ctx context.Context, schema CollectionSchema, document Document) error {
 	for _, field := range schema.Fields {
 		if err := ctx.Err(); err != nil {

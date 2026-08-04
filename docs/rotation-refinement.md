@@ -49,7 +49,15 @@ filter but no approximate-score radius at the base stage, and then applies
 filter, radius, and top-k to exact scores. Scale factors must be finite,
 positive, and free of integer overflow.
 
+`OriginalSparseVectorRefiner` provides the parallel inner-product contract for
+`SparseProvider`. It validates the original sparse query, deduplicates
+candidate keys, reloads unquantized sparse vectors, and reapplies filter,
+radius, and deterministic top-k. `RefinedSparseSearch` uses the same candidate
+count rule. Collection Query and MultiQuery connect it to unquantized or
+FP16-rounded sparse Flat and HNSW first stages; HNSW retains its public
+no-scale-factor behavior.
+
 Tests cover fixed rotation state, power-of-two and arbitrary dimensions,
 inverse and norm preservation, concurrent and batch transforms, fuzzed round
 trips, exact reranking, duplicate keys, filtering, radius, cancellation,
-missing originals, and scale arithmetic.
+missing dense and sparse originals, sparse validation, and scale arithmetic.

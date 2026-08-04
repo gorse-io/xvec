@@ -28,7 +28,14 @@ for graph traversal; they are excluded only from returned candidates.
 Inner product ranks larger scores first. Traversal ties use stable node
 positions, while returned result ties use ascending document keys.
 
+Collection sparse HNSW fields may use FP16-rounded first-stage values.
+`UseRefiner` reloads retained original sparse vectors for the returned graph
+candidates, recomputes exact inner products from the unrounded query, and
+applies the final filter, radius, and top-k. Sparse HNSW has no public scale
+factor at the pinned baseline, so refinement preserves the graph candidate
+count instead of silently widening it.
+
 Tests cover exact Sparse Flat parity below the threshold, empty vectors and
 stable ties, validation and cancellation, EF below TopK, selective filter plus
-radius traversal, score overflow, recall@10 of at least 0.80 above the
-threshold, and a 10,000-vector search benchmark.
+radius traversal, original-vector refinement, score overflow, recall@10 of at
+least 0.80 above the threshold, and a 10,000-vector search benchmark.

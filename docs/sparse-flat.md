@@ -20,3 +20,10 @@ The extended sparse query contract applies candidate filters and inclusive IP
 radius thresholds during the scan. The collection facade supplies live-version
 selection and projected document materialization, while group-by independently
 retains a bounded top-k for each scalar group.
+
+An FP32 collection field may store FP16-rounded first-stage values. With
+`UseRefiner`, Sparse Flat requests `floor(TopK*ScaleFactor)` candidates
+without approximate radius pruning, then reloads the unmodified sparse vectors
+and query to recompute exact inner products, filter, radius, and top-k. The same
+path is available to Query and MultiQuery and is reconstructed identically
+after Optimize or reopen.

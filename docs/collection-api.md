@@ -42,12 +42,14 @@ parameters expose EF or NProbe, metric-aware radius, SQL scalar filters,
 projection, and bounded graph cache warming. Dense FP16, INT8, INT4, and RaBitQ
 code scoring and optional INT8/INT4 rotation are supported where schema
 validation permits them. Dense queries can rerank retained candidates with
-original vectors. Sparse refinement and IVF SOAR return `ErrNotSupported`.
+original vectors. Sparse Flat and HNSW queries can likewise rerank FP16 or
+unquantized candidates with retained original sparse vectors. IVF SOAR returns
+`ErrNotSupported`.
 
 `GroupByQuery` retains a top-k per filtered scalar group and ranks groups by
 their best document. ANN group-by currently requires explicit `Linear`;
-quantized or refined group-by remains unsupported. The library never silently
-substitutes a different algorithm.
+quantized or refined group-by remains unsupported, including sparse refined
+group-by. The library never silently substitutes a different algorithm.
 
 `MultiQuery` evaluates two or more dense-vector, sparse-vector, or FTS
 branches over one immutable live snapshot with a shared SQL filter. A nil

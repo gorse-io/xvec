@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/gorse-io/zvec/internal/ailego"
 	"github.com/gorse-io/zvec/internal/core"
 )
 
@@ -729,7 +730,7 @@ func TestCollectionSparseHNSWFP16Controls(t *testing.T) {
 		documents[position] = Document{PrimaryKey: fmt.Sprintf("s%03d", position), Fields: map[string]any{
 			"sparse": SparseVectorFP32{
 				Indices: []uint32{uint32(position % 31), uint32(100 + position%37), uint32(200 + position%43)},
-				Values:  []float32{float32(position%7) + .25, float32(position%11) + .5, float32(position%13) + .75},
+				Values:  []float32{float32(position%7) + .12345, float32(position%11) + .33331, float32(position%13) + .77771},
 			},
 			"rating": int32(position % 3),
 		}}
@@ -762,8 +763,143 @@ func TestCollectionSparseHNSWFP16Controls(t *testing.T) {
 	queryParams.Linear = false
 	queryParams.UseRefiner = true
 	query.Params = queryParams
-	if _, err := collection.Query(ctx, query); !errors.Is(err, ErrNotSupported) {
-		t.Fatalf("sparse refiner error = %v", err)
+	refined, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approximateByKey := make(map[string]float32, len(got))
+	for _, document := range got {
+		approximateByKey[document.PrimaryKey] = document.Score
+	}
+	originalByKey := make(map[string]SparseVectorFP32, len(documents))
+	for _, document := range documents {
+		originalByKey[document.PrimaryKey] = document.Fields["sparse"].(SparseVectorFP32)
+	}
+	changedScore := false
+	querySparse := query.SparseVector.(SparseVectorFP32)
+	for _, document := range refined {
+		if document.Fields["rating"].(int32) < 1 || document.Score < queryParams.Radius {
+			t.Fatalf("refined filter/radius admitted %#v", document)
+		}
+		original := originalByKey[document.PrimaryKey]
+		exact, err := ailego.SparseInnerProduct(querySparse.Indices, querySparse.Values, original.Indices, original.Values)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if document.Score != exact {
+			t.Fatalf("refined score for %q = %v, want %v", document.PrimaryKey, document.Score, exact)
+		}
+		if approximate, found := approximateByKey[document.PrimaryKey]; found && approximate != exact {
+			changedScore = true
+		}
+	}
+	if len(refined) == 0 || !changedScore {
+		t.Fatalf("sparse HNSW refinement did not expose original scores: %#v", refined)
+	}
+}
+
+func TestCollectionSparseFlatFP16RefinementMultiQueryAndReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sparse-flat-refine")
+	params := NewFlatIndexParams(MetricTypeIP)
+	params.Quantize = QuantizeTypeFP16
+	schema := NewCollectionSchema("sparse_flat_refine",
+		FieldSchema{Name: "sparse", DataType: DataTypeSparseVectorFP32, Index: params},
+		FieldSchema{Name: "rating", DataType: DataTypeInt32},
+	)
+	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
+	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	documents := []Document{
+		{PrimaryKey: "a", Fields: map[string]any{"sparse": SparseVectorFP32{Indices: []uint32{0, 3}, Values: []float32{1.0003, 4.0007}}, "rating": int32(1)}},
+		{PrimaryKey: "b", Fields: map[string]any{"sparse": SparseVectorFP32{Indices: []uint32{0, 2}, Values: []float32{2.0009, 5.0011}}, "rating": int32(2)}},
+		{PrimaryKey: "c", Fields: map[string]any{"sparse": SparseVectorFP32{Indices: []uint32{1, 3}, Values: []float32{9.0021, 1.0004}}, "rating": int32(3)}},
+		{PrimaryKey: "d", Fields: map[string]any{"sparse": SparseVectorFP32{Indices: []uint32{0, 1, 3}, Values: []float32{1.5006, 2.0013, 2.5008}}, "rating": int32(4)}},
+		{PrimaryKey: "e", Fields: map[string]any{"sparse": SparseVectorFP32{Indices: []uint32{2, 3}, Values: []float32{8.0005, 3.0009}}, "rating": int32(5)}},
+		{PrimaryKey: "f", Fields: map[string]any{"sparse": SparseVectorFP32{Indices: []uint32{0, 2}, Values: []float32{.5003, 1.0007}}, "rating": int32(6)}},
+	}
+	if _, err := collection.Insert(ctx, documents); err != nil {
+		t.Fatal(err)
+	}
+	queryVector := SparseVectorFP32{Indices: []uint32{0, 3}, Values: []float32{2.0007, 1.0003}}
+	queryParams := NewFlatQueryParams()
+	queryParams.UseRefiner = true
+	queryParams.ScaleFactor = 100
+	exact := exactSparseDocumentResults(t, documents, queryVector, len(documents))
+	queryParams.Radius = exact[4].Score
+	query := VectorQuery{Field: "sparse", SparseVector: queryVector, TopK: 5, Params: queryParams}
+	refined, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(documentKeys(refined), documentKeys(exact[:5])) ||
+		!reflect.DeepEqual(documentScores(refined), documentScores(exact[:5])) {
+		t.Fatalf("refined sparse Flat = keys %v scores %v, exact keys %v scores %v",
+			documentKeys(refined), documentScores(refined), documentKeys(exact[:5]), documentScores(exact[:5]))
+	}
+
+	unrefinedParams := queryParams
+	unrefinedParams.UseRefiner = false
+	unrefinedParams.Radius = 0
+	unrefined, err := collection.Query(ctx, VectorQuery{
+		Field: "sparse", SparseVector: queryVector, TopK: 5, Params: unrefinedParams,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reflect.DeepEqual(documentScores(unrefined), documentScores(refined)) {
+		t.Fatal("FP16 sparse first-stage scores unexpectedly equal original-vector scores")
+	}
+
+	alternate := SparseVectorFP32{Indices: []uint32{1, 2}, Values: []float32{.7503, 1.2509}}
+	alternateExact := exactSparseDocumentResults(t, documents, alternate, 4)
+	alternateParams := queryParams
+	alternateParams.Radius = 0
+	multi := MultiQuery{
+		Queries: []SubQuery{
+			{Field: "sparse", SparseVector: queryVector, Params: queryParams, NumCandidates: 5},
+			{Field: "sparse", SparseVector: alternate, Params: alternateParams, NumCandidates: 4},
+		},
+		TopK: 2,
+		Reranker: testRerankerFunc(func(_ context.Context, batches []RerankBatch, _ int) ([]Document, error) {
+			if !reflect.DeepEqual(documentKeys(batches[0].Documents), documentKeys(exact[:5])) ||
+				!reflect.DeepEqual(documentScores(batches[0].Documents), documentScores(exact[:5])) {
+				t.Fatalf("first sparse refinement batch = %#v", batches[0].Documents)
+			}
+			if !reflect.DeepEqual(documentKeys(batches[1].Documents), documentKeys(alternateExact)) ||
+				!reflect.DeepEqual(documentScores(batches[1].Documents), documentScores(alternateExact)) {
+				t.Fatalf("second sparse refinement batch = %#v", batches[1].Documents)
+			}
+			return []Document{batches[0].Documents[0], batches[1].Documents[0]}, nil
+		}),
+	}
+	beforeReopen, err := collection.MultiQuery(ctx, multi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := collection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer collection.Close()
+	reopened, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reopened, refined) {
+		t.Fatalf("reopened sparse refinement = %#v, before close %#v", reopened, refined)
+	}
+	reopenedMulti, err := collection.MultiQuery(ctx, multi)
+	if err != nil || !reflect.DeepEqual(reopenedMulti, beforeReopen) {
+		t.Fatalf("reopened sparse MultiQuery = %#v, %v; before %#v", reopenedMulti, err, beforeReopen)
 	}
 }
 
@@ -943,6 +1079,41 @@ func exactDenseDocumentResults(t testing.TB, documents []Document, query VectorF
 		byID[uint64(position)] = document
 	}
 	results, err := core.TopK(context.Background(), metric, []float32(query), candidates, topK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := make([]Document, len(results))
+	for position, result := range results {
+		output[position] = byID[result.Key]
+		output[position].Score = result.Score
+	}
+	return output
+}
+
+func exactSparseDocumentResults(t testing.TB, documents []Document, query SparseVectorFP32, topK int) []Document {
+	t.Helper()
+	index, err := core.NewSparseFlatIndex(core.MetricIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[uint64]Document, len(documents))
+	for position, document := range documents {
+		vector, err := sparseValueToCore(document.Fields["sparse"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := uint64(position)
+		if err := index.AddSparse(context.Background(), key, vector); err != nil {
+			t.Fatal(err)
+		}
+		document.DocID = key
+		byID[key] = document
+	}
+	queryVector, err := sparseValueToCore(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := index.SearchSparseWithOptions(context.Background(), queryVector, core.SearchOptions{TopK: topK})
 	if err != nil {
 		t.Fatal(err)
 	}
