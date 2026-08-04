@@ -19,16 +19,17 @@ the same live documents before and after optimization. A fully deleted
 collection is rewritten with no immutable segments but still retains its next
 document ID.
 
-The current implementation supports Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, and DiskANN vector
-definitions, including implemented scalar quantization and rotation, scalar
-INVERT indexes whose value type is implemented by the filter runtime, and
-fields without indexes. The collection runtime reconstructs those indexes
-from the compacted live snapshot when queried. HNSW-RaBitQ rebuilds its native
+The current implementation supports Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, and
+DiskANN vector definitions, including implemented scalar quantization and
+rotation; scalar INVERT indexes whose value type is implemented by the filter
+runtime; FTS string indexes; and fields without indexes. The collection runtime
+reconstructs those indexes from the compacted live snapshot when queried.
+HNSW-RaBitQ rebuilds its native
 model, codes, and graph deterministically from original FP32 vectors; Vamana
 rebuilds RobustPrune topology and its medoid, then recreates any configured
 scalar codes. DiskANN rebuilds its graph, PQ model, codes, and sector records
 from original FP32 vectors. If compaction is required and the schema contains
-DiskANN scalar quantization, FTS, IVF SOAR, or binary INVERT state, Optimize
+DiskANN scalar quantization, IVF SOAR, or binary INVERT state, Optimize
 returns `ErrNotSupported` before
 publishing anything. Those algorithms are enabled by later milestones rather
 than silently rebuilt as a different index.

@@ -6,6 +6,9 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Enabled atomic `Optimize` compaction for FTS-indexed collections, preserving
+  analyzer configuration and hybrid scores while reclaiming deleted and
+  superseded versions across durable reopen.
 - Added atomic FTS `CreateIndex` backfill for string fields, including complete
   live-snapshot analyzer/dictionary validation, query readiness, failure
   rollback, and durable reopen behavior.

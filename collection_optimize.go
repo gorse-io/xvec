@@ -23,7 +23,8 @@ import (
 
 // Optimize atomically compacts the current live snapshot into maximally sized
 // contiguous-ID segments, reclaims superseded/deleted versions, rebuilds the
-// implemented vector/INVERT runtime state, and removes obsolete storage files.
+// implemented vector/INVERT/FTS runtime state, and removes obsolete storage
+// files.
 func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) error {
 	const op = "optimize collection"
 	if c == nil {
@@ -97,6 +98,11 @@ func optimizableField(field FieldSchema, path string) error {
 		kind, _, supported := filterValueKind(field.DataType)
 		if !supported || kind == dbsql.ValueBinary {
 			return notSupported("optimize collection", path, fmt.Sprintf("INVERT is not implemented for %s field %q", field.DataType, field.Name))
+		}
+		return nil
+	case IndexTypeFTS:
+		if field.DataType != DataTypeString {
+			return invalidArgument("optimize collection", "FTS field %q must use STRING", field.Name)
 		}
 		return nil
 	default:
