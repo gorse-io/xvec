@@ -143,7 +143,9 @@ adjacent-length ranges. Jieba implements baseline search, mixed, full, and HMM
 cut modes using caller-provided cppjieba-format resources. An immutable token
 filter contract plus Unicode 17 lowercase, baseline-compatible ASCII-folding,
 and all 36 Snowball 3.1.1 stemmers provide reusable post-tokenization
-transforms. None requires CGO.
+transforms. A checksummed native FTS dictionary now stores prefix-compressed
+terms, block-bitpacked doc/tf/length payloads, delta-varint positions, and
+deletion-aware cross-segment statistics. None requires CGO.
 
 The current library version is `v0.4.0`; its exact support boundary is recorded
 in the [v0.4 capability matrix](docs/v0.4.md) and [changelog](CHANGELOG.md).
@@ -241,6 +243,7 @@ are exercised by `go test ./...`.
 - [Lowercase token filter](docs/lowercase-token-filter.md)
 - [ASCII-folding token filter](docs/ascii-folding-token-filter.md)
 - [Stemmer token filter](docs/stemmer-token-filter.md)
+- [FTS dictionary, postings, and statistics](docs/fts-postings.md)
 
 ## License
 

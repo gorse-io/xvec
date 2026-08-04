@@ -1,0 +1,23 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "posting_header_sha256": "78b8e7e6af6ae7279eb7561fc4aec53b2f7811a209f3e32306f89eb9430f92b5",
+  "posting_source_sha256": "ed99e2c626429926afc6633c1f4d3d6ae89ac32bb584860306b215302756180c",
+  "indexer_header_sha256": "83baa255dad8f86e18a9c49091bcbcf015d5c066d75e726332eb2dddf7a31056",
+  "indexer_source_sha256": "dbe3bffb8fef7d15a4be09babd5c7d3706dcdde4343d1318a310ba24662d5cab",
+  "reducer_header_sha256": "b87f60888e230f39268dea6614d7aadca60f8945bc3bc0862f2fa026d1aeb43b",
+  "reducer_source_sha256": "7bebfd9d410c598e2970c0d3b7331b9623e2b481b28466b2eae7543af7d58b2e",
+  "phrase_source_sha256": "6316f87dab229ba02fbb588f0047f23a9b988aab584d0d87fb9987896dd565f7",
+  "position_delta_hex": "00028001",
+  "documents": [
+    {"document_id":0,"tokens":[{"term":"hello","position":0},{"term":"world","position":1},{"term":"hello","position":2}]},
+    {"document_id":1,"tokens":[]},
+    {"document_id":2,"tokens":[{"term":"hello","position":0},{"term":"Go","position":1}]}
+  ],
+  "total_documents": 3,
+  "total_tokens": 5,
+  "terms": [
+    {"term":"Go","document_frequency":1,"maximum_term_frequency":1,"postings":[{"document_id":2,"term_frequency":1,"document_length":2,"positions":[1]}]},
+    {"term":"hello","document_frequency":2,"maximum_term_frequency":2,"postings":[{"document_id":0,"term_frequency":2,"document_length":3,"positions":[0,2]},{"document_id":2,"term_frequency":1,"document_length":2,"positions":[0]}]},
+    {"term":"world","document_frequency":1,"maximum_term_frequency":1,"postings":[{"document_id":0,"term_frequency":1,"document_length":3,"positions":[1]}]}
+  ]
+}

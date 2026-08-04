@@ -6,6 +6,11 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added a versioned native FTS dictionary with byte-prefix-compressed terms,
+  128-document bitpacked postings, inline tf/document length, delta-varint
+  positions, skip seeking, nested CRC32C validation, immutable snapshots, and
+  exact deletion-aware cross-segment document/token/term statistics, plus
+  corruption fuzzing, concurrency, examples, and benchmarks.
 - Added a pure-Go Snowball 3.1.1 stemmer token filter with all 36 pinned
   algorithms and 115 case-sensitive libstemmer names and aliases, exact
   cross-language fixtures, explicit invalid-language errors, metadata and
