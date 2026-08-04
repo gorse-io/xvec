@@ -16,9 +16,10 @@ A pure Go, embedded vector database.
 The implementation is being developed from the storage primitives upward. The
 v0.2 milestone covers versioned storage, WAL recovery, CRUD, exact Flat vector
 search, SQL filtering, scalar inverted candidates, atomic DDL, and compaction.
-The v0.3 work has started with baseline-layout FP16, per-vector INT8, and
-packed INT4 scalar quantization primitives. Approximate indexes such as IVF and
-HNSW are the next integration layer.
+The v0.3 work includes baseline-layout FP16, per-vector INT8, and packed INT4
+scalar quantization primitives. IVF is implemented internally through
+incremental assignment, and dense HNSW construction is now the next active
+integration layer.
 
 ## Module
 
@@ -75,6 +76,9 @@ atomic save/reopen, and concurrency-safe incremental assignment are also
 present internally. IVF remains intentionally unexposed as a collection
 execution path until query controls, filtering, refinement, and lifecycle
 orchestration are integrated without fallback.
+Deterministic dense HNSW level assignment, bounded construction search,
+diversity pruning, reverse-edge maintenance, and topology inspection are now
+present as the first independently gated HNSW unit.
 
 The current library version is `v0.2.0`; its exact support boundary is recorded
 in the [v0.2 capability matrix](docs/v0.2.md) and [changelog](CHANGELOG.md).
@@ -148,6 +152,7 @@ are exercised by `go test ./...`.
 - [IVF search](docs/ivf-search.md)
 - [IVF persistence and reopen](docs/ivf-persistence.md)
 - [IVF incremental writes](docs/ivf-incremental.md)
+- [Dense HNSW construction](docs/hnsw-build.md)
 
 ## License
 
