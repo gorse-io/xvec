@@ -134,11 +134,12 @@ routes DiskANN query, CreateIndex, Optimize, Stats, and reopen behavior from
 its durable live snapshot; public scalar quantization on DiskANN remains an
 explicit NotSupported combination because internal PQ has separate semantics.
 
-v0.5 development includes byte-compatible whitespace tokenization and a
-Unicode 17 standard tokenizer. Both preserve source terms and byte offsets and
-emit contiguous positions. Standard tokenization adds pinned word-connector,
-script, combining-mark, malformed-UTF-8, emoji, and codepoint-length behavior
-without CGO or runtime Unicode data files.
+v0.5 development includes byte-compatible whitespace, Unicode 17 standard,
+and Unicode 17 codepoint-ngram tokenizers. All preserve source byte offsets and
+emit contiguous positions. Standard tokenization implements pinned word,
+script, combining-mark, malformed-UTF-8, and emoji behavior; ngram tokenization
+adds optional general-category segmentation and single- or adjacent-length
+ranges. Neither requires CGO or runtime Unicode data files.
 
 The current library version is `v0.4.0`; its exact support boundary is recorded
 in the [v0.4 capability matrix](docs/v0.4.md) and [changelog](CHANGELOG.md).
@@ -231,6 +232,7 @@ are exercised by `go test ./...`.
 - [DiskANN index](docs/diskann.md)
 - [Whitespace tokenizer](docs/whitespace-tokenizer.md)
 - [Standard tokenizer](docs/standard-tokenizer.md)
+- [Ngram tokenizer](docs/ngram-tokenizer.md)
 
 ## License
 

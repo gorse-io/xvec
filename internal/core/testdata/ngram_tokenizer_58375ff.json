@@ -1,0 +1,72 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "source": "src/db/index/column/fts_column/tokenizer/ngram_tokenizer.cc",
+  "source_sha256": "106f58aa34dc0a3d718e1131656edffcadfca51d5700628287259be2986e7785",
+  "unicode_provider": "utf8proc 2.11.3 e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78",
+  "unicode_data_sha256": "950e549dbfc853c4304425f3af1875e72fa9fc9697c273c763400c2da4e380a7",
+  "unicode_version": "17.0.0",
+  "cases": [
+    {
+      "name": "default_ascii_bigram",
+      "min": 2,
+      "max": 2,
+      "token_chars": 0,
+      "input_hex": "68656c6c6f",
+      "tokens": [
+        {"text_hex": "6865", "offset": 0, "position": 0},
+        {"text_hex": "656c", "offset": 1, "position": 1},
+        {"text_hex": "6c6c", "offset": 2, "position": 2},
+        {"text_hex": "6c6f", "offset": 3, "position": 3}
+      ]
+    },
+    {
+      "name": "mixed_lengths",
+      "min": 2,
+      "max": 3,
+      "token_chars": 0,
+      "input_hex": "68656c6c6f",
+      "tokens": [
+        {"text_hex": "6865", "offset": 0, "position": 0},
+        {"text_hex": "68656c", "offset": 0, "position": 1},
+        {"text_hex": "656c", "offset": 1, "position": 2},
+        {"text_hex": "656c6c", "offset": 1, "position": 3},
+        {"text_hex": "6c6c", "offset": 2, "position": 4},
+        {"text_hex": "6c6c6f", "offset": 2, "position": 5},
+        {"text_hex": "6c6f", "offset": 3, "position": 6}
+      ]
+    },
+    {
+      "name": "unicode_byte_offsets",
+      "min": 2,
+      "max": 2,
+      "token_chars": 0,
+      "input_hex": "e4b8ade69687e58886",
+      "tokens": [
+        {"text_hex": "e4b8ade69687", "offset": 0, "position": 0},
+        {"text_hex": "e69687e58886", "offset": 3, "position": 1}
+      ]
+    },
+    {
+      "name": "nul_is_valid",
+      "min": 2,
+      "max": 2,
+      "token_chars": 0,
+      "input_hex": "610062",
+      "tokens": [
+        {"text_hex": "6100", "offset": 0, "position": 0},
+        {"text_hex": "0062", "offset": 1, "position": 1}
+      ]
+    },
+    {
+      "name": "malformed_bytes_split",
+      "min": 2,
+      "max": 2,
+      "token_chars": 0,
+      "input_hex": "6162ff6364",
+      "tokens": [
+        {"text_hex": "6162", "offset": 0, "position": 0},
+        {"text_hex": "6364", "offset": 3, "position": 1}
+      ]
+    }
+  ]
+}

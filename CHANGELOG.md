@@ -6,6 +6,10 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added a Unicode 17 codepoint ngram tokenizer with single- or adjacent-length
+  ranges, baseline general-category filtering, Elasticsearch-compatible
+  whitespace exceptions, valid-NUL and malformed-UTF-8 distinctions,
+  source-hashed fixtures, fuzz coverage, and a throughput benchmark.
 - Added a context-aware Unicode 17 standard tokenizer matching the pinned
   baseline's word, connector, script, combining-mark, malformed-UTF-8, emoji,
   codepoint-length, offset, and position behavior, with licensed generated
