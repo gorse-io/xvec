@@ -86,6 +86,101 @@ func TestCollectionDenseHNSWQueryControlsAndRecall(t *testing.T) {
 	}
 }
 
+func TestCollectionHNSWRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "rabitq")
+	schema := NewCollectionSchema("rabitq_collection",
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 64, Index: NewFlatIndexParams(MetricTypeL2)},
+		FieldSchema{Name: "rating", DataType: DataTypeInt32},
+	)
+	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	documents := annRaBitQDocuments(180)
+	if _, err := collection.Insert(ctx, documents); err != nil {
+		t.Fatal(err)
+	}
+	queryVector := documents[73].Fields["embedding"].(VectorFP32)
+	exact := exactDenseDocumentResults(t, documents, queryVector, core.MetricL2, 15)
+
+	indexParams := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	indexParams.TotalBits = 7
+	indexParams.NumClusters = 8
+	indexParams.M = 8
+	indexParams.EFConstruction = 40
+	if err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3}); err != nil {
+		t.Fatal(err)
+	}
+	defaulted, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defaulted) != 5 {
+		t.Fatalf("default HNSW-RaBitQ query returned %d documents", len(defaulted))
+	}
+	queryParams := NewHNSWRaBitQQueryParams()
+	queryParams.EF = 100
+	query := VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 15, Params: queryParams}
+	approximate, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recall := documentRecall(approximate, exact); recall < .85 {
+		t.Fatalf("collection HNSW-RaBitQ recall@15 = %.3f", recall)
+	}
+	queryParams.Linear = true
+	queryParams.UseRefiner = true
+	query.Params = queryParams
+	refined, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(documentKeys(refined), documentKeys(exact)) || !reflect.DeepEqual(documentScores(refined), documentScores(exact)) {
+		t.Fatalf("linear refined HNSW-RaBitQ differs: keys %v vs %v, scores %v vs %v", documentKeys(refined), documentKeys(exact), documentScores(refined), documentScores(exact))
+	}
+
+	queryParams.Linear = false
+	queryParams.UseRefiner = false
+	queryParams.Radius = approximate[len(approximate)-1].Score
+	query.Params = queryParams
+	query.Filter = "rating >= 1"
+	filtered, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, document := range filtered {
+		if document.Fields["rating"].(int32) < 1 || document.Score > queryParams.Radius {
+			t.Fatalf("filter/radius admitted %#v", document)
+		}
+	}
+	if got := collection.Stats().IndexCompleteness["embedding"]; got != 1 {
+		t.Fatalf("HNSW-RaBitQ completeness = %v", got)
+	}
+	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := collection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer collection.Close()
+	reopened, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reopened, filtered) {
+		t.Fatal("reopened HNSW-RaBitQ query differs")
+	}
+	field, _ := collection.Schema().Field("embedding")
+	if field.IndexType() != IndexTypeHNSWRaBitQ || collection.Stats().IndexCompleteness["embedding"] != 1 {
+		t.Fatalf("reopened HNSW-RaBitQ state = %#v, %#v", field, collection.Stats())
+	}
+}
+
 func TestCollectionQuantizedIVFRefinementCreateIndexAndReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "ivf")
@@ -366,6 +461,21 @@ func annDenseDocuments(count int) []Document {
 	return documents
 }
 
+func annRaBitQDocuments(count int) []Document {
+	documents := make([]Document, count)
+	for position := range documents {
+		vector := make(VectorFP32, 64)
+		for dimension := range vector {
+			vector[dimension] = float32(int((position*37+dimension*17+position*dimension*3)%211)-105) / 19
+		}
+		documents[position] = Document{PrimaryKey: fmt.Sprintf("r%04d", position), Fields: map[string]any{
+			"embedding": vector,
+			"rating":    int32(position % 3),
+		}}
+	}
+	return documents
+}
+
 func documentRecall(got, want []Document) float64 {
 	keys := make(map[string]struct{}, len(want))
 	for _, document := range want {
@@ -381,6 +491,14 @@ func documentRecall(got, want []Document) float64 {
 		return 1
 	}
 	return float64(matched) / float64(len(want))
+}
+
+func documentScores(documents []Document) []float32 {
+	scores := make([]float32, len(documents))
+	for index := range documents {
+		scores[index] = documents[index].Score
+	}
+	return scores
 }
 
 func exactDenseDocumentResults(t testing.TB, documents []Document, query VectorFP32, metric core.Metric, topK int) []Document {

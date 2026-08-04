@@ -17,8 +17,8 @@ The implementation is being developed from the storage primitives upward. The
 v0.3 milestone includes versioned storage, WAL recovery, CRUD, SQL filtering,
 atomic DDL/compaction, FP16/INT8/INT4 scalar quantization, deterministic
 rotation and refinement, k-means, IVF, and dense/sparse HNSW. Collection
-queries route those implemented indexes with explicit ANN controls.
-HNSW-RaBitQ execution, disk indexes, full-text search, and hybrid retrieval
+queries route those implemented indexes with explicit ANN controls. v0.4 work
+adds HNSW-RaBitQ execution; disk indexes, full-text search, and hybrid retrieval
 remain later milestones.
 
 ## Module
@@ -95,13 +95,17 @@ connected end to end. Until segment-native ANN artifacts are integrated, the
 collection rebuilds these runtime indexes from its durable live snapshot for
 each query and DDL validation.
 
-v0.4 work has begun with a portable internal RaBitQ trainer, split-code
-converter, and one-bit/full-bit distance estimator for L2, IP, and cosine. It
-supports the pinned 1–9 total-bit and 64–4095 dimension ranges, deterministic
-centroid/rotation/scale state, cancellation-aware batch conversion, model
-mismatch detection, and the baseline probabilistic pruning envelope. The code
-layout is native Go rather than the C++ AVX layout. Public HNSW-RaBitQ query
-execution remains `ErrNotSupported` until graph integration is complete.
+v0.4 work includes a portable RaBitQ trainer, split-code converter, and
+one-bit/full-bit distance estimator for L2, IP, and cosine. HNSW-RaBitQ now
+builds its graph from original vectors, uses coarse bounds and full codes while
+traversing, and optionally reranks candidates exactly from retained originals.
+It supports the pinned 1–9 total-bit and 64–4095 dimension ranges,
+deterministic training and topology, filtering, radius, linear code scans,
+atomic incremental generations, and a versioned checksummed native artifact.
+Collection queries, CreateIndex, Optimize, Stats, and reopen behavior are
+connected without fallback. The code and file formats are native Go rather
+than C++ compatible; Collection still rebuilds the runtime index from its
+durable live snapshot until segment-native ANN artifacts are integrated.
 
 The current library version is `v0.3.0`; its exact support boundary is recorded
 in the [v0.3 capability matrix](docs/v0.3.md) and [changelog](CHANGELOG.md).
@@ -186,6 +190,7 @@ are exercised by `go test ./...`.
 - [Sparse HNSW incremental writes](docs/hnsw-sparse-incremental.md)
 - [ANN collection query integration](docs/ann-query-integration.md)
 - [RaBitQ training and distance estimation](docs/rabitq.md)
+- [HNSW-RaBitQ index](docs/hnsw-rabitq.md)
 
 ## License
 

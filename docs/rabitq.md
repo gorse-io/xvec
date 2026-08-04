@@ -1,14 +1,15 @@
 # RaBitQ training and distance estimation
 
 This v0.4 component implements the portable RaBitQ model, converter, and
-distance estimator used by the later HNSW-RaBitQ index. Its behavioral baseline
-is zvec commit `58375ff` and the locked RaBitQ-Library commit
+distance estimator used by the HNSW-RaBitQ index. Its behavioral baseline is
+zvec commit `58375ff` and the locked RaBitQ-Library commit
 `858b0d6c480766d0e4f08fc5e02f34b53d698fad`.
 
-The component is currently internal to `internal/core`. It does not yet make a
-public `HNSWRaBitQIndexParams` executable in Collection queries; that remains
-the next independently gated v0.4 unit. Such queries continue to return
-`ErrNotSupported` instead of falling back to another index.
+The converter remains internal to `internal/core`. Public
+`HNSWRaBitQIndexParams` is executable through Collection queries and uses this
+component without falling back to another index. See the
+[HNSW-RaBitQ index](hnsw-rabitq.md) for graph behavior, refinement, and native
+persistence.
 
 ## Model training
 

@@ -10,6 +10,11 @@ subject to compatible migration work throughout the 0.x series.
   portable 1–9 bit split-code conversion; one-bit and full-bit L2/IP/cosine
   estimation with the baseline probabilistic pruning envelope; restorable
   immutable model state; pinned-library fixtures; fuzzing; and benchmarks.
+- Added deterministic original-vector HNSW-RaBitQ construction, coarse-bound
+  graph traversal, full-code ranking, optional exact refinement, filters,
+  radius and linear scans, versioned checksummed persistence, atomic
+  incremental generations, corruption fuzzing, recall gates, and Collection
+  query/CreateIndex/Optimize/Stats/reopen integration without fallback.
 
 ## v0.3.0 - 2026-08-04
 

@@ -33,6 +33,7 @@ type collectionVectorIndex struct {
 	rotate    bool
 	flat      FlatIndexParams
 	hnsw      HNSWIndexParams
+	rabitq    HNSWRaBitQIndexParams
 	ivf       IVFIndexParams
 }
 
@@ -69,6 +70,13 @@ func resolveCollectionVectorIndex(field FieldSchema, op, path string) (collectio
 			return collectionVectorIndex{}, invalidArgument(op, "field %q has nil HNSW index parameters", field.Name)
 		}
 		spec.hnsw = *value
+	case HNSWRaBitQIndexParams:
+		spec.rabitq = value
+	case *HNSWRaBitQIndexParams:
+		if value == nil {
+			return collectionVectorIndex{}, invalidArgument(op, "field %q has nil HNSW-RaBitQ index parameters", field.Name)
+		}
+		spec.rabitq = *value
 	case IVFIndexParams:
 		spec.ivf = value
 	case *IVFIndexParams:
@@ -86,6 +94,8 @@ func resolveCollectionVectorIndex(field FieldSchema, op, path string) (collectio
 		metric, spec.quantize, spec.rotate = spec.flat.Metric, spec.flat.Quantize, spec.flat.Quantizer.EnableRotate
 	case IndexTypeHNSW:
 		metric, spec.quantize, spec.rotate = spec.hnsw.Metric, spec.hnsw.Quantize, spec.hnsw.Quantizer.EnableRotate
+	case IndexTypeHNSWRaBitQ:
+		metric, spec.quantize = spec.rabitq.Metric, QuantizeTypeRaBitQ
 	case IndexTypeIVF:
 		if field.DataType.IsSparseVector() {
 			return collectionVectorIndex{}, invalidArgument(op, "sparse field %q cannot use IVF", field.Name)
@@ -102,9 +112,6 @@ func resolveCollectionVectorIndex(field FieldSchema, op, path string) (collectio
 		return collectionVectorIndex{}, err
 	}
 	spec.metric = converted
-	if spec.quantize == QuantizeTypeRaBitQ {
-		return collectionVectorIndex{}, notSupported(op, path, fmt.Sprintf("RaBitQ index on field %q is not implemented", field.Name))
-	}
 	if field.DataType.IsSparseVector() && spec.quantize != QuantizeTypeUndefined && spec.quantize != QuantizeTypeFP16 {
 		return collectionVectorIndex{}, notSupported(op, path, fmt.Sprintf("%s sparse quantization on field %q is not implemented", spec.quantize, field.Name))
 	}
@@ -119,6 +126,9 @@ func collectionQueryParams(params QueryParams, spec collectionVectorIndex) (coll
 			params = value
 		case IndexTypeHNSW:
 			value := NewHNSWQueryParams()
+			params = value
+		case IndexTypeHNSWRaBitQ:
+			value := NewHNSWRaBitQQueryParams()
 			params = value
 		case IndexTypeIVF:
 			value := NewIVFQueryParams()
@@ -151,6 +161,12 @@ func collectionQueryParams(params QueryParams, spec collectionVectorIndex) (coll
 				options: value.QueryOptions, scaleFactor: 1, ef: value.EF,
 				prefetchOffset: value.PrefetchOffset, prefetchLines: value.PrefetchLines,
 			}, nil
+		}
+	case HNSWRaBitQQueryParams:
+		return collectionQueryConfig{options: value.QueryOptions, scaleFactor: 1, ef: value.EF}, nil
+	case *HNSWRaBitQQueryParams:
+		if value != nil {
+			return collectionQueryConfig{options: value.QueryOptions, scaleFactor: 1, ef: value.EF}, nil
 		}
 	case IVFQueryParams:
 		return collectionQueryConfig{
@@ -193,7 +209,7 @@ func searchCollectionDense(
 	config collectionQueryConfig,
 ) ([]core.Result, error) {
 	final := core.SearchOptions{TopK: topK, Radius: config.options.Radius, Filter: filter}
-	if config.options.Linear || spec.indexType == IndexTypeFlat {
+	if (config.options.Linear && spec.indexType != IndexTypeHNSWRaBitQ) || spec.indexType == IndexTypeFlat {
 		index, err := buildCollectionDenseFlat(ctx, schemaName, field, documents, spec)
 		if err != nil {
 			return nil, err
@@ -216,6 +232,15 @@ func searchCollectionDense(
 					PrefetchOffset: config.prefetchOffset, PrefetchLines: config.prefetchLines,
 				})
 			})
+	case IndexTypeHNSWRaBitQ:
+		index, err := buildCollectionDenseHNSWRaBitQ(ctx, field, documents, spec, 0)
+		if err != nil {
+			return nil, err
+		}
+		return index.SearchHNSWRaBitQ(ctx, query, core.HNSWRaBitQSearchOptions{
+			SearchOptions: final, EF: config.ef, Refine: config.options.UseRefiner,
+			Linear: config.options.Linear,
+		})
 	case IndexTypeIVF:
 		index, err := buildCollectionDenseIVF(ctx, schemaName, field, documents, spec, 0)
 		if err != nil {
@@ -330,6 +355,36 @@ func buildCollectionDenseHNSW(
 		return nil, err
 	}
 	return core.NewScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+}
+
+func buildCollectionDenseHNSWRaBitQ(
+	ctx context.Context,
+	field FieldSchema,
+	documents []Document,
+	spec collectionVectorIndex,
+	workers int,
+) (*core.HNSWRaBitQIndex, error) {
+	candidates, err := collectionDenseCandidates(ctx, field, documents)
+	if err != nil {
+		return nil, err
+	}
+	options := core.DefaultHNSWRaBitQBuildOptions(spec.metric)
+	options.TotalBits = spec.rabitq.TotalBits
+	options.Clusters = spec.rabitq.NumClusters
+	options.SampleCount = spec.rabitq.SampleCount
+	options.M = spec.rabitq.M
+	options.EFConstruction = spec.rabitq.EFConstruction
+	options.Workers = workers
+	builder, err := core.NewHNSWRaBitQBuilder(int(field.Dimension), options)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range candidates {
+		if err := builder.Add(ctx, candidate.Key, candidate.Vector); err != nil {
+			return nil, err
+		}
+	}
+	return builder.Build(ctx)
 }
 
 func buildCollectionDenseIVF(
@@ -554,6 +609,9 @@ func validateCollectionVectorRepresentations(ctx context.Context, schema Collect
 		vector, err := denseValueToFloat32(value)
 		if err != nil {
 			return invalidArgument("validate document", "field %q: %v", field.Name, err)
+		}
+		if spec.indexType == IndexTypeHNSWRaBitQ {
+			continue
 		}
 		kind, err := toCoreQuantization(spec.quantize)
 		if err != nil {
