@@ -6,6 +6,13 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added a pure-Go FTS lexer, tokenizer/filter analysis pipeline, and two-phase
+  parser for term, phrase, natural-match, explicit and implicit boolean expressions,
+  modifiers, grouping, and escapes, with analyzed AST nodes, source-located
+  structured errors, an owned idempotent AST canonicalizer, lazy term/AND/OR
+  posting iterators, exact repeated-term phrase-position matching, deletion
+  snapshots, seek support, complexity bounds, cancellation, concurrency
+  tests, compatibility fixtures, fuzzing, and benchmarks.
 - Added a versioned native FTS dictionary with byte-prefix-compressed terms,
   128-document bitpacked postings, inline tf/document length, delta-varint
   positions, skip seeking, nested CRC32C validation, immutable snapshots, and

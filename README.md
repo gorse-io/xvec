@@ -145,7 +145,11 @@ filter contract plus Unicode 17 lowercase, baseline-compatible ASCII-folding,
 and all 36 Snowball 3.1.1 stemmers provide reusable post-tokenization
 transforms. A checksummed native FTS dictionary now stores prefix-compressed
 terms, block-bitpacked doc/tf/length payloads, delta-varint positions, and
-deletion-aware cross-segment statistics. None requires CGO.
+deletion-aware cross-segment statistics. A baseline-compatible lexer and
+two-phase parser build analyzed term, phrase, AND, OR, and empty query ASTs
+with source-located errors; an owned canonicalization pass and lazy posting
+iterators execute term, exact-phrase, AND, OR, must, must-not, and deletion
+semantics. None requires CGO.
 
 The current library version is `v0.4.0`; its exact support boundary is recorded
 in the [v0.4 capability matrix](docs/v0.4.md) and [changelog](CHANGELOG.md).
@@ -244,6 +248,7 @@ are exercised by `go test ./...`.
 - [ASCII-folding token filter](docs/ascii-folding-token-filter.md)
 - [Stemmer token filter](docs/stemmer-token-filter.md)
 - [FTS dictionary, postings, and statistics](docs/fts-postings.md)
+- [FTS query parser and boolean execution](docs/fts-query-parser.md)
 
 ## License
 
