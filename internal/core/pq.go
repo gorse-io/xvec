@@ -1,0 +1,509 @@
+// Copyright 2026-present the zvec-go project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package core
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"math"
+	"slices"
+
+	"github.com/gorse-io/zvec/internal/ailego"
+)
+
+const (
+	PQBits                   = 8
+	PQCentroidCount          = 1 << PQBits
+	DefaultPQMaxTrainSamples = 200_000
+	DefaultPQIterations      = 12
+	DefaultPQKMC2ChainLength = 32
+)
+
+var (
+	ErrInvalidPQOptions    = errors.New("core: invalid PQ options")
+	ErrInvalidPQModel      = errors.New("core: invalid PQ model")
+	ErrInvalidPQCode       = errors.New("core: invalid PQ code")
+	ErrPQModelMismatch     = errors.New("core: PQ code belongs to a different model")
+	ErrPQUnsupportedMetric = errors.New("core: PQ supports L2 and inner product only")
+	ErrPQScoreOverflow     = errors.New("core: PQ score overflows float32")
+)
+
+// PQOptions configures deterministic 8-bit product-quantizer training.
+// Chunks zero resolves to half the vector dimension, matching DiskANN's
+// public auto setting. Training uses the first MaxTrainSamples vectors.
+type PQOptions struct {
+	Metric          Metric
+	Chunks          int
+	MaxTrainSamples int
+	MaxIterations   int
+	Workers         int
+	Seed            uint64
+}
+
+// DefaultPQOptions returns the pinned 256-centroid, 12-iteration defaults.
+func DefaultPQOptions(metric Metric) PQOptions {
+	return PQOptions{
+		Metric: metric, MaxTrainSamples: DefaultPQMaxTrainSamples,
+		MaxIterations: DefaultPQIterations,
+	}
+}
+
+// Validate checks options that do not depend on vector dimension.
+func (o PQOptions) Validate() error {
+	if o.Metric != MetricL2 && o.Metric != MetricIP {
+		return fmt.Errorf("%w: %w", ErrInvalidPQOptions, ErrPQUnsupportedMetric)
+	}
+	if o.Chunks < 0 {
+		return fmt.Errorf("%w: Chunks cannot be negative", ErrInvalidPQOptions)
+	}
+	if o.MaxTrainSamples <= 0 {
+		return fmt.Errorf("%w: MaxTrainSamples must be positive", ErrInvalidPQOptions)
+	}
+	if o.MaxIterations <= 0 {
+		return fmt.Errorf("%w: MaxIterations must be positive", ErrInvalidPQOptions)
+	}
+	if o.Workers < 0 {
+		return fmt.Errorf("%w: Workers cannot be negative", ErrInvalidPQOptions)
+	}
+	return nil
+}
+
+// PQModelState is the complete portable state of a trained quantizer. Pivots
+// are centroid-major: row c contains all dimensions for centroid ID c, while
+// ChunkOffsets determines which portion of each row belongs to each chunk.
+type PQModelState struct {
+	Dimension    int
+	Metric       Metric
+	ChunkOffsets []int
+	Pivots       []float32
+}
+
+// PQModel is an immutable 8-bit product quantizer.
+type PQModel struct {
+	dimension    int
+	metric       Metric
+	chunkOffsets []int
+	pivots       []float32
+	fingerprint  uint64
+}
+
+// TrainPQ partitions dimensions into contiguous chunks and trains one
+// independent 256-entry codebook per chunk. When fewer than 256 samples are
+// available, unused rows repeat centroid zero and therefore never win a tie.
+func TrainPQ(ctx context.Context, vectors [][]float32, options PQOptions) (*PQModel, error) {
+	if ctx == nil {
+		return nil, errors.New("core: nil PQ training context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
+	if len(vectors) == 0 {
+		return nil, ErrEmptyTrainingSet
+	}
+	dimension := len(vectors[0])
+	if dimension <= 0 || dimension > MaxRotationDimension {
+		return nil, fmt.Errorf("%w: dimension must be in [1,%d]", ErrInvalidPQOptions, MaxRotationDimension)
+	}
+	if err := validateTrainingVectors(ctx, vectors, dimension, true); err != nil {
+		return nil, err
+	}
+	chunks := options.Chunks
+	if chunks == 0 {
+		chunks = dimension / 2
+	}
+	if chunks <= 0 || chunks > dimension {
+		return nil, fmt.Errorf("%w: resolved Chunks must be in [1,%d]", ErrInvalidPQOptions, dimension)
+	}
+	offsets := pqChunkOffsets(dimension, chunks)
+	sampleCount := min(len(vectors), options.MaxTrainSamples)
+	pivots := make([]float32, PQCentroidCount*dimension)
+	for chunk := 0; chunk < chunks; chunk++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		start, end := offsets[chunk], offsets[chunk+1]
+		training := make([][]float32, sampleCount)
+		for sample := range training {
+			if sample&1023 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
+			training[sample] = slices.Clone(vectors[sample][start:end])
+		}
+		kmeans := DefaultKMeansOptions(PQCentroidCount, options.Metric)
+		kmeans.MaxIterations = options.MaxIterations
+		kmeans.Workers = options.Workers
+		kmeans.Seed = options.Seed ^ (0x70716b6d00000000 + uint64(chunk))
+		initialCentroids, err := initializePQKMC2(
+			ctx, training, min(PQCentroidCount, len(training)), options.Metric, kmeans.Seed,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("core: initialize PQ chunk %d: %w", chunk, err)
+		}
+		kmeans.InitialCentroids = initialCentroids
+		model, err := TrainKMeans(ctx, training, kmeans)
+		if err != nil {
+			return nil, fmt.Errorf("core: train PQ chunk %d: %w", chunk, err)
+		}
+		centroids := model.Centroids()
+		for centroid := 0; centroid < PQCentroidCount; centroid++ {
+			source := centroids[0]
+			if centroid < len(centroids) {
+				source = centroids[centroid]
+			}
+			copy(pivots[centroid*dimension+start:centroid*dimension+end], source)
+		}
+	}
+	return RestorePQModel(PQModelState{
+		Dimension: dimension, Metric: options.Metric,
+		ChunkOffsets: offsets, Pivots: pivots,
+	})
+}
+
+// RestorePQModel validates and clones a complete portable model snapshot.
+func RestorePQModel(state PQModelState) (*PQModel, error) {
+	if state.Dimension <= 0 || state.Dimension > MaxRotationDimension {
+		return nil, fmt.Errorf("%w: dimension must be in [1,%d]", ErrInvalidPQModel, MaxRotationDimension)
+	}
+	if state.Metric != MetricL2 && state.Metric != MetricIP {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidPQModel, ErrPQUnsupportedMetric)
+	}
+	if len(state.ChunkOffsets) < 2 || len(state.ChunkOffsets)-1 > state.Dimension ||
+		state.ChunkOffsets[0] != 0 || state.ChunkOffsets[len(state.ChunkOffsets)-1] != state.Dimension {
+		return nil, fmt.Errorf("%w: invalid chunk offsets", ErrInvalidPQModel)
+	}
+	for index := 1; index < len(state.ChunkOffsets); index++ {
+		if state.ChunkOffsets[index] <= state.ChunkOffsets[index-1] {
+			return nil, fmt.Errorf("%w: chunk offsets must be strictly increasing", ErrInvalidPQModel)
+		}
+	}
+	if len(state.Pivots) != PQCentroidCount*state.Dimension {
+		return nil, fmt.Errorf("%w: got %d pivots, want %d", ErrInvalidPQModel, len(state.Pivots), PQCentroidCount*state.Dimension)
+	}
+	for _, value := range state.Pivots {
+		if !finiteFloat32(value) {
+			return nil, fmt.Errorf("%w: non-finite pivot", ErrInvalidPQModel)
+		}
+	}
+	model := &PQModel{
+		dimension: state.Dimension, metric: state.Metric,
+		chunkOffsets: slices.Clone(state.ChunkOffsets), pivots: slices.Clone(state.Pivots),
+	}
+	model.fingerprint = fingerprintPQModel(model)
+	return model, nil
+}
+
+// State returns an independent complete model snapshot.
+func (m *PQModel) State() PQModelState {
+	if m == nil {
+		return PQModelState{}
+	}
+	return PQModelState{
+		Dimension: m.dimension, Metric: m.metric,
+		ChunkOffsets: slices.Clone(m.chunkOffsets), Pivots: slices.Clone(m.pivots),
+	}
+}
+
+func (m *PQModel) Dimension() int {
+	if m == nil {
+		return 0
+	}
+	return m.dimension
+}
+
+func (m *PQModel) Metric() Metric {
+	if m == nil {
+		return 0
+	}
+	return m.metric
+}
+
+func (m *PQModel) Chunks() int {
+	if m == nil {
+		return 0
+	}
+	return len(m.chunkOffsets) - 1
+}
+
+func (m *PQModel) ChunkOffsets() []int {
+	if m == nil {
+		return nil
+	}
+	return slices.Clone(m.chunkOffsets)
+}
+
+// Pivots returns the full centroid-major pivot matrix.
+func (m *PQModel) Pivots() []float32 {
+	if m == nil {
+		return nil
+	}
+	return slices.Clone(m.pivots)
+}
+
+// Code restores one immutable code owned by this model.
+func (m *PQModel) Code(encoded []byte) (PQCode, error) {
+	if err := m.validate(); err != nil {
+		return PQCode{}, err
+	}
+	if len(encoded) != m.Chunks() {
+		return PQCode{}, fmt.Errorf("%w: got %d bytes, want %d", ErrInvalidPQCode, len(encoded), m.Chunks())
+	}
+	return PQCode{modelFingerprint: m.fingerprint, codes: slices.Clone(encoded)}, nil
+}
+
+// Encode selects the best centroid independently in every chunk.
+func (m *PQModel) Encode(vector []float32) (PQCode, error) {
+	if err := m.validate(); err != nil {
+		return PQCode{}, err
+	}
+	if err := validateTrainingVector(vector, m.dimension); err != nil {
+		return PQCode{}, err
+	}
+	codes := make([]byte, m.Chunks())
+	for chunk := range codes {
+		start, end := m.chunkOffsets[chunk], m.chunkOffsets[chunk+1]
+		best := 0
+		bestScore, err := m.subspaceScore(vector, 0, start, end)
+		if err != nil {
+			return PQCode{}, err
+		}
+		for centroid := 1; centroid < PQCentroidCount; centroid++ {
+			score, err := m.subspaceScore(vector, centroid, start, end)
+			if err != nil {
+				return PQCode{}, err
+			}
+			if m.metric.Better(score, bestScore) {
+				best, bestScore = centroid, score
+			}
+		}
+		codes[chunk] = byte(best)
+	}
+	return PQCode{modelFingerprint: m.fingerprint, codes: codes}, nil
+}
+
+// EncodeBatch converts vectors concurrently while preserving input order.
+func (m *PQModel) EncodeBatch(ctx context.Context, vectors [][]float32, workers int) ([]PQCode, error) {
+	if ctx == nil {
+		return nil, errors.New("core: nil PQ encoding context")
+	}
+	if err := m.validate(); err != nil {
+		return nil, err
+	}
+	if workers < 0 {
+		return nil, fmt.Errorf("%w: workers cannot be negative", ErrInvalidPQOptions)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]PQCode, len(vectors))
+	err := ailego.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		code, err := m.Encode(vectors[index])
+		if err != nil {
+			return fmt.Errorf("core: encode PQ vector %d: %w", index, err)
+		}
+		result[index] = code
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Decode reconstructs a vector from one centroid ID per chunk.
+func (m *PQModel) Decode(code PQCode) ([]float32, error) {
+	if err := m.validateCode(code); err != nil {
+		return nil, err
+	}
+	vector := make([]float32, m.dimension)
+	for chunk, encoded := range code.codes {
+		start, end := m.chunkOffsets[chunk], m.chunkOffsets[chunk+1]
+		pivot := int(encoded)*m.dimension + start
+		copy(vector[start:end], m.pivots[pivot:pivot+end-start])
+	}
+	return vector, nil
+}
+
+func (m *PQModel) validate() error {
+	if m == nil || m.dimension <= 0 || (m.metric != MetricL2 && m.metric != MetricIP) ||
+		len(m.chunkOffsets) < 2 || len(m.pivots) != PQCentroidCount*m.dimension || m.fingerprint == 0 {
+		return ErrInvalidPQModel
+	}
+	return nil
+}
+
+func (m *PQModel) validateCode(code PQCode) error {
+	if err := m.validate(); err != nil {
+		return err
+	}
+	if err := code.validate(); err != nil {
+		return err
+	}
+	if code.modelFingerprint != m.fingerprint {
+		return ErrPQModelMismatch
+	}
+	if len(code.codes) != m.Chunks() {
+		return ErrInvalidPQCode
+	}
+	return nil
+}
+
+func (m *PQModel) subspaceScore(vector []float32, centroid, start, end int) (float32, error) {
+	pivot := m.pivots[centroid*m.dimension+start : centroid*m.dimension+end]
+	return m.metric.Compute(vector[start:end], pivot)
+}
+
+// PQCode stores one unsigned 8-bit centroid ID per chunk.
+type PQCode struct {
+	modelFingerprint uint64
+	codes            []byte
+}
+
+func (c PQCode) Chunks() int { return len(c.codes) }
+
+func (c PQCode) Bytes() []byte { return slices.Clone(c.codes) }
+
+func (c PQCode) validate() error {
+	if c.modelFingerprint == 0 || len(c.codes) == 0 {
+		return ErrInvalidPQCode
+	}
+	return nil
+}
+
+func pqChunkOffsets(dimension, chunks int) []int {
+	offsets := make([]int, chunks+1)
+	base, larger := dimension/chunks, dimension%chunks
+	for chunk := 0; chunk < chunks; chunk++ {
+		width := base
+		if chunk < larger {
+			width++
+		}
+		offsets[chunk+1] = offsets[chunk] + width
+	}
+	return offsets
+}
+
+// initializePQKMC2 implements the pinned length-32 Markov-chain centroid
+// initializer with a deterministic native seed.
+func initializePQKMC2(ctx context.Context, vectors [][]float32, clusters int, metric Metric, seed uint64) ([][]float32, error) {
+	if clusters <= 0 || clusters > len(vectors) {
+		return nil, ErrInvalidCentroid
+	}
+	random := splitMix64{state: seed}
+	first, err := pqUniformSampleIndices(ctx, len(vectors), 1, &random)
+	if err != nil {
+		return nil, err
+	}
+	centroids := [][]float32{slices.Clone(vectors[first[0]])}
+	for len(centroids) < clusters {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		indices, err := pqUniformSampleIndices(ctx, len(vectors), min(DefaultPQKMC2ChainLength, len(vectors)), &random)
+		if err != nil {
+			return nil, err
+		}
+		scores := make([]float32, len(indices))
+		for candidateIndex, vectorIndex := range indices {
+			best := float32(math.MaxFloat32)
+			for centroidIndex, centroid := range centroids {
+				if centroidIndex&63 == 0 {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+				}
+				score, err := metric.Compute(centroid, vectors[vectorIndex])
+				if err != nil {
+					return nil, err
+				}
+				if metric == MetricIP {
+					score = -score
+				}
+				if score < best {
+					best = score
+				}
+			}
+			scores[candidateIndex] = best
+		}
+		selectedScore, selected := scores[0], 0
+		for candidate := 1; candidate < len(scores); candidate++ {
+			if selectedScore == 0 || selectedScore*float32(random.float64()) < scores[candidate] {
+				selectedScore, selected = scores[candidate], candidate
+			}
+		}
+		centroids = append(centroids, slices.Clone(vectors[indices[selected]]))
+	}
+	return centroids, nil
+}
+
+func pqUniformSampleIndices(ctx context.Context, count, sample int, random *splitMix64) ([]int, error) {
+	result := make([]int, 0, sample)
+	remaining := sample
+	for index := 0; index < count && remaining > 0; index++ {
+		if index&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		if random.intn(count-index) < remaining {
+			result = append(result, index)
+			remaining--
+		}
+	}
+	return result, nil
+}
+
+func fingerprintPQModel(model *PQModel) uint64 {
+	hash := sha256.New()
+	var header [9]byte
+	binary.LittleEndian.PutUint64(header[:8], uint64(model.dimension))
+	header[8] = byte(model.metric)
+	_, _ = hash.Write(header[:])
+	var buffer [16 * 1024]byte
+	const offsetsPerBlock = len(buffer) / 8
+	for start := 0; start < len(model.chunkOffsets); start += offsetsPerBlock {
+		count := min(offsetsPerBlock, len(model.chunkOffsets)-start)
+		offsetBytes := buffer[:count*8]
+		for index, offset := range model.chunkOffsets[start : start+count] {
+			binary.LittleEndian.PutUint64(offsetBytes[index*8:], uint64(offset))
+		}
+		_, _ = hash.Write(offsetBytes)
+	}
+	const pivotsPerBlock = len(buffer) / 4
+	for start := 0; start < len(model.pivots); start += pivotsPerBlock {
+		count := min(pivotsPerBlock, len(model.pivots)-start)
+		pivotBytes := buffer[:count*4]
+		for index, pivot := range model.pivots[start : start+count] {
+			binary.LittleEndian.PutUint32(pivotBytes[index*4:], math.Float32bits(pivot))
+		}
+		_, _ = hash.Write(pivotBytes)
+	}
+	sum := hash.Sum(nil)
+	fingerprint := binary.LittleEndian.Uint64(sum[:8])
+	if fingerprint == 0 {
+		return 1
+	}
+	return fingerprint
+}

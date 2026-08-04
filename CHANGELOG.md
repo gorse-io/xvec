@@ -20,6 +20,10 @@ subject to compatible migration work throughout the 0.x series.
   metric-aware EF/filter/radius search, scalar quantization and refinement,
   atomic streaming generations, versioned checksummed persistence, corruption
   fuzzing, recall gates, benchmarks, and Collection lifecycle integration.
+- Added deterministic 8-bit product quantization with baseline 256-entry
+  contiguous chunk layout, prefix-bounded training, immutable restorable
+  pivot state, model-bound encoding and reconstruction, additive L2 and inner
+  product distance tables, batch operations, fuzz coverage, and benchmarks.
 
 ## v0.3.0 - 2026-08-04
 

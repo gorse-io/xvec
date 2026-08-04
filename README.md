@@ -116,6 +116,14 @@ extended. Collection routes Vamana queries, DDL, Optimize, Stats, Linear, and
 reopen behavior without fallback; as with the other in-memory ANN indexes, it
 currently rebuilds the runtime graph from the durable live snapshot.
 
+The native PQ component trains 8-bit, 256-entry codebooks over contiguous
+dimension chunks, encodes one byte per chunk, reconstructs vectors, and builds
+chunk-major L2 or inner-product query tables for constant-time code lookup.
+Its immutable state uses the baseline full-pivot layout and can be cloned or
+restored for the forthcoming DiskANN format. Auto chunking, 12 training
+iterations, the 200,000-vector training cap, deterministic prefix sampling,
+batch encoding, and batch lookup are covered without CGO.
+
 The current library version is `v0.3.0`; its exact support boundary is recorded
 in the [v0.3 capability matrix](docs/v0.3.md) and [changelog](CHANGELOG.md).
 
@@ -201,6 +209,7 @@ are exercised by `go test ./...`.
 - [RaBitQ training and distance estimation](docs/rabitq.md)
 - [HNSW-RaBitQ index](docs/hnsw-rabitq.md)
 - [Vamana index](docs/vamana.md)
+- [Product quantization](docs/pq.md)
 
 ## License
 
