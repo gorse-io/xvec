@@ -27,7 +27,7 @@ import (
 
 // CreateIndex validates and backfills a currently implemented index, then
 // atomically publishes the new schema in a manifest generation. At this stage
-// Vector and INVERT indexes are snapshot-local runtime indexes, so backfill
+// Vector, INVERT, and FTS indexes are snapshot-local runtime indexes, so backfill
 // validates the complete live snapshot and publication persists their
 // parameters.
 func (c *Collection) CreateIndex(ctx context.Context, column string, index IndexParams, options CreateIndexOptions) error {
@@ -247,6 +247,11 @@ func supportedCreateIndex(nextField FieldSchema, index IndexParams, path string)
 			return notSupported(op, path, fmt.Sprintf("INVERT is not implemented for %s field %q", nextField.DataType, nextField.Name))
 		}
 		return nil
+	case IndexTypeFTS:
+		if nextField.DataType != DataTypeString {
+			return invalidArgument(op, "FTS field %q must use STRING", nextField.Name)
+		}
+		return nil
 	case IndexTypeFlat, IndexTypeHNSW, IndexTypeHNSWRaBitQ, IndexTypeIVF, IndexTypeDiskANN, IndexTypeVamana:
 		if !nextField.DataType.IsVector() {
 			return invalidArgument(op, "scalar field %q cannot use %s", nextField.Name, index.IndexType())
@@ -298,6 +303,9 @@ func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field Fiel
 			return err
 		}
 		return index.Seal()
+	case IndexTypeFTS:
+		_, err := buildCollectionFTSRuntime(ctx, field, documents, nil)
+		return err
 	case IndexTypeFlat, IndexTypeHNSW, IndexTypeHNSWRaBitQ, IndexTypeIVF, IndexTypeDiskANN, IndexTypeVamana:
 		spec, err := resolveCollectionVectorIndex(field, "create index", c.path)
 		if err != nil {

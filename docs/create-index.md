@@ -15,7 +15,9 @@ The currently executable index types are:
   dimensions and L2, IP, or cosine scoring;
 - `VamanaIndexParams` on supported dense vector fields;
 - `DiskANNIndexParams` on FP32 or FP16 dense vector fields;
-- `InvertIndexParams` on filterable scalar and array fields other than BINARY.
+- `InvertIndexParams` on filterable scalar and array fields other than BINARY;
+- `FTSIndexParams` on string fields, with the configured tokenizer and token
+  filters validated against the complete live snapshot.
 
 Dense Flat/HNSW/IVF definitions may use FP16, INT8, or INT4 scalar codes where
 the vector data type permits them; INT8/INT4 may enable rotation. Sparse
@@ -24,7 +26,7 @@ validates its centroid/rotation model and graph during backfill. Vamana
 performs deterministic RobustPrune graph construction and supports the same
 FP16/INT8/INT4 scalar representations as dense HNSW. DiskANN constructs its
 graph and internal PQ codes during backfill; its public scalar quantization
-settings, FTS, and IVF SOAR return `ErrNotSupported`. A vector index on a
+settings and IVF SOAR return `ErrNotSupported`. A vector index on a
 scalar field, scalar index on a vector field, invalid metric/type combination,
 nil parameters, or negative concurrency returns `ErrInvalidArgument`. A
 missing column returns `ErrNotFound`. Different non-vector index types cannot
@@ -46,9 +48,9 @@ err := collection.CreateIndex(ctx, "title", params,
 )
 ```
 
-The native Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, DiskANN, and INVERT collection search
-structures remain snapshot-local: query execution reconstructs them from live
-documents.
+The native Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, DiskANN, INVERT, and FTS
+collection search structures remain snapshot-local: query execution
+reconstructs them from live documents.
 CreateIndex persists validated parameters, not a C++-compatible or
 segment-attached standalone index artifact. Backfill constructs the requested
 runtime representation, including quantization overflow and rotation checks;

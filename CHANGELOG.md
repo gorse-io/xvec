@@ -6,6 +6,10 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added atomic FTS `CreateIndex` backfill for string fields, including complete
+  live-snapshot analyzer/dictionary validation, query readiness, failure
+  rollback, and durable reopen behavior.
+
 ## v0.5.0 - 2026-08-04
 
 - Added one-shot process runtime configuration with bounded query and
