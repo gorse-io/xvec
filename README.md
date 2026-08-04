@@ -14,11 +14,11 @@ A pure Go, embedded vector database.
 - Linux, macOS, and Windows support.
 
 The implementation is being developed from the storage primitives upward. The
-v0.3 milestone includes versioned storage, WAL recovery, CRUD, SQL filtering,
+v0.4 release includes versioned storage, WAL recovery, CRUD, SQL filtering,
 atomic DDL/compaction, FP16/INT8/INT4 scalar quantization, deterministic
 rotation and refinement, k-means, IVF, and dense/sparse HNSW. Collection
-queries route those implemented indexes with explicit ANN controls. v0.4 work
-adds HNSW-RaBitQ, Vamana, product quantization, and native DiskANN execution;
+queries route those implemented indexes with explicit ANN controls. v0.4 adds
+HNSW-RaBitQ, Vamana, product quantization, and native DiskANN execution;
 full-text search and hybrid retrieval remain later milestones.
 
 ## Module
@@ -95,7 +95,7 @@ original-vector refinement are connected end to end. Until segment-native ANN
 artifacts are integrated, the collection rebuilds these runtime indexes from
 its durable live snapshot for each query and DDL validation.
 
-v0.4 work includes a portable RaBitQ trainer, split-code converter, and
+The v0.4 release includes a portable RaBitQ trainer, split-code converter, and
 one-bit/full-bit distance estimator for L2, IP, and cosine. HNSW-RaBitQ now
 builds its graph from original vectors, uses coarse bounds and full codes while
 traversing, and optionally reranks candidates exactly from retained originals.
@@ -134,8 +134,8 @@ routes DiskANN query, CreateIndex, Optimize, Stats, and reopen behavior from
 its durable live snapshot; public scalar quantization on DiskANN remains an
 explicit NotSupported combination because internal PQ has separate semantics.
 
-The current library version is `v0.3.0`; its exact support boundary is recorded
-in the [v0.3 capability matrix](docs/v0.3.md) and [changelog](CHANGELOG.md).
+The current library version is `v0.4.0`; its exact support boundary is recorded
+in the [v0.4 capability matrix](docs/v0.4.md) and [changelog](CHANGELOG.md).
 
 ## Schema example
 
@@ -182,6 +182,7 @@ are exercised by `go test ./...`.
 ## Documentation
 
 - [Collection API](docs/collection-api.md)
+- [v0.4 capability matrix](docs/v0.4.md)
 - [v0.3 capability matrix](docs/v0.3.md)
 - [v0.2 capability matrix](docs/v0.2.md)
 - [Native Go disk format](docs/disk-format.md)

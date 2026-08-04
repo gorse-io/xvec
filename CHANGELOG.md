@@ -6,6 +6,8 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+## v0.4.0 - 2026-08-04
+
 - Added deterministic RaBitQ centroid, rotation, and expected-scale training;
   portable 1–9 bit split-code conversion; one-bit and full-bit L2/IP/cosine
   estimation with the baseline probabilistic pruning envelope; restorable
@@ -33,6 +35,12 @@ subject to compatible migration work throughout the 0.x series.
   scoring and original-vector refinement, cache preloading, atomic complete
   index persistence, corruption detection, and Collection query/DDL/Optimize
   integration on every supported Go platform.
+- Added v0.4 release gates for DiskANN recall and byte-identical reopen
+  behavior across all four dense metrics, bounded concurrent sector I/O,
+  process-kill atomic publication, shared search-quality reporting, artifact
+  size, and end-to-end build cost.
+
+See [the v0.4 capability matrix](docs/v0.4.md) for exact support boundaries.
 
 ## v0.3.0 - 2026-08-04
 

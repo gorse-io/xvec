@@ -87,9 +87,10 @@ Tests cover all four dense metrics, exact full-list parity, approximate
 recall, filter/radius behavior, refinement, cache ownership and preloading,
 concurrent reads, empty indexes, cancellation and Close, atomic save/reopen,
 replacement, truncation, trailing data, header/section/record corruption,
-fuzzed complete files, race detection, cross-platform builds, and a warm-cache
-search benchmark:
+fuzzed complete files, process-kill publication, bounded multi-sector I/O,
+race detection, cross-platform builds, and build/search benchmarks:
 
     go test ./internal/core -run '^TestDiskANN'
-    go test ./internal/core -run '^$' -bench '^BenchmarkDiskANNSearchWarmCache$' -benchmem
+    go test ./internal/core -run '^TestV04DiskANN'
+    go test ./internal/core -run '^$' -bench '^Benchmark(V04.*DiskANN|DiskANNSearchWarmCache)$' -benchmem
     go test ./internal/core -run '^$' -fuzz '^FuzzDiskANNIndexFile$'

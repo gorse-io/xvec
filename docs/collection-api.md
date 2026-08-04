@@ -1,6 +1,6 @@
 # Collection API
 
-The root `zvec` package exposes the current native collection API. It is a
+The root `zvec` package exposes the v0.4 native collection API. It is a
 pure-Go embedded database: every I/O, write, and query method accepts a
 `context.Context`; schema, options, path, and in-memory statistics getters do
 not.

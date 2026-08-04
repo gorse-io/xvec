@@ -21,7 +21,7 @@ import (
 )
 
 func TestReleaseAndDiskFormatVersions(t *testing.T) {
-	if Version != "0.3.0" {
+	if Version != "0.4.0" {
 		t.Fatalf("Version = %q", Version)
 	}
 	if NativeDiskFormatVersion != db.DiskFormatVersion {
