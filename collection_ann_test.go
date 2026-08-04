@@ -181,6 +181,128 @@ func TestCollectionHNSWRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 	}
 }
 
+func TestCollectionVamanaQueryCreateIndexQuantizeOptimizeAndReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "vamana")
+	schema := NewCollectionSchema("vamana_collection",
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Index: NewFlatIndexParams(MetricTypeL2)},
+		FieldSchema{Name: "rating", DataType: DataTypeInt32},
+	)
+	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	documents := annDenseDocuments(320)
+	if _, err := collection.Insert(ctx, documents); err != nil {
+		t.Fatal(err)
+	}
+	queryVector := documents[217].Fields["embedding"].(VectorFP32)
+
+	indexParams := NewVamanaIndexParams(MetricTypeL2)
+	indexParams.MaxDegree = 12
+	indexParams.SearchListSize = 60
+	indexParams.MaxOcclusionSize = 120
+	indexParams.SaturateGraph = true
+	indexParams.UseContiguousMemory = true
+	indexParams.UseIDMap = true
+	indexParams.Quantize = QuantizeTypeInt8
+	indexParams.Quantizer.EnableRotate = true
+	if err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3}); err != nil {
+		t.Fatal(err)
+	}
+	defaulted, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 5})
+	if err != nil || len(defaulted) != 5 {
+		t.Fatalf("default Vamana query = %#v, %v", defaulted, err)
+	}
+	queryParams := NewVamanaQueryParams()
+	queryParams.EFSearch = 100
+	queryParams.PrefetchOffset = math.MaxUint32
+	queryParams.PrefetchLines = math.MaxUint32
+	query := VectorQuery{
+		Field: "embedding", DenseVector: queryVector, TopK: 15,
+		Filter: "rating >= 1", Params: queryParams,
+	}
+	approximate, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approximate) != 15 {
+		t.Fatalf("Vamana returned %d documents", len(approximate))
+	}
+	for _, document := range approximate {
+		if document.Fields["rating"].(int32) < 1 {
+			t.Fatalf("Vamana filter admitted %#v", document)
+		}
+	}
+	queryParams.UseRefiner = true
+	query.Params = queryParams
+	refined, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := make(map[string]Document, len(documents))
+	for _, document := range documents {
+		byKey[document.PrimaryKey] = document
+	}
+	for _, document := range refined {
+		original := byKey[document.PrimaryKey].Fields["embedding"].(VectorFP32)
+		want, err := core.MetricL2.Compute(queryVector, original)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if document.Score != want {
+			t.Fatalf("refined score for %q = %v, want %v", document.PrimaryKey, document.Score, want)
+		}
+	}
+	queryParams.UseRefiner = false
+	queryParams.Radius = approximate[len(approximate)-1].Score
+	query.Params = queryParams
+	bounded, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, document := range bounded {
+		if document.Score > queryParams.Radius {
+			t.Fatalf("Vamana radius admitted %#v", document)
+		}
+	}
+	queryParams.Linear = true
+	queryParams.Radius = 0
+	query.Params = queryParams
+	linear, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(linear) != 15 {
+		t.Fatalf("linear Vamana returned %d documents", len(linear))
+	}
+	if got := collection.Stats().IndexCompleteness["embedding"]; got != 1 {
+		t.Fatalf("Vamana completeness = %v", got)
+	}
+	if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := collection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer collection.Close()
+	reopened, err := collection.Query(ctx, query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reopened, linear) {
+		t.Fatal("reopened Vamana query differs")
+	}
+	field, _ := collection.Schema().Field("embedding")
+	if field.IndexType() != IndexTypeVamana || collection.Stats().IndexCompleteness["embedding"] != 1 {
+		t.Fatalf("reopened Vamana state = %#v, %#v", field, collection.Stats())
+	}
+}
+
 func TestCollectionQuantizedIVFRefinementCreateIndexAndReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "ivf")
@@ -379,6 +501,15 @@ func TestCollectionANNValidationAndBackfillRollback(t *testing.T) {
 	}
 	if !reflect.DeepEqual(collection.Schema(), before) || collection.store.Manifest().Generation != generation {
 		t.Fatal("failed ANN backfill changed schema generation")
+	}
+	vamana := NewVamanaIndexParams(MetricTypeL2)
+	vamana.MaxDegree, vamana.SearchListSize, vamana.MaxOcclusionSize = 4, 8, 16
+	vamana.Quantize = QuantizeTypeFP16
+	if err := collection.CreateIndex(ctx, "embedding", vamana, CreateIndexOptions{}); err == nil {
+		t.Fatal("Vamana FP16 overflow backfill succeeded")
+	}
+	if !reflect.DeepEqual(collection.Schema(), before) || collection.store.Manifest().Generation != generation {
+		t.Fatal("failed Vamana backfill changed schema generation")
 	}
 	soar := NewIVFIndexParams(MetricTypeL2)
 	soar.UseSOAR = true

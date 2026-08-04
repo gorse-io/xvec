@@ -42,9 +42,11 @@ const (
 	DefaultDiskANNListSize  = 50
 	DefaultDiskANNPQChunks  = 0
 
-	DefaultVamanaMaxDegree      = 64
-	DefaultVamanaSearchListSize = 100
-	DefaultVamanaEFSearch       = 200
+	DefaultVamanaMaxDegree        = 64
+	DefaultVamanaSearchListSize   = 100
+	DefaultVamanaMaxOcclusionSize = 750
+	DefaultVamanaEFSearch         = 200
+	MaxVamanaMaxDegree            = 65_535
 )
 
 const DefaultVamanaAlpha float32 = 1.2
@@ -269,6 +271,7 @@ type VamanaIndexParams struct {
 	MaxDegree           int
 	SearchListSize      int
 	Alpha               float32
+	MaxOcclusionSize    int
 	SaturateGraph       bool
 	UseContiguousMemory bool
 	UseIDMap            bool
@@ -278,10 +281,11 @@ type VamanaIndexParams struct {
 
 func NewVamanaIndexParams(metric MetricType) VamanaIndexParams {
 	return VamanaIndexParams{
-		Metric:         metric,
-		MaxDegree:      DefaultVamanaMaxDegree,
-		SearchListSize: DefaultVamanaSearchListSize,
-		Alpha:          DefaultVamanaAlpha,
+		Metric:           metric,
+		MaxDegree:        DefaultVamanaMaxDegree,
+		SearchListSize:   DefaultVamanaSearchListSize,
+		Alpha:            DefaultVamanaAlpha,
+		MaxOcclusionSize: DefaultVamanaMaxOcclusionSize,
 	}
 }
 
@@ -290,14 +294,17 @@ func (p VamanaIndexParams) Validate() error {
 	if err := validateVectorIndexParams(p.IndexType(), p.vectorConfig()); err != nil {
 		return err
 	}
-	if p.MaxDegree <= 0 {
-		return invalidArgument("validate Vamana index params", "MaxDegree must be positive")
+	if p.MaxDegree <= 0 || p.MaxDegree > MaxVamanaMaxDegree {
+		return invalidArgument("validate Vamana index params", "MaxDegree must be in [1, %d]", MaxVamanaMaxDegree)
 	}
-	if p.SearchListSize < p.MaxDegree {
+	if p.SearchListSize < p.MaxDegree || uint64(p.SearchListSize) > math.MaxUint32 {
 		return invalidArgument("validate Vamana index params", "SearchListSize must be at least MaxDegree")
 	}
 	if math.IsNaN(float64(p.Alpha)) || math.IsInf(float64(p.Alpha), 0) || p.Alpha < 1 {
 		return invalidArgument("validate Vamana index params", "Alpha must be finite and at least 1")
+	}
+	if p.MaxOcclusionSize < 0 || uint64(p.MaxOcclusionSize) > math.MaxUint32 {
+		return invalidArgument("validate Vamana index params", "MaxOcclusionSize cannot be negative")
 	}
 	return nil
 }

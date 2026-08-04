@@ -13,24 +13,28 @@ The currently executable index types are:
 - `IVFIndexParams` on supported dense vector fields;
 - `HNSWRaBitQIndexParams` on FP32 dense vector fields with 64–4095
   dimensions and L2, IP, or cosine scoring;
+- `VamanaIndexParams` on supported dense vector fields;
 - `InvertIndexParams` on filterable scalar and array fields other than BINARY.
 
 Dense Flat/HNSW/IVF definitions may use FP16, INT8, or INT4 scalar codes where
 the vector data type permits them; INT8/INT4 may enable rotation. Sparse
 Flat/HNSW supports unquantized or FP16-rounded values. HNSW-RaBitQ trains and
-validates its centroid/rotation model and graph during backfill. Vamana,
-DiskANN, FTS, and IVF SOAR return `ErrNotSupported` until their algorithm
-milestone. A vector index on a scalar field, scalar index on a vector field,
-invalid metric/type combination, nil parameters, or negative concurrency
-returns `ErrInvalidArgument`. A missing column returns `ErrNotFound`. Different
-non-vector index types cannot coexist on one column.
+validates its centroid/rotation model and graph during backfill. Vamana
+performs deterministic RobustPrune graph construction and supports the same
+FP16/INT8/INT4 scalar representations as dense HNSW. DiskANN, FTS, and IVF SOAR
+return `ErrNotSupported` until their algorithm milestone. A vector index on a
+scalar field, scalar index on a vector field, invalid metric/type combination,
+nil parameters, or negative concurrency returns `ErrInvalidArgument`. A
+missing column returns `ErrNotFound`. Different non-vector index types cannot
+coexist on one column.
 
 `CreateIndexOptions.Concurrency` bounds parallel work in backfills that expose
-it, including IVF and RaBitQ training and assignment. Zero uses the runtime's
-default worker count. The operation is idempotent when the column already has
-equal parameters; no new manifest is published in that case. Supplying
-different parameters of the same implemented type rebuilds and atomically
-replaces the definition.
+it, including IVF and RaBitQ training and assignment. Vamana construction is
+deterministic and cancellation-aware; its current Go builder is serial. Zero
+uses the runtime's default worker count. The operation is idempotent when the
+column already has equal parameters; no new manifest is published in that
+case. Supplying different parameters of the same implemented type rebuilds
+and atomically replaces the definition.
 
 ```go
 params := zvec.NewInvertIndexParams()
@@ -40,13 +44,15 @@ err := collection.CreateIndex(ctx, "title", params,
 )
 ```
 
-The native Flat, HNSW, HNSW-RaBitQ, IVF, and INVERT collection search
-structures remain snapshot-local: query execution reconstructs them from live documents.
+The native Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, and INVERT collection search
+structures remain snapshot-local: query execution reconstructs them from live
+documents.
 CreateIndex persists validated parameters, not a C++-compatible or
 segment-attached standalone index artifact. Backfill constructs the requested
 runtime representation, including quantization overflow and rotation checks;
-IVF and HNSW-RaBitQ also complete deterministic training. Existing WAL data,
-new writes, Close/reopen, and later Flush all use the newly published schema.
+IVF and HNSW-RaBitQ also complete deterministic training, while Vamana
+completes graph construction and medoid selection. Existing WAL data, new
+writes, Close/reopen, and later Flush all use the newly published schema.
 If backfill, encoding, training, cancellation, or pre-commit manifest
 publication fails, the previous in-memory and on-disk schema remains active.
 An error after the atomic CURRENT replacement is reported, but the committed

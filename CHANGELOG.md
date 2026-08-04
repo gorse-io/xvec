@@ -15,6 +15,11 @@ subject to compatible migration work throughout the 0.x series.
   radius and linear scans, versioned checksummed persistence, atomic
   incremental generations, corruption fuzzing, recall gates, and Collection
   query/CreateIndex/Optimize/Stats/reopen integration without fallback.
+- Added deterministic Vamana construction with baseline multi-round
+  RobustPrune, reverse-link pruning, graph saturation, medoid entry points,
+  metric-aware EF/filter/radius search, scalar quantization and refinement,
+  atomic streaming generations, versioned checksummed persistence, corruption
+  fuzzing, recall gates, benchmarks, and Collection lifecycle integration.
 
 ## v0.3.0 - 2026-08-04
 

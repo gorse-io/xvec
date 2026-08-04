@@ -35,6 +35,7 @@ type collectionVectorIndex struct {
 	hnsw      HNSWIndexParams
 	rabitq    HNSWRaBitQIndexParams
 	ivf       IVFIndexParams
+	vamana    VamanaIndexParams
 }
 
 type collectionQueryConfig struct {
@@ -84,6 +85,13 @@ func resolveCollectionVectorIndex(field FieldSchema, op, path string) (collectio
 			return collectionVectorIndex{}, invalidArgument(op, "field %q has nil IVF index parameters", field.Name)
 		}
 		spec.ivf = *value
+	case VamanaIndexParams:
+		spec.vamana = value
+	case *VamanaIndexParams:
+		if value == nil {
+			return collectionVectorIndex{}, invalidArgument(op, "field %q has nil Vamana index parameters", field.Name)
+		}
+		spec.vamana = *value
 	default:
 		return collectionVectorIndex{}, notSupported(op, path, fmt.Sprintf("index %s on field %q is not implemented", index.IndexType(), field.Name))
 	}
@@ -104,6 +112,11 @@ func resolveCollectionVectorIndex(field FieldSchema, op, path string) (collectio
 			return collectionVectorIndex{}, notSupported(op, path, fmt.Sprintf("IVF SOAR layout on field %q is not implemented", field.Name))
 		}
 		metric, spec.quantize, spec.rotate = spec.ivf.Metric, spec.ivf.Quantize, spec.ivf.Quantizer.EnableRotate
+	case IndexTypeVamana:
+		if field.DataType.IsSparseVector() {
+			return collectionVectorIndex{}, invalidArgument(op, "sparse field %q cannot use Vamana", field.Name)
+		}
+		metric, spec.quantize, spec.rotate = spec.vamana.Metric, spec.vamana.Quantize, spec.vamana.Quantizer.EnableRotate
 	default:
 		return collectionVectorIndex{}, notSupported(op, path, fmt.Sprintf("index %s on field %q is not implemented", spec.indexType, field.Name))
 	}
@@ -132,6 +145,9 @@ func collectionQueryParams(params QueryParams, spec collectionVectorIndex) (coll
 			params = value
 		case IndexTypeIVF:
 			value := NewIVFQueryParams()
+			params = value
+		case IndexTypeVamana:
+			value := NewVamanaQueryParams()
 			params = value
 		}
 	}
@@ -178,6 +194,18 @@ func collectionQueryParams(params QueryParams, spec collectionVectorIndex) (coll
 				options: value.QueryOptions, scaleFactor: value.ScaleFactor, nprobe: value.NProbe,
 			}, nil
 		}
+	case VamanaQueryParams:
+		return collectionQueryConfig{
+			options: value.QueryOptions, scaleFactor: 1, ef: value.EFSearch,
+			prefetchOffset: value.PrefetchOffset, prefetchLines: value.PrefetchLines,
+		}, nil
+	case *VamanaQueryParams:
+		if value != nil {
+			return collectionQueryConfig{
+				options: value.QueryOptions, scaleFactor: 1, ef: value.EFSearch,
+				prefetchOffset: value.PrefetchOffset, prefetchLines: value.PrefetchLines,
+			}, nil
+		}
 	}
 	return collectionQueryConfig{}, invalidArgument("query", "invalid %s query parameter value", spec.indexType)
 }
@@ -195,6 +223,11 @@ type collectionHNSWIndex interface {
 type collectionIVFIndex interface {
 	collectionDenseIndex
 	SearchIVF(ctx context.Context, query []float32, options core.IVFSearchOptions) ([]core.Result, error)
+}
+
+type collectionVamanaIndex interface {
+	collectionDenseIndex
+	SearchVamana(ctx context.Context, query []float32, options core.VamanaSearchOptions) ([]core.Result, error)
 }
 
 func searchCollectionDense(
@@ -249,6 +282,18 @@ func searchCollectionDense(
 		return executeCollectionDenseSearch(ctx, index, query, final, config.options.UseRefiner, config.scaleFactor,
 			func(options core.SearchOptions) ([]core.Result, error) {
 				return index.SearchIVF(ctx, query, core.IVFSearchOptions{SearchOptions: options, NProbe: config.nprobe})
+			})
+	case IndexTypeVamana:
+		index, err := buildCollectionDenseVamana(ctx, schemaName, field, documents, spec)
+		if err != nil {
+			return nil, err
+		}
+		return executeCollectionDenseSearch(ctx, index, query, final, config.options.UseRefiner, config.scaleFactor,
+			func(options core.SearchOptions) ([]core.Result, error) {
+				return index.SearchVamana(ctx, query, core.VamanaSearchOptions{
+					SearchOptions: options, EFSearch: config.ef,
+					PrefetchOffset: config.prefetchOffset, PrefetchLines: config.prefetchLines,
+				})
 			})
 	default:
 		return nil, fmt.Errorf("unsupported dense collection index %s", spec.indexType)
@@ -428,6 +473,53 @@ func buildCollectionDenseIVF(
 		return nil, err
 	}
 	return core.NewScalarQuantizedIVFIndex(ctx, base, kind, reformer)
+}
+
+func buildCollectionDenseVamana(
+	ctx context.Context,
+	schemaName string,
+	field FieldSchema,
+	documents []Document,
+	spec collectionVectorIndex,
+) (collectionVamanaIndex, error) {
+	candidates, err := collectionDenseCandidates(ctx, field, documents)
+	if err != nil {
+		return nil, err
+	}
+	options := core.DefaultVamanaBuildOptions(spec.metric)
+	options.MaxDegree = spec.vamana.MaxDegree
+	options.SearchListSize = spec.vamana.SearchListSize
+	options.Alpha = spec.vamana.Alpha
+	options.MaxOcclusionSize = spec.vamana.MaxOcclusionSize
+	if options.MaxOcclusionSize == 0 {
+		options.MaxOcclusionSize = core.DefaultVamanaMaxOcclusionSize
+	}
+	options.SaturateGraph = spec.vamana.SaturateGraph
+	builder, err := core.NewVamanaBuilder(int(field.Dimension), options)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range candidates {
+		if err := builder.Add(ctx, candidate.Key, candidate.Vector); err != nil {
+			return nil, err
+		}
+	}
+	base, err := builder.Build(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if spec.quantize == QuantizeTypeUndefined {
+		return base, nil
+	}
+	kind, err := toCoreQuantization(spec.quantize)
+	if err != nil {
+		return nil, err
+	}
+	reformer, err := collectionReformer(schemaName, field, spec)
+	if err != nil {
+		return nil, err
+	}
+	return core.NewScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
 }
 
 func buildCollectionSparseIndex(

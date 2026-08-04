@@ -35,35 +35,37 @@ fields select all scalar fields, an empty non-nil slice selects none, and
 `IncludeVectors` controls all vector fields.
 
 `Query` accepts either an explicit dense or sparse vector matching the target
-field. Flat search is exact. Dense HNSW and IVF and sparse inner-product HNSW
-use their matching native Go runtimes; an explicit `Linear` query scans the
-matching Flat representation for truth comparisons. Query parameters expose
-EF or NProbe, metric-aware radius, SQL scalar filters, projection, and bounded
-HNSW cache warming. Dense FP16, INT8, and INT4 scalar-code scoring and optional
-INT8/INT4 rotation are supported where schema validation permits them. Dense
-queries can rerank retained candidates with original vectors. Sparse refinement
-and IVF SOAR return `ErrNotSupported`.
+field. Flat search is exact. Dense HNSW, HNSW-RaBitQ, IVF, and Vamana plus
+sparse inner-product HNSW use their matching native Go runtimes; an explicit
+`Linear` query scans the matching representation for truth comparisons. Query
+parameters expose EF or NProbe, metric-aware radius, SQL scalar filters,
+projection, and bounded graph cache warming. Dense FP16, INT8, INT4, and RaBitQ
+code scoring and optional INT8/INT4 rotation are supported where schema
+validation permits them. Dense queries can rerank retained candidates with
+original vectors. Sparse refinement and IVF SOAR return `ErrNotSupported`.
 
 `GroupByQuery` retains a top-k per filtered scalar group and ranks groups by
-their best document. HNSW/IVF group-by currently requires explicit `Linear`;
+their best document. ANN group-by currently requires explicit `Linear`;
 quantized or refined group-by remains unsupported. The library never silently
 substitutes a different algorithm.
 
-`CreateIndex` atomically publishes implemented Flat, HNSW, IVF, and INVERT
-parameters after full-snapshot validation. `DropIndex` atomically clears scalar
+`CreateIndex` atomically publishes implemented Flat, HNSW, HNSW-RaBitQ, IVF,
+Vamana, and INVERT parameters after full-snapshot validation. `DropIndex` atomically clears scalar
 metadata or restores vector fields to Flat/IP. `AddColumn` atomically installs
 supported numeric fields and backfills the live snapshot. `AlterColumn`
 atomically renames or replaces basic numeric fields, and `DropColumn`
 atomically removes them. `Optimize` atomically rewrites the current live
 snapshot, compacts contiguous document-ID runs up to the schema segment limit,
 reclaims deleted and superseded versions, and prunes obsolete native segment,
-WAL, and snapshot files. It accepts the implemented Flat/HNSW/IVF and scalar
-INVERT definitions, including scalar-quantized and rotated vector definitions.
+WAL, and snapshot files. It accepts the implemented Flat/HNSW/HNSW-RaBitQ/IVF,
+Vamana, and scalar INVERT definitions, including quantized and rotated vector
+definitions.
 
 Collection ANN indexes are currently rebuilt from the durable live snapshot
-for each query and DDL validation. The standalone checksummed IVF/HNSW formats
-are not yet collection-segment artifacts. This preserves deterministic reopen
-behavior but makes runtime index construction part of current query latency.
+for each query and DDL validation. The standalone checksummed IVF, HNSW,
+HNSW-RaBitQ, and Vamana formats are not yet collection-segment artifacts. This
+preserves deterministic reopen behavior but makes runtime index construction
+part of current query latency.
 
 WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
 publishes an immutable segment and rotates the WAL. `Open` can acquire either

@@ -87,13 +87,13 @@ behavior plus EF, filtering, radius, and deterministic approximate results. A
 checksummed native sparse format preserves CSR data and topology across reopen.
 Built and reopened sparse graphs accept atomic incremental additions while
 concurrent search and persistence retain a complete CSR/topology generation.
-Collection queries now route Flat, dense/sparse HNSW, and dense IVF parameters
-without fallback. Dense FP16/INT8/INT4 scalar-code scoring, deterministic
-optional rotation, EF/NProbe, metric-aware radius, scalar filters, bounded
-HNSW cache warming, Linear execution, and exact original-vector refinement are
-connected end to end. Until segment-native ANN artifacts are integrated, the
-collection rebuilds these runtime indexes from its durable live snapshot for
-each query and DDL validation.
+Collection queries now route Flat, dense/sparse HNSW, dense IVF, and Vamana
+parameters without fallback. Dense FP16/INT8/INT4 scalar-code scoring,
+deterministic optional rotation, EF/NProbe, metric-aware radius, scalar
+filters, bounded graph cache warming, Linear execution, and exact
+original-vector refinement are connected end to end. Until segment-native ANN
+artifacts are integrated, the collection rebuilds these runtime indexes from
+its durable live snapshot for each query and DDL validation.
 
 v0.4 work includes a portable RaBitQ trainer, split-code converter, and
 one-bit/full-bit distance estimator for L2, IP, and cosine. HNSW-RaBitQ now
@@ -106,6 +106,15 @@ Collection queries, CreateIndex, Optimize, Stats, and reopen behavior are
 connected without fallback. The code and file formats are native Go rather
 than C++ compatible; Collection still rebuilds the runtime index from its
 durable live snapshot until segment-native ANN artifacts are integrated.
+
+Native Vamana now provides deterministic single-layer graph construction,
+multi-round alpha RobustPrune, reverse-link pruning, medoid entry selection,
+EF search, filters, radius, cache warming, scalar quantization, rotation, and
+exact original-vector refinement. Copy-on-write additions publish complete
+generations, and a versioned checksummed native format can be reopened and
+extended. Collection routes Vamana queries, DDL, Optimize, Stats, Linear, and
+reopen behavior without fallback; as with the other in-memory ANN indexes, it
+currently rebuilds the runtime graph from the durable live snapshot.
 
 The current library version is `v0.3.0`; its exact support boundary is recorded
 in the [v0.3 capability matrix](docs/v0.3.md) and [changelog](CHANGELOG.md).
@@ -191,6 +200,7 @@ are exercised by `go test ./...`.
 - [ANN collection query integration](docs/ann-query-integration.md)
 - [RaBitQ training and distance estimation](docs/rabitq.md)
 - [HNSW-RaBitQ index](docs/hnsw-rabitq.md)
+- [Vamana index](docs/vamana.md)
 
 ## License
 

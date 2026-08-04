@@ -288,7 +288,7 @@ func TestOptimizeValidationUnsupportedIndexesAndRollback(t *testing.T) {
 		field FieldSchema
 		value any
 	}{
-		{name: "Vamana", field: FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: NewVamanaIndexParams(MetricTypeIP)}, value: VectorFP32{1, 0}},
+		{name: "DiskANN", field: FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: NewDiskANNIndexParams(MetricTypeIP)}, value: VectorFP32{1, 0}},
 		{name: "FTS", field: FieldSchema{Name: "text", DataType: DataTypeString, Index: NewFTSIndexParams()}, value: "alpha"},
 		{name: "binary INVERT", field: FieldSchema{Name: "data", DataType: DataTypeBinary, Index: NewInvertIndexParams()}, value: Binary{1, 2}},
 	}

@@ -185,7 +185,7 @@ func TestCreateIndexValidationAndRollback(t *testing.T) {
 		{"invert-vector", "embedding", NewInvertIndexParams(), CreateIndexOptions{}, ErrInvalidArgument},
 		{"flat-scalar", "text", NewFlatIndexParams(MetricTypeIP), CreateIndexOptions{}, ErrInvalidArgument},
 		{"fts-unimplemented", "text", NewFTSIndexParams(), CreateIndexOptions{}, ErrNotSupported},
-		{"vamana-unimplemented", "embedding", NewVamanaIndexParams(MetricTypeIP), CreateIndexOptions{}, ErrNotSupported},
+		{"diskann-unimplemented", "embedding", NewDiskANNIndexParams(MetricTypeIP), CreateIndexOptions{}, ErrNotSupported},
 		{"binary-invert-unimplemented", "binary", NewInvertIndexParams(), CreateIndexOptions{}, ErrNotSupported},
 		{"scalar-index-conflict", "already_fts", NewInvertIndexParams(), CreateIndexOptions{}, ErrNotSupported},
 		{"invalid-index-params", "embedding", invalidFlat, CreateIndexOptions{}, ErrInvalidArgument},

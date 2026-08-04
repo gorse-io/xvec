@@ -222,7 +222,6 @@ func TestCollectionUnsupportedIndexesReturnNotSupported(t *testing.T) {
 		name  string
 		index IndexParams
 	}{
-		{name: "Vamana", index: NewVamanaIndexParams(MetricTypeIP)},
 		{name: "DiskANN", index: NewDiskANNIndexParams(MetricTypeIP)},
 	}
 	for _, testCase := range tests {
