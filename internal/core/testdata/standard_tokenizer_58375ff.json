@@ -1,0 +1,56 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "source": "src/db/index/column/fts_column/tokenizer/standard_tokenizer.cc",
+  "source_sha256": "3f9a7ee811e9fac253bac363d5b208b9e7a03cc1bb51b771221e9417bc8864e9",
+  "unicode_table_sha256": "3d666796d24191c9708fb3a183d7ce0f61962da0b34dacfdc73d03061f342722",
+  "unicode_version": "17.0.0",
+  "cases": [
+    {
+      "name": "ascii_offsets",
+      "max_token_length": 255,
+      "input_hex": "202068656c6c6f20776f726c64",
+      "tokens": [
+        {"text_hex": "68656c6c6f", "offset": 2, "position": 0},
+        {"text_hex": "776f726c64", "offset": 8, "position": 1}
+      ]
+    },
+    {
+      "name": "malformed_utf8_boundary",
+      "max_token_length": 255,
+      "input_hex": "6162ff6364",
+      "tokens": [
+        {"text_hex": "6162", "offset": 0, "position": 0},
+        {"text_hex": "6364", "offset": 3, "position": 1}
+      ]
+    },
+    {
+      "name": "mixed_latin_cjk",
+      "max_token_length": 255,
+      "input_hex": "68656c6c6fe4b896e7958c74657374",
+      "tokens": [
+        {"text_hex": "68656c6c6f", "offset": 0, "position": 0},
+        {"text_hex": "e4b896", "offset": 5, "position": 1},
+        {"text_hex": "e7958c", "offset": 8, "position": 2},
+        {"text_hex": "74657374", "offset": 11, "position": 3}
+      ]
+    },
+    {
+      "name": "emoji_zwj_and_variation",
+      "max_token_length": 255,
+      "input_hex": "f09f91a9e2808df09f92bb20e29da4efb88f",
+      "tokens": [
+        {"text_hex": "f09f91a9e2808df09f92bb", "offset": 0, "position": 0},
+        {"text_hex": "e29da4efb88f", "offset": 12, "position": 1}
+      ]
+    },
+    {
+      "name": "codepoint_length_split",
+      "max_token_length": 3,
+      "input_hex": "636166c3a9",
+      "tokens": [
+        {"text_hex": "636166", "offset": 0, "position": 0},
+        {"text_hex": "c3a9", "offset": 3, "position": 1}
+      ]
+    }
+  ]
+}

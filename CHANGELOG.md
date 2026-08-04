@@ -6,6 +6,10 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added a context-aware Unicode 17 standard tokenizer matching the pinned
+  baseline's word, connector, script, combining-mark, malformed-UTF-8, emoji,
+  codepoint-length, offset, and position behavior, with licensed generated
+  tables, source-hashed fixtures, fuzz coverage, and a throughput benchmark.
 - Added a context-aware, byte-compatible whitespace tokenizer with owned term
   text, uint32 byte offsets, contiguous positions, arbitrary-byte handling,
   fuzz coverage, and a throughput benchmark.
