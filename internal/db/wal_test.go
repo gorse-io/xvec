@@ -319,6 +319,9 @@ func TestWALConcurrentAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if len(records) != goroutines*recordsPerGoroutine {
 		t.Fatalf("record count = %d", len(records))
 	}

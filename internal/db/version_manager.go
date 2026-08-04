@@ -354,7 +354,7 @@ func marshalCurrent(name string) ([]byte, error) {
 }
 
 func readCurrent(dir string) (string, error) {
-	file, err := os.Open(filepath.Join(dir, currentFileName))
+	file, err := openCurrentFile(filepath.Join(dir, currentFileName))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", ErrManifestNotFound
