@@ -24,6 +24,10 @@ subject to compatible migration work throughout the 0.x series.
   contiguous chunk layout, prefix-bounded training, immutable restorable
   pivot state, model-bound encoding and reconstruction, additive L2 and inner
   product distance tables, batch operations, fuzz coverage, and benchmarks.
+- Added the native DiskANN node-storage layer with versioned 4 KiB headers,
+  packed and multi-sector records, whole-section and per-node CRC32C,
+  portable parallel ReaderAt batching, exact short-read handling, request
+  deduplication, and a concurrency-safe bounded LRU node cache.
 
 ## v0.3.0 - 2026-08-04
 

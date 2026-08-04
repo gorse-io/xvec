@@ -124,6 +124,14 @@ restored for the forthcoming DiskANN format. Auto chunking, 12 training
 iterations, the 200,000-vector training cap, deterministic prefix sampling,
 batch encoding, and batch lookup are covered without CGO.
 
+DiskANN's native storage foundation now defines versioned 4 KiB headers and
+sector-aligned node records, including packed small nodes and multi-sector
+large nodes. Whole node sections and individual records carry CRC32C checks;
+portable parallel ReaderAt batches handle partial and short reads without
+platform-specific async APIs, while a bounded concurrent LRU avoids repeated
+node I/O. Graph construction and query execution remain explicit
+NotSupported paths until the next DiskANN unit connects this storage layer.
+
 The current library version is `v0.3.0`; its exact support boundary is recorded
 in the [v0.3 capability matrix](docs/v0.3.md) and [changelog](CHANGELOG.md).
 
@@ -210,6 +218,7 @@ are exercised by `go test ./...`.
 - [HNSW-RaBitQ index](docs/hnsw-rabitq.md)
 - [Vamana index](docs/vamana.md)
 - [Product quantization](docs/pq.md)
+- [DiskANN storage and I/O](docs/diskann-storage.md)
 
 ## License
 
