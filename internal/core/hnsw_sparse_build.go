@@ -164,9 +164,11 @@ func (b *SparseHNSWBuilder) Build(ctx context.Context) (*SparseHNSWIndex, error)
 }
 
 // SparseHNSWIndex stores canonical FP32 sparse vectors in CSR form and a
-// bounded multi-layer proximity graph. Search, persistence, and streaming are
-// attached in later units.
+// bounded multi-layer proximity graph. Readers share one immutable generation
+// while additions publish a complete copy-on-write generation.
 type SparseHNSWIndex struct {
+	streamMu      sync.Mutex
+	mu            sync.RWMutex
 	options       HNSWBuildOptions
 	keys          []uint64
 	offsets       []int
@@ -193,6 +195,8 @@ func (i *SparseHNSWIndex) Len() int {
 	if i == nil {
 		return 0
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	return len(i.keys)
 }
 
@@ -209,6 +213,8 @@ func (i *SparseHNSWIndex) SparseVector(key uint64) (SparseVector, bool) {
 	if i == nil {
 		return SparseVector{}, false
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	position, found := i.positions[key]
 	if !found {
 		return SparseVector{}, false
@@ -221,12 +227,19 @@ func (i *SparseHNSWIndex) MaxLevel() int {
 	if i == nil {
 		return -1
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	return i.maxLevel
 }
 
 // EntryPoint returns the current top-layer entry key.
 func (i *SparseHNSWIndex) EntryPoint() (uint64, bool) {
-	if i == nil || i.entryPoint < 0 {
+	if i == nil {
+		return 0, false
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.entryPoint < 0 {
 		return 0, false
 	}
 	return i.keys[i.entryPoint], true
@@ -237,6 +250,8 @@ func (i *SparseHNSWIndex) Level(key uint64) (int, bool) {
 	if i == nil {
 		return 0, false
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	position, found := i.positions[key]
 	if !found {
 		return 0, false
@@ -249,6 +264,8 @@ func (i *SparseHNSWIndex) Neighbors(key uint64, level int) ([]uint64, error) {
 	if i == nil {
 		return nil, errors.New("core: nil sparse HNSW index")
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	position, found := i.positions[key]
 	if !found {
 		return nil, fmt.Errorf("%w: %d", ErrHNSWKeyNotFound, key)

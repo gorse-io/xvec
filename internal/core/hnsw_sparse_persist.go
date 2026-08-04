@@ -51,8 +51,8 @@ var (
 	ErrUnsupportedSparseHNSWVersion = errors.New("core: unsupported sparse HNSW file version")
 )
 
-// Save durably publishes the immutable graph as one checksummed native Go
-// sparse HNSW file.
+// Save durably publishes one complete graph snapshot as a checksummed native
+// Go sparse HNSW file.
 func (i *SparseHNSWIndex) Save(ctx context.Context, path string) error {
 	if ctx == nil {
 		return errors.New("core: nil sparse HNSW save context")
@@ -63,7 +63,11 @@ func (i *SparseHNSWIndex) Save(ctx context.Context, path string) error {
 	if path == "" {
 		return fmt.Errorf("%w: empty path", ErrInvalidSparseHNSWFile)
 	}
-	encoded, err := encodeSparseHNSWIndex(ctx, i)
+	snapshot, err := i.persistenceSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	encoded, err := encodeSparseHNSWIndex(ctx, snapshot)
 	if err != nil {
 		return err
 	}
@@ -71,6 +75,15 @@ func (i *SparseHNSWIndex) Save(ctx context.Context, path string) error {
 		return fmt.Errorf("core: save sparse HNSW file: %w", err)
 	}
 	return nil
+}
+
+func (i *SparseHNSWIndex) persistenceSnapshot(ctx context.Context) (*SparseHNSWIndex, error) {
+	if i == nil {
+		return nil, fmt.Errorf("%w: nil index", ErrInvalidSparseHNSWFile)
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return cloneSparseHNSWIndex(ctx, i)
 }
 
 // OpenSparseHNSWIndex reads and fully verifies a native Go sparse HNSW

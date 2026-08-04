@@ -161,8 +161,10 @@ func TestSparseHNSWPersistenceCancellationAndErrors(t *testing.T) {
 	if err := nilIndex.Save(context.Background(), filepath.Join(dir, "nil.shnsw")); !errors.Is(err, ErrInvalidSparseHNSWFile) {
 		t.Fatalf("nil index Save error = %v", err)
 	}
-	invalid := *index
-	invalid.offsets = slices.Clone(index.offsets)
+	invalid, err := cloneSparseHNSWIndex(context.Background(), index)
+	if err != nil {
+		t.Fatal(err)
+	}
 	invalid.offsets[1] = len(invalid.indices) + 1
 	if err := invalid.Save(context.Background(), filepath.Join(dir, "invalid.shnsw")); !errors.Is(err, ErrInvalidSparseHNSWFile) {
 		t.Fatalf("invalid offsets Save error = %v", err)

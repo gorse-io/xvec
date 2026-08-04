@@ -2,8 +2,8 @@
 
 This independently gated v0.3 unit adds deterministic sparse HNSW graph
 construction to `internal/core`. Sparse graph search and persistence/reopen are
-now implemented by subsequent units; incremental writes and collection
-routing remain separate, so the public collection layer continues to report
+now implemented by subsequent units, as are incremental writes. Collection
+routing remains separate, so the public collection layer continues to report
 sparse HNSW as unsupported.
 
 ## Input and storage contract

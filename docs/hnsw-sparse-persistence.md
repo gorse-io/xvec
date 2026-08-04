@@ -2,7 +2,8 @@
 
 This independently gated v0.3 unit gives sparse HNSW a native Go disk format.
 It is intentionally incompatible with the C++ collection layout. Incremental
-writes and collection routing remain separate units.
+writes are implemented by the following unit; collection routing remains
+separate.
 
 ## File contract
 
@@ -27,7 +28,8 @@ serialized data.
 
 ## Publication and recovery boundary
 
-Save validates and encodes the complete immutable graph before the shared
+Save first clones one complete published graph generation, then validates and
+encodes that snapshot before the shared
 atomic publisher writes a private temporary file, syncs it, checks
 cancellation, renames it over the destination, and syncs the directory. A
 crash therefore exposes an old or new complete generation, never a partially

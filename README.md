@@ -88,6 +88,8 @@ Sparse inner-product HNSW now has deterministic CSR-backed graph construction
 and topology inspection. Metric-aware graph search adds exact small-graph
 behavior plus EF, filtering, radius, and deterministic approximate results. A
 checksummed native sparse format preserves CSR data and topology across reopen.
+Built and reopened sparse graphs accept atomic incremental additions while
+concurrent search and persistence retain a complete CSR/topology generation.
 
 The current library version is `v0.2.0`; its exact support boundary is recorded
 in the [v0.2 capability matrix](docs/v0.2.md) and [changelog](CHANGELOG.md).
@@ -168,6 +170,7 @@ are exercised by `go test ./...`.
 - [Sparse HNSW construction](docs/hnsw-sparse-build.md)
 - [Sparse HNSW search](docs/hnsw-sparse-search.md)
 - [Sparse HNSW persistence and reopen](docs/hnsw-sparse-persistence.md)
+- [Sparse HNSW incremental writes](docs/hnsw-sparse-incremental.md)
 
 ## License
 

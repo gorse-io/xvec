@@ -51,6 +51,8 @@ func (i *SparseHNSWIndex) searchSparseHNSW(ctx context.Context, query SparseVect
 	if i == nil {
 		return nil, errors.New("core: nil sparse HNSW index")
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	if ctx == nil {
 		return nil, errors.New("core: nil sparse HNSW search context")
 	}
