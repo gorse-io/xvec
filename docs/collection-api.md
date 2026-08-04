@@ -43,8 +43,9 @@ projection, and bounded graph cache warming. Dense FP16, INT8, INT4, and RaBitQ
 code scoring and optional INT8/INT4 rotation are supported where schema
 validation permits them. Dense queries can rerank retained candidates with
 original vectors. Sparse Flat and HNSW queries can likewise rerank FP16 or
-unquantized candidates with retained original sparse vectors. IVF SOAR returns
-`ErrNotSupported`.
+unquantized candidates with retained original sparse vectors. IVF accepts and
+persists `UseSOAR`; matching the pinned baseline, it is a compatibility hint
+and does not select a different builder or search layout.
 
 `GroupByQuery` retains a top-k per filtered scalar group and ranks groups by
 their best document. Flat and explicit `Linear` queries support configured

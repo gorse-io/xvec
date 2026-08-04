@@ -30,9 +30,9 @@ rebuilds RobustPrune topology and its medoid, then recreates any configured
 scalar codes. DiskANN rebuilds its graph, PQ model, codes, and sector records
 from the configured scalar representation while retaining original FP32
 vectors for refinement. Its public scalar codes and internal PQ traversal
-codes remain independent. If compaction is required and the schema contains
-IVF SOAR state, Optimize returns `ErrNotSupported` before publishing anything
-rather than silently rebuilding a different layout.
+codes remain independent. IVF preserves the `UseSOAR` compatibility hint
+across compaction; matching the pinned C++ baseline, the flag does not select a
+different IVF builder or search layout.
 
 `CURRENT` is the commit point. Failure before publication leaves the old
 manifest, schema, segments, snapshots, and WAL authoritative. Once publication

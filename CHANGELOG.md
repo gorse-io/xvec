@@ -6,6 +6,10 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Accepted and durably preserved `IVFIndexParams.UseSOAR` through CreateIndex,
+  query, Optimize, and reopen. This intentionally follows the pinned C++
+  baseline, where `use_soar` is a public compatibility hint but is not routed
+  into a distinct IVF builder or search layout.
 - Added native dense, scalar-quantized, sparse, and RaBitQ HNSW GroupByQuery
   traversal with baseline-compatible candidate sizing and level-zero expansion
   for missing groups, including EF/prefetch controls, filters, radius,

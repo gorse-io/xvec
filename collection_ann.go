@@ -117,9 +117,6 @@ func resolveCollectionVectorIndex(field FieldSchema, op, path string) (collectio
 		if field.DataType.IsSparseVector() {
 			return collectionVectorIndex{}, invalidArgument(op, "sparse field %q cannot use IVF", field.Name)
 		}
-		if spec.ivf.UseSOAR {
-			return collectionVectorIndex{}, notSupported(op, path, fmt.Sprintf("IVF SOAR layout on field %q is not implemented", field.Name))
-		}
 		metric, spec.quantize, spec.rotate = spec.ivf.Metric, spec.ivf.Quantize, spec.ivf.Quantizer.EnableRotate
 	case IndexTypeDiskANN:
 		if field.DataType.IsSparseVector() {

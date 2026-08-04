@@ -28,11 +28,12 @@ performs deterministic RobustPrune graph construction and supports the same
 FP16/INT8/INT4 scalar representations as dense HNSW. DiskANN constructs its
 graph and internal PQ codes during backfill and supports FP16/INT8/INT4 public
 scalar representations independently of its `PQChunks` traversal encoding.
-IVF SOAR returns `ErrNotSupported`. A vector index on a
-scalar field, scalar index on a vector field, invalid metric/type combination,
-nil parameters, or negative concurrency returns `ErrInvalidArgument`. A
-missing column returns `ErrNotFound`. Different non-vector index types cannot
-coexist on one column.
+IVF accepts and preserves `UseSOAR` as a public compatibility hint. The pinned
+C++ baseline does not pass that flag to its IVF builder or searcher, so it does
+not select a different runtime layout. A vector index on a scalar field, scalar
+index on a vector field, invalid metric/type combination, nil parameters, or
+negative concurrency returns `ErrInvalidArgument`. A missing column returns
+`ErrNotFound`. Different non-vector index types cannot coexist on one column.
 
 `CreateIndexOptions.Concurrency` bounds parallel work in backfills that expose
 it, including IVF, RaBitQ, and DiskANN PQ training and assignment. Vamana construction is

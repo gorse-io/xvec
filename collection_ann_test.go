@@ -596,7 +596,7 @@ func TestCollectionScalarQuantizedDiskANNBackfillRefineOptimizeAndReopen(t *test
 	}
 }
 
-func TestCollectionQuantizedIVFRefinementCreateIndexAndReopen(t *testing.T) {
+func TestCollectionQuantizedIVFSOARRefinementCreateIndexAndReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "ivf")
 	schema := NewCollectionSchema("quantized_ivf",
@@ -621,10 +621,33 @@ func TestCollectionQuantizedIVFRefinementCreateIndexAndReopen(t *testing.T) {
 	indexParams := NewIVFIndexParams(MetricTypeL2)
 	indexParams.NList = 16
 	indexParams.NIterations = 12
+	indexParams.UseSOAR = true
 	indexParams.Quantize = QuantizeTypeInt8
 	indexParams.Quantizer.EnableRotate = true
+	standardParams := indexParams
+	standardParams.UseSOAR = false
+	if err := collection.CreateIndex(ctx, "embedding", standardParams, CreateIndexOptions{Concurrency: 3}); err != nil {
+		t.Fatal(err)
+	}
+	compatibilityParams := NewIVFQueryParams()
+	compatibilityParams.NProbe = 4
+	compatibilityQuery := VectorQuery{
+		Field: "embedding", DenseVector: queryVector, TopK: 15,
+		Filter: "rating >= 1", Params: compatibilityParams,
+	}
+	standardResults, err := collection.Query(ctx, compatibilityQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3}); err != nil {
 		t.Fatal(err)
+	}
+	soarResults, err := collection.Query(ctx, compatibilityQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(soarResults, standardResults) {
+		t.Fatalf("UseSOAR compatibility results = %#v, standard %#v", soarResults, standardResults)
 	}
 	queryParams := NewIVFQueryParams()
 	queryParams.NProbe = 16
@@ -666,7 +689,8 @@ func TestCollectionQuantizedIVFRefinementCreateIndexAndReopen(t *testing.T) {
 		t.Fatalf("reopened refined IVF differs")
 	}
 	field, _ := collection.Schema().Field("embedding")
-	if field.IndexType() != IndexTypeIVF || collection.Stats().IndexCompleteness["embedding"] != 1 {
+	persisted := field.Index.(IVFIndexParams)
+	if field.IndexType() != IndexTypeIVF || !persisted.UseSOAR || collection.Stats().IndexCompleteness["embedding"] != 1 {
 		t.Fatalf("reopened IVF state = %#v, %#v", field, collection.Stats())
 	}
 }
@@ -950,11 +974,12 @@ func TestCollectionANNValidationAndBackfillRollback(t *testing.T) {
 	}
 	soar := NewIVFIndexParams(MetricTypeL2)
 	soar.UseSOAR = true
-	if err := collection.CreateIndex(ctx, "embedding", soar, CreateIndexOptions{}); !errors.Is(err, ErrNotSupported) {
-		t.Fatalf("IVF SOAR error = %v", err)
+	if err := collection.CreateIndex(ctx, "embedding", soar, CreateIndexOptions{}); err != nil {
+		t.Fatalf("IVF SOAR compatibility hint = %v", err)
 	}
-	if !reflect.DeepEqual(collection.Schema(), before) || collection.store.Manifest().Generation != generation {
-		t.Fatal("unsupported IVF SOAR changed schema generation")
+	soarField, _ := collection.Schema().Field("embedding")
+	if persisted := soarField.Index.(IVFIndexParams); !persisted.UseSOAR || collection.store.Manifest().Generation != generation+1 {
+		t.Fatalf("IVF SOAR compatibility state = %#v, generation %d", persisted, collection.store.Manifest().Generation)
 	}
 
 	hnswParams := NewHNSWQueryParams()

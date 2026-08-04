@@ -38,10 +38,11 @@ scalar-quantized, sparse, and RaBitQ HNSW indexes execute native non-Linear
 group traversal. IVF, Vamana, and DiskANN reject non-Linear group-by, matching
 the pinned baseline; callers can request their explicit `Linear` full scan.
 Flat and explicit Linear group-by honor the configured scalar/RaBitQ
-representation or exact original-vector refinement. IVF's
-alternate SOAR memory layout is also rejected explicitly; the current IVF
-runtime uses its native row-major layout. HNSW's contiguous-memory request is
-satisfied by the Go flat backing slice.
+representation or exact original-vector refinement. `IVFIndexParams.UseSOAR`
+is accepted and preserved as a compatibility hint. The pinned C++ baseline
+does not route that flag into its IVF builder or searcher, so both flag values
+intentionally use the same native row-major IVF runtime. HNSW's
+contiguous-memory request is satisfied by the Go flat backing slice.
 
 ## Query controls
 
