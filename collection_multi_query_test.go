@@ -385,12 +385,19 @@ func TestCollectionMultiQueryValidationAndRerankerBoundaries(t *testing.T) {
 	if _, err := collection.MultiQuery(ctx, valid()); err != nil {
 		t.Fatalf("zero defaults should be valid: %v", err)
 	}
+	explicitRRF := valid()
+	explicitRRF.Reranker = NewRRFReranker()
+	wantRRF, err := collection.MultiQuery(ctx, explicitRRF)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, reranker := range map[string]Reranker{"nil": nil, "typed nil": (*testNilReranker)(nil)} {
 		t.Run(name+" reranker", func(t *testing.T) {
 			query := valid()
 			query.Reranker = reranker
-			if _, err := collection.MultiQuery(ctx, query); !errors.Is(err, ErrNotSupported) {
-				t.Fatalf("error = %v", err)
+			got, err := collection.MultiQuery(ctx, query)
+			if err != nil || !reflect.DeepEqual(got, wantRRF) {
+				t.Fatalf("default RRF = %#v, %v; want %#v", got, err, wantRRF)
 			}
 		})
 	}

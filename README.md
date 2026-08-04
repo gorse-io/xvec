@@ -158,8 +158,10 @@ and FTS candidate batches under one scalar filter through an explicit
 `Reranker` contract. FTS supports both expression and natural-match clauses,
 uses each field's complete analyzer configuration, keeps BM25 corpus statistics
 independent of scalar candidate filtering, validates reranker output, and
-returns durable reopen-identical results. Built-in RRF, weighted, and callback
-adapters remain the next separate v0.5 units. None requires CGO.
+returns durable reopen-identical results. Baseline-compatible
+[`RRFReranker`](docs/rrf-reranker.md) now provides score-independent fusion and
+is the nil/default MultiQuery strategy; weighted and callback adapters remain
+separate v0.5 units. None requires CGO.
 
 The current library version is `v0.4.0`; its exact support boundary is recorded
 in the [v0.4 capability matrix](docs/v0.4.md) and [changelog](CHANGELOG.md).

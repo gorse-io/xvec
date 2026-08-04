@@ -31,7 +31,7 @@ results, err := collection.MultiQuery(ctx, zvec.MultiQuery{
     TopK: 10,
     Filter: "published = true",
     Projection: zvec.Projection{OutputFields: []string{"title"}},
-    Reranker: myReranker,
+    Reranker: myReranker, // omit to use default RRF
 })
 ```
 
@@ -74,11 +74,10 @@ not alter stored or returned data. Caller code runs after the collection read
 lock is released and may safely call other collection methods. Context and
 reranker errors are propagated through the structured zvec error model.
 
-The generic `Reranker` abstraction is executable now. Baseline RRF, weighted
-score fusion, and the panic-contained callback adapter are separate v0.5
-implementation units; until those land, callers provide an implementation
-explicitly. Until the RRF unit lands, a nil reranker returns
-`ErrNotSupported` rather than silently selecting a different fusion algorithm.
+The generic `Reranker` abstraction and baseline-compatible
+[`RRFReranker`](rrf-reranker.md) are executable now. A nil reranker selects RRF
+with `rank_constant=60`. Weighted score fusion and the panic-contained callback
+adapter remain separate v0.5 implementation units.
 
 ## Current storage boundary
 

@@ -6,14 +6,19 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added baseline-compatible reciprocal rank fusion with a default rank
+  constant of 60, primary-key aggregation, score-independent rank
+  contributions, deterministic tied-result ordering, cancellation and
+  concurrency safety, a pinned source fixture, fuzzing, and a benchmark.
+  MultiQuery now uses RRF when its `Reranker` is nil.
 - Added snapshot-consistent `Collection.MultiQuery` across dense vectors,
   sparse vectors, and exact BM25 full-text branches with one shared SQL scalar
   filter, per-branch candidate bounds, expression and natural-match FTS,
   complete tokenizer/filter configuration routing, projection-safe reranker
   batches, strict untrusted-output validation, lock-free caller reranking,
   reopen/concurrency coverage, a pinned compatibility fixture, fuzzing, an
-  example, and a benchmark. The generic `Reranker` contract is public; built-in
-  RRF, weighted, and callback adapters remain separate v0.5 units.
+  example, and a benchmark. The generic `Reranker` contract is public; weighted
+  and callback adapters remain separate v0.5 units.
 - Added immutable baseline-compatible BM25 scoring with deletion-aware
   cross-segment statistics, scored exact term/phrase/boolean iterators,
   deterministic bounded top-k search, and streaming native FTS dictionary

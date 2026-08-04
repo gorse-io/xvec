@@ -23,19 +23,6 @@ import (
 	"github.com/gorse-io/zvec"
 )
 
-type preferFTSReranker struct{}
-
-func (preferFTSReranker) Rerank(_ context.Context, batches []zvec.RerankBatch, topK int) ([]zvec.Document, error) {
-	if len(batches) < 2 || topK <= 0 {
-		return nil, nil
-	}
-	documents := batches[1].Documents
-	if len(documents) > topK {
-		documents = documents[:topK]
-	}
-	return documents, nil
-}
-
 func ExampleCollection_Query() {
 	ctx := context.Background()
 	directory, err := os.MkdirTemp("", "zvec-example-")
@@ -155,7 +142,6 @@ func ExampleCollection_MultiQuery() {
 			{Field: "title", FTS: &zvec.FTSClause{Match: "go search"}, NumCandidates: 2},
 		},
 		TopK: 1, Projection: zvec.Projection{OutputFields: []string{"title"}},
-		Reranker: preferFTSReranker{},
 	})
 	if err != nil {
 		panic(err)

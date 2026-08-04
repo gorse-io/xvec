@@ -72,11 +72,11 @@ type Reranker interface {
 }
 
 // MultiQuery combines vector, sparse-vector, and full-text candidate lists
-// through an explicit Reranker. At least two sub-queries are required. Zero
-// TopK selects DefaultMultiQueryTopK.
+// through a Reranker. Nil selects NewRRFReranker. At least two sub-queries are
+// required. Zero TopK selects DefaultMultiQueryTopK.
 //
-// Built-in RRF, weighted, and callback adapters are introduced as separate
-// compatibility units; callers can implement Reranker directly meanwhile.
+// Weighted and callback adapters are introduced as separate compatibility
+// units.
 type MultiQuery struct {
 	Queries    []SubQuery
 	TopK       int
@@ -86,9 +86,9 @@ type MultiQuery struct {
 }
 
 // MultiQuery executes every branch over one live-document snapshot, applies
-// one shared scalar filter, and delegates fusion to query.Reranker. BM25
-// corpus statistics include every live document; the scalar filter masks FTS
-// candidates without changing IDF or average document length.
+// one shared scalar filter, and delegates fusion to the configured or default
+// Reranker. BM25 corpus statistics include every live document; the scalar
+// filter masks FTS candidates without changing IDF or average document length.
 func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Document, error) {
 	const op = "multi query"
 	if c == nil {
@@ -104,8 +104,10 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 	if err != nil {
 		return nil, err
 	}
-	if isNilInterface(query.Reranker) {
-		return nil, notSupported(op, "", "default RRF reranking is not implemented yet")
+	reranker := query.Reranker
+	if isNilInterface(reranker) {
+		value := NewRRFReranker()
+		reranker = value
 	}
 	projection := query.Projection.Clone()
 
@@ -202,7 +204,7 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 	if err := ctx.Err(); err != nil {
 		return nil, wrapCollectionError(op, path, err)
 	}
-	reranked, err := query.Reranker.Rerank(ctx, batches, topK)
+	reranked, err := reranker.Rerank(ctx, batches, topK)
 	if err != nil {
 		return nil, wrapCollectionError(op, path, err)
 	}
