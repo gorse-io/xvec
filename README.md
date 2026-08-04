@@ -140,7 +140,9 @@ byte offsets and emit contiguous positions. Standard tokenization implements
 pinned word, script, combining-mark, malformed-UTF-8, and emoji behavior;
 ngram tokenization adds optional general-category segmentation and single- or
 adjacent-length ranges. Jieba implements baseline search, mixed, full, and HMM
-cut modes using caller-provided cppjieba-format resources. None requires CGO.
+cut modes using caller-provided cppjieba-format resources. An immutable token
+filter contract and Unicode 17 lowercase filter now provide the first reusable
+post-tokenization transform. None requires CGO.
 
 The current library version is `v0.4.0`; its exact support boundary is recorded
 in the [v0.4 capability matrix](docs/v0.4.md) and [changelog](CHANGELOG.md).

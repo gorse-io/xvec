@@ -1,0 +1,60 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "source_sha256": "52a9c44a460818cf4d4857f980eea8bad944466ca8ca93e754107d4aa47ea7eb",
+  "utf8proc_commit": "e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78",
+  "utf8proc_data_sha256": "950e549dbfc853c4304425f3af1875e72fa9fc9697c273c763400c2da4e380a7",
+  "mapping_pairs_sha256": "3687b35be3fc408c2a4044074d2e673f7cc4818d15e3911ba161aabf252d6068",
+  "mapping_count": 1488,
+  "cases": [
+    {
+      "name": "ascii",
+      "input_hex": "48656c6c6f20574f524c4420466f4f",
+      "output_hex": "68656c6c6f20776f726c6420666f6f"
+    },
+    {
+      "name": "latin_extended",
+      "input_hex": "c39c424552",
+      "output_hex": "c3bc626572"
+    },
+    {
+      "name": "cyrillic",
+      "input_hex": "d09cd09ed0a1d09ad092d090",
+      "output_hex": "d0bcd0bed181d0bad0b2d0b0"
+    },
+    {
+      "name": "greek",
+      "input_hex": "ce94ce95ce9bcea4ce91",
+      "output_hex": "ceb4ceb5cebbcf84ceb1"
+    },
+    {
+      "name": "simple_not_full_case_mapping",
+      "input_hex": "c4b0e284aae1ba9e",
+      "output_hex": "696bc39f"
+    },
+    {
+      "name": "unicode_17_mappings",
+      "input_hex": "ea9f8cf090b590e1b289f096baa0",
+      "output_hex": "ea9f8df090b5b0e1b28af096babb"
+    },
+    {
+      "name": "valid_replacement_and_cjk_passthrough",
+      "input_hex": "efbfbde4b8ade69687",
+      "output_hex": "efbfbde4b8ade69687"
+    },
+    {
+      "name": "malformed_utf8_byte_fallback",
+      "input_hex": "41c08042e228a143eda08044f490808045f846",
+      "output_hex": "61c08062e228a163eda08064f490808065f866"
+    },
+    {
+      "name": "embedded_nul",
+      "input_hex": "410042",
+      "output_hex": "610062"
+    },
+    {
+      "name": "empty",
+      "input_hex": "",
+      "output_hex": ""
+    }
+  ]
+}

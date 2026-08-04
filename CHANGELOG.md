@@ -6,6 +6,10 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added a context-aware lowercase token filter with an immutable `TokenFilter`
+  contract, exact utf8proc 2.11.3 / Unicode 17 simple mappings, byte-preserving
+  malformed-UTF-8 fallback, exhaustive mapping identity, metadata/ownership,
+  concurrency, fuzz, and benchmark coverage.
 - Added a pure-Go Jieba tokenizer with baseline search, mixed, full, and HMM
   modes; cppjieba resource formats and resolution order; user-dictionary
   isolation; exact C++ fixtures; explicit invalid-input errors; cancellation,
