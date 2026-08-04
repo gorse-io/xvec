@@ -6,6 +6,12 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added one-shot process runtime configuration with bounded query and
+  maintenance admission, context-aware conservative scratch-memory budgeting,
+  `slog` severity routing, baseline planner thresholds, worker controls, Jieba
+  fallback configuration, live/peak/queued/completed runtime counters, expanded
+  collection storage statistics, and active DiskANN cache budgeting. Thread
+  binding remains an explicit `ErrNotSupported` Go-runtime limitation.
 - Added a baseline-compatible callback reranker adapter with ordered batches
   and field schemas, exact top-k forwarding, context and error propagation,
   nil validation, panic containment as structured internal errors, lock-free

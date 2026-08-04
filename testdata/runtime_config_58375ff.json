@@ -1,0 +1,19 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "config_header_sha256": "e2fdabad1fca4b3ffd647081962c2869b4c376379fc1e5506f1e465c985b1758",
+  "config_source_sha256": "04c9ea1d60b74dd3c5a1fb78bd61251bd11ab54acf2ada944e780f5800f3d929",
+  "options_header_sha256": "865c50a022754ad5101f9f40a03401e2832c5b008713c92d487ebf125334670d",
+  "stats_header_sha256": "791bb777751cb3f76ed79ec8c068a3575068361a717d246fb02f43027fc685af",
+  "planner_ratio_defaults": {
+    "invert_to_forward": 0.9,
+    "vector_brute_force": 0.1,
+    "fts_brute_force": 0.05
+  },
+  "log_levels": {
+    "debug": 0,
+    "info": 1,
+    "warn": 2,
+    "error": 3,
+    "fatal": 4
+  }
+}

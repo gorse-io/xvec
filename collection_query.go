@@ -70,6 +70,11 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if query.TopK <= 0 {
 		return nil, invalidArgument(op, "TopK must be positive")
 	}
+	releaseRuntime, err := c.beginRuntimeTask(ctx, runtimeQueryTask, op, 8)
+	if err != nil {
+		return nil, wrapCollectionError(op, c.Path(), err)
+	}
+	defer releaseRuntime()
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if err := c.requireOpenLocked(op); err != nil {
@@ -98,7 +103,8 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents)
+	runtimeConfig := c.runtimeConfig()
+	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents, runtimeConfig.InvertToForwardScanRatio)
 	if err != nil {
 		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}
@@ -124,7 +130,7 @@ func (c *Collection) searchVectorSnapshot(
 	topK int,
 	queryParams QueryParams,
 	documents []Document,
-	candidateFilter core.CandidateFilter,
+	candidateFilter evaluatedFilter,
 ) ([]core.Result, error) {
 	vectorIndex, err := resolveCollectionVectorIndex(field, op, c.path)
 	if err != nil {
@@ -147,10 +153,13 @@ func (c *Collection) searchVectorSnapshotResolved(
 	sparse SparseVector,
 	topK int,
 	documents []Document,
-	candidateFilter core.CandidateFilter,
+	candidateFilter evaluatedFilter,
 	vectorIndex collectionVectorIndex,
 	params collectionQueryConfig,
 ) ([]core.Result, error) {
+	if candidateFilter.useBruteForce(c.runtimeConfig().BruteForceByKeysRatio) {
+		params.options.Linear = true
+	}
 	if field.DataType.IsDenseVector() {
 		if sparse != nil {
 			return nil, invalidArgument(op, "dense field %q cannot use a sparse query vector", field.Name)
@@ -160,7 +169,8 @@ func (c *Collection) searchVectorSnapshotResolved(
 			return nil, err
 		}
 		results, err := searchCollectionDense(
-			ctx, c.schema.Name, field, documents, queryVector, topK, candidateFilter, vectorIndex, params,
+			ctx, c.schema.Name, field, documents, queryVector, topK, candidateFilter.predicate, vectorIndex, params,
+			c.queryWorkers(), c.options.MaxBufferSize,
 		)
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
@@ -187,7 +197,7 @@ func (c *Collection) searchVectorSnapshotResolved(
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	searchOptions := core.SearchOptions{TopK: topK, Radius: params.options.Radius, Filter: candidateFilter}
+	searchOptions := core.SearchOptions{TopK: topK, Radius: params.options.Radius, Filter: candidateFilter.predicate}
 	var results []core.Result
 	if vectorIndex.indexType == IndexTypeHNSW && !params.options.Linear {
 		hnsw, ok := index.(*core.SparseHNSWIndex)
@@ -223,6 +233,11 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	if query.TopKPerGroup <= 0 {
 		return nil, invalidArgument(op, "TopKPerGroup must be positive")
 	}
+	releaseRuntime, err := c.beginRuntimeTask(ctx, runtimeQueryTask, op, 8)
+	if err != nil {
+		return nil, wrapCollectionError(op, c.Path(), err)
+	}
+	defer releaseRuntime()
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if err := c.requireOpenLocked(op); err != nil {
@@ -264,9 +279,13 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents)
+	runtimeConfig := c.runtimeConfig()
+	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents, runtimeConfig.InvertToForwardScanRatio)
 	if err != nil {
 		return nil, wrapFilterEvaluationError(op, c.path, err)
+	}
+	if candidateFilter.useBruteForce(runtimeConfig.BruteForceByKeysRatio) {
+		params.options.Linear = true
 	}
 	groupValues := make(map[uint64]string, len(documents))
 	for _, document := range documents {
@@ -282,7 +301,7 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	}
 	options := core.GroupByOptions{
 		GroupCount: query.GroupCount, TopKPerGroup: query.TopKPerGroup,
-		Radius: params.options.Radius, Filter: candidateFilter, Resolve: resolve,
+		Radius: params.options.Radius, Filter: candidateFilter.predicate, Resolve: resolve,
 	}
 	metric := vectorIndex.metric
 	var groups []core.GroupResult

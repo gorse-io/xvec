@@ -33,6 +33,11 @@ func (c *Collection) AlterColumn(ctx context.Context, column, rename string, fie
 	if err := ctx.Err(); err != nil {
 		return wrapCollectionError(op, c.Path(), err)
 	}
+	releaseRuntime, err := c.beginRuntimeTask(ctx, runtimeOptimizeTask, op, 8)
+	if err != nil {
+		return wrapCollectionError(op, c.Path(), err)
+	}
+	defer releaseRuntime()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {

@@ -30,6 +30,16 @@ type FetchResult struct {
 	Err        error
 }
 
+// StorageStats describes retained segment data without allocating document
+// copies. MemoryUsageBytes counts encoded record headers, keys, payloads, and
+// logical-deletion IDs.
+type StorageStats struct {
+	ImmutableSegmentCount uint64
+	MutableDocumentCount  uint64
+	DeletedDocumentCount  uint64
+	MemoryUsageBytes      uint64
+}
+
 // SegmentManager owns sorted immutable segments, one optional write segment,
 // the primary-key map, and the logical deletion snapshot.
 type SegmentManager struct {
@@ -364,6 +374,47 @@ func (m *SegmentManager) LiveDocuments(ctx context.Context) ([]StoredDocument, e
 		return []StoredDocument{}, nil
 	}
 	return result, nil
+}
+
+// StorageStats returns a stable snapshot of retained segment resources.
+func (m *SegmentManager) StorageStats() StorageStats {
+	if m == nil {
+		return StorageStats{}
+	}
+	m.mu.RLock()
+	writing := m.writing
+	segments := make([]*ImmutableSegment, 0, len(m.immutable))
+	for _, segment := range m.immutable {
+		segments = append(segments, segment)
+	}
+	m.mu.RUnlock()
+	stats := StorageStats{
+		ImmutableSegmentCount: uint64(len(segments)),
+		DeletedDocumentCount:  uint64(m.deletes.Count()),
+	}
+	stats.MemoryUsageBytes = saturatingMultiplyByEight(stats.DeletedDocumentCount)
+	for _, segment := range segments {
+		stats.MemoryUsageBytes = saturatingAdd(stats.MemoryUsageBytes, segment.MemoryUsageBytes())
+	}
+	if writing != nil {
+		stats.MutableDocumentCount = writing.Metadata().DocCount
+		stats.MemoryUsageBytes = saturatingAdd(stats.MemoryUsageBytes, writing.MemoryUsageBytes())
+	}
+	return stats
+}
+
+func saturatingAdd(left, right uint64) uint64 {
+	if right > ^uint64(0)-left {
+		return ^uint64(0)
+	}
+	return left + right
+}
+
+func saturatingMultiplyByEight(value uint64) uint64 {
+	if value > ^uint64(0)/8 {
+		return ^uint64(0)
+	}
+	return value * 8
 }
 
 func (m *SegmentManager) checkRangeLocked(candidate SegmentMetadata, candidateID uint64) error {

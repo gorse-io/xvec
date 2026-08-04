@@ -186,6 +186,16 @@ func (s *WriteSegment) Documents() []StoredDocument {
 	return cloneDocuments(s.docs)
 }
 
+// MemoryUsageBytes returns the encoded record bytes retained by the segment.
+func (s *WriteSegment) MemoryUsageBytes() uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return storedDocumentsMemoryBytes(s.docs)
+}
+
 // Metadata returns the current in-memory range without file references.
 func (s *WriteSegment) Metadata() SegmentMetadata {
 	if s == nil {
@@ -337,6 +347,26 @@ func (s *ImmutableSegment) Documents() []StoredDocument {
 		return nil
 	}
 	return cloneDocuments(s.docs)
+}
+
+// MemoryUsageBytes returns the encoded record bytes retained by the segment.
+func (s *ImmutableSegment) MemoryUsageBytes() uint64 {
+	if s == nil {
+		return 0
+	}
+	return storedDocumentsMemoryBytes(s.docs)
+}
+
+func storedDocumentsMemoryBytes(documents []StoredDocument) uint64 {
+	var total uint64
+	for _, document := range documents {
+		size := uint64(segmentRecordHeaderSize + len(document.PrimaryKey) + len(document.Payload))
+		if size > math.MaxUint64-total {
+			return math.MaxUint64
+		}
+		total += size
+	}
+	return total
 }
 
 func encodeSegment(metadata SegmentMetadata, docs []StoredDocument) ([]byte, error) {

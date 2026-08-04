@@ -106,13 +106,28 @@ func filterValueKind(dataType DataType) (kind dbsql.ValueKind, array, supported 
 	}
 }
 
-func evaluateFilterDocuments(ctx context.Context, plan *dbsql.Plan, documents []Document) (core.CandidateFilter, error) {
+type evaluatedFilter struct {
+	predicate core.CandidateFilter
+	ordinals  []uint32
+	matched   uint64
+	total     uint64
+	present   bool
+	usedIndex bool
+}
+
+func (f evaluatedFilter) useBruteForce(ratio float32) bool {
+	return f.present && f.total > 0 && f.matched <= uint64(float64(f.total)*float64(ratio))
+}
+
+func evaluateFilterDocuments(ctx context.Context, plan *dbsql.Plan, documents []Document, invertToForwardRatio float32) (evaluatedFilter, error) {
 	if plan == nil {
-		return nil, nil
+		return evaluatedFilter{total: uint64(len(documents))}, nil
 	}
 	matched := make(map[uint64]struct{}, len(documents))
 	if plan.AlwaysFalse() {
-		return func(uint64) bool { return false }, nil
+		return evaluatedFilter{
+			predicate: func(uint64) bool { return false }, total: uint64(len(documents)), present: true,
+		}, nil
 	}
 	fields := plan.Fields()
 	fieldCount := len(fields)
@@ -126,14 +141,14 @@ func evaluateFilterDocuments(ctx context.Context, plan *dbsql.Plan, documents []
 		}
 		index, err := dbsql.NewInvertedIndex(field)
 		if err != nil {
-			return nil, err
+			return evaluatedFilter{}, err
 		}
 		indexes[field.Name] = index
 	}
 	if len(indexes) > 0 {
 		for row := range documents {
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return evaluatedFilter{}, err
 			}
 			document := &documents[row]
 			for name, index := range indexes {
@@ -141,26 +156,31 @@ func evaluateFilterDocuments(ctx context.Context, plan *dbsql.Plan, documents []
 				raw, found := document.Fields[name]
 				value, err := toFilterValue(field, raw, found)
 				if err != nil {
-					return nil, fmt.Errorf("document %d field %q: %w", document.DocID, name, err)
+					return evaluatedFilter{}, fmt.Errorf("document %d field %q: %w", document.DocID, name, err)
 				}
 				if err := index.Add(uint64(row), value); err != nil {
-					return nil, err
+					return evaluatedFilter{}, err
 				}
 			}
 		}
 		for _, index := range indexes {
 			if err := index.Seal(); err != nil {
-				return nil, err
+				return evaluatedFilter{}, err
 			}
 		}
 	}
 	candidates, candidatesUsed, _, err := plan.Candidates(indexes, uint64(len(documents)))
 	if err != nil {
-		return nil, err
+		return evaluatedFilter{}, err
 	}
+	if candidatesUsed && len(documents) > 0 &&
+		float64(candidates.Count())/float64(len(documents)) >= float64(invertToForwardRatio) {
+		candidatesUsed = false
+	}
+	ordinals := make([]uint32, 0, min(len(documents), 64))
 	for index := range documents {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return evaluatedFilter{}, err
 		}
 		if candidatesUsed && !candidates.Contains(uint64(index)) {
 			continue
@@ -180,15 +200,20 @@ func evaluateFilterDocuments(ctx context.Context, plan *dbsql.Plan, documents []
 			return value, nil
 		})
 		if err != nil {
-			return nil, err
+			return evaluatedFilter{}, err
 		}
 		if match {
 			matched[document.DocID] = struct{}{}
+			ordinals = append(ordinals, uint32(index))
 		}
 	}
-	return func(key uint64) bool {
-		_, found := matched[key]
-		return found
+	return evaluatedFilter{
+		predicate: func(key uint64) bool {
+			_, found := matched[key]
+			return found
+		},
+		ordinals: ordinals, matched: uint64(len(matched)), total: uint64(len(documents)),
+		present: true, usedIndex: candidatesUsed,
 	}, nil
 }
 

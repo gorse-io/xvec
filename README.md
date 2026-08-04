@@ -164,7 +164,13 @@ is the nil/default MultiQuery strategy. [`WeightedReranker`](docs/weighted-reran
 adds pinned metric-specific normalization and per-branch weighting.
 [`CallbackReranker`](docs/callback-reranker.md) supplies a context-aware custom
 fusion adapter with panic containment and strict Collection output validation.
-None requires CGO.
+Process-wide [`RuntimeConfig`](docs/runtime-config.md) now provides bounded
+query and maintenance admission, a conservative context-aware scratch-memory
+budget, `slog` integration, baseline planner thresholds, worker limits, Jieba
+fallback configuration, and concurrency-safe runtime counters. Collection statistics
+also expose retained segment, mutable-document, deletion, and encoded-memory
+estimates, while `CollectionOptions.MaxBufferSize` bounds the DiskANN node
+cache. None requires CGO.
 
 The current library version is `v0.4.0`; its exact support boundary is recorded
 in the [v0.4 capability matrix](docs/v0.4.md) and [changelog](CHANGELOG.md).
@@ -214,6 +220,7 @@ are exercised by `go test ./...`.
 ## Documentation
 
 - [Collection API](docs/collection-api.md)
+- [Runtime configuration and resource governance](docs/runtime-config.md)
 - [v0.4 capability matrix](docs/v0.4.md)
 - [v0.3 capability matrix](docs/v0.3.md)
 - [v0.2 capability matrix](docs/v0.2.md)

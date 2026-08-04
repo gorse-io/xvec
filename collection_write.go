@@ -274,7 +274,7 @@ func (c *Collection) DeleteByFilter(ctx context.Context, filter string) error {
 	if err != nil {
 		return wrapCollectionError(op, c.path, err)
 	}
-	matched, err := evaluateFilterDocuments(ctx, plan, documents)
+	matched, err := evaluateFilterDocuments(ctx, plan, documents, c.runtimeConfig().InvertToForwardScanRatio)
 	if err != nil {
 		return wrapFilterEvaluationError(op, c.path, err)
 	}
@@ -283,7 +283,7 @@ func (c *Collection) DeleteByFilter(ctx context.Context, filter string) error {
 		if err := ctx.Err(); err != nil {
 			return wrapCollectionError(op, c.path, err)
 		}
-		if matched(document.DocID) {
+		if matched.predicate(document.DocID) {
 			primaryKeys = append(primaryKeys, document.PrimaryKey)
 		}
 	}

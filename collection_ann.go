@@ -275,6 +275,8 @@ func searchCollectionDense(
 	filter core.CandidateFilter,
 	spec collectionVectorIndex,
 	config collectionQueryConfig,
+	workers int,
+	maxBufferSize uint32,
 ) ([]core.Result, error) {
 	final := core.SearchOptions{TopK: topK, Radius: config.options.Radius, Filter: filter}
 	if (config.options.Linear && spec.indexType != IndexTypeHNSWRaBitQ) || spec.indexType == IndexTypeFlat {
@@ -301,7 +303,7 @@ func searchCollectionDense(
 				})
 			})
 	case IndexTypeHNSWRaBitQ:
-		index, err := buildCollectionDenseHNSWRaBitQ(ctx, field, documents, spec, 0)
+		index, err := buildCollectionDenseHNSWRaBitQ(ctx, field, documents, spec, workers)
 		if err != nil {
 			return nil, err
 		}
@@ -310,7 +312,7 @@ func searchCollectionDense(
 			Linear: config.options.Linear,
 		})
 	case IndexTypeIVF:
-		index, err := buildCollectionDenseIVF(ctx, schemaName, field, documents, spec, 0)
+		index, err := buildCollectionDenseIVF(ctx, schemaName, field, documents, spec, workers)
 		if err != nil {
 			return nil, err
 		}
@@ -319,7 +321,7 @@ func searchCollectionDense(
 				return index.SearchIVF(ctx, query, core.IVFSearchOptions{SearchOptions: options, NProbe: config.nprobe})
 			})
 	case IndexTypeDiskANN:
-		index, err := buildCollectionDenseDiskANN(ctx, field, documents, spec, 0)
+		index, err := buildCollectionDenseDiskANN(ctx, field, documents, spec, workers, maxBufferSize)
 		if err != nil {
 			return nil, err
 		}
@@ -574,6 +576,7 @@ func buildCollectionDenseDiskANN(
 	documents []Document,
 	spec collectionVectorIndex,
 	workers int,
+	maxBufferSize uint32,
 ) (collectionDiskANNIndex, error) {
 	candidates, err := collectionDenseCandidates(ctx, field, documents)
 	if err != nil {
@@ -584,7 +587,7 @@ func buildCollectionDenseDiskANN(
 	options.ListSize = spec.diskann.ListSize
 	options.PQChunks = spec.diskann.PQChunks
 	options.Workers = workers
-	options.CacheCapacity = min(len(candidates), core.DefaultDiskANNCacheNodes)
+	options.CacheCapacity = collectionDiskANNCacheCapacity(maxBufferSize, len(candidates))
 	builder, err := core.NewDiskANNBuilder(int(field.Dimension), options)
 	if err != nil {
 		return nil, err
@@ -595,6 +598,14 @@ func buildCollectionDenseDiskANN(
 		}
 	}
 	return builder.Build(ctx)
+}
+
+func collectionDiskANNCacheCapacity(maxBufferSize uint32, candidateCount int) int {
+	if candidateCount <= 0 {
+		return 0
+	}
+	cacheCapacity := int(uint64(maxBufferSize) / core.DiskANNSectorSize)
+	return min(candidateCount, cacheCapacity)
 }
 
 func buildCollectionSparseIndex(

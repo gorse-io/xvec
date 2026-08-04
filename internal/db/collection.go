@@ -50,6 +50,15 @@ type CollectionOptions struct {
 	WAL                 WALOptions
 }
 
+// CollectionStats describes current live keys and retained segment resources.
+type CollectionStats struct {
+	DocumentCount         uint64
+	ImmutableSegmentCount uint64
+	MutableDocumentCount  uint64
+	DeletedDocumentCount  uint64
+	MemoryUsageBytes      uint64
+}
+
 // CollectionStore owns one consistent manifest, WAL, and segment view. A
 // writable handle holds the exclusive collection lock; any number of read-only
 // handles can hold the shared lock together.
@@ -350,15 +359,27 @@ func (c *CollectionStore) LiveDocuments(ctx context.Context) ([]StoredDocument, 
 
 // DocumentCount returns the number of live primary keys in memory.
 func (c *CollectionStore) DocumentCount() uint64 {
+	return c.Stats().DocumentCount
+}
+
+// Stats returns a point-in-time storage snapshot without cloning documents.
+func (c *CollectionStore) Stats() CollectionStats {
 	if c == nil {
-		return 0
+		return CollectionStats{}
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.manager == nil || c.manager.PrimaryKeys() == nil {
-		return 0
+		return CollectionStats{}
 	}
-	return uint64(c.manager.PrimaryKeys().Count())
+	storage := c.manager.StorageStats()
+	return CollectionStats{
+		DocumentCount:         uint64(c.manager.PrimaryKeys().Count()),
+		ImmutableSegmentCount: storage.ImmutableSegmentCount,
+		MutableDocumentCount:  storage.MutableDocumentCount,
+		DeletedDocumentCount:  storage.DeletedDocumentCount,
+		MemoryUsageBytes:      storage.MemoryUsageBytes,
+	}
 }
 
 // OptimizationNeeded reports whether rewriting would flush mutable documents,

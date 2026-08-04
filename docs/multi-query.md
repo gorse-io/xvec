@@ -54,6 +54,12 @@ change IDF or average document length.
 `TopK == 0` defaults to 10. `NumCandidates == 0` also defaults to 10. Both are
 bounded by 100,000, and MultiQuery requires at least two branches.
 
+The process [`RuntimeConfig`](runtime-config.md) admits the complete operation
+as one query task. Its scratch estimate increases with branch count. A
+selective shared filter may route vector branches to exact scans and FTS
+branches to posting seeks according to the configured planner ratios; these
+routes are exact and do not change the result set.
+
 ## Reranker contract
 
 `Reranker.Rerank` receives batches in sub-query order. Each `RerankBatch`

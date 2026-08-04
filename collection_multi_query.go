@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/gorse-io/zvec/internal/ailego"
 	"github.com/gorse-io/zvec/internal/core"
@@ -101,6 +102,11 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 	if err != nil {
 		return nil, err
 	}
+	releaseRuntime, err := c.beginRuntimeTask(ctx, runtimeQueryTask, op, uint64(8+2*len(query.Queries)))
+	if err != nil {
+		return nil, wrapCollectionError(op, c.Path(), err)
+	}
+	defer releaseRuntime()
 	reranker := query.Reranker
 	if isNilInterface(reranker) {
 		value := NewRRFReranker()
@@ -129,7 +135,8 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents)
+	runtimeConfig := c.runtimeConfig()
+	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents, runtimeConfig.InvertToForwardScanRatio)
 	if err != nil {
 		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}
@@ -170,13 +177,16 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 		case multiQueryTargetFTS:
 			runtime := ftsFields[field.Name]
 			if runtime == nil {
-				runtime, err = buildCollectionFTSRuntime(ctx, field, documents, candidateFilter)
+				runtime, err = buildCollectionFTSRuntime(ctx, field, documents, candidateFilter.predicate)
 				if err == nil {
 					ftsFields[field.Name] = runtime
 				}
 			}
 			if err == nil {
-				results, err = searchCollectionFTS(ctx, runtime, subQuery.FTS, subQuery.Params, candidateCount)
+				results, err = searchCollectionFTS(
+					ctx, runtime, subQuery.FTS, subQuery.Params, candidateCount,
+					candidateFilter.ordinals, candidateFilter.useBruteForce(runtimeConfig.FTSBruteForceByKeysRatio),
+				)
 			}
 		}
 		if err != nil {
@@ -343,6 +353,8 @@ func searchCollectionFTS(
 	clause *FTSClause,
 	queryParams QueryParams,
 	topK int,
+	candidateOrdinals []uint32,
+	bruteForceByKeys bool,
 ) ([]core.Result, error) {
 	if runtime == nil || clause == nil {
 		return nil, invalidArgument("multi query", "FTS runtime and clause are required")
@@ -364,10 +376,15 @@ func searchCollectionFTS(
 	if err != nil {
 		return nil, err
 	}
-	results, err := core.SearchFTS(ctx, runtime.dictionary, node, runtime.scorer, core.FTSSearchOptions{
-		TopK:                     topK,
-		FTSQueryExecutionOptions: core.FTSQueryExecutionOptions{DeletedDocuments: runtime.deleted},
-	})
+	var results []core.FTSResult
+	if bruteForceByKeys {
+		results, err = searchCollectionFTSCandidates(ctx, runtime, node, candidateOrdinals, topK)
+	} else {
+		results, err = core.SearchFTS(ctx, runtime.dictionary, node, runtime.scorer, core.FTSSearchOptions{
+			TopK:                     topK,
+			FTSQueryExecutionOptions: core.FTSQueryExecutionOptions{DeletedDocuments: runtime.deleted},
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -379,6 +396,42 @@ func searchCollectionFTS(
 		output[index] = core.Result{Key: runtime.documentIDs[result.DocumentID], Score: result.Score}
 	}
 	return output, nil
+}
+
+func searchCollectionFTSCandidates(
+	ctx context.Context,
+	runtime *collectionFTSRuntime,
+	node core.FTSQueryNode,
+	candidateOrdinals []uint32,
+	topK int,
+) ([]core.FTSResult, error) {
+	iterator, err := core.NewFTSScoredQueryIterator(ctx, runtime.dictionary, node, runtime.scorer, core.FTSQueryExecutionOptions{})
+	if err != nil {
+		return nil, err
+	}
+	results := make([]core.FTSResult, 0, min(topK, len(candidateOrdinals)))
+	for _, documentID := range candidateOrdinals {
+		if !iterator.Advance(ctx, documentID) {
+			break
+		}
+		if iterator.DocumentID() != documentID || iterator.Score() <= 0 {
+			continue
+		}
+		results = append(results, core.FTSResult{DocumentID: documentID, Score: iterator.Score()})
+	}
+	if err := iterator.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(results, func(left, right int) bool {
+		if results[left].Score != results[right].Score {
+			return results[left].Score > results[right].Score
+		}
+		return results[left].DocumentID < results[right].DocumentID
+	})
+	if len(results) > topK {
+		results = results[:topK]
+	}
+	return results, nil
 }
 
 func collectionFTSDefaultOperator(params QueryParams) (core.FTSDefaultOperator, error) {

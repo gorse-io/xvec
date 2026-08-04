@@ -23,6 +23,18 @@ import (
 	"github.com/gorse-io/zvec"
 )
 
+func ExampleRuntimeConfig_Validate() {
+	config := zvec.NewRuntimeConfig()
+	config.MemoryLimitBytes = zvec.MinRuntimeMemoryLimit
+	config.QueryConcurrency = 4
+	config.OptimizeConcurrency = 2
+
+	fmt.Println(config.Validate() == nil)
+
+	// Output:
+	// true
+}
+
 func ExampleCollection_Query() {
 	ctx := context.Background()
 	directory, err := os.MkdirTemp("", "zvec-example-")

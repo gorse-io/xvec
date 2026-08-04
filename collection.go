@@ -24,12 +24,12 @@ import (
 	"github.com/gorse-io/zvec/internal/db"
 )
 
-// DefaultMaxBufferSize is the baseline-compatible future disk-cache budget.
+// DefaultMaxBufferSize is the baseline-compatible DiskANN cache budget.
 const DefaultMaxBufferSize uint32 = 64 << 20
 
 // CollectionOptions controls one collection handle. EnableMmap is persisted
-// when creating a collection; MaxBufferSize is reserved for later disk-index
-// caches. A zero MaxBufferSize selects DefaultMaxBufferSize.
+// when creating a collection; MaxBufferSize bounds native DiskANN node-cache
+// bytes. A zero MaxBufferSize selects DefaultMaxBufferSize.
 type CollectionOptions struct {
 	ReadOnly      bool
 	EnableMmap    bool
@@ -49,10 +49,16 @@ func (o CollectionOptions) normalized() CollectionOptions {
 	return o
 }
 
-// CollectionStats is a point-in-time in-memory collection summary.
+// CollectionStats is a point-in-time summary of live and retained in-memory
+// collection state. StorageMemoryBytes is a conservative encoded-size estimate,
+// not the Go process heap size.
 type CollectionStats struct {
-	DocumentCount     uint64
-	IndexCompleteness map[string]float32
+	DocumentCount      uint64
+	IndexCompleteness  map[string]float32
+	ImmutableSegments  uint64
+	MutableDocuments   uint64
+	DeletedDocuments   uint64
+	StorageMemoryBytes uint64
 }
 
 // Collection is one open native Go collection. Its methods are safe for
@@ -63,6 +69,7 @@ type Collection struct {
 	path    string
 	schema  CollectionSchema
 	options CollectionOptions
+	runtime *runtimeResources
 	closed  bool
 }
 
@@ -81,6 +88,7 @@ func CreateAndOpen(ctx context.Context, path string, schema CollectionSchema, op
 	if err := schema.Validate(); err != nil {
 		return nil, err
 	}
+	resources := currentRuntimeResources()
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, wrapCollectionError("create collection", path, err)
@@ -100,6 +108,7 @@ func CreateAndOpen(ctx context.Context, path string, schema CollectionSchema, op
 	}
 	return &Collection{
 		store: store, path: absolute, schema: schema.Clone(), options: options,
+		runtime: resources,
 	}, nil
 }
 
@@ -111,6 +120,7 @@ func Open(ctx context.Context, path string, options CollectionOptions) (*Collect
 	if path == "" {
 		return nil, invalidArgument("open collection", "path is empty")
 	}
+	resources := currentRuntimeResources()
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, wrapCollectionError("open collection", path, err)
@@ -136,6 +146,7 @@ func Open(ctx context.Context, path string, options CollectionOptions) (*Collect
 	options.EnableMmap = manifest.EnableMmap
 	return &Collection{
 		store: store, path: absolute, schema: schema, options: options,
+		runtime: resources,
 	}, nil
 }
 
@@ -169,7 +180,8 @@ func (c *Collection) Options() CollectionOptions {
 	return c.options
 }
 
-// Stats returns live document count and current index completeness.
+// Stats returns document, segment, deletion, retained-memory, and current index
+// completeness counters.
 func (c *Collection) Stats() CollectionStats {
 	if c == nil {
 		return CollectionStats{IndexCompleteness: map[string]float32{}}
@@ -178,7 +190,12 @@ func (c *Collection) Stats() CollectionStats {
 	defer c.mu.RUnlock()
 	stats := CollectionStats{IndexCompleteness: make(map[string]float32)}
 	if c.store != nil {
-		stats.DocumentCount = c.store.DocumentCount()
+		storage := c.store.Stats()
+		stats.DocumentCount = storage.DocumentCount
+		stats.ImmutableSegments = storage.ImmutableSegmentCount
+		stats.MutableDocuments = storage.MutableDocumentCount
+		stats.DeletedDocuments = storage.DeletedDocumentCount
+		stats.StorageMemoryBytes = storage.MemoryUsageBytes
 	}
 	for _, field := range c.schema.Fields {
 		index := field.EffectiveIndex()

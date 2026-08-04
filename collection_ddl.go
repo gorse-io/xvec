@@ -41,6 +41,11 @@ func (c *Collection) CreateIndex(ctx context.Context, column string, index Index
 	if err := ctx.Err(); err != nil {
 		return wrapCollectionError(op, c.Path(), err)
 	}
+	releaseRuntime, err := c.beginRuntimeTask(ctx, runtimeOptimizeTask, op, 8)
+	if err != nil {
+		return wrapCollectionError(op, c.Path(), err)
+	}
+	defer releaseRuntime()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {
@@ -109,6 +114,11 @@ func (c *Collection) DropIndex(ctx context.Context, column string) error {
 	if err := ctx.Err(); err != nil {
 		return wrapCollectionError(op, c.Path(), err)
 	}
+	releaseRuntime, err := c.beginRuntimeTask(ctx, runtimeOptimizeTask, op, 8)
+	if err != nil {
+		return wrapCollectionError(op, c.Path(), err)
+	}
+	defer releaseRuntime()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {
@@ -184,6 +194,7 @@ func (c *Collection) rewriteCollectionDocumentsLocked(
 	if transform == nil {
 		return &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "document rewrite transform is nil"}
 	}
+	workers = c.optimizeWorkers(workers)
 	rewritten := make([]db.StoredDocument, len(documents))
 	if err := ailego.ParallelFor(ctx, len(documents), workers, func(_ context.Context, index int) error {
 		document := documents[index]
@@ -255,6 +266,7 @@ func equalIndexParams(left, right IndexParams) bool {
 }
 
 func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field FieldSchema, workers int) error {
+	workers = c.optimizeWorkers(workers)
 	documents, err := c.liveDocumentsLocked(ctx)
 	if err != nil {
 		return err
@@ -302,7 +314,7 @@ func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field Fiel
 			case IndexTypeIVF:
 				_, err = buildCollectionDenseIVF(ctx, c.schema.Name, field, documents, spec, workers)
 			case IndexTypeDiskANN:
-				_, err = buildCollectionDenseDiskANN(ctx, field, documents, spec, workers)
+				_, err = buildCollectionDenseDiskANN(ctx, field, documents, spec, workers, c.options.MaxBufferSize)
 			case IndexTypeVamana:
 				_, err = buildCollectionDenseVamana(ctx, c.schema.Name, field, documents, spec)
 			}
