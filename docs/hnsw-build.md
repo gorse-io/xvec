@@ -1,10 +1,10 @@
 # Dense HNSW construction
 
 This independently gated v0.3 unit adds deterministic dense HNSW graph
-construction to `internal/core`. Graph search is now implemented by the next
-unit; persistence/reopen, incremental writes, and collection orchestration
-remain separate, so the public collection layer continues returning
-`ErrNotSupported` for HNSW.
+construction to `internal/core`. Graph search and persistence/reopen are now
+implemented by subsequent units; incremental writes and collection
+orchestration remain separate, so the public collection layer continues
+returning `ErrNotSupported` for HNSW.
 
 ## Build contract
 

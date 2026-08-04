@@ -1,9 +1,10 @@
 # Dense HNSW search
 
 This v0.3 unit makes the deterministic dense HNSW graph searchable through the
-common `DenseSearcher` and `DenseQuerySearcher` contracts. Persistence/reopen,
-incremental writes, and collection orchestration remain separate units, so
-public HNSW collection queries are still explicitly unsupported.
+common `DenseSearcher` and `DenseQuerySearcher` contracts. Persistence/reopen
+is now implemented by the next unit; incremental writes and collection
+orchestration remain separate, so public HNSW collection queries are still
+explicitly unsupported.
 
 ## Query controls
 
