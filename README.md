@@ -84,6 +84,8 @@ deterministic result ordering. Native checksummed persistence preserves
 topology and identical search behavior across reopen without depending on the
 C++ format. Built and reopened graphs also accept atomic, deterministic
 incremental additions while concurrent readers retain a complete generation.
+Sparse inner-product HNSW now has deterministic CSR-backed graph construction
+and topology inspection as the first independently gated sparse ANN unit.
 
 The current library version is `v0.2.0`; its exact support boundary is recorded
 in the [v0.2 capability matrix](docs/v0.2.md) and [changelog](CHANGELOG.md).
@@ -161,6 +163,7 @@ are exercised by `go test ./...`.
 - [Dense HNSW search](docs/hnsw-search.md)
 - [Dense HNSW persistence and reopen](docs/hnsw-persistence.md)
 - [Dense HNSW incremental writes](docs/hnsw-incremental.md)
+- [Sparse HNSW construction](docs/hnsw-sparse-build.md)
 
 ## License
 
