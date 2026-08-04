@@ -402,6 +402,62 @@ func (i *HNSWRaBitQIndex) SearchHNSWRaBitQ(ctx context.Context, query []float32,
 	return i.search(ctx, query, options, true)
 }
 
+// SearchGroups performs an exact scan over the immutable RaBitQ codes and
+// groups the resulting public approximation scores.
+func (i *HNSWRaBitQIndex) SearchGroups(
+	ctx context.Context,
+	vector []float32,
+	options GroupByOptions,
+) ([]GroupResult, error) {
+	if i == nil {
+		return nil, errors.New("core: nil HNSW-RaBitQ index")
+	}
+	if ctx == nil {
+		return nil, errors.New("core: nil HNSW-RaBitQ group-by context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if err := validateHNSWRaBitQGeneration(i); err != nil {
+		return nil, err
+	}
+	query, err := i.model.PrepareQuery(vector)
+	if err != nil {
+		return nil, fmt.Errorf("core: prepare HNSW-RaBitQ group-by query: %w", err)
+	}
+	accumulator := newGroupAccumulator(i.options.Metric, options.TopKPerGroup)
+	for position, code := range i.codes {
+		if position&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		key := i.base.keys[position]
+		if options.Filter != nil && !options.Filter(key) {
+			continue
+		}
+		estimate, err := query.Estimate(code)
+		if err != nil {
+			return nil, fmt.Errorf("core: score HNSW-RaBitQ group candidate %d: %w", position, err)
+		}
+		score := i.publicRaBitQScore(estimate.Distance)
+		if !scoreWithinRadius(i.options.Metric, score, options.Radius) {
+			continue
+		}
+		value, found := options.Resolve(key)
+		if !found {
+			continue
+		}
+		accumulator.add(value, Result{Key: key, Score: score})
+	}
+	return accumulator.finish(options.GroupCount), nil
+}
+
 func (i *HNSWRaBitQIndex) search(ctx context.Context, vector []float32, options HNSWRaBitQSearchOptions, requirePositiveTopK bool) ([]Result, error) {
 	if i == nil {
 		return nil, errors.New("core: nil HNSW-RaBitQ index")
@@ -784,4 +840,5 @@ var (
 	_ DenseIndex         = (*HNSWRaBitQIndex)(nil)
 	_ DenseProvider      = (*HNSWRaBitQIndex)(nil)
 	_ DenseQuerySearcher = (*HNSWRaBitQIndex)(nil)
+	_ DenseGroupSearcher = (*HNSWRaBitQIndex)(nil)
 )

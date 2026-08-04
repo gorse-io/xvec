@@ -49,7 +49,8 @@ Collection maps `HNSWRaBitQQueryParams.EF`, `QueryOptions.Linear`, and
 `QueryOptions.UseRefiner` directly to these controls. CreateIndex validates a
 concurrent snapshot backfill before the schema version is published; Optimize,
 Stats, filters, radius, and reopen use the same index semantics. Group-by over
-quantized indexes remains unsupported.
+RaBitQ codes is available with explicit Linear execution, and `UseRefiner`
+switches that full scan to exact original-vector group scores.
 
 ## Native persistence
 

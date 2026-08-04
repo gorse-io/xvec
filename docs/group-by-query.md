@@ -1,9 +1,11 @@
 # Group-by vector query
 
-The exact dense and sparse Flat indexes can retain the best documents from
-several distinct scalar groups in one query. Group-by scans every eligible
-candidate; it does not first take a global top-k, which could hide all but one
-group.
+Dense and sparse Flat indexes can retain the best documents from several
+distinct scalar groups in one query. Collection fields configured with an ANN
+index expose the same complete scan when query parameters explicitly set
+`Linear`; non-Linear ANN group traversal remains a separate unsupported
+operation. Group-by scans every eligible candidate and does not first take a
+global top-k, which could hide all but one group.
 
 `core.GroupByOptions` has the following controls:
 
@@ -36,3 +38,11 @@ baseline-compatible strings and materializes projected `zvec.Document`
 results. Integer and Boolean values use their ordinary decimal/lowercase form;
 FLOAT and DOUBLE use the native baseline's fixed six fractional digits; NULL
 uses the empty string group.
+
+An unrefined group scan uses the field's configured representation:
+FP16/INT8/INT4 scalar codes and optional rotation for dense vectors, RaBitQ
+codes for HNSW-RaBitQ, FP16-rounded sparse values, or original values when no
+quantizer is configured. With `UseRefiner`, the complete Linear scan instead
+scores retained original dense or sparse vectors before radius admission and
+group retention. Optimize and reopen deterministically reconstruct the same
+representation and results.

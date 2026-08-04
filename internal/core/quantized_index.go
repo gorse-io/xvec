@@ -121,6 +121,53 @@ func (i *ScalarQuantizedFlatIndex) SearchWithOptions(ctx context.Context, query 
 	return i.vectors.search(ctx, query, options, positions)
 }
 
+// SearchGroups scans scalar codes and retains the best candidates inside each
+// resolved group.
+func (i *ScalarQuantizedFlatIndex) SearchGroups(
+	ctx context.Context,
+	query []float32,
+	options GroupByOptions,
+) ([]GroupResult, error) {
+	if i == nil || i.vectors == nil {
+		return nil, errors.New("core: nil scalar-quantized Flat index")
+	}
+	if ctx == nil {
+		return nil, errors.New("core: nil scalar-quantized Flat group-by context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
+	queryCode, err := i.vectors.quantizedQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	accumulator := newGroupAccumulator(i.vectors.metric, options.TopKPerGroup)
+	for position, key := range i.vectors.keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if options.Filter != nil && !options.Filter(key) {
+			continue
+		}
+		score, err := QuantizedDistance(i.vectors.metric, i.vectors.codes[position], queryCode)
+		if err != nil {
+			return nil, fmt.Errorf("core: score scalar-quantized group candidate %d: %w", position, err)
+		}
+		if !scoreWithinRadius(i.vectors.metric, score, options.Radius) {
+			continue
+		}
+		value, found := options.Resolve(key)
+		if !found {
+			continue
+		}
+		accumulator.add(value, Result{Key: key, Score: score})
+	}
+	return accumulator.finish(options.GroupCount), nil
+}
+
 type scalarQuantizedVectors struct {
 	dimension int
 	metric    Metric
@@ -291,4 +338,5 @@ var (
 	_ DenseProvider      = (*ScalarQuantizedFlatIndex)(nil)
 	_ DenseSearcher      = (*ScalarQuantizedFlatIndex)(nil)
 	_ DenseQuerySearcher = (*ScalarQuantizedFlatIndex)(nil)
+	_ DenseGroupSearcher = (*ScalarQuantizedFlatIndex)(nil)
 )

@@ -35,8 +35,9 @@ The scalar representation supplies graph-build vectors and public first-stage
 scores, while its required internal PQ remains controlled independently by
 `PQChunks`; optional refinement reads retained original vectors. ANN group-by
 traversal is still deferred: an HNSW, HNSW-RaBitQ, IVF, Vamana, or DiskANN
-group query must set `Linear`, and quantized/refined group-by currently returns
-`NotSupported` rather than falling back. IVF's
+group query must set `Linear`. Flat and explicit Linear group-by honor the
+configured scalar/RaBitQ representation or exact original-vector refinement.
+IVF's
 alternate SOAR memory layout is also rejected explicitly; the current IVF
 runtime uses its native row-major layout. HNSW's contiguous-memory request is
 satisfied by the Go flat backing slice.
@@ -85,7 +86,8 @@ returned graph candidates. Missing originals and invalid scale arithmetic are
 errors. Sparse Flat follows its public scale factor, while sparse HNSW follows
 the same no-scale-factor candidate behavior as dense HNSW; both recompute exact
 inner products from retained original sparse vectors. Query and MultiQuery use
-this path, while refined group-by remains a separate unsupported operation.
+this path. Flat or explicit Linear group-by scans all live candidates and
+therefore can apply exact dense or sparse refinement without losing groups.
 DiskANN uses `floor(TopK*10)` candidates when `UseRefiner` is enabled, then
 reads its original FP32 vectors for exact final metric scoring.
 

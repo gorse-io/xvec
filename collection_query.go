@@ -237,8 +237,9 @@ func (c *Collection) searchVectorSnapshotResolved(
 	return results, nil
 }
 
-// GroupByQuery executes exact supported group-by search. Groups are selected
-// only after every live candidate has passed scalar and radius filtering.
+// GroupByQuery executes Flat or explicit Linear group-by search. Groups are
+// selected only after every live candidate has passed scalar and radius
+// filtering.
 func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery) ([]GroupResult, error) {
 	const op = "group-by query"
 	if c == nil {
@@ -282,14 +283,8 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	if err != nil {
 		return nil, err
 	}
-	if params.options.UseRefiner {
-		return nil, notSupported(op, c.path, "group-by with original-vector refinement is not implemented")
-	}
 	if vectorIndex.indexType != IndexTypeFlat && !params.options.Linear {
 		return nil, notSupported(op, c.path, fmt.Sprintf("group-by with %s requires Linear until ANN group traversal is implemented", vectorIndex.indexType))
-	}
-	if vectorIndex.quantize != QuantizeTypeUndefined {
-		return nil, notSupported(op, c.path, "group-by over scalar-quantized vectors is not implemented")
 	}
 	filterPlan, err := buildFilterPlan(query.Filter, c.schema)
 	if err != nil {
@@ -333,11 +328,26 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 		if err != nil {
 			return nil, err
 		}
-		index, err := buildDenseFlatIndex(ctx, field, metric, documents)
+		var searcher core.DenseGroupSearcher
+		if params.options.UseRefiner {
+			searcher, err = buildDenseFlatIndex(ctx, field, metric, documents)
+		} else if vectorIndex.indexType == IndexTypeHNSWRaBitQ {
+			searcher, err = buildCollectionDenseHNSWRaBitQ(ctx, field, documents, vectorIndex, c.queryWorkers())
+		} else {
+			var index collectionDenseIndex
+			index, err = buildCollectionDenseFlat(ctx, c.schema.Name, field, documents, vectorIndex)
+			if err == nil {
+				var compatible bool
+				searcher, compatible = index.(core.DenseGroupSearcher)
+				if !compatible {
+					err = fmt.Errorf("dense Flat builder returned an incompatible group searcher")
+				}
+			}
+		}
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}
-		groups, err = index.SearchGroups(ctx, queryVector, options)
+		groups, err = searcher.SearchGroups(ctx, queryVector, options)
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}
@@ -349,11 +359,29 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 		if err != nil {
 			return nil, err
 		}
-		index, err := buildSparseFlatIndex(ctx, field, documents)
+		var searcher core.SparseGroupSearcher
+		if params.options.UseRefiner {
+			searcher, err = buildSparseFlatIndex(ctx, field, documents)
+		} else {
+			if vectorIndex.quantize == QuantizeTypeFP16 {
+				queryVector, err = sparseFP16Vector(queryVector)
+			}
+			if err == nil {
+				var index core.SparseQuerySearcher
+				index, err = buildCollectionSparseIndex(ctx, field, documents, vectorIndex, true)
+				if err == nil {
+					var compatible bool
+					searcher, compatible = index.(core.SparseGroupSearcher)
+					if !compatible {
+						err = fmt.Errorf("sparse Flat builder returned an incompatible group searcher")
+					}
+				}
+			}
+		}
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}
-		groups, err = index.SearchSparseGroups(ctx, queryVector, options)
+		groups, err = searcher.SearchSparseGroups(ctx, queryVector, options)
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}

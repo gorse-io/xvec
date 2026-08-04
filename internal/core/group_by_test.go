@@ -146,6 +146,113 @@ func TestDenseFlatSearchGroupsUsesMetricOrdering(t *testing.T) {
 	}
 }
 
+func TestScalarQuantizedFlatSearchGroupsMatchesScalarScan(t *testing.T) {
+	candidates := []Candidate{
+		{Key: 1, Vector: []float32{1.013, .031, -.077, .125}},
+		{Key: 2, Vector: []float32{.511, 2.037, .291, -.417}},
+		{Key: 3, Vector: []float32{3.117, -.271, .051, -.2}},
+		{Key: 4, Vector: []float32{1.919, .813, -.613, .411}},
+		{Key: 5, Vector: []float32{-.719, 1.117, .333, 2.019}},
+		{Key: 6, Vector: []float32{2.717, -.919, .231, .777}},
+	}
+	query := []float32{.9, .02, -.04, .1}
+	for _, kind := range []Quantization{QuantizationFP16, QuantizationInt8, QuantizationInt4} {
+		t.Run(quantizationName(kind), func(t *testing.T) {
+			var reformer DenseReformer
+			if kind != QuantizationFP16 {
+				rotator, err := NewFHTRotatorFromSigns(4, []byte{0x13, 0x57, 0x9b, 0xdf})
+				if err != nil {
+					t.Fatal(err)
+				}
+				reformer, err = NewRotationReformer(rotator)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			index, err := NewScalarQuantizedFlatIndex(context.Background(), 4, MetricL2, kind, reformer, candidates)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolve := func(key uint64) (string, bool) {
+				return strconv.FormatUint(key%3, 10), key != 5
+			}
+			options := GroupByOptions{
+				GroupCount: 3, TopKPerGroup: 2,
+				Radius: 10, Filter: func(key uint64) bool { return key != 4 }, Resolve: resolve,
+			}
+			got, err := index.SearchGroups(context.Background(), query, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scanned, err := index.SearchWithOptions(context.Background(), query, SearchOptions{
+				TopK: len(candidates), Radius: options.Radius, Filter: options.Filter,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			accumulator := newGroupAccumulator(MetricL2, options.TopKPerGroup)
+			for _, result := range scanned {
+				if value, found := resolve(result.Key); found {
+					accumulator.add(value, result)
+				}
+			}
+			want := accumulator.finish(options.GroupCount)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("groups = %#v, scalar scan %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestHNSWRaBitQSearchGroupsMatchesLinearCodeScan(t *testing.T) {
+	candidates := hnswRaBitQCandidates(24, 64)
+	options := DefaultHNSWRaBitQBuildOptions(MetricL2)
+	options.TotalBits, options.Clusters = 5, 4
+	options.M, options.EFConstruction = 6, 24
+	builder, err := NewHNSWRaBitQBuilder(64, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range candidates {
+		if err := builder.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
+			t.Fatal(err)
+		}
+	}
+	index, err := builder.Build(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := candidates[11].Vector
+	resolve := func(key uint64) (string, bool) {
+		return strconv.FormatUint(key%4, 10), key != candidates[3].Key
+	}
+	groupOptions := GroupByOptions{
+		GroupCount: 4, TopKPerGroup: 3,
+		Filter: func(key uint64) bool { return key%5 != 0 }, Resolve: resolve,
+	}
+	got, err := index.SearchGroups(context.Background(), query, groupOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanned, err := index.SearchHNSWRaBitQ(context.Background(), query, HNSWRaBitQSearchOptions{
+		SearchOptions: SearchOptions{TopK: len(candidates), Filter: groupOptions.Filter},
+		EF:            len(candidates), Linear: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accumulator := newGroupAccumulator(MetricL2, groupOptions.TopKPerGroup)
+	for _, result := range scanned {
+		if value, found := resolve(result.Key); found {
+			accumulator.add(value, result)
+		}
+	}
+	want := accumulator.finish(groupOptions.GroupCount)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("groups = %#v, code scan %#v", got, want)
+	}
+}
+
 func TestSparseFlatSearchGroups(t *testing.T) {
 	index, err := NewSparseFlatIndex(MetricIP)
 	if err != nil {

@@ -47,9 +47,10 @@ unquantized candidates with retained original sparse vectors. IVF SOAR returns
 `ErrNotSupported`.
 
 `GroupByQuery` retains a top-k per filtered scalar group and ranks groups by
-their best document. ANN group-by currently requires explicit `Linear`;
-quantized or refined group-by remains unsupported, including sparse refined
-group-by. The library never silently substitutes a different algorithm.
+their best document. Flat and explicit `Linear` queries support configured
+dense scalar codes, RaBitQ, sparse FP16, and original-vector refinement. ANN
+group-by without `Linear` remains unsupported; the library never silently
+substitutes a full scan for graph traversal.
 
 `MultiQuery` evaluates two or more dense-vector, sparse-vector, or FTS
 branches over one immutable live snapshot with a shared SQL filter. A nil

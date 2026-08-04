@@ -6,6 +6,10 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Enabled scalar-quantized and original-vector-refined GroupByQuery execution
+  for Flat indexes and explicit Linear ANN queries, including FP16/INT8/INT4,
+  RaBitQ, sparse FP16, filters, radius, deterministic grouping, Optimize, and
+  reopen behavior.
 - Added exact original-vector refinement for sparse Flat and HNSW collection
   queries, including FP16 first-stage scoring, candidate expansion, final
   filter/radius enforcement, Query and MultiQuery integration, deterministic
