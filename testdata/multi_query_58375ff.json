@@ -1,0 +1,11 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "query_header_sha256": "2c482b4c9832ffb07086e9789c88a4f7de6bc278c3f7ae901b4091e7acbdd193",
+  "collection_source_sha256": "cf4145fa9cbed9bf8975c440f024ce98359b2c6792f008e630db5da7f6422493",
+  "reranker_header_sha256": "bc1949536968bc27f0cb11026d0ab8633dbb46641365455c20b433367837c7d6",
+  "max_topk": 100000,
+  "minimum_sub_queries": 2,
+  "default_topk": 10,
+  "default_num_candidates": 10,
+  "default_fts_operator": ""
+}

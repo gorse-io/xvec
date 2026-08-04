@@ -23,6 +23,19 @@ import (
 	"github.com/gorse-io/zvec"
 )
 
+type preferFTSReranker struct{}
+
+func (preferFTSReranker) Rerank(_ context.Context, batches []zvec.RerankBatch, topK int) ([]zvec.Document, error) {
+	if len(batches) < 2 || topK <= 0 {
+		return nil, nil
+	}
+	documents := batches[1].Documents
+	if len(documents) > topK {
+		documents = documents[:topK]
+	}
+	return documents, nil
+}
+
 func ExampleCollection_Query() {
 	ctx := context.Background()
 	directory, err := os.MkdirTemp("", "zvec-example-")
@@ -109,6 +122,52 @@ func ExampleCollection_Query_ann() {
 
 	// Output:
 	// nearest 0.0
+}
+
+func ExampleCollection_MultiQuery() {
+	ctx := context.Background()
+	directory, err := os.MkdirTemp("", "zvec-multi-query-example-")
+	if err != nil {
+		panic(err)
+	}
+	path := filepath.Join(directory, "books")
+	schema := zvec.NewCollectionSchema("books",
+		zvec.FieldSchema{Name: "title", DataType: zvec.DataTypeString, Index: zvec.NewFTSIndexParams()},
+		zvec.FieldSchema{
+			Name: "embedding", DataType: zvec.DataTypeVectorFP32, Dimension: 2,
+			Index: zvec.NewFlatIndexParams(zvec.MetricTypeIP),
+		},
+	)
+	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	if err != nil {
+		panic(err)
+	}
+	_, err = collection.Insert(ctx, []zvec.Document{
+		{PrimaryKey: "go", Fields: map[string]any{"title": "Go vector search", "embedding": zvec.VectorFP32{0.8, 0}}},
+		{PrimaryKey: "ann", Fields: map[string]any{"title": "Approximate neighbors", "embedding": zvec.VectorFP32{1, 0}}},
+	})
+	if err != nil {
+		panic(err)
+	}
+	results, err := collection.MultiQuery(ctx, zvec.MultiQuery{
+		Queries: []zvec.SubQuery{
+			{Field: "embedding", DenseVector: zvec.VectorFP32{1, 0}, NumCandidates: 2},
+			{Field: "title", FTS: &zvec.FTSClause{Match: "go search"}, NumCandidates: 2},
+		},
+		TopK: 1, Projection: zvec.Projection{OutputFields: []string{"title"}},
+		Reranker: preferFTSReranker{},
+	})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("%s: %s\n", results[0].PrimaryKey, results[0].Fields["title"])
+	if err := collection.Destroy(ctx); err != nil {
+		panic(err)
+	}
+	_ = os.Remove(directory)
+
+	// Output:
+	// go: Go vector search
 }
 
 func ExampleCollection_DeleteByFilter() {

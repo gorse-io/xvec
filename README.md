@@ -19,7 +19,8 @@ atomic DDL/compaction, FP16/INT8/INT4 scalar quantization, deterministic
 rotation and refinement, k-means, IVF, and dense/sparse HNSW. Collection
 queries route those implemented indexes with explicit ANN controls. v0.4 adds
 HNSW-RaBitQ, Vamana, product quantization, and native DiskANN execution;
-full-text search and hybrid retrieval remain later milestones.
+v0.5 full-text primitives and snapshot-level hybrid MultiQuery are now under
+active development.
 
 ## Module
 
@@ -151,7 +152,14 @@ with source-located errors; an owned canonicalization pass and lazy posting
 iterators execute term, exact-phrase, AND, OR, must, must-not, and deletion
 semantics. Immutable deletion-aware BM25 scorers provide stable top-k results,
 and streaming native dictionary compaction removes tombstones while preserving
-positions and densely remapping document IDs. None requires CGO.
+positions and densely remapping document IDs. Snapshot-consistent public
+[`MultiQuery`](docs/multi-query.md) now combines dense-vector, sparse-vector,
+and FTS candidate batches under one scalar filter through an explicit
+`Reranker` contract. FTS supports both expression and natural-match clauses,
+uses each field's complete analyzer configuration, keeps BM25 corpus statistics
+independent of scalar candidate filtering, validates reranker output, and
+returns durable reopen-identical results. Built-in RRF, weighted, and callback
+adapters remain the next separate v0.5 units. None requires CGO.
 
 The current library version is `v0.4.0`; its exact support boundary is recorded
 in the [v0.4 capability matrix](docs/v0.4.md) and [changelog](CHANGELOG.md).

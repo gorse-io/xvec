@@ -102,60 +102,109 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err != nil {
 		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}
-	var results []core.Result
+	results, err := c.searchVectorSnapshotResolved(
+		ctx, op, field, query.DenseVector, query.SparseVector, query.TopK,
+		documents, candidateFilter, vectorIndex, params,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return c.materializeResults(documents, results, query.Projection)
+}
+
+// searchVectorSnapshot executes one vector target against documents while the
+// caller holds the collection read lock. MultiQuery reuses it so every branch
+// observes the same live document and scalar-filter snapshot as Query.
+func (c *Collection) searchVectorSnapshot(
+	ctx context.Context,
+	op string,
+	field FieldSchema,
+	dense DenseVector,
+	sparse SparseVector,
+	topK int,
+	queryParams QueryParams,
+	documents []Document,
+	candidateFilter core.CandidateFilter,
+) ([]core.Result, error) {
+	vectorIndex, err := resolveCollectionVectorIndex(field, op, c.path)
+	if err != nil {
+		return nil, err
+	}
+	params, err := collectionQueryParams(queryParams, vectorIndex)
+	if err != nil {
+		return nil, err
+	}
+	return c.searchVectorSnapshotResolved(
+		ctx, op, field, dense, sparse, topK, documents, candidateFilter, vectorIndex, params,
+	)
+}
+
+func (c *Collection) searchVectorSnapshotResolved(
+	ctx context.Context,
+	op string,
+	field FieldSchema,
+	dense DenseVector,
+	sparse SparseVector,
+	topK int,
+	documents []Document,
+	candidateFilter core.CandidateFilter,
+	vectorIndex collectionVectorIndex,
+	params collectionQueryConfig,
+) ([]core.Result, error) {
 	if field.DataType.IsDenseVector() {
-		if query.SparseVector != nil {
+		if sparse != nil {
 			return nil, invalidArgument(op, "dense field %q cannot use a sparse query vector", field.Name)
 		}
-		queryVector, err := validateDenseQueryVector(field, query.DenseVector)
+		queryVector, err := validateDenseQueryVector(field, dense)
 		if err != nil {
 			return nil, err
 		}
-		results, err = searchCollectionDense(
-			ctx, c.schema.Name, field, documents, queryVector, query.TopK, candidateFilter, vectorIndex, params,
+		results, err := searchCollectionDense(
+			ctx, c.schema.Name, field, documents, queryVector, topK, candidateFilter, vectorIndex, params,
 		)
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}
-	} else {
-		if query.DenseVector != nil {
-			return nil, invalidArgument(op, "sparse field %q cannot use a dense query vector", field.Name)
-		}
-		queryVector, err := validateSparseQueryVector(field, query.SparseVector)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateSparseRefiner(params, field); err != nil {
-			return nil, err
-		}
-		if vectorIndex.quantize == QuantizeTypeFP16 {
-			queryVector, err = sparseFP16Vector(queryVector)
-			if err != nil {
-				return nil, wrapCollectionError(op, c.path, err)
-			}
-		}
-		index, err := buildCollectionSparseIndex(ctx, field, documents, vectorIndex, params.options.Linear)
-		if err != nil {
-			return nil, wrapCollectionError(op, c.path, err)
-		}
-		searchOptions := core.SearchOptions{TopK: query.TopK, Radius: params.options.Radius, Filter: candidateFilter}
-		if vectorIndex.indexType == IndexTypeHNSW && !params.options.Linear {
-			hnsw, ok := index.(*core.SparseHNSWIndex)
-			if !ok {
-				return nil, &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "sparse HNSW builder returned an incompatible index"}
-			}
-			results, err = hnsw.SearchSparseHNSW(ctx, queryVector, core.HNSWSearchOptions{
-				SearchOptions: searchOptions, EF: params.ef,
-				PrefetchOffset: params.prefetchOffset, PrefetchLines: params.prefetchLines,
-			})
-		} else {
-			results, err = index.SearchSparseWithOptions(ctx, queryVector, searchOptions)
-		}
+		return results, nil
+	}
+	if dense != nil {
+		return nil, invalidArgument(op, "sparse field %q cannot use a dense query vector", field.Name)
+	}
+	queryVector, err := validateSparseQueryVector(field, sparse)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSparseRefiner(params, field); err != nil {
+		return nil, err
+	}
+	if vectorIndex.quantize == QuantizeTypeFP16 {
+		queryVector, err = sparseFP16Vector(queryVector)
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}
 	}
-	return c.materializeResults(documents, results, query.Projection)
+	index, err := buildCollectionSparseIndex(ctx, field, documents, vectorIndex, params.options.Linear)
+	if err != nil {
+		return nil, wrapCollectionError(op, c.path, err)
+	}
+	searchOptions := core.SearchOptions{TopK: topK, Radius: params.options.Radius, Filter: candidateFilter}
+	var results []core.Result
+	if vectorIndex.indexType == IndexTypeHNSW && !params.options.Linear {
+		hnsw, ok := index.(*core.SparseHNSWIndex)
+		if !ok {
+			return nil, &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "sparse HNSW builder returned an incompatible index"}
+		}
+		results, err = hnsw.SearchSparseHNSW(ctx, queryVector, core.HNSWSearchOptions{
+			SearchOptions: searchOptions, EF: params.ef,
+			PrefetchOffset: params.prefetchOffset, PrefetchLines: params.prefetchLines,
+		})
+	} else {
+		results, err = index.SearchSparseWithOptions(ctx, queryVector, searchOptions)
+	}
+	if err != nil {
+		return nil, wrapCollectionError(op, c.path, err)
+	}
+	return results, nil
 }
 
 // GroupByQuery executes exact supported group-by search. Groups are selected
