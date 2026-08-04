@@ -156,6 +156,35 @@ func ExampleCollection_MultiQuery() {
 	// go: Go vector search
 }
 
+func ExampleWeightedReranker_Rerank() {
+	reranker := zvec.NewWeightedReranker(0.5, 0.5)
+	results, err := reranker.Rerank(context.Background(), []zvec.RerankBatch{
+		{
+			Field: zvec.FieldSchema{
+				Name: "embedding", DataType: zvec.DataTypeVectorFP32, Dimension: 2,
+				Index: zvec.NewFlatIndexParams(zvec.MetricTypeL2),
+			},
+			Documents: []zvec.Document{
+				{PrimaryKey: "a", DocID: 1, Score: 0},
+				{PrimaryKey: "b", DocID: 2, Score: 1},
+			},
+		},
+		{
+			Field: zvec.FieldSchema{Name: "body", DataType: zvec.DataTypeString, Index: zvec.NewFTSIndexParams()},
+			Documents: []zvec.Document{
+				{PrimaryKey: "a", DocID: 1, Score: 1},
+			},
+		},
+	}, 2)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("%s %.3f\n", results[0].PrimaryKey, results[0].Score)
+
+	// Output:
+	// a 0.750
+}
+
 func ExampleCollection_DeleteByFilter() {
 	ctx := context.Background()
 	directory, err := os.MkdirTemp("", "zvec-delete-example-")

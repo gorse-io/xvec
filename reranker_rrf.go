@@ -16,6 +16,7 @@ package zvec
 
 import (
 	"context"
+	"math"
 	"sort"
 )
 
@@ -57,17 +58,24 @@ func (r RRFReranker) Rerank(ctx context.Context, batches []RerankBatch, topK int
 	if err := r.Validate(); err != nil {
 		return nil, err
 	}
+	return scoreBasedRerank(ctx, op, batches, topK, func(_ Document, rank, _ int) (float64, error) {
+		return 1 / (float64(r.RankConstant) + float64(rank) + 1), nil
+	})
+}
+
+type rerankScoreFunc func(document Document, rank, batch int) (float64, error)
+
+func scoreBasedRerank(ctx context.Context, op string, batches []RerankBatch, topK int, score rerankScoreFunc) ([]Document, error) {
 	if topK <= 0 || len(batches) == 0 {
 		return []Document{}, nil
 	}
-
 	type fusedCandidate struct {
 		document Document
 		score    float64
 	}
 	candidates := make(map[string]*fusedCandidate)
 	work := 0
-	for _, batch := range batches {
+	for batchIndex, batch := range batches {
 		for rank, document := range batch.Documents {
 			if work&4095 == 0 {
 				if err := ctx.Err(); err != nil {
@@ -75,12 +83,22 @@ func (r RRFReranker) Rerank(ctx context.Context, batches []RerankBatch, topK int
 				}
 			}
 			work++
+			contribution, err := score(document, rank, batchIndex)
+			if err != nil {
+				return nil, err
+			}
+			if math.IsNaN(contribution) || math.IsInf(contribution, 0) {
+				return nil, invalidArgument(op, "document %q produced a non-finite contribution", document.PrimaryKey)
+			}
 			candidate := candidates[document.PrimaryKey]
 			if candidate == nil {
 				candidate = &fusedCandidate{document: document}
 				candidates[document.PrimaryKey] = candidate
 			}
-			candidate.score += 1 / (float64(r.RankConstant) + float64(rank) + 1)
+			candidate.score += contribution
+			if math.IsNaN(candidate.score) || math.IsInf(candidate.score, 0) {
+				return nil, invalidArgument(op, "document %q produced a non-finite fused score", document.PrimaryKey)
+			}
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -108,6 +126,9 @@ func (r RRFReranker) Rerank(ctx context.Context, batches []RerankBatch, topK int
 	result := make([]Document, len(ordered))
 	for index, candidate := range ordered {
 		candidate.document.Score = float32(candidate.score)
+		if math.IsInf(float64(candidate.document.Score), 0) {
+			return nil, invalidArgument(op, "document %q fused score exceeds float32", candidate.document.PrimaryKey)
+		}
 		result[index] = candidate.document
 	}
 	return result, nil

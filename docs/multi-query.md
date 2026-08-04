@@ -76,8 +76,10 @@ reranker errors are propagated through the structured zvec error model.
 
 The generic `Reranker` abstraction and baseline-compatible
 [`RRFReranker`](rrf-reranker.md) are executable now. A nil reranker selects RRF
-with `rank_constant=60`. Weighted score fusion and the panic-contained callback
-adapter remain separate v0.5 implementation units.
+with `rank_constant=60`. [`WeightedReranker`](weighted-reranker.md) provides the
+pinned metric-specific score normalization formulas and explicit per-branch
+weights. The panic-contained callback adapter remains a separate v0.5
+implementation unit.
 
 ## Current storage boundary
 

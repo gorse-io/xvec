@@ -6,6 +6,12 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added baseline-compatible weighted score fusion for L2, inner product,
+  cosine distance, sparse inner product, and BM25, with exact pinned
+  normalization formulas, finite weight/score validation, explicit MIPS-L2
+  rejection, deterministic primary-key aggregation, cancellation and
+  concurrency safety, a pinned source fixture, fuzzing, an example, and a
+  benchmark.
 - Added baseline-compatible reciprocal rank fusion with a default rank
   constant of 60, primary-key aggregation, score-independent rank
   contributions, deterministic tied-result ordering, cancellation and
@@ -17,8 +23,8 @@ subject to compatible migration work throughout the 0.x series.
   complete tokenizer/filter configuration routing, projection-safe reranker
   batches, strict untrusted-output validation, lock-free caller reranking,
   reopen/concurrency coverage, a pinned compatibility fixture, fuzzing, an
-  example, and a benchmark. The generic `Reranker` contract is public; weighted
-  and callback adapters remain separate v0.5 units.
+  example, and a benchmark. The generic `Reranker` contract is public; the
+  callback adapter remains a separate v0.5 unit.
 - Added immutable baseline-compatible BM25 scoring with deletion-aware
   cross-segment statistics, scored exact term/phrase/boolean iterators,
   deterministic bounded top-k search, and streaming native FTS dictionary

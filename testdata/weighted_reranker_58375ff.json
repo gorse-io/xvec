@@ -1,0 +1,12 @@
+{
+  "baseline_commit": "58375ff7b8fdd0d6fc7d234e47567b179777883b",
+  "header_sha256": "bc1949536968bc27f0cb11026d0ab8633dbb46641365455c20b433367837c7d6",
+  "source_sha256": "3c93edc12303898af52911589c46c720072f9470446858fc36a61206d538aa1e",
+  "tests_sha256": "05a03cacf74e7615661cec3153b2d2307f6a991510018386f6650f2625cb9a7d",
+  "formulas": {
+    "FTS": "2*atan(score)/pi",
+    "L2": "1-2*atan(score)/pi",
+    "IP": "0.5+atan(score)/pi",
+    "COSINE": "1-score/2"
+  }
+}
