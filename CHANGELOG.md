@@ -6,6 +6,10 @@ subject to compatible migration work throughout the 0.x series.
 
 ## Unreleased
 
+- Added public FP16, INT8, and INT4 scalar quantization for collection DiskANN
+  fields, with deterministic optional rotation, an independent internal PQ
+  traversal layer, scalar-code scoring, original-vector refinement, atomic
+  backfill validation, Optimize/reopen support, and overflow rollback.
 - Added exact BINARY and ARRAY_BINARY inverted indexes, including bytewise
   equality/range/`IN`, array contain/length/NULL candidates, atomic DDL,
   Optimize, forward-verification parity, and reopen coverage.

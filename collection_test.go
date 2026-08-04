@@ -216,34 +216,37 @@ func TestCollectionDenseSparseRadiusProjectionAndGroupBy(t *testing.T) {
 	}
 }
 
-func TestCollectionUnsupportedIndexConfigurationsReturnNotSupported(t *testing.T) {
+func TestCollectionScalarQuantizedDiskANNDirectSchema(t *testing.T) {
 	ctx := context.Background()
-	diskANN := NewDiskANNIndexParams(MetricTypeIP)
-	diskANN.Quantize = QuantizeTypeFP16
-	tests := []struct {
-		name  string
-		index IndexParams
-	}{
-		{name: "DiskANN scalar quantization", index: diskANN},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
+	for _, quantize := range []QuantizeType{QuantizeTypeFP16, QuantizeTypeInt8, QuantizeTypeInt4} {
+		t.Run(quantize.String(), func(t *testing.T) {
+			diskANN := NewDiskANNIndexParams(MetricTypeL2)
+			diskANN.MaxDegree, diskANN.ListSize, diskANN.PQChunks = 4, 8, 2
+			diskANN.Quantize = quantize
+			diskANN.Quantizer.EnableRotate = quantize != QuantizeTypeFP16
 			schema := NewCollectionSchema("later", FieldSchema{
-				Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: testCase.index,
+				Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Index: diskANN,
 			})
 			collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "later"), schema, NewCollectionOptions())
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer collection.Close()
-			if _, err := collection.Insert(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{1, 0}}}}); err != nil {
+			if _, err := collection.Insert(ctx, []Document{
+				{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{0, 0, 0, 0}}},
+				{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{1.013, .031, -.077, .125}}},
+				{PrimaryKey: "c", Fields: map[string]any{"embedding": VectorFP32{3.117, -.271, .051, -.2}}},
+			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 1}); !errors.Is(err, ErrNotSupported) {
-				t.Fatalf("query error = %v", err)
+			results, err := collection.Query(ctx, VectorQuery{
+				Field: "embedding", DenseVector: VectorFP32{.9, .02, -.04, .1}, TopK: 3,
+			})
+			if err != nil || !reflect.DeepEqual(documentKeys(results), []string{"b", "a", "c"}) {
+				t.Fatalf("query = %#v, %v", results, err)
 			}
-			if got := collection.Stats().IndexCompleteness["embedding"]; got != 0 {
-				t.Fatalf("unsupported completeness = %v", got)
+			if got := collection.Stats().IndexCompleteness["embedding"]; got != 1 {
+				t.Fatalf("completeness = %v", got)
 			}
 		})
 	}

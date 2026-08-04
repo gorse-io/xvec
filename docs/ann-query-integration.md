@@ -14,7 +14,8 @@ return `NotSupported`.
 | dense FP32 | Flat/HNSW/IVF | original FP32, FP16, INT8, or INT4 |
 | dense FP32, 64–4095 dimensions | HNSW-RaBitQ | portable 1–9 bit RaBitQ codes |
 | dense FP32 | Vamana | original FP32, FP16, INT8, or INT4 |
-| dense FP32/FP16 | DiskANN | 8-bit PQ frontier codes and disk-layout FP32-view original nodes |
+| dense FP32 | DiskANN | original FP32 or public FP16/INT8/INT4 scalar codes, plus independent 8-bit PQ frontier codes |
+| dense FP16 | DiskANN | input converted to FP32 scoring plus independent 8-bit PQ frontier codes |
 | dense FP16/INT8 | Flat/HNSW/IVF | original values converted to FP32 scoring |
 | sparse FP32 | Flat/HNSW | original values or FP16-rounded values |
 | sparse FP16 | Flat/HNSW | original FP16 values converted to FP32 scoring |
@@ -29,11 +30,13 @@ standalone native IVF, HNSW, HNSW-RaBitQ, Vamana, and DiskANN persistence
 formats remain available internally; connecting those artifacts directly to
 collection segments is a later lifecycle optimization.
 
-The DiskANN `Quantize` settings FP16, INT8, and INT4 remain explicitly
-unsupported; its required internal PQ is controlled independently by
-`PQChunks`. ANN group-by traversal is also deferred: an HNSW, HNSW-RaBitQ,
-IVF, Vamana, or DiskANN group query must set `Linear`, and quantized/refined
-group-by currently returns `NotSupported` rather than falling back. IVF's
+DiskANN accepts public FP16, INT8, and INT4 `Quantize` settings on FP32 fields.
+The scalar representation supplies graph-build vectors and public first-stage
+scores, while its required internal PQ remains controlled independently by
+`PQChunks`; optional refinement reads retained original vectors. ANN group-by
+traversal is still deferred: an HNSW, HNSW-RaBitQ, IVF, Vamana, or DiskANN
+group query must set `Linear`, and quantized/refined group-by currently returns
+`NotSupported` rather than falling back. IVF's
 alternate SOAR memory layout is also rejected explicitly; the current IVF
 runtime uses its native row-major layout. HNSW's contiguous-memory request is
 satisfied by the Go flat backing slice.
@@ -85,7 +88,8 @@ DiskANN uses `floor(TopK*10)` candidates when `UseRefiner` is enabled, then
 reads its original FP32 vectors for exact final metric scoring.
 
 `CreateIndex` backfill-validates Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, and
-DiskANN—including conversion overflow, rotation, and RaBitQ training—before
+DiskANN—including conversion overflow, rotation, scalar/PQ layering, and
+RaBitQ training—before
 atomically publishing schema parameters.
 Writes to an already scalar-quantized field perform the same representation
 check before WAL publication, so an unrepresentable vector fails only its

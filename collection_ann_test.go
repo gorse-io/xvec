@@ -455,6 +455,146 @@ func TestCollectionDiskANNDirectFP16SchemaDefaults(t *testing.T) {
 	}
 }
 
+func TestCollectionScalarQuantizedDiskANNBackfillRefineOptimizeAndReopen(t *testing.T) {
+	ctx := context.Background()
+	for _, quantize := range []QuantizeType{QuantizeTypeFP16, QuantizeTypeInt8, QuantizeTypeInt4} {
+		t.Run(quantize.String(), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "diskann")
+			schema := NewCollectionSchema("quantized_diskann",
+				FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Index: NewFlatIndexParams(MetricTypeL2)},
+				FieldSchema{Name: "rating", DataType: DataTypeInt32},
+			)
+			schema.MaxDocsPerSegment = MinMaxDocsPerSegment
+			collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			documents := annDenseDocuments(48)
+			if _, err := collection.Insert(ctx, documents); err != nil {
+				t.Fatal(err)
+			}
+
+			indexParams := NewDiskANNIndexParams(MetricTypeL2)
+			indexParams.MaxDegree, indexParams.ListSize, indexParams.PQChunks = 8, len(documents), 2
+			indexParams.Quantize = quantize
+			indexParams.Quantizer.EnableRotate = quantize != QuantizeTypeFP16
+			if err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 2}); err != nil {
+				t.Fatal(err)
+			}
+
+			queryVector := append(VectorFP32(nil), documents[17].Fields["embedding"].(VectorFP32)...)
+			queryVector[1] += .137
+			queryParams := NewDiskANNQueryParams()
+			queryParams.ListSize = len(documents)
+			query := VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 12, Params: queryParams}
+			graph, err := collection.Query(ctx, query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			queryParams.Linear = true
+			query.Params = queryParams
+			linear, err := collection.Query(ctx, query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(graph, linear) {
+				t.Fatalf("full-list graph = %#v, scalar Flat truth %#v", graph, linear)
+			}
+			byKey := make(map[string]Document, len(documents))
+			for _, document := range documents {
+				byKey[document.PrimaryKey] = document
+			}
+			quantizedDifference := false
+			for _, document := range linear {
+				original := byKey[document.PrimaryKey].Fields["embedding"].(VectorFP32)
+				score, err := core.MetricL2.Compute(queryVector, original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if document.Score != score {
+					quantizedDifference = true
+					break
+				}
+			}
+			if !quantizedDifference {
+				t.Fatal("DiskANN scalar quantization did not affect any first-stage score")
+			}
+
+			queryParams.Linear = false
+			queryParams.UseRefiner = true
+			query.Params = queryParams
+			refined, err := collection.Query(ctx, query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exact := exactDenseDocumentResults(t, documents, queryVector, core.MetricL2, query.TopK)
+			if !reflect.DeepEqual(documentKeys(refined), documentKeys(exact)) || !reflect.DeepEqual(documentScores(refined), documentScores(exact)) {
+				t.Fatalf("refined = keys %v scores %v, exact keys %v scores %v",
+					documentKeys(refined), documentScores(refined), documentKeys(exact), documentScores(exact))
+			}
+
+			queryParams.UseRefiner = false
+			queryParams.Radius = graph[7].Score
+			query.Filter = "rating >= 1"
+			query.Params = queryParams
+			bounded, err := collection.Query(ctx, query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, document := range bounded {
+				if document.Fields["rating"].(int32) < 1 || document.Score > queryParams.Radius {
+					t.Fatalf("filter/radius admitted %#v", document)
+				}
+			}
+			if len(bounded) == 0 {
+				t.Fatal("filter/radius removed every document")
+			}
+
+			if quantize == QuantizeTypeFP16 {
+				results, err := collection.Insert(ctx, []Document{{
+					PrimaryKey: "overflow", Fields: map[string]any{"embedding": VectorFP32{70000, 0, 0, 0}, "rating": int32(1)},
+				}})
+				if err == nil || len(results) != 1 || !errors.Is(results[0].Err, ErrInvalidArgument) {
+					t.Fatalf("FP16 overflow write = %#v, %v", results, err)
+				}
+			}
+			if _, err := collection.Delete(ctx, []string{"d0003"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}); err != nil {
+				t.Fatal(err)
+			}
+			if got := collection.Stats().IndexCompleteness["embedding"]; got != 1 {
+				t.Fatalf("completeness = %v", got)
+			}
+			beforeReopen, err := collection.Query(ctx, query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := collection.Close(); err != nil {
+				t.Fatal(err)
+			}
+			collection, err = Open(ctx, path, NewCollectionOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer collection.Close()
+			reopened, err := collection.Query(ctx, query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(reopened, beforeReopen) {
+				t.Fatalf("reopened = %#v, before close %#v", reopened, beforeReopen)
+			}
+			field, _ := collection.Schema().Field("embedding")
+			persisted := field.Index.(DiskANNIndexParams)
+			if persisted.Quantize != quantize || persisted.Quantizer.EnableRotate != (quantize != QuantizeTypeFP16) {
+				t.Fatalf("persisted index params = %#v", persisted)
+			}
+		})
+	}
+}
+
 func TestCollectionQuantizedIVFRefinementCreateIndexAndReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "ivf")
@@ -662,6 +802,15 @@ func TestCollectionANNValidationAndBackfillRollback(t *testing.T) {
 	}
 	if !reflect.DeepEqual(collection.Schema(), before) || collection.store.Manifest().Generation != generation {
 		t.Fatal("failed Vamana backfill changed schema generation")
+	}
+	diskANN := NewDiskANNIndexParams(MetricTypeL2)
+	diskANN.MaxDegree, diskANN.ListSize, diskANN.PQChunks = 4, 8, 2
+	diskANN.Quantize = QuantizeTypeFP16
+	if err := collection.CreateIndex(ctx, "embedding", diskANN, CreateIndexOptions{}); err == nil {
+		t.Fatal("DiskANN FP16 overflow backfill succeeded")
+	}
+	if !reflect.DeepEqual(collection.Schema(), before) || collection.store.Manifest().Generation != generation {
+		t.Fatal("failed DiskANN backfill changed schema generation")
 	}
 	soar := NewIVFIndexParams(MetricTypeL2)
 	soar.UseSOAR = true

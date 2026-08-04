@@ -68,7 +68,9 @@ snapshot, compacts contiguous document-ID runs up to the schema segment limit,
 reclaims deleted and superseded versions, and prunes obsolete native segment,
 WAL, and snapshot files. It accepts the implemented Flat/HNSW/HNSW-RaBitQ/IVF,
 Vamana/DiskANN, and scalar INVERT definitions. Scalar quantization and rotation
-apply to the supported in-memory indexes; DiskANN uses its separate internal PQ.
+apply to Flat, HNSW, IVF, Vamana, and DiskANN. On DiskANN, public scalar codes
+determine first-stage scores and feed the separately configured internal PQ
+used for graph traversal; exact refinement continues to use original vectors.
 
 Collection ANN indexes are currently rebuilt from the durable live snapshot
 for each query and DDL validation. The standalone checksummed IVF, HNSW,

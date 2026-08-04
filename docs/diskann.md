@@ -76,15 +76,23 @@ CreateIndex backfill, DropIndex, Optimize, Stats completeness, and Close/reopen
 are connected. Until ANN artifacts become segment-native, Collection rebuilds
 the deterministic runtime index from its durable live-document snapshot.
 
-Public FP16/INT8/INT4 scalar quantization on a DiskANN field remains
-`NotSupported`: DiskANN's mandatory PQ is controlled separately by
-`PQChunks`, and silently treating the two representations as equivalent would
-change schema semantics.
+FP32 collection fields may select public FP16, INT8, or INT4 scalar
+quantization. INT8 and INT4 may additionally enable the deterministic FHT/Kac
+rotation used by the other collection ANN indexes. The public representation
+and DiskANN's mandatory PQ are deliberately separate: scalar-quantized,
+optionally rotated vectors are decoded to build the graph and its `PQChunks`
+frontier codes, visited candidates receive scalar-code scores, and
+`UseRefiner` reranks retained candidates against the unmodified original
+vectors. Linear execution uses the same scalar representation without the
+graph, so it is a deterministic first-stage truth path. Writes and CreateIndex
+backfills reject unrepresentable values before publishing state; Optimize and
+reopen reconstruct both layers from the durable snapshot.
 
 ## Verification
 
-Tests cover all four dense metrics, exact full-list parity, approximate
-recall, filter/radius behavior, refinement, cache ownership and preloading,
+Tests cover all four dense metrics, FP16/INT8/INT4 scalar-code parity and
+rotation, exact full-list parity, approximate recall, filter/radius behavior,
+refinement, cache ownership and preloading,
 concurrent reads, empty indexes, cancellation and Close, atomic save/reopen,
 replacement, truncation, trailing data, header/section/record corruption,
 fuzzed complete files, process-kill publication, bounded multi-sector I/O,

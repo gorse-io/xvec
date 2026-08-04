@@ -126,9 +126,6 @@ func resolveCollectionVectorIndex(field FieldSchema, op, path string) (collectio
 			return collectionVectorIndex{}, invalidArgument(op, "sparse field %q cannot use DiskANN", field.Name)
 		}
 		metric, spec.quantize, spec.rotate = spec.diskann.Metric, spec.diskann.Quantize, spec.diskann.Quantizer.EnableRotate
-		if spec.quantize != QuantizeTypeUndefined {
-			return collectionVectorIndex{}, notSupported(op, path, fmt.Sprintf("%s scalar quantization on DiskANN field %q is not implemented", spec.quantize, field.Name))
-		}
 	case IndexTypeVamana:
 		if field.DataType.IsSparseVector() {
 			return collectionVectorIndex{}, invalidArgument(op, "sparse field %q cannot use Vamana", field.Name)
@@ -321,7 +318,7 @@ func searchCollectionDense(
 				return index.SearchIVF(ctx, query, core.IVFSearchOptions{SearchOptions: options, NProbe: config.nprobe})
 			})
 	case IndexTypeDiskANN:
-		index, err := buildCollectionDenseDiskANN(ctx, field, documents, spec, workers, maxBufferSize)
+		index, err := buildCollectionDenseDiskANN(ctx, schemaName, field, documents, spec, workers, maxBufferSize)
 		if err != nil {
 			return nil, err
 		}
@@ -572,6 +569,7 @@ func buildCollectionDenseVamana(
 
 func buildCollectionDenseDiskANN(
 	ctx context.Context,
+	schemaName string,
 	field FieldSchema,
 	documents []Document,
 	spec collectionVectorIndex,
@@ -588,6 +586,17 @@ func buildCollectionDenseDiskANN(
 	options.PQChunks = spec.diskann.PQChunks
 	options.Workers = workers
 	options.CacheCapacity = collectionDiskANNCacheCapacity(maxBufferSize, len(candidates))
+	if spec.quantize != QuantizeTypeUndefined {
+		kind, err := toCoreQuantization(spec.quantize)
+		if err != nil {
+			return nil, err
+		}
+		reformer, err := collectionReformer(schemaName, field, spec)
+		if err != nil {
+			return nil, err
+		}
+		return core.NewScalarQuantizedDiskANNIndex(ctx, int(field.Dimension), options, kind, reformer, candidates)
+	}
 	builder, err := core.NewDiskANNBuilder(int(field.Dimension), options)
 	if err != nil {
 		return nil, err

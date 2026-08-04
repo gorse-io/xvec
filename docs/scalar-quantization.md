@@ -2,8 +2,9 @@
 
 The first v0.3 implementation unit provides dependency-free FP16, INT8, and
 INT4 scalar quantization primitives in `internal/core`. The completed v0.3 ANN
-integration connects them to dense Flat, IVF, and HNSW collection query paths
-while retaining original vectors for optional refinement.
+integration first connected them to dense Flat, IVF, and HNSW collection query
+paths; current collection execution also supports Vamana and DiskANN while
+retaining original vectors for optional refinement.
 
 ## Encodings
 
@@ -44,3 +45,18 @@ context cancellation, and never aliases caller-owned vectors.
 The implementation is covered by all-binary16-pattern round trips, pinned
 integer code examples, decoded-distance equivalence tests, cancellation and
 corruption checks, and a fuzz target.
+
+## Collection execution
+
+Dense FP32 Flat, HNSW, IVF, Vamana, and DiskANN fields accept FP16, INT8, or
+INT4 scalar representations. INT8 and INT4 may apply a deterministic
+dimension-preserving rotation before quantization. Collection Linear queries
+use the matching scalar Flat truth path, while `UseRefiner` reranks candidates
+against retained unmodified vectors.
+
+For DiskANN, scalar quantization and product quantization have distinct jobs.
+The optionally rotated scalar representation supplies graph-build vectors and
+candidate scores. DiskANN then trains its mandatory 8-bit `PQChunks` model over
+that representation solely to order the graph frontier. CreateIndex, writes,
+Optimize, and reopen validate or reconstruct both layers without treating one
+as a substitute for the other.

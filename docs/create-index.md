@@ -26,8 +26,9 @@ Flat/HNSW supports unquantized or FP16-rounded values. HNSW-RaBitQ trains and
 validates its centroid/rotation model and graph during backfill. Vamana
 performs deterministic RobustPrune graph construction and supports the same
 FP16/INT8/INT4 scalar representations as dense HNSW. DiskANN constructs its
-graph and internal PQ codes during backfill; its public scalar quantization
-settings and IVF SOAR return `ErrNotSupported`. A vector index on a
+graph and internal PQ codes during backfill and supports FP16/INT8/INT4 public
+scalar representations independently of its `PQChunks` traversal encoding.
+IVF SOAR returns `ErrNotSupported`. A vector index on a
 scalar field, scalar index on a vector field, invalid metric/type combination,
 nil parameters, or negative concurrency returns `ErrInvalidArgument`. A
 missing column returns `ErrNotFound`. Different non-vector index types cannot

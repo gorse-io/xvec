@@ -322,7 +322,7 @@ func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field Fiel
 			case IndexTypeIVF:
 				_, err = buildCollectionDenseIVF(ctx, c.schema.Name, field, documents, spec, workers)
 			case IndexTypeDiskANN:
-				_, err = buildCollectionDenseDiskANN(ctx, field, documents, spec, workers, c.options.MaxBufferSize)
+				_, err = buildCollectionDenseDiskANN(ctx, c.schema.Name, field, documents, spec, workers, c.options.MaxBufferSize)
 			case IndexTypeVamana:
 				_, err = buildCollectionDenseVamana(ctx, c.schema.Name, field, documents, spec)
 			}

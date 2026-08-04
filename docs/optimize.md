@@ -28,11 +28,11 @@ HNSW-RaBitQ rebuilds its native
 model, codes, and graph deterministically from original FP32 vectors; Vamana
 rebuilds RobustPrune topology and its medoid, then recreates any configured
 scalar codes. DiskANN rebuilds its graph, PQ model, codes, and sector records
-from original FP32 vectors. If compaction is required and the schema contains
-DiskANN scalar quantization or IVF SOAR state, Optimize
-returns `ErrNotSupported` before
-publishing anything. Those algorithms are enabled by later milestones rather
-than silently rebuilt as a different index.
+from the configured scalar representation while retaining original FP32
+vectors for refinement. Its public scalar codes and internal PQ traversal
+codes remain independent. If compaction is required and the schema contains
+IVF SOAR state, Optimize returns `ErrNotSupported` before publishing anything
+rather than silently rebuilding a different layout.
 
 `CURRENT` is the commit point. Failure before publication leaves the old
 manifest, schema, segments, snapshots, and WAL authoritative. Once publication

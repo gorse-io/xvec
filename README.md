@@ -132,8 +132,11 @@ concurrent LRU, exact expanded-node scoring, filters, radius, Linear truth
 queries, original-vector refinement, cache preloading, and a complete atomic
 single-file format work without CGO on Linux, macOS, and Windows. Collection
 routes DiskANN query, CreateIndex, Optimize, Stats, and reopen behavior from
-its durable live snapshot; public scalar quantization on DiskANN remains an
-explicit NotSupported combination because internal PQ has separate semantics.
+its durable live snapshot. Collection DiskANN fields also support public FP16,
+INT8, and INT4 scalar representations with deterministic optional rotation:
+the public scalar codes determine first-stage scores while DiskANN's separately
+configured PQ remains the graph-frontier encoding, and retained original
+vectors remain available for exact refinement.
 
 The v0.5 release includes byte-compatible whitespace, Unicode 17 standard,
 Unicode 17 codepoint-ngram, and pure-Go Jieba tokenizers. All preserve source

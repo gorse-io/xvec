@@ -209,7 +209,7 @@ func TestOptimizeFullyDeletedCollectionKeepsDocumentIDsMonotonic(t *testing.T) {
 	}
 }
 
-func TestOptimizeValidationUnsupportedIndexesAndRollback(t *testing.T) {
+func TestOptimizeValidationAndRollback(t *testing.T) {
 	ctx := context.Background()
 	var nilCollection *Collection
 	if err := nilCollection.Optimize(ctx, OptimizeOptions{}); !errors.Is(err, ErrInvalidArgument) {
@@ -281,37 +281,6 @@ func TestOptimizeValidationUnsupportedIndexesAndRollback(t *testing.T) {
 	}
 	if err := collection.Close(); err != nil {
 		t.Fatal(err)
-	}
-
-	quantizedDiskANN := NewDiskANNIndexParams(MetricTypeIP)
-	quantizedDiskANN.Quantize = QuantizeTypeFP16
-	unsupported := []struct {
-		name  string
-		field FieldSchema
-		value any
-	}{
-		{name: "DiskANN scalar quantization", field: FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: quantizedDiskANN}, value: VectorFP32{1, 0}},
-	}
-	for _, testCase := range unsupported {
-		t.Run(testCase.name, func(t *testing.T) {
-			schema := NewCollectionSchema("unsupported_optimize", testCase.field)
-			schema.MaxDocsPerSegment = MinMaxDocsPerSegment
-			collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "collection"), schema, NewCollectionOptions())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer collection.Close()
-			if _, err := collection.Insert(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{testCase.field.Name: testCase.value}}}); err != nil {
-				t.Fatal(err)
-			}
-			generation := collection.store.Manifest().Generation
-			if err := collection.Optimize(ctx, OptimizeOptions{}); !errors.Is(err, ErrNotSupported) {
-				t.Fatalf("Optimize = %v", err)
-			}
-			if collection.store.Manifest().Generation != generation || collection.Stats().DocumentCount != 1 {
-				t.Fatalf("unsupported Optimize changed state: %#v", collection.store.Manifest())
-			}
-		})
 	}
 }
 
