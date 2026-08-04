@@ -1,10 +1,10 @@
 # IVF construction
 
 This v0.3 unit adds deterministic, unquantized IVF construction to
-`internal/core`. It deliberately stops at a validated immutable layout:
-candidate search, persistence/reopen, and runtime incremental writes are the
-next three independently gated IVF units. The collection layer therefore
-continues returning `ErrNotSupported` for IVF rather than substituting Flat.
+`internal/core`. Search and persistence/reopen are now implemented by later
+independently gated units; runtime incremental writes and collection
+orchestration remain. The collection layer therefore continues returning
+`ErrNotSupported` for IVF rather than substituting Flat.
 
 ## Build contract
 
@@ -41,9 +41,9 @@ search is connected. `Vector`, `List`, and `Centroids` return clones; option
 values, list membership, training objective, and iteration count are available
 for inspection without exposing mutable state.
 
-The next search unit will probe the nearest centroids and scan only their
-position lists. This construction unit contains no search method or placeholder
-fallback, making its current support boundary explicit at compile time.
+The separately documented search unit probes the nearest centroids and scans
+only their position lists. The persistence unit durably preserves this layout
+and reconstructs its derived maps and lists on reopen.
 
 Tests cover separated-cluster assignment, stable list order, input/accessor
 ownership, empty indexes, list-count capping, deterministic output across

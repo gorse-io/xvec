@@ -85,7 +85,7 @@ type IVFBuilder struct {
 
 // NewIVFBuilder constructs an empty IVF builder.
 func NewIVFBuilder(dimension int, options IVFBuildOptions) (*IVFBuilder, error) {
-	if dimension <= 0 {
+	if dimension <= 0 || dimension > MaxRotationDimension {
 		return nil, fmt.Errorf("%w: got %d", ErrInvalidDimension, dimension)
 	}
 	if err := options.Validate(); err != nil {
@@ -296,6 +296,11 @@ func (i *IVFIndex) TrainingIterations() int {
 		return 0
 	}
 	return i.model.Iterations()
+}
+
+// TrainingConverged reports whether centroid training stopped on tolerance.
+func (i *IVFIndex) TrainingConverged() bool {
+	return i != nil && i.model != nil && i.model.converged
 }
 
 // List returns original candidate clones in stable builder insertion order.

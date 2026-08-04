@@ -1,9 +1,9 @@
 # IVF search
 
 This independently gated v0.3 unit makes the immutable IVF layout searchable.
-It remains internal until persistence/reopen and incremental-write units are
-complete, so collection queries still never substitute an in-memory index for
-an unsupported durable IVF definition.
+Persistence/reopen is now available in a later unit, but the index remains
+internal until incremental writes and collection orchestration are complete,
+so collection queries never substitute an incomplete IVF execution path.
 
 ## Query flow
 

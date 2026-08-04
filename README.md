@@ -69,10 +69,11 @@ Public APIs and on-disk formats are not stable before v1.0.
 The current development branch also contains internal scalar-quantization
 kernels, reversible FHT/Kac rotation, exact original-vector candidate
 refinement, and deterministic k-means training for the forthcoming v0.3
-indexes. Deterministic unquantized IVF construction, list assignment, and
-metric-aware NProbe search are also present internally. These pieces are
+indexes. Deterministic unquantized IVF construction, list assignment,
+metric-aware NProbe search, and a versioned checksummed native IVF artifact
+with atomic save/reopen are also present internally. These pieces are
 intentionally not exposed as a collection execution path before the indexes
-can persist, reopen, and stream writes without fallback.
+can stream writes without fallback.
 
 The current library version is `v0.2.0`; its exact support boundary is recorded
 in the [v0.2 capability matrix](docs/v0.2.md) and [changelog](CHANGELOG.md).
@@ -144,6 +145,7 @@ are exercised by `go test ./...`.
 - [K-means training framework](docs/kmeans.md)
 - [IVF construction](docs/ivf-build.md)
 - [IVF search](docs/ivf-search.md)
+- [IVF persistence and reopen](docs/ivf-persistence.md)
 
 ## License
 
