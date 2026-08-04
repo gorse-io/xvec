@@ -1,10 +1,10 @@
 # IVF construction
 
 This v0.3 unit adds deterministic, unquantized IVF construction to
-`internal/core`. Search and persistence/reopen are now implemented by later
-independently gated units; runtime incremental writes and collection
-orchestration remain. The collection layer therefore continues returning
-`ErrNotSupported` for IVF rather than substituting Flat.
+`internal/core`. Search, persistence/reopen, and incremental writes are now
+implemented by later independently gated units; collection orchestration
+remains. The collection layer therefore continues returning `ErrNotSupported`
+for IVF rather than substituting Flat.
 
 ## Build contract
 
@@ -32,7 +32,7 @@ to each inverted list in builder insertion order, so layout does not depend on
 worker scheduling. Duplicate samples may result in an empty list because equal
 centroid scores use the lower index.
 
-## Immutable output
+## Streamable output
 
 `IVFIndex` stores original vectors once in contiguous FP32 memory. Inverted
 lists contain positions into that storage rather than duplicate vectors. It
@@ -43,7 +43,8 @@ for inspection without exposing mutable state.
 
 The separately documented search unit probes the nearest centroids and scans
 only their position lists. The persistence unit durably preserves this layout
-and reconstructs its derived maps and lists on reopen.
+and reconstructs its derived maps and lists on reopen. The incremental unit
+adds concurrency-safe online list assignment without retraining a full index.
 
 Tests cover separated-cluster assignment, stable list order, input/accessor
 ownership, empty indexes, list-count capping, deterministic output across

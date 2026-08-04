@@ -60,7 +60,11 @@ func (i *IVFIndex) Save(ctx context.Context, path string) error {
 	if path == "" {
 		return fmt.Errorf("%w: empty path", ErrInvalidIVFFile)
 	}
-	encoded, err := encodeIVFIndex(ctx, i)
+	snapshot, err := i.persistenceSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	encoded, err := encodeIVFIndex(ctx, snapshot)
 	if err != nil {
 		return err
 	}
@@ -68,6 +72,53 @@ func (i *IVFIndex) Save(ctx context.Context, path string) error {
 		return fmt.Errorf("core: save IVF file: %w", err)
 	}
 	return nil
+}
+
+func (i *IVFIndex) persistenceSnapshot(ctx context.Context) (*IVFIndex, error) {
+	if i == nil {
+		return nil, fmt.Errorf("%w: nil index", ErrInvalidIVFFile)
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	snapshot := &IVFIndex{
+		dimension:       i.dimension,
+		options:         i.options,
+		keys:            append([]uint64(nil), i.keys...),
+		vectors:         append([]float32(nil), i.vectors...),
+		positions:       make(map[uint64]int, len(i.positions)),
+		lists:           make([]ivfList, len(i.lists)),
+		listForPosition: append([]int(nil), i.listForPosition...),
+	}
+	for key, position := range i.positions {
+		snapshot.positions[key] = position
+	}
+	for list := range i.lists {
+		if list&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		snapshot.lists[list].positions = append([]int(nil), i.lists[list].positions...)
+	}
+	if i.model != nil {
+		centroids, err := cloneVectorsContext(ctx, i.model.centroids)
+		if err != nil {
+			return nil, err
+		}
+		snapshot.model = &KMeansModel{
+			metric:     i.model.metric,
+			dimension:  i.model.dimension,
+			centroids:  centroids,
+			counts:     append([]int(nil), i.model.counts...),
+			cost:       i.model.cost,
+			iterations: i.model.iterations,
+			converged:  i.model.converged,
+		}
+	}
+	return snapshot, nil
 }
 
 // OpenIVFIndex reads and fully verifies a native Go IVF artifact. It never

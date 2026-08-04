@@ -71,8 +71,8 @@ func (o IVFBuildOptions) Validate() error {
 	return nil
 }
 
-// IVFBuilder collects original vectors and builds a one-shot immutable IVF
-// layout. Search and incremental streaming are attached in later units.
+// IVFBuilder collects original vectors and builds a one-shot IVF layout. The
+// resulting index supports concurrent search and incremental streaming.
 type IVFBuilder struct {
 	mu        sync.Mutex
 	dimension int
@@ -206,9 +206,10 @@ func (b *IVFBuilder) Build(ctx context.Context) (*IVFIndex, error) {
 
 type ivfList struct{ positions []int }
 
-// IVFIndex is the immutable output of IVF construction. It retains original
+// IVFIndex is the streamable output of IVF construction. It retains original
 // vectors for exact refinement and stores list membership by vector position.
 type IVFIndex struct {
+	mu              sync.RWMutex
 	dimension       int
 	options         IVFBuildOptions
 	model           *KMeansModel
@@ -240,6 +241,8 @@ func (i *IVFIndex) Len() int {
 	if i == nil {
 		return 0
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	return len(i.keys)
 }
 
@@ -250,6 +253,8 @@ func (i *IVFIndex) NList() int {
 	if i == nil {
 		return 0
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	return len(i.lists)
 }
 
@@ -266,6 +271,8 @@ func (i *IVFIndex) Vector(key uint64) ([]float32, bool) {
 	if i == nil {
 		return nil, false
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	position, found := i.positions[key]
 	if !found {
 		return nil, false
@@ -274,17 +281,28 @@ func (i *IVFIndex) Vector(key uint64) ([]float32, bool) {
 	return slices.Clone(i.vectors[start : start+i.dimension]), true
 }
 
-// Centroids returns a deep copy of trained centroids.
+// Centroids returns a deep copy of trained or online-bootstrapped centroids.
 func (i *IVFIndex) Centroids() [][]float32 {
-	if i == nil || i.model == nil {
+	if i == nil {
+		return [][]float32{}
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.model == nil {
 		return [][]float32{}
 	}
 	return i.model.Centroids()
 }
 
-// TrainingCost returns the final k-means objective. Empty indexes return zero.
+// TrainingCost returns the current list-assignment objective. Empty indexes
+// return zero.
 func (i *IVFIndex) TrainingCost() float64 {
-	if i == nil || i.model == nil {
+	if i == nil {
+		return 0
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.model == nil {
 		return 0
 	}
 	return i.model.Cost()
@@ -292,7 +310,12 @@ func (i *IVFIndex) TrainingCost() float64 {
 
 // TrainingIterations returns completed k-means rounds.
 func (i *IVFIndex) TrainingIterations() int {
-	if i == nil || i.model == nil {
+	if i == nil {
+		return 0
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.model == nil {
 		return 0
 	}
 	return i.model.Iterations()
@@ -300,7 +323,12 @@ func (i *IVFIndex) TrainingIterations() int {
 
 // TrainingConverged reports whether centroid training stopped on tolerance.
 func (i *IVFIndex) TrainingConverged() bool {
-	return i != nil && i.model != nil && i.model.converged
+	if i == nil {
+		return false
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.model != nil && i.model.converged
 }
 
 // List returns original candidate clones in stable builder insertion order.
@@ -308,6 +336,8 @@ func (i *IVFIndex) List(list int) ([]Candidate, error) {
 	if i == nil {
 		return nil, errors.New("core: nil IVF index")
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	if list < 0 || list >= len(i.lists) {
 		return nil, fmt.Errorf("%w: %d", ErrInvalidIVFList, list)
 	}
@@ -328,6 +358,8 @@ func (i *IVFIndex) ListForKey(key uint64) (int, bool) {
 	if i == nil {
 		return 0, false
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	position, found := i.positions[key]
 	if !found || position >= len(i.listForPosition) {
 		return 0, false

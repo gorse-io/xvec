@@ -1,6 +1,6 @@
 # IVF persistence and reopen
 
-This v0.3 unit gives the immutable IVF index its first native Go disk format.
+This v0.3 unit gives the IVF index its first native Go disk format.
 The artifact is intentionally independent from the C++ collection layout and
 cannot be opened by either implementation. Collection-level IVF remains
 disabled until the following incremental-write and orchestration units are
@@ -32,10 +32,10 @@ silently ignored.
 
 ## Publication and failure boundary
 
-Save first encodes and validates the complete immutable snapshot. It writes a
-private temporary file in the destination directory, syncs and closes it,
-checks cancellation, atomically replaces the destination, and syncs the parent
-directory. Therefore a process crash before the rename leaves the previous
+Save first takes, encodes, and validates a complete consistent snapshot. It
+writes a private temporary file in the destination directory, syncs and closes
+it, checks cancellation, atomically replaces the destination, and syncs the
+parent directory. Therefore a process crash before the rename leaves the previous
 generation visible; a crash after the rename leaves the complete new
 generation visible. A stale temporary file can remain after an operating-system
 kill, but it is never considered an index artifact.

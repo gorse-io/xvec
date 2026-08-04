@@ -97,11 +97,13 @@ func (i *IVFIndex) searchIVF(ctx context.Context, query []float32, options IVFSe
 	if _, err := i.options.Metric.Compute(query, query); err != nil {
 		return nil, fmt.Errorf("core: validate IVF query: %w", err)
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	if options.TopK == 0 || len(i.keys) == 0 {
 		return []Result{}, nil
 	}
 
-	lists, err := i.ProbedLists(ctx, query, options.NProbe)
+	lists, err := i.probedListsLocked(ctx, query, options.NProbe)
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +145,12 @@ func (i *IVFIndex) ProbedLists(ctx context.Context, query []float32, nprobe int)
 	if _, err := i.options.Metric.Compute(query, query); err != nil {
 		return nil, fmt.Errorf("core: validate IVF probe query: %w", err)
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.probedListsLocked(ctx, query, nprobe)
+}
+
+func (i *IVFIndex) probedListsLocked(ctx context.Context, query []float32, nprobe int) ([]int, error) {
 	if len(i.lists) == 0 {
 		return []int{}, nil
 	}
