@@ -231,6 +231,7 @@ are exercised by `go test ./...`.
 - [v0.2 capability matrix](docs/v0.2.md)
 - [v0.1 capability matrix](docs/v0.1.md)
 - [Native Go disk format](docs/disk-format.md)
+- [Native disk compatibility and migrations](docs/disk-compatibility.md)
 - [Documents and projection](docs/document-projection.md)
 - [Exact vector query semantics](docs/vector-query.md)
 - [Group-by vector query](docs/group-by-query.md)
