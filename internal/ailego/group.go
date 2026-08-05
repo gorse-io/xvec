@@ -18,54 +18,10 @@ import (
 	"context"
 	"errors"
 	"runtime"
-	"sync"
 	"sync/atomic"
+
+	"golang.org/x/sync/errgroup"
 )
-
-// Group runs related functions under a context canceled by the first error.
-type Group struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	once   sync.Once
-	err    error
-}
-
-// NewGroup returns a group derived from ctx. A nil context is treated as
-// context.Background.
-func NewGroup(ctx context.Context) *Group {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	groupCtx, cancel := context.WithCancel(ctx)
-	return &Group{ctx: groupCtx, cancel: cancel}
-}
-
-// Go starts fn. The first non-nil error cancels the contexts observed by all
-// group functions.
-func (g *Group) Go(fn func(context.Context) error) {
-	if fn == nil {
-		panic("ailego: nil group function")
-	}
-	g.wg.Add(1)
-	go func() {
-		defer g.wg.Done()
-		if err := fn(g.ctx); err != nil {
-			g.once.Do(func() {
-				g.err = err
-				g.cancel()
-			})
-		}
-	}()
-}
-
-// Wait blocks until every function returns, releases context resources, and
-// returns the first function error.
-func (g *Group) Wait() error {
-	g.wg.Wait()
-	g.cancel()
-	return g.err
-}
 
 // ParallelFor calls fn once for each integer in [0, n), using at most workers
 // goroutines. A non-positive workers value uses GOMAXPROCS. The first error
@@ -91,20 +47,23 @@ func ParallelFor(
 	if workers > n {
 		workers = n
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	group := NewGroup(ctx)
+	group, groupCtx := errgroup.WithContext(ctx)
 	var next atomic.Int64
 	for range workers {
-		group.Go(func(ctx context.Context) error {
+		group.Go(func() error {
 			for {
-				if err := ctx.Err(); err != nil {
+				if err := groupCtx.Err(); err != nil {
 					return err
 				}
 				index := int(next.Add(1) - 1)
 				if index >= n {
 					return nil
 				}
-				if err := fn(ctx, index); err != nil {
+				if err := fn(groupCtx, index); err != nil {
 					return err
 				}
 			}
