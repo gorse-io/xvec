@@ -31,4 +31,13 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Test
+        if: matrix.os != 'ubuntu-latest'
         run: go test ./...
+      - name: Test with coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -coverprofile=coverage.txt -coverpkg=./... ./...
+      - name: Upload coverage reports to Codecov
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
