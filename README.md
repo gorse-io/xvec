@@ -5,7 +5,8 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/gorse-io/zvec)](go.mod)
 [![License](https://img.shields.io/github/license/gorse-io/zvec)](LICENSE)
 
-A pure-Go, embedded vector database with durable local storage. zvec runs inside
+zvec is a pure-Go reimplementation of [Alibaba zvec](https://github.com/alibaba/zvec),
+providing an embedded vector database with durable local storage. It runs inside
 your application without CGO, a separate database server, or prebuilt native
 libraries.
 
