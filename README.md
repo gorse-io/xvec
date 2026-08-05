@@ -168,10 +168,8 @@ projections, ANN parameters, grouping, and refinement.
 - [Vector query semantics](docs/vector-query.md)
 - [Hybrid MultiQuery](docs/multi-query.md)
 - [Runtime configuration](docs/runtime-config.md)
-- [v0.5 capability matrix](docs/v0.5.md)
 - [Native Go disk format](docs/disk-format.md)
 - [Disk compatibility and migrations](docs/disk-compatibility.md)
-- [Changelog](CHANGELOG.md)
 
 ## Compatibility
 
