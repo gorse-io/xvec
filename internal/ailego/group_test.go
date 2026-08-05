@@ -19,6 +19,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -56,6 +57,7 @@ func TestParallelForCancelsOnError(t *testing.T) {
 func TestParallelForCancelsPeers(t *testing.T) {
 	want := errors.New("first error")
 	ready := make(chan struct{})
+	peerCanceled := make(chan bool, 1)
 	err := ParallelFor(context.Background(), 2, 2, func(ctx context.Context, index int) error {
 		switch index {
 		case 0:
@@ -63,11 +65,18 @@ func TestParallelForCancelsPeers(t *testing.T) {
 			return want
 		case 1:
 			close(ready)
-			<-ctx.Done()
-			return ctx.Err()
+			select {
+			case <-ctx.Done():
+				peerCanceled <- true
+				return ctx.Err()
+			case <-time.After(time.Second):
+				peerCanceled <- false
+				return errors.New("peer was not canceled")
+			}
 		default:
 			panic("unexpected work item")
 		}
 	})
 	require.ErrorIs(t, err, want)
+	require.True(t, <-peerCanceled)
 }
