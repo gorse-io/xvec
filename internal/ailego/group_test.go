@@ -53,16 +53,21 @@ func TestParallelForCancelsOnError(t *testing.T) {
 	require.ErrorIs(t, err, want)
 }
 
-func TestGroupCancelsPeers(t *testing.T) {
+func TestParallelForCancelsPeers(t *testing.T) {
 	want := errors.New("first error")
-	group := NewGroup(context.Background())
-	group.Go(func(context.Context) error { return want })
-	group.Go(func(ctx context.Context) error {
-		<-ctx.Done()
-		return ctx.Err()
+	ready := make(chan struct{})
+	err := ParallelFor(context.Background(), 2, 2, func(ctx context.Context, index int) error {
+		switch index {
+		case 0:
+			<-ready
+			return want
+		case 1:
+			close(ready)
+			<-ctx.Done()
+			return ctx.Err()
+		default:
+			panic("unexpected work item")
+		}
 	})
-	{
-		err := group.Wait()
-		require.ErrorIs(t, err, want)
-	}
+	require.ErrorIs(t, err, want)
 }
