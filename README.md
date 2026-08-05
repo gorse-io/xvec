@@ -1,7 +1,7 @@
 # zvec
 
 [![CI](https://github.com/gorse-io/zvec/actions/workflows/ci.yml/badge.svg)](https://github.com/gorse-io/zvec/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/gorse-io/zvec)](https://goreportcard.com/report/github.com/gorse-io/zvec)
+[![Go Report Card](https://goreportcard.com/badge/github.com/gorse-io/zvec)](https://pkg.go.dev/github.com/gorse-io/zvec)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/gorse-io/zvec)](go.mod)
 [![License](https://img.shields.io/github/license/gorse-io/zvec)](LICENSE)
 
