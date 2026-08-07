@@ -11,10 +11,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -43,3 +48,30 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  linux-quality:
+    name: Linux quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Test without CGO
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./...
+      - name: Race detector
+        run: go test -race ./...
+      - name: Persistence crash recovery
+        shell: bash
+        run: |
+          go test ./internal/ailego -run '^TestWriteFileAtomicProcessKill$'
+          go test ./internal/core -run '^TestV04DiskANNAtomicSaveProcessKill$'
+          go test . -run '^TestAtomicDDLAndOptimizeCrashRecovery$'
