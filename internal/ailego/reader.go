@@ -19,6 +19,8 @@ import (
 	"io"
 	"os"
 	"sync"
+
+	mmap "github.com/blevesearch/mmap-go"
 )
 
 // ReaderAt is a sized, closeable random-access reader for immutable files.
@@ -55,16 +57,16 @@ func OpenReaderAt(path string, useMMap bool) (ReaderAt, error) {
 		return nil, errors.New("ailego: file is too large to memory map")
 	}
 
-	data, unmap, err := mapReadOnly(file, int(info.Size()))
+	data, err := mmap.MapRegion(file, int(info.Size()), mmap.RDONLY, 0, 0)
 	if err != nil {
 		_ = file.Close()
 		return nil, err
 	}
 	if err := file.Close(); err != nil {
-		_ = unmap()
+		_ = data.Unmap()
 		return nil, err
 	}
-	return &mmapReaderAt{data: data, size: info.Size(), unmap: unmap}, nil
+	return &mmapReaderAt{data: data, size: info.Size()}, nil
 }
 
 type fileReaderAt struct {
@@ -82,9 +84,8 @@ func (r *fileReaderAt) Close() error { return r.file.Close() }
 
 type mmapReaderAt struct {
 	mu     sync.RWMutex
-	data   []byte
+	data   mmap.MMap
 	size   int64
-	unmap  func() error
 	closed bool
 }
 
@@ -123,10 +124,7 @@ func (r *mmapReaderAt) Close() error {
 		return nil
 	}
 	r.closed = true
-	err := r.unmap()
-	r.data = nil
-	r.unmap = nil
-	return err
+	return r.data.Unmap()
 }
 
 func maxInt() int { return int(^uint(0) >> 1) }
