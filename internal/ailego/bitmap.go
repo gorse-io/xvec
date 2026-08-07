@@ -15,116 +15,122 @@
 package ailego
 
 import (
-	"math/bits"
 	"sync"
+
+	"github.com/RoaringBitmap/roaring/v2/roaring64"
 )
 
-// Bitmap is a growable, concurrent-safe dense bitmap.
+// Bitmap is a growable, concurrent-safe compressed bitmap.
 type Bitmap struct {
-	mu    sync.RWMutex
-	words []uint64
+	mu   sync.RWMutex
+	bits *roaring64.Bitmap
 }
 
-// NewBitmap returns a bitmap with capacity for bitCount bits. All bits are
-// initially clear.
+// NewBitmap returns an empty bitmap. bitCount is accepted for API
+// compatibility; compressed bitmaps allocate containers on demand.
 func NewBitmap(bitCount uint64) *Bitmap {
-	wordCount := wordsForBits(bitCount)
-	return &Bitmap{words: make([]uint64, wordCount)}
+	_ = bitCount
+	return &Bitmap{bits: roaring64.NewBitmap()}
 }
 
-// Set sets bit and reports whether its value changed. The bitmap grows when
-// necessary.
+// Set sets bit and reports whether its value changed.
 func (b *Bitmap) Set(bit uint64) bool {
-	word := bitmapWordIndex(bit)
-	mask := uint64(1) << (bit & 63)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if word >= len(b.words) {
-		b.words = append(b.words, make([]uint64, word+1-len(b.words))...)
+	if b.bits == nil {
+		b.bits = roaring64.NewBitmap()
 	}
-	changed := b.words[word]&mask == 0
-	b.words[word] |= mask
-	return changed
+	return b.bits.CheckedAdd(bit)
 }
 
 // Clear clears bit and reports whether its value changed.
 func (b *Bitmap) Clear(bit uint64) bool {
-	word := bitmapWordIndex(bit)
-	mask := uint64(1) << (bit & 63)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if word >= len(b.words) || b.words[word]&mask == 0 {
+	if b.bits == nil {
 		return false
 	}
-	b.words[word] &^= mask
-	return true
+	return b.bits.CheckedRemove(bit)
 }
 
 // Contains reports whether bit is set.
 func (b *Bitmap) Contains(bit uint64) bool {
-	word := bitmapWordIndex(bit)
-	mask := uint64(1) << (bit & 63)
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return word < len(b.words) && b.words[word]&mask != 0
+	return b.bits != nil && b.bits.Contains(bit)
 }
 
 // Count returns the number of set bits.
 func (b *Bitmap) Count() uint64 {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	var count uint64
-	for _, word := range b.words {
-		count += uint64(bits.OnesCount64(word))
+	if b.bits == nil {
+		return 0
 	}
-	return count
+	return b.bits.GetCardinality()
 }
 
-// Snapshot returns a copy of the bitmap words in little bit order.
+// Snapshot returns a dense copy of the bitmap words in little bit order. Its
+// memory use is proportional to the highest set bit, so callers with extremely
+// sparse high positions should prefer Clone or Range.
 func (b *Bitmap) Snapshot() []uint64 {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return append([]uint64(nil), b.words...)
+	clone := b.snapshot()
+	if clone.IsEmpty() {
+		return nil
+	}
+	iterator := clone.Iterator()
+	var words []uint64
+	for iterator.HasNext() {
+		bit := iterator.Next()
+		word := bit >> 6
+		if word >= uint64(maxInt()) {
+			panic("ailego: bitmap index exceeds addressable memory")
+		}
+		if int(word) >= len(words) {
+			words = append(words, make([]uint64, int(word)+1-len(words))...)
+		}
+		words[word] |= uint64(1) << (bit & 63)
+	}
+	return words
 }
 
 // Clone returns an independent copy of b.
-func (b *Bitmap) Clone() *Bitmap { return &Bitmap{words: b.Snapshot()} }
+func (b *Bitmap) Clone() *Bitmap { return &Bitmap{bits: b.snapshot()} }
 
 // Or sets every bit present in other.
 func (b *Bitmap) Or(other *Bitmap) {
 	if other == nil || b == other {
 		return
 	}
-	words := other.Snapshot()
+	otherBits := other.snapshot()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(words) > len(b.words) {
-		b.words = append(b.words, make([]uint64, len(words)-len(b.words))...)
+	if b.bits == nil {
+		b.bits = roaring64.NewBitmap()
 	}
-	for index, word := range words {
-		b.words[index] |= word
-	}
+	b.bits.Or(otherBits)
 }
 
 // And retains only bits also present in other.
 func (b *Bitmap) And(other *Bitmap) {
 	if other == nil {
 		b.mu.Lock()
-		clear(b.words)
+		if b.bits != nil {
+			b.bits.Clear()
+		}
 		b.mu.Unlock()
 		return
 	}
 	if b == other {
 		return
 	}
-	words := other.Snapshot()
+	otherBits := other.snapshot()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	common := min(len(b.words), len(words))
-	for index := 0; index < common; index++ {
-		b.words[index] &= words[index]
+	if b.bits == nil {
+		return
 	}
-	clear(b.words[common:])
+	b.bits.And(otherBits)
 }
 
 // AndNot clears every bit present in other.
@@ -134,19 +140,19 @@ func (b *Bitmap) AndNot(other *Bitmap) {
 	}
 	if b == other {
 		b.mu.Lock()
-		clear(b.words)
+		if b.bits != nil {
+			b.bits.Clear()
+		}
 		b.mu.Unlock()
 		return
 	}
-	words := other.Snapshot()
+	otherBits := other.snapshot()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for index, word := range words {
-		if index >= len(b.words) {
-			break
-		}
-		b.words[index] &^= word
+	if b.bits == nil {
+		return
 	}
+	b.bits.AndNot(otherBits)
 }
 
 // Range calls yield for set bits in ascending order and stops when yield
@@ -155,32 +161,19 @@ func (b *Bitmap) Range(yield func(bit uint64) bool) {
 	if yield == nil {
 		return
 	}
-	for wordIndex, word := range b.Snapshot() {
-		for word != 0 {
-			bit := bits.TrailingZeros64(word)
-			if !yield(uint64(wordIndex)*64 + uint64(bit)) {
-				return
-			}
-			word &= word - 1
+	iterator := b.snapshot().Iterator()
+	for iterator.HasNext() {
+		if !yield(iterator.Next()) {
+			return
 		}
 	}
 }
 
-func wordsForBits(bitCount uint64) int {
-	if bitCount == 0 {
-		return 0
+func (b *Bitmap) snapshot() *roaring64.Bitmap {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.bits == nil {
+		return roaring64.NewBitmap()
 	}
-	wordCount := (bitCount-1)/64 + 1
-	if wordCount > uint64(maxInt()) {
-		panic("ailego: bitmap exceeds addressable memory")
-	}
-	return int(wordCount)
-}
-
-func bitmapWordIndex(bit uint64) int {
-	word := bit >> 6
-	if word >= uint64(maxInt()) {
-		panic("ailego: bitmap index exceeds addressable memory")
-	}
-	return int(word)
+	return b.bits.Clone()
 }

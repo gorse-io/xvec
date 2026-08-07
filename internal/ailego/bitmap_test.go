@@ -77,6 +77,94 @@ func TestBitmap(t *testing.T) {
 		"And(nil) did not clear the bitmap")
 }
 
+func TestBitmapSnapshot(t *testing.T) {
+	bitmap := NewBitmap(0)
+	bitmap.Set(1)
+	bitmap.Set(64)
+	require.Equal(t, []uint64{2, 1}, bitmap.Snapshot())
+}
+
+func TestBitmapSupportsSparseHighBits(t *testing.T) {
+	bitmap := NewBitmap(0)
+	const highBit = uint64(1) << 40
+
+	require.True(t, bitmap.Set(highBit))
+	require.True(t, bitmap.Contains(highBit))
+	require.Equal(t, uint64(1), bitmap.Count())
+
+	var got []uint64
+	bitmap.Range(func(bit uint64) bool {
+		got = append(got, bit)
+		return true
+	})
+	require.Equal(t, []uint64{highBit}, got)
+}
+
+func TestBitmapZeroValue(t *testing.T) {
+	var bitmap Bitmap
+	require.False(t, bitmap.Contains(1))
+	require.False(t, bitmap.Clear(1))
+	require.Zero(t, bitmap.Count())
+	require.True(t, bitmap.Set(1))
+	require.True(t, bitmap.Contains(1))
+}
+
+func TestBitmapRangeMayMutateReceiver(t *testing.T) {
+	bitmap := NewBitmap(0)
+	bitmap.Set(1)
+	bitmap.Set(2)
+
+	var visited []uint64
+	bitmap.Range(func(bit uint64) bool {
+		visited = append(visited, bit)
+		bitmap.Clear(bit)
+		bitmap.Set(bit + 10)
+		return true
+	})
+
+	require.Equal(t, []uint64{1, 2}, visited)
+	require.False(t, bitmap.Contains(1))
+	require.False(t, bitmap.Contains(2))
+	require.True(t, bitmap.Contains(11))
+	require.True(t, bitmap.Contains(12))
+}
+
+func TestBitmapConcurrentBinaryOperations(t *testing.T) {
+	left := NewBitmap(0)
+	right := NewBitmap(0)
+	for bit := range uint64(100) {
+		left.Set(bit)
+		right.Set(bit + 50)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for range 100 {
+			left.Or(right)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for range 100 {
+			right.And(left)
+		}
+	}()
+	close(start)
+	wg.Wait()
+
+	require.GreaterOrEqual(t, left.Count(), uint64(100))
+	require.GreaterOrEqual(t, right.Count(), uint64(50))
+	right.Range(func(bit uint64) bool {
+		require.True(t, left.Contains(bit))
+		return true
+	})
+}
+
 func TestBitmapConcurrentAccess(t *testing.T) {
 	bitmap := NewBitmap(0)
 	var wg sync.WaitGroup
