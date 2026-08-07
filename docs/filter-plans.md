@@ -34,8 +34,8 @@ documents. Filter results are deterministic across Flush and reopen because
 they operate on decoded native document values rather than index-specific text
 encodings.
 
-Fields configured with an INVERT index also build exact snapshot-local
-postings. The planner intersects indexed `AND` branches, unions `OR` branches
+Fields configured with an INVERT index use exact snapshot-local postings,
+cached in memory and persisted by Flush/Optimize. The planner intersects indexed `AND` branches, unions `OR` branches
 only when both are indexable, and can retain one indexed `AND` branch as a safe
 prefilter. Sorted dictionaries accelerate ranges; prefix LIKE is always
 indexable, while suffix and single-middle-wildcard routes require the extended

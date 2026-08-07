@@ -144,7 +144,10 @@ collection, err := zvec.Open(
 
 Use `Insert`, `Upsert`, `Update`, and `Delete` for document mutations. Call
 `Flush` to publish an immutable segment and `Optimize` to compact stored data;
-WAL-backed writes remain recoverable even without an explicit flush.
+WAL-backed writes remain recoverable even without an explicit flush. `Query`
+also accepts `PrimaryKey` as a vector target, a single `FTS` clause, or a
+filter-only request with no target. `MultiQuery` fuses dense, sparse,
+primary-key-vector, and FTS branches over one snapshot.
 
 ### Choosing an index
 

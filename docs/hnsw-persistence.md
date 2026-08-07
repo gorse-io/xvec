@@ -3,9 +3,9 @@
 This independently gated v0.3 unit gives the dense HNSW graph its native Go
 disk format. The artifact is intentionally incompatible with the C++
 collection layout. Incremental graph writes are now implemented by the next
-unit, and collection-level query routing is implemented by a later unit. The
-collection runtime currently rebuilds from durable documents rather than
-consuming this standalone artifact.
+unit, and collection-level query routing is implemented. Flush and Optimize
+publish this artifact under exact live-snapshot manifest identity; older
+collections without that metadata rebuild it from durable documents.
 
 ## File contract
 

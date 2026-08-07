@@ -52,14 +52,15 @@ err := collection.CreateIndex(ctx, "title", params,
 ```
 
 The native Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, DiskANN, INVERT, and FTS
-collection search structures remain snapshot-local: query execution
-reconstructs them from live documents.
-CreateIndex persists validated parameters, not a C++-compatible or
-segment-attached standalone index artifact. Backfill constructs the requested
+collection structures are cached for one exact schema/document snapshot.
+CreateIndex persists validated parameters and backfill constructs the requested
 runtime representation, including quantization overflow and rotation checks;
 IVF, HNSW-RaBitQ, and DiskANN also complete deterministic training, while
 Vamana completes graph construction and medoid selection. Existing WAL data, new
 writes, Close/reopen, and later Flush all use the newly published schema.
+Flush or Optimize publishes the current checksummed vector, FTS, and INVERT
+artifacts under manifest snapshot identity; these native files are not
+C++-compatible.
 If backfill, encoding, training, cancellation, or pre-commit manifest
 publication fails, the previous in-memory and on-disk schema remains active.
 An error after the atomic CURRENT replacement is reported, but the committed

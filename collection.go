@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -41,6 +42,11 @@ import (
 
 // DefaultMaxBufferSize is the baseline-compatible DiskANN cache budget.
 const DefaultMaxBufferSize uint32 = 64 << 20
+
+const (
+	collectionFTSArtifactKind    = "fts"
+	collectionInvertArtifactKind = "invert"
+)
 
 // CollectionOptions controls one collection handle. EnableMmap is persisted
 // when creating a collection; MaxBufferSize bounds native DiskANN node-cache
@@ -86,6 +92,546 @@ type Collection struct {
 	options CollectionOptions
 	runtime *runtimeResources
 	closed  bool
+
+	indexMu         sync.Mutex
+	indexes         *collectionRuntimeIndexes
+	indexBuildCount uint64
+}
+
+type collectionRuntimeKey struct {
+	schemaHash [sha256.Size]byte
+	count      int
+	maxDocID   uint64
+}
+
+type collectionRuntimeIndexes struct {
+	key          collectionRuntimeKey
+	denseFlat    map[string]collectionDenseIndex
+	denseNative  map[string]collectionDenseIndex
+	denseExact   map[string]*core.DenseFlatIndex
+	sparseFlat   map[string]core.SparseQuerySearcher
+	sparseNative map[string]core.SparseQuerySearcher
+	sparseExact  map[string]*core.SparseFlatIndex
+	fts          map[string]*collectionFTSRuntime
+	scalar       dbsql.IndexSet
+}
+
+func collectionRuntimeKeyFor(schema CollectionSchema, documents []Document) (collectionRuntimeKey, error) {
+	encoded, err := marshalCollectionSchema(schema)
+	if err != nil {
+		return collectionRuntimeKey{}, err
+	}
+	key := collectionRuntimeKey{schemaHash: sha256.Sum256(encoded), count: len(documents)}
+	for _, document := range documents {
+		key.maxDocID = max(key.maxDocID, document.DocID)
+	}
+	return key, nil
+}
+
+func (c *Collection) runtimeIndexesLocked(ctx context.Context, documents []Document) (*collectionRuntimeIndexes, error) {
+	key, err := collectionRuntimeKeyFor(c.schema, documents)
+	if err != nil {
+		return nil, err
+	}
+	c.indexMu.Lock()
+	defer c.indexMu.Unlock()
+	if c.indexes != nil && c.indexes.key == key {
+		return c.indexes, nil
+	}
+	artifacts := c.indexArtifactPaths(key)
+	indexes, err := buildCollectionRuntimeIndexes(ctx, c.schema, documents, c.queryWorkers(), c.options.MaxBufferSize, c.options.EnableMmap, artifacts)
+	if err != nil {
+		return nil, err
+	}
+	indexes.key = key
+	previous := c.indexes
+	c.indexes = indexes
+	c.indexBuildCount++
+	if previous != nil {
+		_ = previous.Close()
+	}
+	return indexes, nil
+}
+
+func collectionIndexArtifactKey(field, kind string) string {
+	return field + "\x00" + kind
+}
+
+func collectionVectorArtifactKind(indexType IndexType) string {
+	return "vector-" + strconv.FormatUint(uint64(indexType), 10)
+}
+
+func (c *Collection) indexArtifactPaths(key collectionRuntimeKey) map[string]string {
+	paths := make(map[string]string)
+	if c == nil || c.store == nil {
+		return paths
+	}
+	snapshot := c.store.Manifest().IndexSnapshot
+	if snapshot == nil || snapshot.SchemaSHA256 != hex.EncodeToString(key.schemaHash[:]) ||
+		snapshot.DocumentCount != uint64(key.count) || snapshot.MaxDocumentID != key.maxDocID {
+		return paths
+	}
+	for _, artifact := range snapshot.Artifacts {
+		paths[collectionIndexArtifactKey(artifact.Field, artifact.Kind)] = filepath.Join(c.path, filepath.FromSlash(artifact.File))
+	}
+	return paths
+}
+
+func openCollectionDenseArtifact(
+	ctx context.Context,
+	path string,
+	schemaName string,
+	field FieldSchema,
+	documents []Document,
+	spec collectionVectorIndex,
+	workers int,
+	maxBufferSize uint32,
+	useMmap bool,
+) (collectionDenseIndex, error) {
+	var (
+		kind     core.Quantization
+		reformer core.DenseReformer
+		err      error
+	)
+	if spec.quantize != QuantizeTypeUndefined && spec.indexType != IndexTypeHNSWRaBitQ {
+		kind, err = toCoreQuantization(spec.quantize)
+		if err != nil {
+			return nil, err
+		}
+		reformer, err = collectionReformer(schemaName, field, spec)
+		if err != nil {
+			return nil, err
+		}
+	}
+	switch spec.indexType {
+	case IndexTypeHNSW:
+		if spec.quantize == QuantizeTypeUndefined {
+			return core.OpenHNSWIndex(ctx, path)
+		}
+		return core.OpenScalarQuantizedHNSWIndex(ctx, path, kind, reformer)
+	case IndexTypeHNSWRaBitQ:
+		return core.OpenHNSWRaBitQIndex(ctx, path)
+	case IndexTypeIVF:
+		if spec.quantize == QuantizeTypeUndefined {
+			return core.OpenIVFIndex(ctx, path)
+		}
+		return core.OpenScalarQuantizedIVFIndex(ctx, path, kind, reformer)
+	case IndexTypeVamana:
+		if spec.quantize == QuantizeTypeUndefined {
+			return core.OpenVamanaIndex(ctx, path)
+		}
+		return core.OpenScalarQuantizedVamanaIndex(ctx, path, kind, reformer)
+	case IndexTypeDiskANN:
+		candidates, candidateErr := collectionDenseCandidates(ctx, field, documents)
+		if candidateErr != nil {
+			return nil, candidateErr
+		}
+		cacheCapacity := collectionDiskANNCacheCapacity(maxBufferSize, len(candidates))
+		if spec.quantize == QuantizeTypeUndefined {
+			return core.OpenDiskANNIndexWithMmap(ctx, path, cacheCapacity, workers, useMmap)
+		}
+		return core.OpenScalarQuantizedDiskANNIndexWithMmap(ctx, path, cacheCapacity, workers, kind, reformer, candidates, useMmap)
+	default:
+		return nil, fmt.Errorf("unsupported persisted dense collection index %s", spec.indexType)
+	}
+}
+
+func openCollectionFTSRuntime(ctx context.Context, path string, field FieldSchema, documents []Document) (*collectionFTSRuntime, error) {
+	if field.DataType != DataTypeString || field.IndexType() != IndexTypeFTS {
+		return nil, invalidArgument("open FTS index", "field %q is not an FTS-indexed STRING field", field.Name)
+	}
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read FTS artifact: %w", err)
+	}
+	dictionary, err := core.OpenFTSTermDictionary(ctx, encoded)
+	if err != nil {
+		return nil, err
+	}
+	if dictionary.Stats().TotalDocuments != uint64(len(documents)) {
+		return nil, fmt.Errorf("FTS artifact has %d documents, collection has %d", dictionary.Stats().TotalDocuments, len(documents))
+	}
+	params, err := collectionFTSIndexParams(field)
+	if err != nil {
+		return nil, err
+	}
+	analyzer, err := newCollectionFTSAnalyzer(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	stats, err := core.AggregateFTSCorpusStats(ctx, []core.FTSSegmentView{{Dictionary: dictionary}})
+	if err != nil {
+		return nil, err
+	}
+	scorer, err := core.NewBM25Scorer(core.DefaultBM25Params(), stats)
+	if err != nil {
+		return nil, err
+	}
+	documentIDs := make([]uint64, len(documents))
+	for index := range documents {
+		documentIDs[index] = documents[index].DocID
+	}
+	return &collectionFTSRuntime{analyzer: analyzer, dictionary: dictionary, scorer: scorer, documentIDs: documentIDs}, nil
+}
+
+func (c *Collection) refreshIndexArtifactsLocked(ctx context.Context) error {
+	documents, err := c.liveDocumentsLocked(ctx)
+	if err != nil {
+		return err
+	}
+	indexes, err := c.runtimeIndexesLocked(ctx, documents)
+	if err != nil {
+		return err
+	}
+	return c.publishIndexArtifactsLocked(ctx, indexes)
+}
+
+func (c *Collection) publishIndexArtifactsLocked(ctx context.Context, indexes *collectionRuntimeIndexes) error {
+	if indexes == nil {
+		return errors.New("collection runtime indexes are nil")
+	}
+	current := c.store.Manifest().IndexSnapshot
+	if c.indexSnapshotFilesExist(indexes.key, current) {
+		return nil
+	}
+	indexDirectory := filepath.Join(c.path, "indexes")
+	if err := os.MkdirAll(indexDirectory, 0o700); err != nil {
+		return fmt.Errorf("create index artifact directory: %w", err)
+	}
+	created := make([]string, 0)
+	cleanup := func() {
+		for _, path := range created {
+			_ = os.Remove(path)
+		}
+	}
+	artifacts := make([]db.IndexArtifactMetadata, 0)
+	writeArtifact := func(field, kind string, write func(string) error) error {
+		file, err := os.CreateTemp(indexDirectory, "snapshot-*.zvi")
+		if err != nil {
+			return err
+		}
+		path := file.Name()
+		if closeErr := file.Close(); closeErr != nil {
+			_ = os.Remove(path)
+			return closeErr
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		if err := write(path); err != nil {
+			_ = os.Remove(path)
+			return err
+		}
+		created = append(created, path)
+		relative, err := filepath.Rel(c.path, path)
+		if err != nil {
+			return err
+		}
+		artifacts = append(artifacts, db.IndexArtifactMetadata{Field: field, Kind: kind, File: filepath.ToSlash(relative)})
+		return nil
+	}
+	for _, field := range c.schema.Fields {
+		if field.DataType.IsVector() {
+			spec, err := resolveCollectionVectorIndex(field, "persist collection indexes", c.path)
+			if err != nil {
+				cleanup()
+				return err
+			}
+			if spec.indexType == IndexTypeFlat {
+				continue
+			}
+			kind := collectionVectorArtifactKind(spec.indexType)
+			if field.DataType.IsDenseVector() {
+				index := indexes.denseNative[field.Name]
+				saver, ok := index.(interface {
+					Save(context.Context, string) error
+				})
+				if !ok {
+					cleanup()
+					return fmt.Errorf("dense index %q cannot be persisted", field.Name)
+				}
+				if err := writeArtifact(field.Name, kind, func(path string) error { return saver.Save(ctx, path) }); err != nil {
+					cleanup()
+					return fmt.Errorf("persist dense index %q: %w", field.Name, err)
+				}
+				continue
+			}
+			index := indexes.sparseNative[field.Name]
+			saver, ok := index.(interface {
+				Save(context.Context, string) error
+			})
+			if !ok {
+				cleanup()
+				return fmt.Errorf("sparse index %q cannot be persisted", field.Name)
+			}
+			if err := writeArtifact(field.Name, kind, func(path string) error { return saver.Save(ctx, path) }); err != nil {
+				cleanup()
+				return fmt.Errorf("persist sparse index %q: %w", field.Name, err)
+			}
+			continue
+		}
+		if field.IndexType() == IndexTypeFTS {
+			runtime := indexes.fts[field.Name]
+			if runtime == nil || runtime.dictionary == nil {
+				cleanup()
+				return fmt.Errorf("FTS index %q cannot be persisted", field.Name)
+			}
+			if err := writeArtifact(field.Name, collectionFTSArtifactKind, func(path string) error {
+				encoded, err := runtime.dictionary.Encode(ctx)
+				if err != nil {
+					return err
+				}
+				return ailego.WriteFileAtomic(ctx, path, encoded, 0o600)
+			}); err != nil {
+				cleanup()
+				return fmt.Errorf("persist FTS index %q: %w", field.Name, err)
+			}
+			continue
+		}
+		if field.IndexType() == IndexTypeInvert {
+			index := indexes.scalar[field.Name]
+			if index == nil {
+				cleanup()
+				return fmt.Errorf("INVERT index %q cannot be persisted", field.Name)
+			}
+			if err := writeArtifact(field.Name, collectionInvertArtifactKind, func(path string) error {
+				encoded, err := index.Encode(ctx)
+				if err != nil {
+					return err
+				}
+				return ailego.WriteFileAtomic(ctx, path, encoded, 0o600)
+			}); err != nil {
+				cleanup()
+				return fmt.Errorf("persist INVERT index %q: %w", field.Name, err)
+			}
+		}
+	}
+	if len(artifacts) == 0 && current == nil {
+		return nil
+	}
+	snapshot := &db.IndexSnapshotMetadata{
+		SchemaSHA256:  hex.EncodeToString(indexes.key.schemaHash[:]),
+		DocumentCount: uint64(indexes.key.count),
+		MaxDocumentID: indexes.key.maxDocID,
+		Artifacts:     artifacts,
+	}
+	committed, err := c.store.PublishIndexSnapshot(ctx, snapshot)
+	if !committed {
+		cleanup()
+	}
+	if err != nil {
+		return err
+	}
+	if !committed {
+		return errors.New("index snapshot publication did not commit")
+	}
+	return c.store.PruneObsoleteArtifacts(ctx)
+}
+
+func (c *Collection) indexSnapshotFilesExist(key collectionRuntimeKey, snapshot *db.IndexSnapshotMetadata) bool {
+	if snapshot == nil || snapshot.SchemaSHA256 != hex.EncodeToString(key.schemaHash[:]) ||
+		snapshot.DocumentCount != uint64(key.count) || snapshot.MaxDocumentID != key.maxDocID {
+		return false
+	}
+	for _, artifact := range snapshot.Artifacts {
+		info, err := os.Lstat(filepath.Join(c.path, filepath.FromSlash(artifact.File)))
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func buildCollectionRuntimeIndexes(
+	ctx context.Context,
+	schema CollectionSchema,
+	documents []Document,
+	workers int,
+	maxBufferSize uint32,
+	useMmap bool,
+	artifacts map[string]string,
+) (*collectionRuntimeIndexes, error) {
+	indexes := &collectionRuntimeIndexes{
+		denseFlat: make(map[string]collectionDenseIndex), denseNative: make(map[string]collectionDenseIndex),
+		denseExact: make(map[string]*core.DenseFlatIndex),
+		sparseFlat: make(map[string]core.SparseQuerySearcher), sparseNative: make(map[string]core.SparseQuerySearcher),
+		sparseExact: make(map[string]*core.SparseFlatIndex),
+		fts:         make(map[string]*collectionFTSRuntime), scalar: make(dbsql.IndexSet),
+	}
+	fail := func(err error) (*collectionRuntimeIndexes, error) {
+		_ = indexes.Close()
+		return nil, err
+	}
+	for _, field := range schema.Fields {
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
+		if field.DataType.IsVector() {
+			spec, err := resolveCollectionVectorIndex(field, "build collection indexes", "")
+			if err != nil {
+				return fail(err)
+			}
+			if field.DataType.IsDenseVector() {
+				exact, err := buildDenseFlatIndex(ctx, field, spec.metric, documents)
+				if err != nil {
+					return fail(err)
+				}
+				indexes.denseExact[field.Name] = exact
+				flat, err := buildCollectionDenseFlat(ctx, schema.Name, field, documents, spec)
+				if err != nil {
+					return fail(err)
+				}
+				indexes.denseFlat[field.Name] = flat
+				if spec.indexType == IndexTypeFlat {
+					indexes.denseNative[field.Name] = flat
+					continue
+				}
+				var native collectionDenseIndex
+				artifact := artifacts[collectionIndexArtifactKey(field.Name, collectionVectorArtifactKind(spec.indexType))]
+				if artifact != "" {
+					native, err = openCollectionDenseArtifact(ctx, artifact, schema.Name, field, documents, spec, workers, maxBufferSize, useMmap)
+					if err != nil {
+						return fail(err)
+					}
+					indexes.denseNative[field.Name] = native
+					continue
+				}
+				switch spec.indexType {
+				case IndexTypeHNSW:
+					native, err = buildCollectionDenseHNSW(ctx, schema.Name, field, documents, spec)
+				case IndexTypeHNSWRaBitQ:
+					native, err = buildCollectionDenseHNSWRaBitQ(ctx, field, documents, spec, workers)
+				case IndexTypeIVF:
+					native, err = buildCollectionDenseIVF(ctx, schema.Name, field, documents, spec, workers)
+				case IndexTypeVamana:
+					native, err = buildCollectionDenseVamana(ctx, schema.Name, field, documents, spec)
+				case IndexTypeDiskANN:
+					native, err = buildCollectionDenseDiskANN(ctx, schema.Name, field, documents, spec, workers, maxBufferSize)
+				default:
+					err = fmt.Errorf("unsupported dense collection index %s", spec.indexType)
+				}
+				if err != nil {
+					return fail(err)
+				}
+				indexes.denseNative[field.Name] = native
+				continue
+			}
+			exact, err := buildSparseFlatIndex(ctx, field, documents)
+			if err != nil {
+				return fail(err)
+			}
+			indexes.sparseExact[field.Name] = exact
+			flat, err := buildCollectionSparseIndex(ctx, field, documents, spec, true)
+			if err != nil {
+				return fail(err)
+			}
+			indexes.sparseFlat[field.Name] = flat
+			if spec.indexType == IndexTypeFlat {
+				indexes.sparseNative[field.Name] = flat
+				continue
+			}
+			var native core.SparseQuerySearcher
+			artifact := artifacts[collectionIndexArtifactKey(field.Name, collectionVectorArtifactKind(spec.indexType))]
+			if artifact != "" {
+				native, err = core.OpenSparseHNSWIndex(ctx, artifact)
+			} else {
+				native, err = buildCollectionSparseIndex(ctx, field, documents, spec, false)
+			}
+			if err != nil {
+				return fail(err)
+			}
+			indexes.sparseNative[field.Name] = native
+			continue
+		}
+		if field.IndexType() == IndexTypeFTS {
+			var runtime *collectionFTSRuntime
+			artifact := artifacts[collectionIndexArtifactKey(field.Name, collectionFTSArtifactKind)]
+			var err error
+			if artifact != "" {
+				runtime, err = openCollectionFTSRuntime(ctx, artifact, field, documents)
+			} else {
+				runtime, err = buildCollectionFTSRuntime(ctx, field, documents, nil)
+			}
+			if err != nil {
+				return fail(err)
+			}
+			indexes.fts[field.Name] = runtime
+			continue
+		}
+		indexed, rangeOptimized, extendedWildcard := filterIndexOptions(field, true)
+		if !indexed {
+			continue
+		}
+		kind, array, supported := filterValueKind(field.DataType)
+		if !supported {
+			continue
+		}
+		definition := dbsql.Field{
+			Name: field.Name, Kind: kind, Array: array, Nullable: field.Nullable, Filterable: true,
+			Indexed: true, RangeOptimized: rangeOptimized, ExtendedWildcard: extendedWildcard,
+		}
+		if artifact := artifacts[collectionIndexArtifactKey(field.Name, collectionInvertArtifactKind)]; artifact != "" {
+			encoded, err := os.ReadFile(artifact)
+			if err != nil {
+				return fail(fmt.Errorf("read INVERT artifact for field %q: %w", field.Name, err))
+			}
+			index, err := dbsql.OpenInvertedIndex(ctx, encoded)
+			if err != nil {
+				return fail(fmt.Errorf("open INVERT artifact for field %q: %w", field.Name, err))
+			}
+			if index.Field() != definition || index.RowCount() != uint64(len(documents)) {
+				return fail(fmt.Errorf("INVERT artifact for field %q does not match the collection snapshot", field.Name))
+			}
+			indexes.scalar[field.Name] = index
+			continue
+		}
+		index, err := dbsql.NewInvertedIndex(definition)
+		if err != nil {
+			return fail(err)
+		}
+		for row := range documents {
+			raw, found := documents[row].Fields[field.Name]
+			value, err := toFilterValue(definition, raw, found)
+			if err != nil {
+				return fail(err)
+			}
+			if err := index.Add(uint64(row), value); err != nil {
+				return fail(err)
+			}
+		}
+		if err := index.Seal(); err != nil {
+			return fail(err)
+		}
+		indexes.scalar[field.Name] = index
+	}
+	return indexes, nil
+}
+
+func (i *collectionRuntimeIndexes) Close() error {
+	if i == nil {
+		return nil
+	}
+	seen := make(map[uintptr]struct{})
+	var errs []error
+	for _, index := range i.denseNative {
+		closer, ok := index.(interface{ Close() error })
+		if !ok || isNilInterface(closer) {
+			continue
+		}
+		value := reflect.ValueOf(closer)
+		pointer := uintptr(0)
+		if value.Kind() == reflect.Pointer {
+			pointer = value.Pointer()
+		}
+		if pointer != 0 {
+			if _, duplicate := seen[pointer]; duplicate {
+				continue
+			}
+			seen[pointer] = struct{}{}
+		}
+		errs = append(errs, closer.Close())
+	}
+	return errors.Join(errs...)
 }
 
 // CreateAndOpen creates a native Go collection and opens its sole writable
@@ -239,7 +785,10 @@ func (c *Collection) Flush(ctx context.Context) error {
 	if err := c.requireOpenLocked("flush collection"); err != nil {
 		return err
 	}
-	return wrapCollectionError("flush collection", c.path, c.store.Flush(ctx))
+	if err := c.store.Flush(ctx); err != nil {
+		return wrapCollectionError("flush collection", c.path, err)
+	}
+	return wrapCollectionError("flush collection", c.path, c.refreshIndexArtifactsLocked(ctx))
 }
 
 // Close releases files and the cross-process collection lock. It is
@@ -254,7 +803,14 @@ func (c *Collection) Close() error {
 		return nil
 	}
 	c.closed = true
-	return wrapCollectionError("close collection", c.path, c.store.Close())
+	c.indexMu.Lock()
+	indexes := c.indexes
+	c.indexes = nil
+	c.indexMu.Unlock()
+	return errors.Join(
+		wrapCollectionError("close collection", c.path, c.store.Close()),
+		indexes.Close(),
+	)
 }
 
 // Destroy closes the handle and recursively removes only its validated
@@ -281,9 +837,14 @@ func (c *Collection) Destroy(ctx context.Context) error {
 		return &Error{Code: ErrorCodeInvalidArgument, Op: "destroy collection", Path: c.path, Message: "refusing to remove an unsafe collection path"}
 	}
 	c.closed = true
+	c.indexMu.Lock()
+	indexes := c.indexes
+	c.indexes = nil
+	c.indexMu.Unlock()
+	indexErr := indexes.Close()
 	closeErr := c.store.Close()
 	removeErr := os.RemoveAll(c.path)
-	return wrapCollectionError("destroy collection", c.path, errors.Join(closeErr, removeErr))
+	return wrapCollectionError("destroy collection", c.path, errors.Join(indexErr, closeErr, removeErr))
 }
 
 func (c *Collection) requireOpenLocked(op string) error {
@@ -745,23 +1306,15 @@ type collectionDiskANNIndex interface {
 
 func searchCollectionDense(
 	ctx context.Context,
-	schemaName string,
-	field FieldSchema,
-	documents []Document,
+	index collectionDenseIndex,
 	query []float32,
 	topK int,
 	filter core.CandidateFilter,
 	spec collectionVectorIndex,
 	config collectionQueryConfig,
-	workers int,
-	maxBufferSize uint32,
 ) ([]core.Result, error) {
 	final := core.SearchOptions{TopK: topK, Radius: config.options.Radius, Filter: filter}
 	if (config.options.Linear && spec.indexType != IndexTypeHNSWRaBitQ) || spec.indexType == IndexTypeFlat {
-		index, err := buildCollectionDenseFlat(ctx, schemaName, field, documents, spec)
-		if err != nil {
-			return nil, err
-		}
 		return executeCollectionDenseSearch(ctx, index, query, final, config.options.UseRefiner, config.scaleFactor,
 			func(options core.SearchOptions) ([]core.Result, error) {
 				return index.SearchWithOptions(ctx, query, options)
@@ -769,54 +1322,54 @@ func searchCollectionDense(
 	}
 	switch spec.indexType {
 	case IndexTypeHNSW:
-		index, err := buildCollectionDenseHNSW(ctx, schemaName, field, documents, spec)
-		if err != nil {
-			return nil, err
+		hnsw, ok := index.(collectionHNSWIndex)
+		if !ok {
+			return nil, errors.New("collection HNSW cache has an incompatible index")
 		}
-		return executeCollectionDenseSearch(ctx, index, query, final, config.options.UseRefiner, config.scaleFactor,
+		return executeCollectionDenseSearch(ctx, hnsw, query, final, config.options.UseRefiner, config.scaleFactor,
 			func(options core.SearchOptions) ([]core.Result, error) {
-				return index.SearchHNSW(ctx, query, core.HNSWSearchOptions{
+				return hnsw.SearchHNSW(ctx, query, core.HNSWSearchOptions{
 					SearchOptions: options, EF: config.ef,
 					PrefetchOffset: config.prefetchOffset, PrefetchLines: config.prefetchLines,
 				})
 			})
 	case IndexTypeHNSWRaBitQ:
-		index, err := buildCollectionDenseHNSWRaBitQ(ctx, field, documents, spec, workers)
-		if err != nil {
-			return nil, err
+		rabitq, ok := index.(*core.HNSWRaBitQIndex)
+		if !ok {
+			return nil, errors.New("collection HNSW-RaBitQ cache has an incompatible index")
 		}
-		return index.SearchHNSWRaBitQ(ctx, query, core.HNSWRaBitQSearchOptions{
+		return rabitq.SearchHNSWRaBitQ(ctx, query, core.HNSWRaBitQSearchOptions{
 			SearchOptions: final, EF: config.ef, Refine: config.options.UseRefiner,
 			Linear: config.options.Linear,
 		})
 	case IndexTypeIVF:
-		index, err := buildCollectionDenseIVF(ctx, schemaName, field, documents, spec, workers)
-		if err != nil {
-			return nil, err
+		ivf, ok := index.(collectionIVFIndex)
+		if !ok {
+			return nil, errors.New("collection IVF cache has an incompatible index")
 		}
-		return executeCollectionDenseSearch(ctx, index, query, final, config.options.UseRefiner, config.scaleFactor,
+		return executeCollectionDenseSearch(ctx, ivf, query, final, config.options.UseRefiner, config.scaleFactor,
 			func(options core.SearchOptions) ([]core.Result, error) {
-				return index.SearchIVF(ctx, query, core.IVFSearchOptions{SearchOptions: options, NProbe: config.nprobe})
+				return ivf.SearchIVF(ctx, query, core.IVFSearchOptions{SearchOptions: options, NProbe: config.nprobe})
 			})
 	case IndexTypeDiskANN:
-		index, err := buildCollectionDenseDiskANN(ctx, schemaName, field, documents, spec, workers, maxBufferSize)
-		if err != nil {
-			return nil, err
+		diskANN, ok := index.(collectionDiskANNIndex)
+		if !ok {
+			return nil, errors.New("collection DiskANN cache has an incompatible index")
 		}
-		return executeCollectionDenseSearch(ctx, index, query, final, config.options.UseRefiner, config.scaleFactor,
+		return executeCollectionDenseSearch(ctx, diskANN, query, final, config.options.UseRefiner, config.scaleFactor,
 			func(options core.SearchOptions) ([]core.Result, error) {
-				return index.SearchDiskANN(ctx, query, core.DiskANNSearchOptions{
+				return diskANN.SearchDiskANN(ctx, query, core.DiskANNSearchOptions{
 					SearchOptions: options, ListSize: config.listSize, Linear: config.options.Linear,
 				})
 			})
 	case IndexTypeVamana:
-		index, err := buildCollectionDenseVamana(ctx, schemaName, field, documents, spec)
-		if err != nil {
-			return nil, err
+		vamana, ok := index.(collectionVamanaIndex)
+		if !ok {
+			return nil, errors.New("collection Vamana cache has an incompatible index")
 		}
-		return executeCollectionDenseSearch(ctx, index, query, final, config.options.UseRefiner, config.scaleFactor,
+		return executeCollectionDenseSearch(ctx, vamana, query, final, config.options.UseRefiner, config.scaleFactor,
 			func(options core.SearchOptions) ([]core.Result, error) {
-				return index.SearchVamana(ctx, query, core.VamanaSearchOptions{
+				return vamana.SearchVamana(ctx, query, core.VamanaSearchOptions{
 					SearchOptions: options, EFSearch: config.ef,
 					PrefetchOffset: config.prefetchOffset, PrefetchLines: config.prefetchLines,
 				})
@@ -864,7 +1417,7 @@ func buildCollectionDenseFlat(
 	if err != nil {
 		return nil, err
 	}
-	if spec.quantize == QuantizeTypeUndefined {
+	if spec.quantize == QuantizeTypeUndefined || spec.indexType == IndexTypeHNSWRaBitQ {
 		index, err := core.NewDenseFlatIndex(int(field.Dimension), spec.metric)
 		if err != nil {
 			return nil, err
@@ -1843,7 +2396,13 @@ func (f evaluatedFilter) useBruteForce(ratio float32) bool {
 	return f.present && f.total > 0 && f.matched <= uint64(float64(f.total)*float64(ratio))
 }
 
-func evaluateFilterDocuments(ctx context.Context, plan *dbsql.Plan, documents []Document, invertToForwardRatio float32) (evaluatedFilter, error) {
+func evaluateFilterDocuments(
+	ctx context.Context,
+	plan *dbsql.Plan,
+	documents []Document,
+	invertToForwardRatio float32,
+	cached ...dbsql.IndexSet,
+) (evaluatedFilter, error) {
 	if plan == nil {
 		return evaluatedFilter{total: uint64(len(documents))}, nil
 	}
@@ -1856,6 +2415,12 @@ func evaluateFilterDocuments(ctx context.Context, plan *dbsql.Plan, documents []
 	fields := plan.Fields()
 	fieldCount := len(fields)
 	indexes := make(dbsql.IndexSet)
+	if len(cached) != 0 && cached[0] != nil {
+		for name, index := range cached[0] {
+			indexes[name] = index
+		}
+	}
+	built := make(dbsql.IndexSet)
 	for _, field := range fields {
 		if !field.Indexed {
 			continue
@@ -1868,14 +2433,15 @@ func evaluateFilterDocuments(ctx context.Context, plan *dbsql.Plan, documents []
 			return evaluatedFilter{}, err
 		}
 		indexes[field.Name] = index
+		built[field.Name] = index
 	}
-	if len(indexes) > 0 {
+	if len(built) > 0 {
 		for row := range documents {
 			if err := ctx.Err(); err != nil {
 				return evaluatedFilter{}, err
 			}
 			document := &documents[row]
-			for name, index := range indexes {
+			for name, index := range built {
 				field := index.Field()
 				raw, found := document.Fields[name]
 				value, err := toFilterValue(field, raw, found)
@@ -1887,7 +2453,7 @@ func evaluateFilterDocuments(ctx context.Context, plan *dbsql.Plan, documents []
 				}
 			}
 		}
-		for _, index := range indexes {
+		for _, index := range built {
 			if err := index.Seal(); err != nil {
 				return evaluatedFilter{}, err
 			}
@@ -2133,12 +2699,15 @@ type FTSClause struct {
 }
 
 // SubQuery describes one candidate-producing branch of MultiQuery. Exactly
-// one of DenseVector, SparseVector, and FTS must be set. A zero NumCandidates
-// selects DefaultSubQueryCandidates.
+// one of DenseVector, SparseVector, PrimaryKey, and FTS must be set. PrimaryKey
+// resolves the query vector from Field in the same immutable collection
+// snapshot used by every branch. A zero NumCandidates selects
+// DefaultSubQueryCandidates.
 type SubQuery struct {
 	Field         string
 	DenseVector   DenseVector
 	SparseVector  SparseVector
+	PrimaryKey    string
 	FTS           *FTSClause
 	Params        QueryParams
 	NumCandidates int
@@ -2223,15 +2792,18 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
+	indexes, err := c.runtimeIndexesLocked(ctx, documents)
+	if err != nil {
+		return nil, wrapCollectionError(op, c.path, err)
+	}
 	runtimeConfig := c.runtimeConfig()
-	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents, runtimeConfig.InvertToForwardScanRatio)
+	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents, runtimeConfig.InvertToForwardScanRatio, indexes.scalar)
 	if err != nil {
 		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}
 
 	batches := make([]RerankBatch, len(query.Queries))
 	candidateIDs := make(map[uint64]struct{})
-	ftsFields := make(map[string]*collectionFTSRuntime)
 	for index, subQuery := range query.Queries {
 		if err := ctx.Err(); err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
@@ -2254,23 +2826,28 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 
 		var results []core.Result
 		switch target {
-		case multiQueryTargetDense, multiQueryTargetSparse:
+		case multiQueryTargetDense, multiQueryTargetSparse, multiQueryTargetPrimaryKey:
 			if !field.DataType.IsVector() {
 				return nil, invalidArgument(op, "sub-query %d field %q is not a vector field", index, field.Name)
 			}
+			dense, sparse := subQuery.DenseVector, subQuery.SparseVector
+			if target == multiQueryTargetPrimaryKey {
+				dense, sparse, err = resolveSnapshotQueryVector(documents, field, subQuery.PrimaryKey, op)
+			}
+			if err != nil {
+				break
+			}
 			results, err = c.searchVectorSnapshot(
-				ctx, op, field, subQuery.DenseVector, subQuery.SparseVector,
-				candidateCount, subQuery.Params, documents, candidateFilter,
+				ctx, op, field, dense, sparse,
+				candidateCount, subQuery.Params, documents, candidateFilter, indexes,
 			)
 		case multiQueryTargetFTS:
-			runtime := ftsFields[field.Name]
+			runtime := indexes.fts[field.Name]
 			if runtime == nil {
-				runtime, err = buildCollectionFTSRuntime(ctx, field, documents, candidateFilter.predicate)
-				if err == nil {
-					ftsFields[field.Name] = runtime
-				}
+				err = invalidArgument(op, "field %q is not an FTS-indexed STRING field", field.Name)
 			}
 			if err == nil {
+				runtime = runtime.withFilter(candidateFilter.predicate)
 				results, err = searchCollectionFTS(
 					ctx, runtime, subQuery.FTS, subQuery.Params, candidateCount,
 					candidateFilter.ordinals, candidateFilter.useBruteForce(runtimeConfig.FTSBruteForceByKeysRatio),
@@ -2324,12 +2901,14 @@ type multiQueryTarget uint8
 const (
 	multiQueryTargetDense multiQueryTarget = iota + 1
 	multiQueryTargetSparse
+	multiQueryTargetPrimaryKey
 	multiQueryTargetFTS
 )
 
 func multiQueryTargetKind(query SubQuery) (multiQueryTarget, error) {
 	hasDense := !isNilInterface(query.DenseVector)
 	hasSparse := !isNilInterface(query.SparseVector)
+	hasPrimaryKey := query.PrimaryKey != ""
 	hasFTS := !isNilInterface(query.FTS)
 	count := 0
 	if hasDense {
@@ -2338,17 +2917,23 @@ func multiQueryTargetKind(query SubQuery) (multiQueryTarget, error) {
 	if hasSparse {
 		count++
 	}
+	if hasPrimaryKey {
+		count++
+	}
 	if hasFTS {
 		count++
 	}
 	if count != 1 {
-		return 0, fmt.Errorf("exactly one of DenseVector, SparseVector, and FTS must be set")
+		return 0, fmt.Errorf("exactly one of DenseVector, SparseVector, PrimaryKey, and FTS must be set")
 	}
 	if hasDense {
 		return multiQueryTargetDense, nil
 	}
 	if hasSparse {
 		return multiQueryTargetSparse, nil
+	}
+	if hasPrimaryKey {
+		return multiQueryTargetPrimaryKey, nil
 	}
 	return multiQueryTargetFTS, nil
 }
@@ -2359,6 +2944,20 @@ type collectionFTSRuntime struct {
 	scorer      *core.BM25Scorer
 	deleted     *ailego.Bitmap
 	documentIDs []uint64
+}
+
+func (r *collectionFTSRuntime) withFilter(candidateFilter core.CandidateFilter) *collectionFTSRuntime {
+	if r == nil || candidateFilter == nil {
+		return r
+	}
+	clone := *r
+	clone.deleted = ailego.NewBitmap(uint64(len(r.documentIDs)))
+	for index, documentID := range r.documentIDs {
+		if !candidateFilter(documentID) {
+			clone.deleted.Set(uint64(index))
+		}
+	}
+	return &clone
 }
 
 func buildCollectionFTSRuntime(
@@ -2797,6 +3396,9 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 		// Publication is the durability boundary. A process can stop after the
 		// new manifest becomes current but before obsolete files are removed;
 		// a later no-op optimization must finish that safe cleanup.
+		if err := c.refreshIndexArtifactsLocked(ctx); err != nil {
+			return wrapCollectionError(op, c.path, err)
+		}
 		return wrapCollectionError(op, c.path, c.store.PruneObsoleteArtifacts(ctx))
 	}
 	for _, field := range c.schema.Fields {
@@ -2812,6 +3414,9 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 		return nil
 	}); err != nil {
 		return err
+	}
+	if err := c.refreshIndexArtifactsLocked(ctx); err != nil {
+		return wrapCollectionError(op, c.path, err)
 	}
 	return wrapCollectionError(op, c.path, c.store.PruneObsoleteArtifacts(ctx))
 }
@@ -2847,12 +3452,16 @@ func optimizableField(field FieldSchema, path string) error {
 	}
 }
 
-// VectorQuery describes one exact or approximate vector search. Exactly one
-// of DenseVector and SparseVector must be set according to the target field.
+// VectorQuery describes one collection search. Set exactly one of DenseVector,
+// SparseVector, PrimaryKey, and FTS. PrimaryKey resolves the vector stored in
+// Field from the query snapshot. Leaving all targets and Field empty performs
+// a scalar filter scan in ascending document-ID order.
 type VectorQuery struct {
 	Field        string
 	DenseVector  DenseVector
 	SparseVector SparseVector
+	PrimaryKey   string
+	FTS          *FTSClause
 	TopK         int
 	Filter       string
 	Projection   Projection
@@ -2865,6 +3474,7 @@ type GroupByVectorQuery struct {
 	Field        string
 	DenseVector  DenseVector
 	SparseVector SparseVector
+	PrimaryKey   string
 	Filter       string
 	Projection   Projection
 	Params       QueryParams
@@ -2880,9 +3490,9 @@ type GroupResult struct {
 	Documents []Document
 }
 
-// Query executes the field's exact or ANN search over the current live
-// document versions. Filter is parsed and schema-bound before its candidate
-// mask is applied.
+// Query executes a vector, document-ID vector, full-text, or filter-only search
+// over the current live document versions. Filter is parsed and schema-bound
+// before its candidate mask is applied.
 func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, error) {
 	const op = "query"
 	if c == nil {
@@ -2904,19 +3514,7 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err := c.requireOpenLocked(op); err != nil {
 		return nil, err
 	}
-	field, found := c.schema.Field(query.Field)
-	if !found || !field.DataType.IsVector() {
-		return nil, invalidArgument(op, "vector field %q does not exist", query.Field)
-	}
 	if err := query.Projection.Validate(c.schema); err != nil {
-		return nil, err
-	}
-	vectorIndex, err := resolveCollectionVectorIndex(field, op, c.path)
-	if err != nil {
-		return nil, err
-	}
-	params, err := collectionQueryParams(query.Params, vectorIndex)
-	if err != nil {
 		return nil, err
 	}
 	filterPlan, err := buildFilterPlan(query.Filter, c.schema)
@@ -2927,19 +3525,150 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
+	indexes, err := c.runtimeIndexesLocked(ctx, documents)
+	if err != nil {
+		return nil, wrapCollectionError(op, c.path, err)
+	}
 	runtimeConfig := c.runtimeConfig()
-	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents, runtimeConfig.InvertToForwardScanRatio)
+	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents, runtimeConfig.InvertToForwardScanRatio, indexes.scalar)
 	if err != nil {
 		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}
-	results, err := c.searchVectorSnapshotResolved(
-		ctx, op, field, query.DenseVector, query.SparseVector, query.TopK,
-		documents, candidateFilter, vectorIndex, params,
-	)
+	target, err := singleQueryTargetKind(query)
 	if err != nil {
-		return nil, err
+		return nil, invalidArgument(op, "%v", err)
+	}
+	var results []core.Result
+	switch target {
+	case singleQueryTargetFilter:
+		if !isNilInterface(query.Params) {
+			return nil, invalidArgument(op, "filter-only query cannot set index-specific Params")
+		}
+		results = filterOnlyResults(documents, candidateFilter.predicate, query.TopK)
+	case singleQueryTargetFTS:
+		field, found := c.schema.Field(query.Field)
+		if !found {
+			return nil, invalidArgument(op, "FTS field %q does not exist", query.Field)
+		}
+		runtime := indexes.fts[field.Name]
+		if runtime == nil {
+			return nil, invalidArgument(op, "field %q is not an FTS-indexed STRING field", field.Name)
+		}
+		runtime = runtime.withFilter(candidateFilter.predicate)
+		results, err = searchCollectionFTS(
+			ctx, runtime, query.FTS, query.Params, query.TopK,
+			candidateFilter.ordinals, candidateFilter.useBruteForce(runtimeConfig.FTSBruteForceByKeysRatio),
+		)
+	case singleQueryTargetDense, singleQueryTargetSparse, singleQueryTargetPrimaryKey:
+		field, found := c.schema.Field(query.Field)
+		if !found || !field.DataType.IsVector() {
+			return nil, invalidArgument(op, "vector field %q does not exist", query.Field)
+		}
+		dense, sparse := query.DenseVector, query.SparseVector
+		if target == singleQueryTargetPrimaryKey {
+			dense, sparse, err = resolveSnapshotQueryVector(documents, field, query.PrimaryKey, op)
+			if err != nil {
+				return nil, err
+			}
+		}
+		results, err = c.searchVectorSnapshot(
+			ctx, op, field, dense, sparse, query.TopK, query.Params, documents, candidateFilter, indexes,
+		)
+	}
+	if err != nil {
+		return nil, wrapCollectionError(op, c.path, err)
 	}
 	return c.materializeResults(documents, results, query.Projection)
+}
+
+type singleQueryTarget uint8
+
+const (
+	singleQueryTargetFilter singleQueryTarget = iota + 1
+	singleQueryTargetDense
+	singleQueryTargetSparse
+	singleQueryTargetPrimaryKey
+	singleQueryTargetFTS
+)
+
+func singleQueryTargetKind(query VectorQuery) (singleQueryTarget, error) {
+	hasDense := !isNilInterface(query.DenseVector)
+	hasSparse := !isNilInterface(query.SparseVector)
+	hasPrimaryKey := query.PrimaryKey != ""
+	hasFTS := !isNilInterface(query.FTS)
+	count := 0
+	for _, present := range []bool{hasDense, hasSparse, hasPrimaryKey, hasFTS} {
+		if present {
+			count++
+		}
+	}
+	if count == 0 {
+		if query.Field != "" {
+			return 0, fmt.Errorf("query Field requires a vector, PrimaryKey, or FTS target")
+		}
+		return singleQueryTargetFilter, nil
+	}
+	if count != 1 {
+		return 0, fmt.Errorf("exactly one of DenseVector, SparseVector, PrimaryKey, and FTS must be set")
+	}
+	if query.Field == "" {
+		return 0, fmt.Errorf("target query requires Field")
+	}
+	if hasDense {
+		return singleQueryTargetDense, nil
+	}
+	if hasSparse {
+		return singleQueryTargetSparse, nil
+	}
+	if hasPrimaryKey {
+		return singleQueryTargetPrimaryKey, nil
+	}
+	return singleQueryTargetFTS, nil
+}
+
+func filterOnlyResults(documents []Document, predicate core.CandidateFilter, topK int) []core.Result {
+	results := make([]core.Result, 0, min(topK, len(documents)))
+	for _, document := range documents {
+		if predicate != nil && !predicate(document.DocID) {
+			continue
+		}
+		results = append(results, core.Result{Key: document.DocID})
+	}
+	sort.Slice(results, func(left, right int) bool { return results[left].Key < results[right].Key })
+	if len(results) > topK {
+		results = results[:topK]
+	}
+	return results
+}
+
+func resolveSnapshotQueryVector(
+	documents []Document,
+	field FieldSchema,
+	primaryKey string,
+	op string,
+) (DenseVector, SparseVector, error) {
+	for _, document := range documents {
+		if document.PrimaryKey != primaryKey {
+			continue
+		}
+		value, found := document.Fields[field.Name]
+		if !found || value == nil {
+			return nil, nil, invalidArgument(op, "document %q has no vector in field %q", primaryKey, field.Name)
+		}
+		if field.DataType.IsDenseVector() {
+			vector, ok := value.(DenseVector)
+			if !ok {
+				return nil, nil, &Error{Code: ErrorCodeInternal, Op: op, Message: fmt.Sprintf("document %q field %q is not a dense vector", primaryKey, field.Name)}
+			}
+			return vector, nil, nil
+		}
+		vector, ok := value.(SparseVector)
+		if !ok {
+			return nil, nil, &Error{Code: ErrorCodeInternal, Op: op, Message: fmt.Sprintf("document %q field %q is not a sparse vector", primaryKey, field.Name)}
+		}
+		return nil, vector, nil
+	}
+	return nil, nil, &Error{Code: ErrorCodeNotFound, Op: op, Message: fmt.Sprintf("document %q does not exist", primaryKey)}
 }
 
 // searchVectorSnapshot executes one vector target against documents while the
@@ -2955,6 +3684,7 @@ func (c *Collection) searchVectorSnapshot(
 	queryParams QueryParams,
 	documents []Document,
 	candidateFilter evaluatedFilter,
+	indexes *collectionRuntimeIndexes,
 ) ([]core.Result, error) {
 	vectorIndex, err := resolveCollectionVectorIndex(field, op, c.path)
 	if err != nil {
@@ -2965,7 +3695,7 @@ func (c *Collection) searchVectorSnapshot(
 		return nil, err
 	}
 	return c.searchVectorSnapshotResolved(
-		ctx, op, field, dense, sparse, topK, documents, candidateFilter, vectorIndex, params,
+		ctx, op, field, dense, sparse, topK, documents, candidateFilter, vectorIndex, params, indexes,
 	)
 }
 
@@ -2980,6 +3710,7 @@ func (c *Collection) searchVectorSnapshotResolved(
 	candidateFilter evaluatedFilter,
 	vectorIndex collectionVectorIndex,
 	params collectionQueryConfig,
+	indexes *collectionRuntimeIndexes,
 ) ([]core.Result, error) {
 	if candidateFilter.useBruteForce(c.runtimeConfig().BruteForceByKeysRatio) {
 		params.options.Linear = true
@@ -2992,10 +3723,14 @@ func (c *Collection) searchVectorSnapshotResolved(
 		if err != nil {
 			return nil, err
 		}
-		results, err := searchCollectionDense(
-			ctx, c.schema.Name, field, documents, queryVector, topK, candidateFilter.predicate, vectorIndex, params,
-			c.queryWorkers(), c.options.MaxBufferSize,
-		)
+		index := indexes.denseNative[field.Name]
+		if (params.options.Linear && vectorIndex.indexType != IndexTypeHNSWRaBitQ) || vectorIndex.indexType == IndexTypeFlat {
+			index = indexes.denseFlat[field.Name]
+		}
+		if index == nil {
+			return nil, &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: fmt.Sprintf("runtime index for field %q is missing", field.Name)}
+		}
+		results, err := searchCollectionDense(ctx, index, queryVector, topK, candidateFilter.predicate, vectorIndex, params)
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}
@@ -3015,9 +3750,12 @@ func (c *Collection) searchVectorSnapshotResolved(
 			return nil, wrapCollectionError(op, c.path, err)
 		}
 	}
-	index, err := buildCollectionSparseIndex(ctx, field, documents, vectorIndex, params.options.Linear)
-	if err != nil {
-		return nil, wrapCollectionError(op, c.path, err)
+	index := indexes.sparseNative[field.Name]
+	if params.options.Linear || vectorIndex.indexType == IndexTypeFlat {
+		index = indexes.sparseFlat[field.Name]
+	}
+	if index == nil {
+		return nil, &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: fmt.Sprintf("runtime sparse index for field %q is missing", field.Name)}
 	}
 	searchOptions := core.SearchOptions{TopK: topK, Radius: params.options.Radius, Filter: candidateFilter.predicate}
 	baseOptions := searchOptions
@@ -3045,9 +3783,9 @@ func (c *Collection) searchVectorSnapshotResolved(
 		return nil, wrapCollectionError(op, c.path, err)
 	}
 	if params.options.UseRefiner {
-		originals, err := buildSparseFlatIndex(ctx, field, documents)
-		if err != nil {
-			return nil, wrapCollectionError(op, c.path, err)
+		originals := indexes.sparseExact[field.Name]
+		if originals == nil {
+			return nil, &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: fmt.Sprintf("runtime sparse refiner index for field %q is incompatible", field.Name)}
 		}
 		refiner, err := core.NewOriginalSparseVectorRefiner(originals)
 		if err != nil {
@@ -3092,6 +3830,18 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	if !found || !field.DataType.IsVector() {
 		return nil, invalidArgument(op, "vector field %q does not exist", query.Field)
 	}
+	hasDense := !isNilInterface(query.DenseVector)
+	hasSparse := !isNilInterface(query.SparseVector)
+	hasPrimaryKey := query.PrimaryKey != ""
+	targetCount := 0
+	for _, present := range []bool{hasDense, hasSparse, hasPrimaryKey} {
+		if present {
+			targetCount++
+		}
+	}
+	if targetCount != 1 {
+		return nil, invalidArgument(op, "exactly one of DenseVector, SparseVector, and PrimaryKey must be set")
+	}
 	groupField, found := c.schema.Field(query.GroupByField)
 	if !found || !groupDataTypeSupported(groupField.DataType) {
 		return nil, invalidArgument(op, "group field %q must be a supported scalar field", query.GroupByField)
@@ -3115,13 +3865,24 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
+	indexes, err := c.runtimeIndexesLocked(ctx, documents)
+	if err != nil {
+		return nil, wrapCollectionError(op, c.path, err)
+	}
 	runtimeConfig := c.runtimeConfig()
-	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents, runtimeConfig.InvertToForwardScanRatio)
+	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents, runtimeConfig.InvertToForwardScanRatio, indexes.scalar)
 	if err != nil {
 		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}
 	if candidateFilter.useBruteForce(runtimeConfig.BruteForceByKeysRatio) {
 		params.options.Linear = true
+	}
+	dense, sparse := query.DenseVector, query.SparseVector
+	if hasPrimaryKey {
+		dense, sparse, err = resolveSnapshotQueryVector(documents, field, query.PrimaryKey, op)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if !params.options.Linear && vectorIndex.indexType != IndexTypeFlat {
 		if params.options.UseRefiner {
@@ -3147,23 +3908,26 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 		GroupCount: query.GroupCount, TopKPerGroup: query.TopKPerGroup,
 		Radius: params.options.Radius, Filter: candidateFilter.predicate, Resolve: resolve,
 	}
-	metric := vectorIndex.metric
 	var groups []core.GroupResult
 	if field.DataType.IsDenseVector() {
-		if query.SparseVector != nil {
+		if sparse != nil {
 			return nil, invalidArgument(op, "dense field %q cannot use a sparse query vector", field.Name)
 		}
-		queryVector, err := validateDenseQueryVector(field, query.DenseVector)
+		queryVector, err := validateDenseQueryVector(field, dense)
 		if err != nil {
 			return nil, err
 		}
 		var searcher core.DenseGroupSearcher
 		if params.options.UseRefiner {
-			searcher, err = buildDenseFlatIndex(ctx, field, metric, documents)
+			searcher = indexes.denseExact[field.Name]
+			if searcher == nil {
+				err = fmt.Errorf("dense runtime refiner index is incompatible")
+			}
 		} else if vectorIndex.indexType == IndexTypeHNSWRaBitQ {
-			var index *core.HNSWRaBitQIndex
-			index, err = buildCollectionDenseHNSWRaBitQ(ctx, field, documents, vectorIndex, c.queryWorkers())
-			if err == nil {
+			index, compatible := indexes.denseNative[field.Name].(*core.HNSWRaBitQIndex)
+			if !compatible {
+				err = fmt.Errorf("dense HNSW-RaBitQ runtime index is incompatible")
+			} else {
 				if params.options.Linear {
 					groups, err = index.SearchGroups(ctx, queryVector, options)
 				} else {
@@ -3173,9 +3937,10 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 				}
 			}
 		} else if vectorIndex.indexType == IndexTypeHNSW && !params.options.Linear {
-			var index collectionHNSWIndex
-			index, err = buildCollectionDenseHNSW(ctx, c.schema.Name, field, documents, vectorIndex)
-			if err == nil {
+			index, compatible := indexes.denseNative[field.Name].(collectionHNSWIndex)
+			if !compatible {
+				err = fmt.Errorf("dense HNSW runtime index is incompatible")
+			} else {
 				groupIndex, compatible := index.(collectionHNSWGroupIndex)
 				if !compatible {
 					err = fmt.Errorf("dense HNSW builder returned an incompatible group searcher")
@@ -3187,14 +3952,11 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 				}
 			}
 		} else {
-			var index collectionDenseIndex
-			index, err = buildCollectionDenseFlat(ctx, c.schema.Name, field, documents, vectorIndex)
-			if err == nil {
-				var compatible bool
-				searcher, compatible = index.(core.DenseGroupSearcher)
-				if !compatible {
-					err = fmt.Errorf("dense Flat builder returned an incompatible group searcher")
-				}
+			index := indexes.denseFlat[field.Name]
+			var compatible bool
+			searcher, compatible = index.(core.DenseGroupSearcher)
+			if !compatible {
+				err = fmt.Errorf("dense Flat runtime returned an incompatible group searcher")
 			}
 		}
 		if err != nil {
@@ -3207,24 +3969,31 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 			}
 		}
 	} else {
-		if query.DenseVector != nil {
+		if dense != nil {
 			return nil, invalidArgument(op, "sparse field %q cannot use a dense query vector", field.Name)
 		}
-		queryVector, err := validateSparseQueryVector(field, query.SparseVector)
+		queryVector, err := validateSparseQueryVector(field, sparse)
 		if err != nil {
 			return nil, err
 		}
 		var searcher core.SparseGroupSearcher
 		if params.options.UseRefiner {
-			searcher, err = buildSparseFlatIndex(ctx, field, documents)
+			searcher = indexes.sparseExact[field.Name]
+			if searcher == nil {
+				err = fmt.Errorf("sparse runtime refiner index is incompatible")
+			}
 		} else {
 			if vectorIndex.quantize == QuantizeTypeFP16 {
 				queryVector, err = sparseFP16Vector(queryVector)
 			}
 			if err == nil {
-				var index core.SparseQuerySearcher
-				index, err = buildCollectionSparseIndex(ctx, field, documents, vectorIndex, params.options.Linear)
-				if err == nil {
+				index := indexes.sparseNative[field.Name]
+				if params.options.Linear || vectorIndex.indexType == IndexTypeFlat {
+					index = indexes.sparseFlat[field.Name]
+				}
+				if index == nil {
+					err = fmt.Errorf("sparse runtime index is missing")
+				} else {
 					if !params.options.Linear {
 						hnsw, compatible := index.(*core.SparseHNSWIndex)
 						if !compatible {

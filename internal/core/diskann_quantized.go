@@ -83,6 +83,71 @@ func NewScalarQuantizedDiskANNIndex(
 	return &ScalarQuantizedDiskANNIndex{base: base, vectors: vectors}, nil
 }
 
+// Save persists the DiskANN graph and its traversal representation. Original
+// vectors remain in the collection segment and are supplied again on open.
+func (i *ScalarQuantizedDiskANNIndex) Save(ctx context.Context, path string) error {
+	if i == nil || i.base == nil {
+		return errors.New("core: nil scalar-quantized DiskANN index")
+	}
+	return i.base.Save(ctx, path)
+}
+
+// OpenScalarQuantizedDiskANNIndex reopens a persisted DiskANN graph and
+// restores public scalar-code scoring from the collection-owned originals.
+func OpenScalarQuantizedDiskANNIndex(
+	ctx context.Context,
+	path string,
+	cacheCapacity, workers int,
+	kind Quantization,
+	reformer DenseReformer,
+	candidates []Candidate,
+) (*ScalarQuantizedDiskANNIndex, error) {
+	return OpenScalarQuantizedDiskANNIndexWithMmap(ctx, path, cacheCapacity, workers, kind, reformer, candidates, false)
+}
+
+// OpenScalarQuantizedDiskANNIndexWithMmap reopens a persisted graph through
+// the selected random-access reader and restores scalar-code scoring.
+func OpenScalarQuantizedDiskANNIndexWithMmap(
+	ctx context.Context,
+	path string,
+	cacheCapacity, workers int,
+	kind Quantization,
+	reformer DenseReformer,
+	candidates []Candidate,
+	useMmap bool,
+) (*ScalarQuantizedDiskANNIndex, error) {
+	base, err := OpenDiskANNIndexWithMmap(ctx, path, cacheCapacity, workers, useMmap)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]uint64, len(candidates))
+	originals := make([]float32, 0, len(candidates)*max(1, base.Dimension()))
+	for position, candidate := range candidates {
+		if len(candidate.Vector) != base.Dimension() {
+			_ = base.Close()
+			return nil, fmt.Errorf("%w: candidate %d has %d, want %d", ErrInvalidDimension, position, len(candidate.Vector), base.Dimension())
+		}
+		keys[position] = candidate.Key
+		originals = append(originals, candidate.Vector...)
+	}
+	if len(keys) != base.Len() {
+		_ = base.Close()
+		return nil, fmt.Errorf("%w: artifact has %d vectors, collection has %d", ErrInvalidQuantizedVector, base.Len(), len(keys))
+	}
+	vectors, err := newScalarQuantizedVectors(ctx, base.Dimension(), base.Metric(), kind, reformer, keys, originals)
+	if err != nil {
+		_ = base.Close()
+		return nil, err
+	}
+	for _, key := range keys {
+		if _, found := base.Vector(key); !found {
+			_ = base.Close()
+			return nil, fmt.Errorf("%w: artifact is missing key %d", ErrInvalidQuantizedVector, key)
+		}
+	}
+	return &ScalarQuantizedDiskANNIndex{base: base, vectors: vectors}, nil
+}
+
 func (i *ScalarQuantizedDiskANNIndex) Dimension() int {
 	if i == nil || i.vectors == nil {
 		return 0

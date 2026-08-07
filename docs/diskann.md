@@ -65,8 +65,9 @@ graph options, PQ configuration, entry point, five section CRC32C values, and
 its own CRC32C. Open derives the expected layout instead of trusting offsets,
 rejects truncation and trailing bytes, checks zero reserved/padding bytes,
 validates key uniqueness and PQ state, verifies every section and the embedded
-node file, and retains the `os.File` until Close. Per-record CRC remains a
-second random-read integrity boundary after open.
+node file, and retains a closeable random-access reader until Close. Collection
+reopen selects a normal file reader or read-only mapping from `EnableMmap`.
+Per-record CRC remains a second random-read integrity boundary after open.
 
 ## Collection integration
 

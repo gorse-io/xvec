@@ -23,6 +23,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sync"
 
@@ -464,6 +465,11 @@ func (c *CollectionStore) PruneObsoleteArtifacts(ctx context.Context) error {
 			keep[filepath.Clean(collectionPath(c.dir, relative)+".lock")] = struct{}{}
 		}
 	}
+	if manifest.IndexSnapshot != nil {
+		for _, artifact := range manifest.IndexSnapshot.Artifacts {
+			keepRelative(artifact.File)
+		}
+	}
 	keepRelative(primarySnapshotName(manifest.IDMapGeneration))
 	keepRelative(deleteSnapshotName(manifest.DeleteSnapshotGeneration))
 
@@ -486,6 +492,7 @@ func (c *CollectionStore) PruneObsoleteArtifacts(ctx context.Context) error {
 	}{
 		{filepath.Join(c.dir, "wal"), []string{"*.wal.lock", "*.wal"}},
 		{filepath.Join(c.dir, "snapshots"), []string{"primary-*.snap", "delete-*.snap"}},
+		{filepath.Join(c.dir, "indexes"), []string{"*.zvi"}},
 	} {
 		matches, matchErr := ownedFiles(specification.directory, specification.patterns...)
 		if matchErr != nil {
@@ -778,6 +785,60 @@ func (c *CollectionStore) PublishSchema(ctx context.Context, schema json.RawMess
 	}
 	next := current.Clone()
 	next.Schema = slices.Clone(schema)
+	_, publishErr := c.versions.Publish(ctx, next)
+	committed = c.versions.Current().Generation != current.Generation
+	return committed, publishErr
+}
+
+// PublishIndexSnapshot atomically installs collection-snapshot index artifact
+// metadata. Every referenced artifact must already exist as a regular file
+// below the collection directory. Passing nil clears the current snapshot.
+func (c *CollectionStore) PublishIndexSnapshot(ctx context.Context, snapshot *IndexSnapshotMetadata) (committed bool, err error) {
+	if c == nil {
+		return false, errors.New("db: nil collection")
+	}
+	if ctx == nil {
+		return false, errors.New("db: nil publish index snapshot context")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if snapshot != nil {
+		copy := *snapshot
+		copy.Artifacts = slices.Clone(snapshot.Artifacts)
+		snapshot = &copy
+		candidate := Manifest{FormatVersion: DiskFormatVersion, Generation: 1, Schema: json.RawMessage(`{}`), SegmentMaxDocuments: 1, IndexSnapshot: snapshot}
+		if err := candidate.Validate(); err != nil {
+			return false, err
+		}
+		for _, artifact := range snapshot.Artifacts {
+			path := collectionPath(c.dir, artifact.File)
+			info, statErr := os.Lstat(path)
+			if statErr != nil {
+				return false, fmt.Errorf("db: inspect index artifact %q: %w", artifact.File, statErr)
+			}
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return false, fmt.Errorf("db: index artifact %q is not a regular file", artifact.File)
+			}
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.requireWritableLocked(); err != nil {
+		return false, err
+	}
+	current := c.versions.Current()
+	if reflect.DeepEqual(current.IndexSnapshot, snapshot) {
+		return false, nil
+	}
+	next := current.Clone()
+	if snapshot == nil {
+		next.IndexSnapshot = nil
+	} else {
+		copy := *snapshot
+		copy.Artifacts = slices.Clone(snapshot.Artifacts)
+		next.IndexSnapshot = &copy
+	}
 	_, publishErr := c.versions.Publish(ctx, next)
 	committed = c.versions.Current().Generation != current.Generation
 	return committed, publishErr

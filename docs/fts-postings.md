@@ -86,9 +86,9 @@ front-coding, deletion-aware multi-segment totals, concurrent readers,
 structural corruption with repaired checksums, fuzzing, and benchmarks.
 
 BM25 scoring and native physical segment merging are documented separately.
-Block-max bounds and Collection integration remain later v0.5 work. Query
-lexing, AST canonicalization, and term/phrase/boolean execution are also
-documented separately. No placeholder score is stored in this format.
+Collection integration, query lexing, AST canonicalization, boolean execution,
+and BM25 are implemented and documented separately. Block-max bounds remain a
+later optimization. No placeholder score is stored in this format.
 
 ```sh
 go test ./internal/core -run '^TestFTS|^TestAggregateFTS'

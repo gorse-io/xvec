@@ -88,10 +88,10 @@ weights. [`CallbackReranker`](callback-reranker.md) adapts context-aware Go
 functions, propagates returned errors, and contains callback panics as
 structured internal errors.
 
-## Current storage boundary
+## Storage boundary
 
-MultiQuery builds the FTS dictionary and current vector runtime indexes from
-the durable live snapshot for each call. Results are durable and identical
-after reopen, but FTS `CreateIndex` backfill, persisted FTS segment artifacts,
-and FTS-aware `Optimize` remain later integration work. The native Go format
-does not read C++ collection files.
+MultiQuery reuses the collection's exact-snapshot runtime cache. `Flush` and
+`Optimize` publish vector, FTS, and INVERT files with matching manifest
+identity, and reopen loads those artifacts instead of retraining them. Older
+format-1 collections without index metadata rebuild safely. The native Go
+format does not read C++ collection files.

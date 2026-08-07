@@ -52,6 +52,25 @@ func NewScalarQuantizedIVFIndex(
 	return &ScalarQuantizedIVFIndex{base: snapshot, vectors: vectors}, nil
 }
 
+// Save persists the immutable IVF topology and original vectors. Scalar codes
+// are reconstructed deterministically when reopened.
+func (i *ScalarQuantizedIVFIndex) Save(ctx context.Context, path string) error {
+	if i == nil || i.base == nil {
+		return errors.New("core: nil scalar-quantized IVF index")
+	}
+	return i.base.Save(ctx, path)
+}
+
+// OpenScalarQuantizedIVFIndex reopens a persisted IVF topology and restores
+// scalar-code scoring.
+func OpenScalarQuantizedIVFIndex(ctx context.Context, path string, kind Quantization, reformer DenseReformer) (*ScalarQuantizedIVFIndex, error) {
+	base, err := OpenIVFIndex(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return NewScalarQuantizedIVFIndex(ctx, base, kind, reformer)
+}
+
 func (i *ScalarQuantizedIVFIndex) Dimension() int {
 	if i == nil || i.vectors == nil {
 		return 0

@@ -31,9 +31,9 @@ indexed side of `AND` may be used alone as a superset of the final matches.
 Every selected row is then evaluated by the typed forward plan, so index
 routing cannot change SQL three-valued semantics.
 
-Postings are built in memory from the
-collection's consistent live-document snapshot for each filtered query. They
-are not a new on-disk format and require no migration; Flush and reopen produce
-the same results. DDL persists the INVERT parameters in the schema, and
-Optimize atomically compacts the live data from which exact postings are
-rebuilt; no separate posting file can become stale.
+Postings are built once for a consistent live-document snapshot and reused by
+filtered Query, MultiQuery, and GroupByQuery calls. Flush and Optimize encode a
+checksummed INVERT artifact and publish its schema/document identity in the
+manifest. Reopen loads an exact match; an older manifest without the optional
+metadata rebuilds postings from documents. Mutations change the snapshot key,
+so a stale posting file is never selected.

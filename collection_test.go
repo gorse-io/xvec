@@ -242,6 +242,199 @@ func TestCollectionDenseSparseRadiusProjectionAndGroupBy(t *testing.T) {
 	}
 }
 
+func TestCollectionUnifiedQueryTargets(t *testing.T) {
+	ctx := context.Background()
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "unified"), testMultiQuerySchema(), NewCollectionOptions())
+	require.NoError(t, err)
+	defer collection.Close()
+	_, err = collection.Insert(ctx, testMultiQueryDocuments())
+	require.NoError(t, err)
+
+	filtered, err := collection.Query(ctx, VectorQuery{
+		TopK: 2, Filter: "rating >= 2", Projection: Projection{OutputFields: []string{"rating"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "c"}, documentKeys(filtered))
+	require.Zero(t, filtered[0].Score)
+	require.Equal(t, map[string]any{"rating": int32(2)}, filtered[0].Fields)
+
+	fts, err := collection.Query(ctx, VectorQuery{
+		Field: "title", FTS: &FTSClause{Match: "go"}, TopK: 3, Filter: "category = 'keep'",
+		Projection: Projection{OutputFields: []string{"title"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "a"}, documentKeys(fts))
+	require.Greater(t, fts[0].Score, fts[1].Score)
+
+	byDenseID, err := collection.Query(ctx, VectorQuery{
+		Field: "embedding", PrimaryKey: "c", TopK: 2,
+		Projection: Projection{OutputFields: []string{}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"c", "a"}, documentKeys(byDenseID))
+
+	bySparseID, err := collection.Query(ctx, VectorQuery{
+		Field: "sparse", PrimaryKey: "b", TopK: 2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"c", "b"}, documentKeys(bySparseID))
+
+	groups, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
+		Field: "embedding", PrimaryKey: "a", GroupByField: "category",
+		GroupCount: 2, TopKPerGroup: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, groups, 2)
+	require.Equal(t, "drop", groups[0].Value)
+	require.Equal(t, []string{"c"}, documentKeys(groups[0].Documents))
+
+	_, err = collection.Query(ctx, VectorQuery{Field: "embedding", PrimaryKey: "missing", TopK: 1})
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = collection.Query(ctx, VectorQuery{
+		Field: "embedding", PrimaryKey: "a", DenseVector: VectorFP32{1, 0}, TopK: 1,
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	_, err = collection.Query(ctx, VectorQuery{Field: "embedding", TopK: 1})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	_, err = collection.Query(ctx, VectorQuery{TopK: 1, Params: NewFlatQueryParams()})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
+func TestCollectionMultiQueryPrimaryKeyTarget(t *testing.T) {
+	ctx := context.Background()
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "multi-id"), testMultiQuerySchema(), NewCollectionOptions())
+	require.NoError(t, err)
+	defer collection.Close()
+	_, err = collection.Insert(ctx, testMultiQueryDocuments())
+	require.NoError(t, err)
+
+	query := MultiQuery{
+		Queries: []SubQuery{
+			{Field: "embedding", PrimaryKey: "c", NumCandidates: 2},
+			{Field: "title", FTS: &FTSClause{Match: "go"}, NumCandidates: 2},
+		},
+		TopK: 2,
+		Reranker: testRerankerFunc(func(_ context.Context, batches []RerankBatch, _ int) ([]Document, error) {
+			require.Equal(t, []string{"c", "a"}, documentKeys(batches[0].Documents))
+			require.Equal(t, []string{"b", "a"}, documentKeys(batches[1].Documents))
+			return []Document{batches[0].Documents[0], batches[1].Documents[0]}, nil
+		}),
+	}
+	results, err := collection.MultiQuery(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"c", "b"}, documentKeys(results))
+
+	query.Queries[0] = SubQuery{Field: "embedding", PrimaryKey: "missing"}
+	_, err = collection.MultiQuery(ctx, query)
+	require.ErrorIs(t, err, ErrNotFound)
+	query.Queries[0] = SubQuery{Field: "embedding", PrimaryKey: "a", DenseVector: VectorFP32{1, 0}}
+	_, err = collection.MultiQuery(ctx, query)
+	require.ErrorIs(t, err, ErrInvalidArgument)
+}
+
+func TestCollectionRuntimeIndexesAreReusedUntilSnapshotChanges(t *testing.T) {
+	ctx := context.Background()
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "runtime-cache"), testPublicCollectionSchema(), NewCollectionOptions())
+	require.NoError(t, err)
+	defer collection.Close()
+	_, err = collection.Insert(ctx, []Document{
+		testPublicDocument("a", "alpha", "low", 1, 1, []float32{1, 0}),
+		testPublicDocument("b", "bravo", "high", 2, 2, []float32{2, 0}),
+	})
+	require.NoError(t, err)
+
+	query := VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2}
+	_, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), collection.indexBuildCount)
+	_, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	_, err = collection.Query(ctx, VectorQuery{TopK: 1, Filter: "rating >= 1"})
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), collection.indexBuildCount)
+
+	_, err = collection.Update(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{"rating": int32(3)}}})
+	require.NoError(t, err)
+	_, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), collection.indexBuildCount)
+	_, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), collection.indexBuildCount)
+}
+
+func TestCollectionPersistsAndReopensSnapshotIndexes(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "persisted-indexes")
+	hnsw := NewHNSWIndexParams(MetricTypeIP)
+	hnsw.M, hnsw.EFConstruction = 4, 16
+	sparseHNSW := NewHNSWIndexParams(MetricTypeIP)
+	sparseHNSW.M, sparseHNSW.EFConstruction = 4, 16
+	schema := NewCollectionSchema("persisted_indexes",
+		FieldSchema{Name: "text", DataType: DataTypeString, Index: NewFTSIndexParams()},
+		FieldSchema{Name: "rating", DataType: DataTypeInt32, Index: NewInvertIndexParams()},
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: hnsw},
+		FieldSchema{Name: "sparse", DataType: DataTypeSparseVectorFP32, Index: sparseHNSW},
+	)
+	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
+	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+	require.NoError(t, err)
+	_, err = collection.Insert(ctx, []Document{
+		{PrimaryKey: "a", Fields: map[string]any{"text": "red apple", "rating": int32(1), "embedding": VectorFP32{1, 0}, "sparse": SparseVectorFP32{Indices: []uint32{1}, Values: []float32{1}}}},
+		{PrimaryKey: "b", Fields: map[string]any{"text": "green apple", "rating": int32(2), "embedding": VectorFP32{0.8, 0.2}, "sparse": SparseVectorFP32{Indices: []uint32{1}, Values: []float32{0.8}}}},
+		{PrimaryKey: "c", Fields: map[string]any{"text": "blue berry", "rating": int32(3), "embedding": VectorFP32{0, 1}, "sparse": SparseVectorFP32{Indices: []uint32{2}, Values: []float32{1}}}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, collection.Flush(ctx))
+
+	snapshot := collection.store.Manifest().IndexSnapshot
+	require.NotNil(t, snapshot)
+	require.Equal(t, uint64(3), snapshot.DocumentCount)
+	require.Len(t, snapshot.Artifacts, 4)
+	artifactKinds := make(map[string]string)
+	for _, artifact := range snapshot.Artifacts {
+		artifactKinds[artifact.Field] = artifact.Kind
+		info, statErr := os.Stat(filepath.Join(path, filepath.FromSlash(artifact.File)))
+		require.NoError(t, statErr)
+		require.True(t, info.Mode().IsRegular())
+	}
+	require.Equal(t, collectionFTSArtifactKind, artifactKinds["text"])
+	require.Equal(t, collectionInvertArtifactKind, artifactKinds["rating"])
+	require.Equal(t, collectionVectorArtifactKind(IndexTypeHNSW), artifactKinds["embedding"])
+	require.Equal(t, collectionVectorArtifactKind(IndexTypeHNSW), artifactKinds["sparse"])
+	require.NoError(t, collection.Close())
+
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	require.NoError(t, err)
+	vectorResults, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2, Filter: "rating >= 2"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "c"}, documentKeys(vectorResults))
+	ftsResults, err := collection.Query(ctx, VectorQuery{Field: "text", FTS: &FTSClause{Match: "apple"}, TopK: 10})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, documentKeys(ftsResults))
+	filterResults, err := collection.Query(ctx, VectorQuery{Filter: "rating >= 2", TopK: 10})
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "c"}, documentKeys(filterResults))
+	sparseResults, err := collection.Query(ctx, VectorQuery{Field: "sparse", SparseVector: SparseVectorFP32{Indices: []uint32{1}, Values: []float32{1}}, TopK: 2})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, documentKeys(sparseResults))
+	require.NoError(t, collection.Close())
+
+	var invertPath string
+	for _, artifact := range snapshot.Artifacts {
+		if artifact.Kind == collectionInvertArtifactKind {
+			invertPath = filepath.Join(path, filepath.FromSlash(artifact.File))
+		}
+	}
+	require.NotEmpty(t, invertPath)
+	require.NoError(t, os.WriteFile(invertPath, []byte("corrupt"), 0o600))
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	require.NoError(t, err)
+	defer collection.Close()
+	_, err = collection.Query(ctx, VectorQuery{Filter: "rating >= 2", TopK: 10})
+	require.ErrorIs(t, err, dbsql.ErrCorruptInvertedIndex)
+}
+
 func TestCollectionScalarQuantizedDiskANNDirectSchema(t *testing.T) {
 	ctx := context.Background()
 	for _, quantize := range []QuantizeType{QuantizeTypeFP16, QuantizeTypeInt8, QuantizeTypeInt4} {

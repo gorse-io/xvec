@@ -69,10 +69,10 @@ inconsistent graph/model metadata, bad fingerprints, invalid factors, and
 out-of-range centroid assignments. Reopened artifacts preserve topology,
 scores, and incremental-add behavior.
 
-This artifact is available to the internal index API. Collection storage does
-not yet persist segment-native ANN artifacts; it rebuilds the runtime
-HNSW-RaBitQ index from the durable live document snapshot for query and DDL
-validation. No operation silently substitutes Flat or another index.
+Collection Flush and Optimize publish this artifact for the exact live
+snapshot, and reopen validates the manifest identity before loading it. Older
+collections rebuild once from durable documents. No operation silently
+substitutes Flat or another index.
 
 ## Verification
 

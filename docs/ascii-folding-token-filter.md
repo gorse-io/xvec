@@ -43,8 +43,8 @@ ASCII. Exhaustive tests reconstruct and hash all pinned source and effective
 mappings. The Unicode License V3 notice is reproduced in `NOTICE`.
 
 This unit provides the reusable ASCII-folding primitive. Tokenizer-pipeline
-configuration, posting lists, FTS parsing, BM25, and Collection FTS execution
-remain separate v0.5 units.
+configuration, posting lists, query parsing, BM25, and Collection FTS execution
+now compose it through `FTSIndexParams`.
 
 Verification includes the exhaustive table identities, compatibility and
 supplemental mappings, unmapped scripts, standalone marks, malformed UTF-8,

@@ -61,6 +61,26 @@ func NewScalarQuantizedHNSWIndex(
 	return &ScalarQuantizedHNSWIndex{base: snapshot, vectors: vectors}, nil
 }
 
+// Save persists the immutable HNSW topology and original vectors. Scalar codes
+// are deterministically reconstructed from the supplied quantizer and reformer
+// when the artifact is reopened.
+func (i *ScalarQuantizedHNSWIndex) Save(ctx context.Context, path string) error {
+	if i == nil || i.base == nil {
+		return errors.New("core: nil scalar-quantized HNSW index")
+	}
+	return i.base.Save(ctx, path)
+}
+
+// OpenScalarQuantizedHNSWIndex reopens a persisted topology and reconstructs
+// its immutable scalar-code scoring representation.
+func OpenScalarQuantizedHNSWIndex(ctx context.Context, path string, kind Quantization, reformer DenseReformer) (*ScalarQuantizedHNSWIndex, error) {
+	base, err := OpenHNSWIndex(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return NewScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+}
+
 func (i *ScalarQuantizedHNSWIndex) Dimension() int {
 	if i == nil || i.vectors == nil {
 		return 0

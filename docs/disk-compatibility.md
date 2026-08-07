@@ -38,9 +38,11 @@ runs `Optimize`, and verifies the migrated generation through read-only reopen.
 
 Because every tagged 0.x release retained collection format 1 and schema codec
 1, the oldest-release fixture crosses every intervening reader boundary. The
-standalone ANN artifact formats also retain their own magic, version, length,
-and CRC checks; they are not part of this collection fixture because collection
-queries currently rebuild those runtimes from the durable document snapshot.
+fixture predates optional collection index-snapshot metadata. Current readers
+therefore rebuild its indexes once, then `Flush` or `Optimize` can publish
+checksummed vector, FTS, and INVERT artifacts without changing format version
+1. Reopen uses those artifacts only when their schema/document identity exactly
+matches the live snapshot.
 
 Readers reject unknown future format or codec versions instead of guessing.
 Format upgrades must add an explicit reader/migration path and a historical

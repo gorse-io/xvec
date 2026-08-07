@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/gorse-io/zvec/internal/ailego"
@@ -44,6 +45,7 @@ func TestManifestCloneIsIndependent(t *testing.T) {
 	clone.Schema[0] = '['
 	clone.PersistedSegments[0].Files[0] = "changed"
 	clone.WritingSegment.Files[0] = "changed"
+	clone.IndexSnapshot.Artifacts[0].File = "changed"
 	require.False(t, json.Valid(clone.Schema),
 		"schema clone shares storage")
 	require.True(t, json.Valid(original.Schema),
@@ -52,6 +54,8 @@ func TestManifestCloneIsIndependent(t *testing.T) {
 		"persisted segment clone shares files")
 	require.False(t, original.WritingSegment.Files[0] == "changed",
 		"writing segment clone shares files")
+	require.False(t, original.IndexSnapshot.Artifacts[0].File == "changed",
+		"index snapshot clone shares artifacts")
 }
 
 func TestManifestValidation(t *testing.T) {
@@ -79,6 +83,16 @@ func TestManifestValidation(t *testing.T) {
 		{name: "unclean file", mutate: func(m *Manifest) { m.WritingSegment.Files = []string{"segment/../data.seg"} }, expected: ErrManifestCorrupt},
 		{name: "windows separator", mutate: func(m *Manifest) { m.WritingSegment.Files = []string{`segment\data.seg`} }, expected: ErrManifestCorrupt},
 		{name: "duplicate file", mutate: func(m *Manifest) { m.WritingSegment.Files = []string{"data.seg", "data.seg"} }, expected: ErrManifestCorrupt},
+		{name: "short index hash", mutate: func(m *Manifest) { m.IndexSnapshot.SchemaSHA256 = "00" }, expected: ErrManifestCorrupt},
+		{name: "invalid index hash", mutate: func(m *Manifest) { m.IndexSnapshot.SchemaSHA256 = strings.Repeat("z", 64) }, expected: ErrManifestCorrupt},
+		{name: "empty index field", mutate: func(m *Manifest) { m.IndexSnapshot.Artifacts[0].Field = "" }, expected: ErrManifestCorrupt},
+		{name: "parent index file", mutate: func(m *Manifest) { m.IndexSnapshot.Artifacts[0].File = "../index.zvi" }, expected: ErrManifestCorrupt},
+		{name: "duplicate index artifact", mutate: func(m *Manifest) {
+			m.IndexSnapshot.Artifacts = append(m.IndexSnapshot.Artifacts, m.IndexSnapshot.Artifacts[0])
+		}, expected: ErrManifestCorrupt},
+		{name: "duplicate index file", mutate: func(m *Manifest) {
+			m.IndexSnapshot.Artifacts = append(m.IndexSnapshot.Artifacts, IndexArtifactMetadata{Field: "text", Kind: "fts", File: m.IndexSnapshot.Artifacts[0].File})
+		}, expected: ErrManifestCorrupt},
 	}
 
 	for _, testCase := range tests {
@@ -208,5 +222,9 @@ func sampleManifest(generation uint64) Manifest {
 		IDMapGeneration:          5,
 		DeleteSnapshotGeneration: 6,
 		NextSegmentID:            5,
+		IndexSnapshot: &IndexSnapshotMetadata{
+			SchemaSHA256: strings.Repeat("a", 64), DocumentCount: 8, MaxDocumentID: 19,
+			Artifacts: []IndexArtifactMetadata{{Field: "embedding", Kind: "vector-2", File: "indexes/embedding.zvi"}},
+		},
 	}
 }

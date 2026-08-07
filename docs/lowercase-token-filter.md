@@ -35,8 +35,8 @@ codepoint/mapping pairs and verifies the SHA-256 recorded from the pinned
 utf8proc data, in addition to the C++ behavior fixture.
 
 This unit adds the reusable `TokenFilter` contract and lowercase primitive.
-Tokenizer-pipeline configuration, posting lists, FTS parsing, BM25, and
-Collection FTS execution remain separate v0.5 units.
+Tokenizer pipelines, posting lists, query parsing, BM25, and Collection FTS
+execution now compose it through `FTSIndexParams`.
 
 Verification includes ASCII, Latin, Cyrillic, Greek, Unicode 17 additions,
 simple-versus-full-case distinctions, malformed UTF-8, metadata and ownership,

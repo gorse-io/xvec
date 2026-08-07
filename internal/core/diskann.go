@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 	"slices"
 	"sync"
 
@@ -870,6 +869,13 @@ func (i *DiskANNIndex) Save(ctx context.Context, path string) error {
 // OpenDiskANNIndex opens and validates a complete artifact. cacheCapacity zero
 // disables node caching; workers zero lets the shared parallel helper choose.
 func OpenDiskANNIndex(ctx context.Context, path string, cacheCapacity, workers int) (*DiskANNIndex, error) {
+	return OpenDiskANNIndexWithMmap(ctx, path, cacheCapacity, workers, false)
+}
+
+// OpenDiskANNIndexWithMmap opens a complete artifact through either ordinary
+// file reads or a read-only memory mapping. The returned index owns the reader
+// and releases it from Close.
+func OpenDiskANNIndexWithMmap(ctx context.Context, path string, cacheCapacity, workers int, useMmap bool) (*DiskANNIndex, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil DiskANN open context")
 	}
@@ -882,18 +888,13 @@ func OpenDiskANNIndex(ctx context.Context, path string, cacheCapacity, workers i
 	if cacheCapacity < 0 || workers < 0 {
 		return nil, fmt.Errorf("%w: negative runtime option", ErrInvalidDiskANNOptions)
 	}
-	file, err := os.Open(path)
+	reader, err := ailego.OpenReaderAt(path, useMmap)
 	if err != nil {
 		return nil, fmt.Errorf("core: open DiskANN file: %w", err)
 	}
-	info, err := file.Stat()
+	index, err := openDiskANNIndexReader(ctx, reader, reader.Size(), cacheCapacity, workers, reader)
 	if err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("core: stat DiskANN file: %w", err)
-	}
-	index, err := openDiskANNIndexReader(ctx, file, info.Size(), cacheCapacity, workers, file)
-	if err != nil {
-		_ = file.Close()
+		_ = reader.Close()
 		return nil, err
 	}
 	return index, nil

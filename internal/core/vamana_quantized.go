@@ -56,6 +56,25 @@ func NewScalarQuantizedVamanaIndex(
 	return &ScalarQuantizedVamanaIndex{base: snapshot, vectors: vectors}, nil
 }
 
+// Save persists the immutable Vamana topology and original vectors. Scalar
+// codes are reconstructed deterministically when reopened.
+func (i *ScalarQuantizedVamanaIndex) Save(ctx context.Context, path string) error {
+	if i == nil || i.base == nil {
+		return errors.New("core: nil scalar-quantized Vamana index")
+	}
+	return i.base.Save(ctx, path)
+}
+
+// OpenScalarQuantizedVamanaIndex reopens a persisted topology and restores
+// scalar-code scoring.
+func OpenScalarQuantizedVamanaIndex(ctx context.Context, path string, kind Quantization, reformer DenseReformer) (*ScalarQuantizedVamanaIndex, error) {
+	base, err := OpenVamanaIndex(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return NewScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
+}
+
 func (i *ScalarQuantizedVamanaIndex) Dimension() int {
 	if i == nil || i.vectors == nil {
 		return 0
