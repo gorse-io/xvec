@@ -167,6 +167,50 @@ func (i *FTSQueryIterator) Advance(ctx context.Context, target uint32) bool {
 	}
 }
 
+// advanceCompetitive uses WAND pivot scheduling only when the root query is a
+// disjunction. Ordinary Advance deliberately remains an exact seek because a
+// disjunction may also be an optional child whose score its parent needs at an
+// already selected document.
+func (i *FTSQueryIterator) advanceCompetitive(ctx context.Context, target uint32, minScore float32) (bool, uint64) {
+	if !i.prepare(ctx) || i.root == nil {
+		return false, 0
+	}
+	root, ok := i.root.(*ftsOrDocumentIterator)
+	if !ok || minScore <= 0 {
+		return i.Advance(ctx, target), 0
+	}
+	if i.valid && i.documentID >= target {
+		return true, 0
+	}
+	var skips uint64
+	for {
+		documentID, found, candidateSkips, err := root.advanceCompetitive(ctx, target, minScore)
+		skips += candidateSkips
+		if err != nil {
+			i.fail(err)
+			return false, skips
+		}
+		if !found {
+			i.valid, i.score = false, 0
+			return false, skips
+		}
+		if !ftsDeleted(i.deletedWords, documentID) {
+			score, err := i.root.score(ctx)
+			if err != nil {
+				i.fail(err)
+				return false, skips
+			}
+			i.documentID, i.valid, i.score = documentID, true, score
+			return true, skips
+		}
+		if documentID == math.MaxUint32 {
+			i.valid, i.score = false, 0
+			return false, skips
+		}
+		target = documentID + 1
+	}
+}
+
 // Valid reports whether the iterator addresses a live match.
 func (i *FTSQueryIterator) Valid() bool { return i != nil && i.valid && i.err == nil }
 
@@ -284,11 +328,60 @@ func ftsIteratorBlockMaxInfo(iterator ftsDocumentIterator, target uint32) ftsBlo
 }
 
 func addFTSBlockMaxInfo(left, right ftsBlockMaxInfo) ftsBlockMaxInfo {
-	left.score += right.score
+	left.score = addFTSScoreBounds(left.score, right.score)
 	if right.lastDoc < left.lastDoc {
 		left.lastDoc = right.lastDoc
 	}
 	return left
+}
+
+// ftsIteratorMaxScore returns a query-specific global score upper bound. Term
+// bounds use BM25's tf-to-infinity limit; composites add their non-negative
+// scoring children. Unknown implementations disable WAND pruning.
+func ftsIteratorMaxScore(iterator ftsDocumentIterator) float32 {
+	switch typed := iterator.(type) {
+	case *ftsTermDocumentIterator:
+		return typed.maxScore()
+	case *ftsPhraseDocumentIterator:
+		if typed == nil || typed.conjunction == nil {
+			return 0
+		}
+		return ftsIteratorMaxScore(typed.conjunction)
+	case *ftsAndDocumentIterator:
+		if typed == nil {
+			return 0
+		}
+		var bound float32
+		for _, child := range typed.must {
+			bound = addFTSScoreBounds(bound, ftsIteratorMaxScore(child))
+		}
+		for _, child := range typed.should {
+			bound = addFTSScoreBounds(bound, ftsIteratorMaxScore(child))
+		}
+		return bound
+	case *ftsOrDocumentIterator:
+		if typed == nil {
+			return 0
+		}
+		var bound float32
+		for _, child := range typed.children {
+			bound = addFTSScoreBounds(bound, ftsIteratorMaxScore(child))
+		}
+		return bound
+	default:
+		return math.MaxFloat32
+	}
+}
+
+func addFTSScoreBounds(left, right float32) float32 {
+	sum := left + right
+	if math.IsNaN(float64(sum)) || math.IsInf(float64(sum), 0) {
+		return math.MaxFloat32
+	}
+	if sum > 0 && sum < math.MaxFloat32 {
+		return math.Nextafter32(sum, float32(math.Inf(1)))
+	}
+	return sum
 }
 
 type ftsTermDocumentIterator struct {
@@ -298,6 +391,34 @@ type ftsTermDocumentIterator struct {
 	boost           float32
 	blockMaxScores  []float32
 	blockMaxDecoded []bool
+}
+
+func (i *ftsTermDocumentIterator) maxScore() float32 {
+	if i == nil || i.scorer == nil || i.idf <= 0 || i.boost == 0 {
+		return 0
+	}
+	if math.IsNaN(float64(i.boost)) || math.IsInf(float64(i.boost), 0) {
+		return math.MaxFloat32
+	}
+	absBoost := i.boost
+	if absBoost < 0 {
+		absBoost = -absBoost
+	}
+	weightedIDF := absBoost * i.idf
+	if math.IsInf(float64(weightedIDF), 0) {
+		return math.MaxFloat32
+	}
+	weightedIDF = math.Nextafter32(weightedIDF, float32(math.Inf(1)))
+	normalization := math.Nextafter32(i.scorer.params.K1+1, float32(math.Inf(1)))
+	bound := weightedIDF * normalization
+	if math.IsNaN(float64(bound)) || math.IsInf(float64(bound), 0) {
+		return math.MaxFloat32
+	}
+	bound = math.Nextafter32(bound, float32(math.Inf(1)))
+	if i.boost < 0 {
+		return 0
+	}
+	return bound
 }
 
 func (i *ftsTermDocumentIterator) blockMaxInfo(target uint32) ftsBlockMaxInfo {
@@ -529,6 +650,14 @@ type ftsOrDocumentIterator struct {
 	started         bool
 	currentDocument uint32
 	valid           bool
+	wandPostings    []ftsWANDPosting
+	wandMaxScores   []float32
+}
+
+type ftsWANDPosting struct {
+	iterator   ftsDocumentIterator
+	documentID uint32
+	maxScore   float32
 }
 
 func (i *ftsOrDocumentIterator) next(ctx context.Context) (uint32, bool, error) {
@@ -565,6 +694,98 @@ func (i *ftsOrDocumentIterator) advance(ctx context.Context, target uint32) (uin
 		}
 	}
 	return i.minimum(ctx)
+}
+
+// advanceCompetitive returns the next candidate that can reach minScore by
+// global MaxScore WAND pivoting, followed by an exact block-max check at an
+// aligned pivot. It is intentionally separate from advance so parent
+// iterators retain exact seek behavior.
+func (i *ftsOrDocumentIterator) advanceCompetitive(ctx context.Context, target uint32, minScore float32) (uint32, bool, uint64, error) {
+	if err := ctx.Err(); err != nil {
+		i.valid = false
+		return 0, false, 0, err
+	}
+	if i.valid && i.currentDocument >= target {
+		return i.currentDocument, true, 0, nil
+	}
+	i.started, i.valid = true, false
+	if i.wandMaxScores == nil {
+		i.wandMaxScores = make([]float32, len(i.children))
+		for index, child := range i.children {
+			i.wandMaxScores[index] = ftsIteratorMaxScore(child)
+		}
+	}
+	var skips uint64
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, false, skips, err
+		}
+		i.wandPostings = i.wandPostings[:0]
+		for index, child := range i.children {
+			documentID, ok := child.current()
+			if !ok || documentID < target {
+				var err error
+				documentID, ok, err = child.advance(ctx, target)
+				if err != nil {
+					return 0, false, skips, err
+				}
+			}
+			if ok {
+				i.wandPostings = append(i.wandPostings, ftsWANDPosting{
+					iterator: child, documentID: documentID, maxScore: i.wandMaxScores[index],
+				})
+			}
+		}
+		if len(i.wandPostings) == 0 {
+			return 0, false, skips, nil
+		}
+		sortFTSWANDPostings(i.wandPostings)
+
+		partialMaxScore := float32(0)
+		pivotIndex := -1
+		for index := range i.wandPostings {
+			partialMaxScore = addFTSScoreBounds(partialMaxScore, i.wandPostings[index].maxScore)
+			if partialMaxScore >= minScore {
+				pivotIndex = index
+				break
+			}
+		}
+		if pivotIndex < 0 {
+			return 0, false, skips + 1, nil
+		}
+		pivotDocument := i.wandPostings[pivotIndex].documentID
+		if i.wandPostings[0].documentID < pivotDocument {
+			if _, _, err := i.wandPostings[0].iterator.advance(ctx, pivotDocument); err != nil {
+				return 0, false, skips, err
+			}
+			skips++
+			continue
+		}
+
+		block := ftsIteratorBlockMaxInfo(i, pivotDocument)
+		if block.score < minScore {
+			skips++
+			if block.lastDoc == math.MaxUint32 {
+				return 0, false, skips, nil
+			}
+			target = block.lastDoc + 1
+			continue
+		}
+		i.currentDocument, i.valid = pivotDocument, true
+		return pivotDocument, true, skips, nil
+	}
+}
+
+func sortFTSWANDPostings(postings []ftsWANDPosting) {
+	for index := 1; index < len(postings); index++ {
+		posting := postings[index]
+		position := index
+		for position > 0 && postings[position-1].documentID > posting.documentID {
+			postings[position] = postings[position-1]
+			position--
+		}
+		postings[position] = posting
+	}
 }
 
 func (i *ftsOrDocumentIterator) minimum(ctx context.Context) (uint32, bool, error) {

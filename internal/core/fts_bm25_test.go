@@ -294,6 +294,43 @@ func TestSearchFTSBlockMaxDoesNotHideNonFiniteScores(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidFTSSearch)
 }
 
+func TestSearchFTSWANDSkipsCandidatesBeforePivot(t *testing.T) {
+	documents := make([][]Token, 201)
+	documents[0] = repeatedFTSTestTokens("winner", 16)
+	for documentID := 1; documentID <= 128; documentID++ {
+		documents[documentID] = append(repeatedFTSTestTokens("low", 1), repeatedFTSTestTokens("filler", 63)...)
+	}
+	for documentID := 129; documentID < 200; documentID++ {
+		documents[documentID] = repeatedFTSTestTokens("filler", 1)
+	}
+	documents[200] = repeatedFTSTestTokens("future", 16)
+	for documentID := range documents {
+		for position := range documents[documentID] {
+			documents[documentID][position].Position = uint32(position)
+		}
+	}
+	dictionary := buildFTSTestDictionary(t, documents)
+	stats, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{{Dictionary: dictionary}})
+	require.NoError(t, err)
+	scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
+	require.NoError(t, err)
+	node := &FTSOrQueryNode{Flags: defaultFTSQueryModifier(), Children: []FTSQueryNode{
+		&FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: "winner"},
+		&FTSTermQueryNode{Flags: FTSQueryModifier{Boost: 0.05}, Term: "low"},
+		&FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: "future"},
+	}}
+	options := FTSSearchOptions{TopK: 1}
+
+	want := exhaustiveFTSSearchForTest(t, dictionary, node, scorer, options)
+	got, searchStats, err := searchFTSWithStats(context.Background(), dictionary, node, scorer, options)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	require.Equal(t, []uint32{0}, ftsResultDocumentIDs(got))
+	require.Positive(t, searchStats.wandSkips)
+	require.Equal(t, uint64(2), searchStats.scoredDocuments,
+		"WAND should jump from the first low-score candidate to the future pivot")
+}
+
 func repeatedFTSTestTokens(term string, count int) []Token {
 	tokens := make([]Token, count)
 	for position := range tokens {

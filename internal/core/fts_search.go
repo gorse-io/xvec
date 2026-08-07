@@ -52,6 +52,7 @@ func SearchFTS(ctx context.Context, dictionary *FTSTermDictionary, node FTSQuery
 type ftsSearchStats struct {
 	scoredDocuments uint64
 	blockMaxSkips   uint64
+	wandSkips       uint64
 }
 
 func searchFTSWithStats(ctx context.Context, dictionary *FTSTermDictionary, node FTSQueryNode, scorer *BM25Scorer, options FTSSearchOptions) ([]FTSResult, ftsSearchStats, error) {
@@ -100,7 +101,15 @@ func searchFTSWithStats(ctx context.Context, dictionary *FTSTermDictionary, node
 		if exhausted {
 			break
 		}
-		if !iterator.Advance(ctx, target) {
+		advanced := false
+		if len(results) == options.TopK {
+			var wandSkips uint64
+			advanced, wandSkips = iterator.advanceCompetitive(ctx, target, results[0].Score)
+			stats.wandSkips += wandSkips
+		} else {
+			advanced = iterator.Advance(ctx, target)
+		}
+		if !advanced {
 			break
 		}
 		stats.scoredDocuments++
