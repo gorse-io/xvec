@@ -49,10 +49,13 @@ children matching the same document. Excluded children never contribute.
 The original `NewFTSQueryIterator` remains a score-free exact iterator and
 returns zero from `Score`.
 
-`SearchFTS` runs exhaustive exact scoring and keeps a bounded top-k heap.
-Results use descending score and ascending document ID for deterministic ties.
-A zero `TopK` returns immediately after validating the dictionary and scorer.
-Non-positive scores are omitted, matching the baseline search boundary.
+`SearchFTS` keeps a bounded top-k heap and remains exact. Once that heap is
+full, it computes safe BM25 upper bounds lazily for the current 128-posting
+blocks and seeks past a shared document range only when its bound is strictly
+below the minimum competitive score. Results use descending score and ascending
+document ID for deterministic ties. A zero `TopK` returns immediately after
+validating the dictionary and scorer. Non-positive scores are omitted,
+matching the baseline search boundary.
 
 ```go
 results, err := core.SearchFTS(
@@ -69,9 +72,14 @@ results, err := core.SearchFTS(
 )
 ```
 
-This unit deliberately uses exhaustive scoring. WAND/block-max pruning is a
-performance optimization and is not encoded into the current posting format;
-it cannot change the deterministic result set and remains future work.
+Block maxima are derived from inline term frequency and document length using
+the query's deletion-aware global scorer. They are cached by each query-local
+term iterator, so no posting-format migration is required and separately
+searched segments retain comparable bounds. AND, optional, OR, and phrase
+trees add non-negative child bounds over the shortest shared range; negative
+clauses never contribute. A strict comparison preserves score ties and their
+ascending-document-ID order. Disjunctive WAND pivot scheduling remains a
+separate potential optimization.
 
 ## Native segment merge
 
@@ -135,5 +143,5 @@ go test ./internal/core -run '^$' -bench '^(BenchmarkSearchFTSBM25|BenchmarkMerg
 
 Collection Query and MultiQuery use deletion-aware BM25 and persist one FTS
 dictionary per immutable data segment. They aggregate global live-corpus stats
-without merging the dictionaries. Mixed vector/sparse/FTS fusion is available
-through MultiQuery; block-max pruning remains a later optimization.
+without merging the dictionaries. Mixed vector/sparse/FTS fusion and exact
+query-local block-max pruning are available through MultiQuery.

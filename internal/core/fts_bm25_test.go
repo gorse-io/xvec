@@ -188,6 +188,144 @@ func TestSearchFTSBM25BooleanPhraseBoostAndTopK(t *testing.T) {
 	}
 }
 
+func TestSearchFTSBlockMaxSkipsNonCompetitivePostingBlocks(t *testing.T) {
+	documents := make([][]Token, 256)
+	for documentID := range documents {
+		if documentID < 128 {
+			documents[documentID] = repeatedFTSTestTokens("target", 16)
+			continue
+		}
+		documents[documentID] = append(repeatedFTSTestTokens("target", 1), repeatedFTSTestTokens("filler", 63)...)
+		for position := range documents[documentID] {
+			documents[documentID][position].Position = uint32(position)
+		}
+	}
+	dictionary := buildFTSTestDictionary(t, documents)
+	stats, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{{Dictionary: dictionary}})
+	require.NoError(t, err)
+	scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
+	require.NoError(t, err)
+	node := &FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: "target"}
+
+	results, searchStats, err := searchFTSWithStats(context.Background(), dictionary, node, scorer, FTSSearchOptions{TopK: 1})
+	require.NoError(t, err)
+	require.Equal(t, []uint32{0}, ftsResultDocumentIDs(results))
+	require.Positive(t, searchStats.blockMaxSkips)
+	require.Equal(t, uint64(128), searchStats.scoredDocuments,
+		"the non-competitive second posting block should not be scored")
+}
+
+func TestSearchFTSBlockMaxMatchesExhaustiveBooleanAndPhraseSearch(t *testing.T) {
+	documents := make([][]Token, 640)
+	for documentID := range documents {
+		terms := make([]string, 0, 16)
+		for range 1 + documentID%5 {
+			terms = append(terms, "apple")
+		}
+		if documentID%2 == 0 {
+			terms = append(terms, "banana")
+		}
+		if documentID%3 == 0 {
+			terms = append(terms, "quick", "brown")
+		}
+		for range documentID % 9 {
+			terms = append(terms, "filler")
+		}
+		tokens := make([]Token, len(terms))
+		for position, term := range terms {
+			tokens[position] = Token{Text: term, Position: uint32(position)}
+		}
+		documents[documentID] = tokens
+	}
+	dictionary := buildFTSTestDictionary(t, documents)
+	deleted := ailego.NewBitmap(uint64(len(documents)))
+	for documentID := 17; documentID < len(documents); documentID += 71 {
+		deleted.Set(uint64(documentID))
+	}
+	stats, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{{Dictionary: dictionary, DeletedDocuments: deleted}})
+	require.NoError(t, err)
+	scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
+	require.NoError(t, err)
+	pipeline := newFTSStandardTestPipeline(t)
+	options := FTSSearchOptions{TopK: 7, FTSQueryExecutionOptions: FTSQueryExecutionOptions{DeletedDocuments: deleted}}
+
+	var totalSkips uint64
+	for _, query := range []string{
+		"apple", "apple OR banana", "apple AND banana", `"quick brown"`,
+		"+apple banana", "apple AND NOT banana",
+	} {
+		node, err := ParseFTSQuery(context.Background(), query, pipeline, FTSDefaultOperatorOR)
+		require.NoError(t, err)
+		want := exhaustiveFTSSearchForTest(t, dictionary, node, scorer, options)
+		got, searchStats, err := searchFTSWithStats(context.Background(), dictionary, node, scorer, options)
+		require.NoError(t, err)
+		require.Equal(t, want, got, query)
+		totalSkips += searchStats.blockMaxSkips
+	}
+	require.Positive(t, totalSkips)
+}
+
+func TestSearchFTSBlockMaxDoesNotHideNonFiniteScores(t *testing.T) {
+	documents := make([][]Token, 256)
+	for documentID := range documents {
+		if documentID < 128 {
+			documents[documentID] = repeatedFTSTestTokens("strong", 16)
+		} else {
+			documents[documentID] = append(repeatedFTSTestTokens("strong", 1), repeatedFTSTestTokens("filler", 63)...)
+		}
+		if documentID == 200 {
+			documents[documentID] = append(documents[documentID], Token{Text: "toxic"})
+		}
+		for position := range documents[documentID] {
+			documents[documentID][position].Position = uint32(position)
+		}
+	}
+	dictionary := buildFTSTestDictionary(t, documents)
+	stats, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{{Dictionary: dictionary}})
+	require.NoError(t, err)
+	scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
+	require.NoError(t, err)
+	node := &FTSOrQueryNode{Flags: defaultFTSQueryModifier(), Children: []FTSQueryNode{
+		&FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: "strong"},
+		&FTSTermQueryNode{Flags: FTSQueryModifier{Boost: -math.MaxFloat32}, Term: "toxic"},
+	}}
+
+	_, err = SearchFTS(context.Background(), dictionary, node, scorer, FTSSearchOptions{TopK: 1})
+	require.ErrorIs(t, err, ErrInvalidFTSSearch)
+}
+
+func repeatedFTSTestTokens(term string, count int) []Token {
+	tokens := make([]Token, count)
+	for position := range tokens {
+		tokens[position] = Token{Text: term, Position: uint32(position)}
+	}
+	return tokens
+}
+
+func exhaustiveFTSSearchForTest(
+	t testing.TB,
+	dictionary *FTSTermDictionary,
+	node FTSQueryNode,
+	scorer *BM25Scorer,
+	options FTSSearchOptions,
+) []FTSResult {
+	t.Helper()
+	iterator, err := NewFTSScoredQueryIterator(context.Background(), dictionary, node, scorer, options.FTSQueryExecutionOptions)
+	require.NoError(t, err)
+	results := make([]FTSResult, 0)
+	for iterator.Next(context.Background()) {
+		if iterator.Score() > 0 {
+			results = append(results, FTSResult{DocumentID: iterator.DocumentID(), Score: iterator.Score()})
+		}
+	}
+	require.NoError(t, iterator.Err())
+	sort.Slice(results, func(left, right int) bool { return ftsResultBetter(results[left], results[right]) })
+	if len(results) > options.TopK {
+		results = results[:options.TopK]
+	}
+	return results
+}
+
 func TestSearchFTSTiesDeletionAdvanceAndValidation(t *testing.T) {
 	dictionary := buildFTSTestDictionary(t, [][]Token{
 		{{Text: "same", Position: 0}},

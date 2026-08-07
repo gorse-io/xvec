@@ -87,8 +87,9 @@ structural corruption with repaired checksums, fuzzing, and benchmarks.
 
 BM25 scoring and native physical segment merging are documented separately.
 Collection integration, query lexing, AST canonicalization, boolean execution,
-and BM25 are implemented and documented separately. Block-max bounds remain a
-later optimization. No placeholder score is stored in this format.
+and BM25 are implemented and documented separately. Exact top-k search derives
+query-specific block-max bounds lazily from the inline tf/document-length
+payload, so no placeholder score is stored in this format.
 
 ```sh
 go test ./internal/core -run '^TestFTS|^TestAggregateFTS'

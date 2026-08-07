@@ -20,7 +20,7 @@ libraries.
 - Dense and sparse vector storage with exact and approximate nearest-neighbor search.
 - Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, and DiskANN indexes.
 - L2, inner-product, cosine, and MIPS-L2 metrics with optional quantization and refinement.
-- Scalar filtering, full-text search, grouping, and hybrid multi-query retrieval.
+- Scalar filtering, block-max BM25 full-text search, grouping, and hybrid multi-query retrieval.
 - Durable WAL-backed writes, crash recovery, segment-native incremental indexes, and atomic compaction.
 - Pure Go on Linux, macOS, and Windows.
 
