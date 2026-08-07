@@ -55,8 +55,8 @@ The vendored runtime and generated algorithms are covered by the Snowball
 BSD-3-Clause text in `NOTICE`.
 
 This unit provides the stemming primitive. Tokenizer-pipeline configuration,
-posting lists, FTS parsing, BM25, and Collection FTS execution remain separate
-v0.5 units.
+posting lists, query parsing, BM25, and Collection FTS execution now compose it
+through `FTSIndexParams`.
 
 ```sh
 go test ./internal/core -run '^TestStemmerTokenFilter|^TestSupportedStemmer'

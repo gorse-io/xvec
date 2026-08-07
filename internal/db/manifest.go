@@ -16,7 +16,9 @@ package db
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,21 +58,40 @@ type SegmentMetadata struct {
 	Files    []string `json:"files,omitempty"`
 }
 
+// IndexArtifactMetadata identifies one collection-snapshot index file. Kind is
+// interpreted by the public collection layer; the storage layer owns only its
+// portable path and publication lifecycle.
+type IndexArtifactMetadata struct {
+	Field string `json:"field"`
+	Kind  string `json:"kind"`
+	File  string `json:"file"`
+}
+
+// IndexSnapshotMetadata describes index artifacts built from one exact live
+// document snapshot. Older manifests omit this value and remain readable.
+type IndexSnapshotMetadata struct {
+	SchemaSHA256  string                  `json:"schema_sha256"`
+	DocumentCount uint64                  `json:"document_count"`
+	MaxDocumentID uint64                  `json:"max_document_id"`
+	Artifacts     []IndexArtifactMetadata `json:"artifacts,omitempty"`
+}
+
 // Manifest is one immutable collection metadata snapshot. Schema contains the
 // versioned JSON representation owned by the schema codec; the manifest layer
 // preserves it without importing the public package.
 type Manifest struct {
-	FormatVersion            uint32            `json:"format_version"`
-	Generation               uint64            `json:"generation"`
-	Schema                   json.RawMessage   `json:"schema"`
-	EnableMmap               bool              `json:"enable_mmap"`
-	SegmentMaxDocuments      uint64            `json:"segment_max_documents"`
-	PersistedSegments        []SegmentMetadata `json:"persisted_segments,omitempty"`
-	WritingSegment           *SegmentMetadata  `json:"writing_segment,omitempty"`
-	WritingSegmentStartDocID uint64            `json:"writing_segment_start_doc_id,omitempty"`
-	IDMapGeneration          uint64            `json:"id_map_generation"`
-	DeleteSnapshotGeneration uint64            `json:"delete_snapshot_generation"`
-	NextSegmentID            uint64            `json:"next_segment_id"`
+	FormatVersion            uint32                 `json:"format_version"`
+	Generation               uint64                 `json:"generation"`
+	Schema                   json.RawMessage        `json:"schema"`
+	EnableMmap               bool                   `json:"enable_mmap"`
+	SegmentMaxDocuments      uint64                 `json:"segment_max_documents"`
+	PersistedSegments        []SegmentMetadata      `json:"persisted_segments,omitempty"`
+	WritingSegment           *SegmentMetadata       `json:"writing_segment,omitempty"`
+	WritingSegmentStartDocID uint64                 `json:"writing_segment_start_doc_id,omitempty"`
+	IDMapGeneration          uint64                 `json:"id_map_generation"`
+	DeleteSnapshotGeneration uint64                 `json:"delete_snapshot_generation"`
+	NextSegmentID            uint64                 `json:"next_segment_id"`
+	IndexSnapshot            *IndexSnapshotMetadata `json:"index_snapshot,omitempty"`
 }
 
 // Clone returns a deep copy of m.
@@ -81,6 +102,11 @@ func (m Manifest) Clone() Manifest {
 	if m.WritingSegment != nil {
 		writing := cloneSegment(*m.WritingSegment)
 		clone.WritingSegment = &writing
+	}
+	if m.IndexSnapshot != nil {
+		snapshot := *m.IndexSnapshot
+		snapshot.Artifacts = slices.Clone(m.IndexSnapshot.Artifacts)
+		clone.IndexSnapshot = &snapshot
 	}
 	return clone
 }
@@ -130,6 +156,33 @@ func (m Manifest) Validate() error {
 	if len(m.PersistedSegments) > 0 || m.WritingSegment != nil {
 		if m.NextSegmentID <= maxSegmentID {
 			return fmt.Errorf("%w: next segment ID %d must exceed %d", ErrManifestCorrupt, m.NextSegmentID, maxSegmentID)
+		}
+	}
+	if m.IndexSnapshot != nil {
+		if len(m.IndexSnapshot.SchemaSHA256) != sha256.Size*2 {
+			return fmt.Errorf("%w: invalid index snapshot schema hash", ErrManifestCorrupt)
+		}
+		if _, err := hex.DecodeString(m.IndexSnapshot.SchemaSHA256); err != nil {
+			return fmt.Errorf("%w: invalid index snapshot schema hash: %v", ErrManifestCorrupt, err)
+		}
+		seenArtifacts := make(map[string]struct{}, len(m.IndexSnapshot.Artifacts))
+		seenFiles := make(map[string]struct{}, len(m.IndexSnapshot.Artifacts))
+		for index, artifact := range m.IndexSnapshot.Artifacts {
+			if artifact.Field == "" || artifact.Kind == "" {
+				return fmt.Errorf("%w: index artifact %d has an empty field or kind", ErrManifestCorrupt, index)
+			}
+			if err := validatePortableRelativePath(artifact.File); err != nil {
+				return fmt.Errorf("%w: index artifact %d: %v", ErrManifestCorrupt, index, err)
+			}
+			key := artifact.Field + "\x00" + artifact.Kind
+			if _, duplicate := seenArtifacts[key]; duplicate {
+				return fmt.Errorf("%w: duplicate index artifact for field %q kind %q", ErrManifestCorrupt, artifact.Field, artifact.Kind)
+			}
+			seenArtifacts[key] = struct{}{}
+			if _, duplicate := seenFiles[artifact.File]; duplicate {
+				return fmt.Errorf("%w: duplicate index artifact file %q", ErrManifestCorrupt, artifact.File)
+			}
+			seenFiles[artifact.File] = struct{}{}
 		}
 	}
 	return nil

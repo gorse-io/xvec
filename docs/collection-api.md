@@ -34,8 +34,11 @@ Its `Projection` separates scalar selection from vector inclusion: nil output
 fields select all scalar fields, an empty non-nil slice selects none, and
 `IncludeVectors` controls all vector fields.
 
-`Query` accepts either an explicit dense or sparse vector matching the target
-field. Flat search is exact. Dense HNSW, HNSW-RaBitQ, IVF, Vamana, and DiskANN
+`Query` is the unified single-branch API. It accepts an explicit dense or
+sparse vector, resolves a vector from `PrimaryKey`, executes one `FTS` clause,
+or performs a filter-only query when no target and no field are supplied.
+Filter-only results use ascending document-ID order and zero scores. Flat
+search is exact. Dense HNSW, HNSW-RaBitQ, IVF, Vamana, and DiskANN
 plus sparse inner-product HNSW use their matching native Go runtimes; an explicit
 `Linear` query scans the matching representation for truth comparisons. Query
 parameters expose EF or NProbe, metric-aware radius, SQL scalar filters,
@@ -56,8 +59,8 @@ non-Linear group-by rejection; the library never silently substitutes a full
 scan for those algorithms. HNSW group-by with `UseRefiner` requires explicit
 `Linear` execution.
 
-`MultiQuery` evaluates two or more dense-vector, sparse-vector, or FTS
-branches over one immutable live snapshot with a shared SQL filter. A nil
+`MultiQuery` evaluates two or more dense-vector, sparse-vector, primary-key
+vector, or FTS branches over one immutable live snapshot with a shared SQL filter. A nil
 reranker selects reciprocal-rank fusion; weighted score fusion and a
 context-aware callback adapter are also available. FTS branches use configured
 tokenizers and filters, exact boolean/phrase execution, and deletion-aware BM25
@@ -79,11 +82,14 @@ apply to Flat, HNSW, IVF, Vamana, and DiskANN. On DiskANN, public scalar codes
 determine first-stage scores and feed the separately configured internal PQ
 used for graph traversal; exact refinement continues to use original vectors.
 
-Collection ANN indexes are currently rebuilt from the durable live snapshot
-for each query and DDL validation. The standalone checksummed IVF, HNSW,
-HNSW-RaBitQ, Vamana, and DiskANN formats are not yet collection-segment
-artifacts. This preserves deterministic reopen behavior but makes runtime
-index construction part of current query latency.
+Collection indexes are cached for the exact live schema/document snapshot, so
+repeated Query, MultiQuery, and GroupByQuery calls reuse vector, FTS, and
+INVERT state until a mutation changes that snapshot. `Flush` and `Optimize`
+publish checksummed HNSW, HNSW-RaBitQ, IVF, Vamana, DiskANN, sparse HNSW, FTS,
+and INVERT artifacts together with snapshot identity in the manifest. Reopen
+loads matching artifacts and automatically rebuilds when opening an older
+format-1 manifest that has no index snapshot. DiskANN uses the collection's
+persisted `EnableMmap` option for its immutable random-access artifact.
 
 WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
 publishes an immutable segment and rotates the WAL. `Open` can acquire either

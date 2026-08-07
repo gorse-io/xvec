@@ -133,5 +133,6 @@ go test ./internal/core -run '^$' -fuzz '^FuzzMergeFTSTermDictionaries$'
 go test ./internal/core -run '^$' -bench '^(BenchmarkSearchFTSBM25|BenchmarkMergeFTSTermDictionaries)$' -benchmem
 ```
 
-Collection FTS persistence/query wiring, cross-segment top-k orchestration,
-and mixed vector/sparse/FTS query fusion remain subsequent v0.5 units.
+Collection Query and MultiQuery now use deletion-aware BM25 and persist an FTS
+dictionary for each exact live snapshot. Mixed vector/sparse/FTS fusion is
+available through MultiQuery; block-max pruning remains a later optimization.

@@ -22,13 +22,10 @@ return `NotSupported`.
 
 INT4 retains the schema-level even-dimension requirement. Optional FHT/Kac
 rotation is accepted only with INT8 or INT4, as required by public parameter
-validation. Because collection ANN artifacts are not segment-native yet, the
-runtime derives deterministic rotation signs from the schema and field
-identity and rebuilds a query-local index from the durable live-document
-snapshot. Reopen therefore produces identical codes and results. The
-standalone native IVF, HNSW, HNSW-RaBitQ, Vamana, and DiskANN persistence
-formats remain available internally; connecting those artifacts directly to
-collection segments is a later lifecycle optimization.
+validation. The runtime derives deterministic rotation signs from the schema
+and field identity. It caches one index set for the exact live snapshot, while
+Flush and Optimize publish native IVF, HNSW, HNSW-RaBitQ, Vamana, and DiskANN
+artifacts for reopen. Older manifests rebuild them from durable documents.
 
 DiskANN accepts public FP16, INT8, and INT4 `Quantize` settings on FP32 fields.
 The scalar representation supplies graph-build vectors and public first-stage

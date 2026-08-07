@@ -46,10 +46,8 @@ The generated category ranges are covered by the Unicode License V3 notice in
 `NOTICE`. The compatibility fixture records the pinned C++ tokenizer source,
 utf8proc commit, Unicode version, and data hashes.
 
-This unit provides ngram tokenization only. Token filters, posting lists, FTS
-parsing, BM25, and Collection FTS execution remain separate v0.5 units and
-continue to return `ErrNotSupported` at their existing public operation
-boundaries.
+Ngram tokenization now composes with token filters, posting lists, query
+parsing, BM25, and Collection FTS execution through `FTSIndexParams`.
 
 Verification includes fixed cross-language fixtures, Unicode 17 additions,
 category boundaries and exclusions, NUL and malformed UTF-8, cancellation,

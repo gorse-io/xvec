@@ -41,10 +41,8 @@ The checked-in Unicode tables are derived from Unicode Character Database
 compatibility fixture records both pinned C++ source hashes, preventing an
 unreviewed Unicode-data or baseline change.
 
-This unit provides standard tokenization only. Token filters, posting lists,
-FTS parsing, BM25, and Collection FTS execution remain separate v0.5 units and
-continue to return `ErrNotSupported` at their existing public operation
-boundaries.
+Standard tokenization now composes with token filters, posting lists, query
+parsing, BM25, and Collection FTS execution through `FTSIndexParams`.
 
 Verification includes the pinned fixture, script and emoji behavior matrices,
 invalid UTF-8, cancellation, randomized source-range invariants, an example,

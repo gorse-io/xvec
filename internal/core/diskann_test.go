@@ -402,6 +402,12 @@ func TestDiskANNPersistenceRoundTripSearchCacheAndReplace(t *testing.T) {
 	got, err := opened.SearchDiskANN(context.Background(), query, search)
 	require.NoError(t, err)
 	require.Equal(t, want, got)
+	mapped, err := OpenDiskANNIndexWithMmap(context.Background(), path, 24, 4, true)
+	require.NoError(t, err)
+	mappedResults, err := mapped.SearchDiskANN(context.Background(), query, search)
+	require.NoError(t, err)
+	require.Equal(t, want, mappedResults)
+	require.NoError(t, mapped.Close())
 	{
 		warmed, err := opened.WarmCache(context.Background(), 10)
 		require.NoError(t, err)

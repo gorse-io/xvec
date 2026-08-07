@@ -1,0 +1,53 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  critical-formats:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - package: .
+            target: FuzzCollectionSchemaCodec
+          - package: .
+            target: FuzzDocumentPayload
+          - package: ./internal/db
+            target: FuzzUnmarshalManifest
+          - package: ./internal/db
+            target: FuzzScanWAL
+          - package: ./internal/db
+            target: FuzzDecodeSegment
+          - package: ./internal/db
+            target: FuzzDecodeSnapshot
+          - package: ./internal/db/sql
+            target: FuzzParseFilter
+          - package: ./internal/db/sql
+            target: FuzzOpenInvertedIndex
+          - package: ./internal/core
+            target: FuzzParseFTSQuery
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Fuzz ${{ matrix.target }}
+        shell: bash
+        run: >-
+          go test '${{ matrix.package }}' -run '^$'
+          -fuzz '^${{ matrix.target }}$' -fuzztime=60s -timeout=5m

@@ -131,8 +131,8 @@ concurrency, fuzzing, and resource bounds.
 
 `NewFTSQueryIterator` intentionally remains score-free;
 `NewFTSScoredQueryIterator`, BM25 top-k search, and physical FTS index merging
-are documented separately. Block-max pruning and Collection integration remain
-subsequent v0.5 work.
+are documented separately. Collection Query and MultiQuery integration is
+complete; block-max pruning remains a later optimization.
 
 ```sh
 go test ./internal/core -run '^Test(FTSQuery|LexFTS|ParseFTS|AnalyzeFTS|FTSTokenizer)'

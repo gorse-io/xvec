@@ -30,10 +30,8 @@ tokenizer := core.NewWhitespaceTokenizer()
 tokens, err := tokenizer.Tokenize(ctx, "  Go\t向量 search")
 ```
 
-This unit provides tokenization only. Token filters, posting lists, FTS query
-parsing, BM25, and Collection FTS execution remain separate v0.5 units and
-continue to return `ErrNotSupported` at their existing public operation
-boundaries.
+Whitespace tokenization now composes with token filters, posting lists, query
+parsing, BM25, and Collection FTS execution through `FTSIndexParams`.
 
 Verification includes fixed byte-offset fixtures, all delimiter bytes,
 Unicode and invalid-UTF-8 preservation, cancellation, fuzzed partition

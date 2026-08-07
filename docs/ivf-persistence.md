@@ -2,9 +2,8 @@
 
 This v0.3 unit gives the IVF index its first native Go disk format.
 The artifact is intentionally independent from the C++ collection layout and
-cannot be opened by either implementation. Collection-level IVF remains
-disabled until the following incremental-write and orchestration units are
-complete.
+cannot be opened by either implementation. Collection-level IVF query,
+backfill, Flush/Optimize publication, and reopen are implemented.
 
 ## File contract
 

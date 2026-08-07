@@ -17,6 +17,13 @@ current writing segment. Readers still derive that value for older manifests;
 the explicit field prevents ID reuse when a rewrite reclaims the highest
 deleted or superseded versions.
 
+An optional index snapshot records the schema SHA-256, live document count,
+maximum live document ID, and field/kind/file metadata for immutable files in
+`indexes/`. The identity must match the decoded live snapshot before any file
+is opened. Older format-1 manifests omit this object and rebuild indexes from
+documents, so adding physical index artifacts does not require a disk-format
+version change.
+
 `CURRENT` is the commit point. It is itself framed and checksummed and names one
 manifest. Publication writes and synchronizes the immutable manifest first,
 then writes a synchronized temporary pointer and atomically installs or replaces
@@ -89,9 +96,11 @@ point: a crash before replacement recovers the old WAL, while a crash after
 replacement has every file needed by the new version. An empty flush only
 synchronizes the WAL and does not create a new manifest generation.
 
-Artifact names include their segment or snapshot generation. A failed retry
-never overwrites an immutable file. Unreferenced artifacts and higher-numbered
-orphan manifests are ignored during recovery.
+Artifact names are unique and immutable. After segment publication, Flush
+builds the exact live-snapshot vector, FTS, and INVERT artifacts and publishes
+their metadata in another atomic manifest generation. A failed retry never
+overwrites an immutable file. Unreferenced artifacts and higher-numbered orphan
+manifests are ignored during recovery.
 
 Schema-changing data rewrites use the same commit protocol. The writer builds
 new immutable segments from the complete live snapshot, writes fresh
@@ -112,6 +121,13 @@ WAL, WAL-lock, and snapshot naming schemes are removed and their directories
 are synchronized. Unknown files and manifest generations are never selected
 for pruning. A crash during pruning leaves only harmless unreferenced files;
 even a no-op Optimize retries the cleanup.
+
+HNSW, HNSW-RaBitQ, IVF, Vamana, DiskANN, sparse HNSW, FTS dictionaries, and
+INVERT postings have checksummed native artifacts. DiskANN retains its file or
+read-only mapping for random access until the collection closes; the persisted
+collection `EnableMmap` option selects that reader. Other formats decode into
+immutable memory before serving queries. Obsolete `indexes/*.zvi` files are
+pruned only after a newer manifest becomes authoritative.
 
 ## DDL and Optimize crash boundary
 
