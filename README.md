@@ -175,6 +175,7 @@ projections, ANN parameters, grouping, and refinement.
 - [Runtime configuration](docs/runtime-config.md)
 - [Native Go disk format](docs/disk-format.md)
 - [Disk compatibility and migrations](docs/disk-compatibility.md)
+- [VectorDBBench-compatible Go benchmark](cmd/vector-db-bench/README.md)
 
 ## Compatibility
 
