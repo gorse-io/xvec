@@ -17,12 +17,13 @@ current writing segment. Readers still derive that value for older manifests;
 the explicit field prevents ID reuse when a rewrite reclaims the highest
 deleted or superseded versions.
 
-An optional index snapshot records the schema SHA-256, live document count,
-maximum live document ID, and field/kind/file metadata for immutable files in
-`indexes/`. The identity must match the decoded live snapshot before any file
-is opened. Older format-1 manifests omit this object and rebuild indexes from
-documents, so adding physical index artifacts does not require a disk-format
-version change.
+Optional segment index snapshots record the schema SHA-256, owning segment ID,
+document count and bounds, and field/kind/file metadata for immutable files in
+`indexes/`. Every identity component must match before a file is opened. The
+older optional collection-wide index snapshot remains readable for format-1
+compatibility and is replaced on the next Flush or Optimize. Manifests with no
+index metadata rebuild from segment documents, so this addition does not
+require a disk-format version change.
 
 `CURRENT` is the commit point. It is itself framed and checksummed and names one
 manifest. Publication writes and synchronizes the immutable manifest first,
@@ -61,7 +62,8 @@ codec version, segment and document-ID range, document count, payload length,
 payload CRC32C, and header CRC32C. Records are stored in contiguous document-ID
 order and contain the primary key plus an opaque schema-coded document payload.
 Each record also checksums its key and payload. The first file listed for a
-segment in the manifest is its data file; later index files can follow it.
+segment in the manifest is its data file. Index artifacts are referenced by the
+top-level segment index snapshots so the segment data-file contract is stable.
 
 The opaque document payload inside a segment is itself a versioned `ZVECDOC`
 frame. Its header stores codec version, field count, payload length, payload
@@ -97,8 +99,9 @@ replacement has every file needed by the new version. An empty flush only
 synchronizes the WAL and does not create a new manifest generation.
 
 Artifact names are unique and immutable. After segment publication, Flush
-builds the exact live-snapshot vector, FTS, and INVERT artifacts and publishes
-their metadata in another atomic manifest generation. A failed retry never
+builds vector, FTS, and INVERT artifacts only for newly immutable segments and
+publishes their metadata in another atomic manifest generation. Metadata and
+files for unchanged segments are reused exactly. A failed retry never
 overwrites an immutable file. Unreferenced artifacts and higher-numbered orphan
 manifests are ignored during recovery.
 

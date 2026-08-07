@@ -74,8 +74,8 @@ Per-record CRC remains a second random-read integrity boundary after open.
 Dense collection fields accept `DiskANNIndexParams` and
 `DiskANNQueryParams`. Query, filters, radius, projection, Linear, refinement,
 CreateIndex backfill, DropIndex, Optimize, Stats completeness, and Close/reopen
-are connected. Until ANN artifacts become segment-native, Collection rebuilds
-the deterministic runtime index from its durable live-document snapshot.
+are connected. Collection persists one DiskANN artifact per immutable segment
+and rebuilds only the WAL-backed mutable segment while it changes.
 
 FP32 collection fields may select public FP16, INT8, or INT4 scalar
 quantization. INT8 and INT4 may additionally enable the deterministic FHT/Kac
@@ -86,8 +86,8 @@ frontier codes, visited candidates receive scalar-code scores, and
 `UseRefiner` reranks retained candidates against the unmodified original
 vectors. Linear execution uses the same scalar representation without the
 graph, so it is a deterministic first-stage truth path. Writes and CreateIndex
-backfills reject unrepresentable values before publishing state; Optimize and
-reopen reconstruct both layers from the durable snapshot.
+backfills reject unrepresentable values before publishing state; Optimize
+rebuilds replacement segments and reopen maps each matching immutable artifact.
 
 ## Verification
 

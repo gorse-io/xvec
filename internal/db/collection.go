@@ -75,6 +75,15 @@ type CollectionStore struct {
 	wal      *WAL
 }
 
+// SegmentSnapshot is an owned, stable view used by the collection index layer.
+// Immutable snapshots correspond to PersistedSegments; the final mutable
+// snapshot corresponds to the current WAL-backed writing segment.
+type SegmentSnapshot struct {
+	Metadata  SegmentMetadata
+	Documents []StoredDocument
+	Mutable   bool
+}
+
 // CreateCollection creates a native Go collection and returns its sole writer.
 func CreateCollection(ctx context.Context, dir string, schema json.RawMessage, options CollectionOptions) (*CollectionStore, error) {
 	if ctx == nil {
@@ -358,6 +367,38 @@ func (c *CollectionStore) LiveDocuments(ctx context.Context) ([]StoredDocument, 
 	return c.manager.LiveDocuments(ctx)
 }
 
+// SegmentSnapshots returns retained documents grouped by physical segment.
+// Logical deletions and superseded versions remain present so immutable index
+// artifacts never need rewriting; query-time live masks exclude them.
+func (c *CollectionStore) SegmentSnapshots(ctx context.Context) ([]SegmentSnapshot, error) {
+	if c == nil {
+		return nil, errors.New("db: nil collection")
+	}
+	if ctx == nil {
+		return nil, errors.New("db: nil segment-snapshot context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.closed {
+		return nil, ErrCollectionClosed
+	}
+	segments := c.manager.ImmutableSegments()
+	snapshots := make([]SegmentSnapshot, 0, len(segments)+1)
+	for _, segment := range segments {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, SegmentSnapshot{Metadata: segment.Metadata(), Documents: segment.Documents()})
+	}
+	if writing := c.manager.Writing(); writing != nil {
+		snapshots = append(snapshots, SegmentSnapshot{Metadata: writing.Metadata(), Documents: writing.Documents(), Mutable: true})
+	}
+	return snapshots, nil
+}
+
 // DocumentCount returns the number of live primary keys in memory.
 func (c *CollectionStore) DocumentCount() uint64 {
 	return c.Stats().DocumentCount
@@ -467,6 +508,11 @@ func (c *CollectionStore) PruneObsoleteArtifacts(ctx context.Context) error {
 	}
 	if manifest.IndexSnapshot != nil {
 		for _, artifact := range manifest.IndexSnapshot.Artifacts {
+			keepRelative(artifact.File)
+		}
+	}
+	for _, snapshot := range manifest.SegmentIndexSnapshots {
+		for _, artifact := range snapshot.Artifacts {
 			keepRelative(artifact.File)
 		}
 	}
@@ -844,6 +890,52 @@ func (c *CollectionStore) PublishIndexSnapshot(ctx context.Context, snapshot *In
 	return committed, publishErr
 }
 
+// PublishSegmentIndexSnapshots atomically installs immutable per-segment index
+// metadata and clears the legacy collection-wide index snapshot. Artifacts
+// must already exist as regular files below the collection directory.
+func (c *CollectionStore) PublishSegmentIndexSnapshots(ctx context.Context, snapshots []SegmentIndexSnapshotMetadata) (committed bool, err error) {
+	if c == nil {
+		return false, errors.New("db: nil collection")
+	}
+	if ctx == nil {
+		return false, errors.New("db: nil publish segment indexes context")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	snapshots = cloneSegmentIndexSnapshots(snapshots)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.requireWritableLocked(); err != nil {
+		return false, err
+	}
+	current := c.versions.Current()
+	if current.IndexSnapshot == nil && reflect.DeepEqual(current.SegmentIndexSnapshots, snapshots) {
+		return false, nil
+	}
+	next := current.Clone()
+	next.IndexSnapshot = nil
+	next.SegmentIndexSnapshots = snapshots
+	if err := next.Validate(); err != nil {
+		return false, err
+	}
+	for _, snapshot := range snapshots {
+		for _, artifact := range snapshot.Artifacts {
+			path := collectionPath(c.dir, artifact.File)
+			info, statErr := os.Lstat(path)
+			if statErr != nil {
+				return false, fmt.Errorf("db: inspect segment index artifact %q: %w", artifact.File, statErr)
+			}
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return false, fmt.Errorf("db: segment index artifact %q is not a regular file", artifact.File)
+			}
+		}
+	}
+	_, publishErr := c.versions.Publish(ctx, next)
+	committed = c.versions.Current().Generation != current.Generation
+	return committed, publishErr
+}
+
 // RewriteDocuments atomically replaces every live document payload together
 // with the collection schema. Document IDs and primary keys must exactly match
 // the current live snapshot in ascending document-ID order. Superseded and
@@ -1033,6 +1125,7 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 	nextManifest := current.Clone()
 	nextManifest.Schema = slices.Clone(schema)
 	nextManifest.PersistedSegments = segmentMetadata
+	nextManifest.SegmentIndexSnapshots = nil
 	nextManifest.WritingSegment = &SegmentMetadata{ID: writingID, Files: []string{walRelative}}
 	nextManifest.WritingSegmentStartDocID = nextDocID
 	nextManifest.IDMapGeneration = snapshotGeneration

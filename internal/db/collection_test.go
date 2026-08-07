@@ -79,6 +79,43 @@ func TestCollectionPublishIndexSnapshotAndPrune(t *testing.T) {
 	require.NoError(t, store.Close())
 }
 
+func TestCollectionPublishSegmentIndexSnapshotsAndPrune(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{SegmentMaxDocuments: 4})
+	require.NoError(t, err)
+	_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "a", Payload: []byte("a")}})
+	require.NoError(t, err)
+	require.NoError(t, store.Flush(ctx))
+
+	indexDirectory := filepath.Join(dir, "indexes")
+	require.NoError(t, os.MkdirAll(indexDirectory, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(indexDirectory, "segment.zvi"), []byte("segment"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(indexDirectory, "obsolete.zvi"), []byte("obsolete"), 0o600))
+	segment := store.Manifest().PersistedSegments[0]
+	snapshots := []SegmentIndexSnapshotMetadata{{
+		SegmentID: segment.ID, SchemaSHA256: strings.Repeat("a", 64),
+		DocumentCount: segment.DocCount, MinDocumentID: segment.MinDocID, MaxDocumentID: segment.MaxDocID,
+		Artifacts: []IndexArtifactMetadata{{Field: "embedding", Kind: "vector-2", File: "indexes/segment.zvi"}},
+	}}
+	committed, err := store.PublishSegmentIndexSnapshots(ctx, snapshots)
+	require.NoError(t, err)
+	require.True(t, committed)
+	require.Equal(t, snapshots, store.Manifest().SegmentIndexSnapshots)
+	snapshots[0].Artifacts[0].File = "changed"
+	require.Equal(t, "indexes/segment.zvi", store.Manifest().SegmentIndexSnapshots[0].Artifacts[0].File)
+
+	committed, err = store.PublishSegmentIndexSnapshots(ctx, store.Manifest().SegmentIndexSnapshots)
+	require.NoError(t, err)
+	require.False(t, committed)
+	require.NoError(t, store.PruneObsoleteArtifacts(ctx))
+	_, err = os.Stat(filepath.Join(indexDirectory, "obsolete.zvi"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+	_, err = os.Stat(filepath.Join(indexDirectory, "segment.zvi"))
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+}
+
 func TestCollectionCreateRecoverFlushAndContinue(t *testing.T) {
 	dir := t.TempDir()
 	store, err := CreateCollection(context.Background(), dir, testCollectionSchema, CollectionOptions{SegmentMaxDocuments: 4})

@@ -90,8 +90,9 @@ structured internal errors.
 
 ## Storage boundary
 
-MultiQuery reuses the collection's exact-snapshot runtime cache. `Flush` and
-`Optimize` publish vector, FTS, and INVERT files with matching manifest
-identity, and reopen loads those artifacts instead of retraining them. Older
-format-1 collections without index metadata rebuild safely. The native Go
-format does not read C++ collection files.
+MultiQuery reuses the collection's per-segment runtime cache. `Flush` publishes
+vector, FTS, and INVERT files only for newly immutable segments; reopen loads
+matching artifacts instead of retraining them. Segment-local branches are
+merged globally, and deletion masks prevent superseded versions from becoming
+candidates. Older format-1 collections without segment metadata rebuild safely.
+The native Go format does not read C++ collection files.

@@ -387,8 +387,11 @@ func TestCollectionPersistsAndReopensSnapshotIndexes(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, collection.Flush(ctx))
 
-	snapshot := collection.store.Manifest().IndexSnapshot
-	require.NotNil(t, snapshot)
+	manifest := collection.store.Manifest()
+	require.Nil(t, manifest.IndexSnapshot)
+	require.Len(t, manifest.SegmentIndexSnapshots, 1)
+	snapshot := manifest.SegmentIndexSnapshots[0]
+	require.Equal(t, manifest.PersistedSegments[0].ID, snapshot.SegmentID)
 	require.Equal(t, uint64(3), snapshot.DocumentCount)
 	require.Len(t, snapshot.Artifacts, 4)
 	artifactKinds := make(map[string]string)
@@ -433,6 +436,76 @@ func TestCollectionPersistsAndReopensSnapshotIndexes(t *testing.T) {
 	defer collection.Close()
 	_, err = collection.Query(ctx, VectorQuery{Filter: "rating >= 2", TopK: 10})
 	require.ErrorIs(t, err, dbsql.ErrCorruptInvertedIndex)
+}
+
+func TestCollectionSegmentNativeIndexesAreIncremental(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "segment-native-indexes")
+	hnsw := NewHNSWIndexParams(MetricTypeIP)
+	hnsw.M, hnsw.EFConstruction = 4, 16
+	schema := NewCollectionSchema("segment_native_indexes",
+		FieldSchema{Name: "text", DataType: DataTypeString, Index: NewFTSIndexParams()},
+		FieldSchema{Name: "rating", DataType: DataTypeInt32, Index: NewInvertIndexParams()},
+		FieldSchema{Name: "category", DataType: DataTypeString},
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: hnsw},
+	)
+	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
+	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+	require.NoError(t, err)
+	_, err = collection.Insert(ctx, []Document{{
+		PrimaryKey: "a", Fields: map[string]any{
+			"text": "red apple", "rating": int32(1), "category": "red", "embedding": VectorFP32{1, 0},
+		},
+	}})
+	require.NoError(t, err)
+	require.NoError(t, collection.Flush(ctx))
+	firstSnapshot := collection.store.Manifest().SegmentIndexSnapshots[0]
+	require.Len(t, firstSnapshot.Artifacts, 3)
+
+	_, err = collection.Insert(ctx, []Document{{
+		PrimaryKey: "b", Fields: map[string]any{
+			"text": "green apple", "rating": int32(2), "category": "green", "embedding": VectorFP32{0.8, 0.2},
+		},
+	}})
+	require.NoError(t, err)
+	require.NoError(t, collection.Flush(ctx))
+	manifest := collection.store.Manifest()
+	require.Len(t, manifest.SegmentIndexSnapshots, 2)
+	require.Equal(t, firstSnapshot, manifest.SegmentIndexSnapshots[0], "publishing a new segment rebuilt the old segment artifacts")
+	require.NoError(t, collection.Close())
+
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	require.NoError(t, err)
+	defer collection.Close()
+	results, err := collection.Query(ctx, VectorQuery{Field: "text", FTS: &FTSClause{Match: "apple"}, TopK: 10})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, documentKeys(results))
+	require.Equal(t, uint64(2), collection.indexBuildCount)
+	firstRuntime := collection.segmentIndexes[manifest.PersistedSegments[0].ID]
+	secondRuntime := collection.segmentIndexes[manifest.PersistedSegments[1].ID]
+	require.NotNil(t, firstRuntime)
+	require.NotNil(t, secondRuntime)
+
+	_, err = collection.Update(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{
+		"text": "red berry", "rating": int32(3),
+	}}})
+	require.NoError(t, err)
+	results, err = collection.Query(ctx, VectorQuery{Field: "text", FTS: &FTSClause{Match: "apple"}, TopK: 10})
+	require.NoError(t, err)
+	require.Equal(t, []string{"b"}, documentKeys(results), "stale segment versions must be filtered before BM25 merge")
+	require.Equal(t, uint64(3), collection.indexBuildCount, "only the new mutable segment should be built")
+	require.Same(t, firstRuntime, collection.segmentIndexes[manifest.PersistedSegments[0].ID])
+	require.Same(t, secondRuntime, collection.segmentIndexes[manifest.PersistedSegments[1].ID])
+
+	results, err = collection.Query(ctx, VectorQuery{TopK: 10, Filter: "rating >= 3"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a"}, documentKeys(results))
+	groups, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
+		Field: "embedding", DenseVector: VectorFP32{1, 0}, GroupByField: "category",
+		GroupCount: 2, TopKPerGroup: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, groups, 2)
 }
 
 func TestCollectionScalarQuantizedDiskANNDirectSchema(t *testing.T) {

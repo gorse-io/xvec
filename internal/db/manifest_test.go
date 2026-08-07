@@ -46,6 +46,7 @@ func TestManifestCloneIsIndependent(t *testing.T) {
 	clone.PersistedSegments[0].Files[0] = "changed"
 	clone.WritingSegment.Files[0] = "changed"
 	clone.IndexSnapshot.Artifacts[0].File = "changed"
+	clone.SegmentIndexSnapshots[0].Artifacts[0].File = "changed"
 	require.False(t, json.Valid(clone.Schema),
 		"schema clone shares storage")
 	require.True(t, json.Valid(original.Schema),
@@ -56,6 +57,8 @@ func TestManifestCloneIsIndependent(t *testing.T) {
 		"writing segment clone shares files")
 	require.False(t, original.IndexSnapshot.Artifacts[0].File == "changed",
 		"index snapshot clone shares artifacts")
+	require.False(t, original.SegmentIndexSnapshots[0].Artifacts[0].File == "changed",
+		"segment index snapshot clone shares artifacts")
 }
 
 func TestManifestValidation(t *testing.T) {
@@ -92,6 +95,20 @@ func TestManifestValidation(t *testing.T) {
 		}, expected: ErrManifestCorrupt},
 		{name: "duplicate index file", mutate: func(m *Manifest) {
 			m.IndexSnapshot.Artifacts = append(m.IndexSnapshot.Artifacts, IndexArtifactMetadata{Field: "text", Kind: "fts", File: m.IndexSnapshot.Artifacts[0].File})
+		}, expected: ErrManifestCorrupt},
+		{name: "missing indexed segment", mutate: func(m *Manifest) { m.SegmentIndexSnapshots[0].SegmentID = 99 }, expected: ErrManifestCorrupt},
+		{name: "duplicate segment index", mutate: func(m *Manifest) {
+			m.SegmentIndexSnapshots = append(m.SegmentIndexSnapshots, m.SegmentIndexSnapshots[0])
+		}, expected: ErrManifestCorrupt},
+		{name: "segment index count mismatch", mutate: func(m *Manifest) { m.SegmentIndexSnapshots[0].DocumentCount++ }, expected: ErrManifestCorrupt},
+		{name: "segment index min mismatch", mutate: func(m *Manifest) { m.SegmentIndexSnapshots[0].MinDocumentID++ }, expected: ErrManifestCorrupt},
+		{name: "segment index max mismatch", mutate: func(m *Manifest) { m.SegmentIndexSnapshots[0].MaxDocumentID++ }, expected: ErrManifestCorrupt},
+		{name: "short segment index hash", mutate: func(m *Manifest) { m.SegmentIndexSnapshots[0].SchemaSHA256 = "00" }, expected: ErrManifestCorrupt},
+		{name: "duplicate segment artifact", mutate: func(m *Manifest) {
+			m.SegmentIndexSnapshots[0].Artifacts = append(m.SegmentIndexSnapshots[0].Artifacts, m.SegmentIndexSnapshots[0].Artifacts[0])
+		}, expected: ErrManifestCorrupt},
+		{name: "duplicate global index file", mutate: func(m *Manifest) {
+			m.SegmentIndexSnapshots[0].Artifacts[0].File = m.IndexSnapshot.Artifacts[0].File
 		}, expected: ErrManifestCorrupt},
 	}
 
@@ -226,5 +243,10 @@ func sampleManifest(generation uint64) Manifest {
 			SchemaSHA256: strings.Repeat("a", 64), DocumentCount: 8, MaxDocumentID: 19,
 			Artifacts: []IndexArtifactMetadata{{Field: "embedding", Kind: "vector-2", File: "indexes/embedding.zvi"}},
 		},
+		SegmentIndexSnapshots: []SegmentIndexSnapshotMetadata{{
+			SegmentID: 3, SchemaSHA256: strings.Repeat("b", 64), DocumentCount: 8,
+			MinDocumentID: 10, MaxDocumentID: 19,
+			Artifacts: []IndexArtifactMetadata{{Field: "text", Kind: "fts", File: "indexes/segment-3-text.zvi"}},
+		}},
 	}
 }

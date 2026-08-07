@@ -38,11 +38,11 @@ runs `Optimize`, and verifies the migrated generation through read-only reopen.
 
 Because every tagged 0.x release retained collection format 1 and schema codec
 1, the oldest-release fixture crosses every intervening reader boundary. The
-fixture predates optional collection index-snapshot metadata. Current readers
-therefore rebuild its indexes once, then `Flush` or `Optimize` can publish
-checksummed vector, FTS, and INVERT artifacts without changing format version
-1. Reopen uses those artifacts only when their schema/document identity exactly
-matches the live snapshot.
+fixture predates optional index metadata. Current readers therefore rebuild its
+indexes once, then `Flush` or `Optimize` can publish checksummed vector, FTS,
+and INVERT artifacts per immutable segment without changing format version 1.
+Reopen uses an artifact only when its schema hash, segment ID, document count,
+and document bounds match.
 
 Readers reject unknown future format or codec versions instead of guessing.
 Format upgrades must add an explicit reader/migration path and a historical
