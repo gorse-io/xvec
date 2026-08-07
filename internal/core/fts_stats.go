@@ -115,7 +115,17 @@ func AggregateFTSCorpusStats(ctx context.Context, segments []FTSSegmentView) (FT
 			result.TotalDocuments++
 			result.TotalTokens += uint64(documentLength)
 		}
-		for termIndex, term := range segment.Dictionary.terms {
+		terms, err := segment.Dictionary.terms(ctx)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return FTSCorpusStats{}, ctxErr
+			}
+			return FTSCorpusStats{}, fmt.Errorf("%w: segment %d term index is inconsistent", ErrInvalidFTSStats, segmentIndex)
+		}
+		if len(terms) != len(segment.Dictionary.postings) {
+			return FTSCorpusStats{}, fmt.Errorf("%w: segment %d term index is inconsistent", ErrInvalidFTSStats, segmentIndex)
+		}
+		for termIndex, term := range terms {
 			if work&4095 == 0 {
 				if err := ctx.Err(); err != nil {
 					return FTSCorpusStats{}, err

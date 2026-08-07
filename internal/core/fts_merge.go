@@ -29,6 +29,7 @@ var ErrInvalidFTSMerge = errors.New("core: invalid FTS merge")
 
 type ftsMergeSegment struct {
 	dictionary   *FTSTermDictionary
+	terms        []string
 	deletedWords []uint64
 	deletePrefix []uint64
 	outputBase   uint64
@@ -61,8 +62,15 @@ func MergeFTSTermDictionaries(ctx context.Context, sources []FTSSegmentView) (*F
 			return nil, fmt.Errorf("%w: segment %d has nil dictionary", ErrInvalidFTSMerge, segmentIndex)
 		}
 		dictionary := source.Dictionary
+		terms, err := dictionary.terms(ctx)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			return nil, fmt.Errorf("%w: segment %d term index: %v", ErrInvalidFTSMerge, segmentIndex, err)
+		}
 		if uint64(len(dictionary.documentLengths)) != dictionary.stats.TotalDocuments ||
-			len(dictionary.terms) != len(dictionary.postings) || len(dictionary.terms) != len(dictionary.maximumTF) {
+			len(terms) != len(dictionary.postings) || len(terms) != len(dictionary.maximumTF) {
 			return nil, fmt.Errorf("%w: segment %d dictionary is inconsistent", ErrInvalidFTSMerge, segmentIndex)
 		}
 		var deletedWords []uint64
@@ -83,7 +91,7 @@ func MergeFTSTermDictionaries(ctx context.Context, sources []FTSSegmentView) (*F
 			deletePrefix[index+1] = deletePrefix[index] + uint64(bits.OnesCount64(word))
 		}
 		segment := ftsMergeSegment{
-			dictionary: dictionary, deletedWords: deletedWords,
+			dictionary: dictionary, terms: terms, deletedWords: deletedWords,
 			deletePrefix: deletePrefix, outputBase: totalDocuments,
 		}
 		var sourceTokens uint64
@@ -139,7 +147,6 @@ func MergeFTSTermDictionaries(ctx context.Context, sources []FTSSegmentView) (*F
 	}
 
 	output := &FTSTermDictionary{
-		terms:           make([]string, 0),
 		postings:        make([]*FTSPostingList, 0),
 		maximumTF:       make([]uint32, 0),
 		documentLengths: documentLengths,
@@ -148,6 +155,7 @@ func MergeFTSTermDictionaries(ctx context.Context, sources []FTSSegmentView) (*F
 			TotalTokens:    totalTokens,
 		},
 	}
+	outputTerms := make([]string, 0)
 	cursors := make([]int, len(segments))
 	for {
 		minimumTerm := ""
@@ -160,10 +168,10 @@ func MergeFTSTermDictionaries(ctx context.Context, sources []FTSSegmentView) (*F
 			}
 			work++
 			cursor := cursors[segmentIndex]
-			if cursor >= len(segment.dictionary.terms) {
+			if cursor >= len(segment.terms) {
 				continue
 			}
-			term := segment.dictionary.terms[cursor]
+			term := segment.terms[cursor]
 			if !found || term < minimumTerm {
 				minimumTerm, found = term, true
 			}
@@ -176,7 +184,7 @@ func MergeFTSTermDictionaries(ctx context.Context, sources []FTSSegmentView) (*F
 		var maximumTermFrequency uint32
 		for segmentIndex, segment := range segments {
 			cursor := cursors[segmentIndex]
-			if cursor >= len(segment.dictionary.terms) || segment.dictionary.terms[cursor] != minimumTerm {
+			if cursor >= len(segment.terms) || segment.terms[cursor] != minimumTerm {
 				continue
 			}
 			list := segment.dictionary.postings[cursor]
@@ -228,10 +236,18 @@ func MergeFTSTermDictionaries(ctx context.Context, sources []FTSSegmentView) (*F
 			}
 			return nil, fmt.Errorf("%w: term %q: %v", ErrInvalidFTSMerge, minimumTerm, err)
 		}
-		output.terms = append(output.terms, strings.Clone(minimumTerm))
+		outputTerms = append(outputTerms, strings.Clone(minimumTerm))
 		output.postings = append(output.postings, postingList)
 		output.maximumTF = append(output.maximumTF, maximumTermFrequency)
 	}
+	termIndex, err := buildFTSTermIndex(ctx, outputTerms)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("%w: build output term index: %v", ErrInvalidFTSMerge, err)
+	}
+	output.termIndex = termIndex
 	return output, nil
 }
 

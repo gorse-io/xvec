@@ -32,8 +32,10 @@ dictionary, err := builder.Build(ctx)
 `Build` creates a point-in-time snapshot without consuming the builder. The
 dictionary is immutable and safe for concurrent lookup, prefix enumeration,
 encoding, and posting iteration. `Lookup` returns document frequency,
-maximum term frequency, and an independent iterator. `Prefix` uses the sorted
-term table and is ready for the later wildcard-query unit.
+maximum term frequency, and an independent iterator. Exact lookup and `Prefix`
+enumeration use an immutable Vellum FST, the same pure-Go term-index component
+used by Bleve. The FST maps byte-lexical terms to their posting-list ordinals;
+the previous resident sorted string table is no longer retained.
 
 ## Native format
 
@@ -58,6 +60,9 @@ checks, a payload CRC32C, and a header CRC32C. Open rejects truncation, unknown
 versions, overlapping sections, impossible allocation counts, invalid bit
 widths, nonmonotonic IDs or terms, malformed varints, inconsistent inline
 document lengths, and trailing bytes. Encoders and readers own their bytes.
+Opening reconstructs the in-memory Vellum FST from this existing term table, so
+the native on-disk version and previously encoded dictionaries remain
+compatible.
 
 ## Cross-segment statistics
 

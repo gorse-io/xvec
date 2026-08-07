@@ -15,6 +15,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/blevesearch/vellum"
 	"github.com/gorse-io/zvec/internal/ailego"
 )
 
@@ -66,10 +68,11 @@ type FTSTermInfo struct {
 	MaximumTermFrequency uint32
 }
 
-// FTSTermDictionary is an immutable term dictionary with front-coded native
-// persistence and independently checksummed compressed posting lists.
+// FTSTermDictionary is an immutable Vellum FST-backed term dictionary with
+// front-coded native persistence and independently checksummed compressed
+// posting lists.
 type FTSTermDictionary struct {
-	terms           []string
+	termIndex       *vellum.FST
 	postings        []*FTSPostingList
 	maximumTF       []uint32
 	documentLengths []uint32
@@ -159,7 +162,6 @@ func (b *FTSFieldBuilder) Build(ctx context.Context) (*FTSTermDictionary, error)
 	}
 	sort.Strings(terms)
 	dictionary := &FTSTermDictionary{
-		terms:           make([]string, len(terms)),
 		postings:        make([]*FTSPostingList, len(terms)),
 		maximumTF:       make([]uint32, len(terms)),
 		documentLengths: append([]uint32(nil), b.documentLengths...),
@@ -185,10 +187,17 @@ func (b *FTSFieldBuilder) Build(ctx context.Context) (*FTSTermDictionary, error)
 		for _, posting := range b.postings[term] {
 			maximumTF = max(maximumTF, posting.TermFrequency)
 		}
-		dictionary.terms[index] = strings.Clone(term)
 		dictionary.postings[index] = postingList
 		dictionary.maximumTF[index] = maximumTF
 	}
+	termIndex, err := buildFTSTermIndex(ctx, terms)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("%w: build term index: %v", ErrInvalidFTSDictionary, err)
+	}
+	dictionary.termIndex = termIndex
 	return dictionary, nil
 }
 
@@ -210,52 +219,70 @@ func (d *FTSTermDictionary) DocumentLength(documentID uint32) (uint32, bool) {
 
 // TermCount returns the number of unique terms.
 func (d *FTSTermDictionary) TermCount() int {
-	if d == nil {
+	if d == nil || d.termIndex == nil {
 		return 0
 	}
-	return len(d.terms)
+	return d.termIndex.Len()
 }
 
 // Terms returns an owned byte-lexicographically sorted term slice.
 func (d *FTSTermDictionary) Terms() []string {
-	if d == nil {
+	terms, err := d.terms(context.Background())
+	if err != nil {
 		return []string{}
 	}
-	return append([]string(nil), d.terms...)
+	return terms
 }
 
 // Lookup returns immutable term metadata and its posting list.
 func (d *FTSTermDictionary) Lookup(term string) (FTSTermInfo, *FTSPostingList, bool) {
-	if d == nil {
+	if d == nil || d.termIndex == nil {
 		return FTSTermInfo{}, nil, false
 	}
-	index := sort.SearchStrings(d.terms, term)
-	if index == len(d.terms) || d.terms[index] != term {
+	value, found, err := d.termIndex.Get([]byte(term))
+	if err != nil || !found || value >= uint64(len(d.postings)) {
 		return FTSTermInfo{}, nil, false
 	}
-	return d.termInfo(index), d.postings[index], true
+	index := int(value)
+	return d.termInfo(term, index), d.postings[index], true
 }
 
 // Prefix returns up to limit terms beginning with prefix in byte-lexical
 // order. A zero limit means no limit.
 func (d *FTSTermDictionary) Prefix(prefix string, limit int) []FTSTermInfo {
-	if d == nil || limit < 0 {
+	if d == nil || d.termIndex == nil || limit < 0 {
 		return []FTSTermInfo{}
 	}
-	start := sort.Search(len(d.terms), func(index int) bool { return d.terms[index] >= prefix })
 	result := make([]FTSTermInfo, 0)
-	for index := start; index < len(d.terms) && strings.HasPrefix(d.terms[index], prefix); index++ {
+	iterator, err := d.termIndex.Iterator([]byte(prefix), ftsPrefixEnd([]byte(prefix)))
+	if errors.Is(err, vellum.ErrIteratorDone) {
+		return result
+	}
+	if err != nil {
+		return []FTSTermInfo{}
+	}
+	defer iterator.Close()
+	for {
 		if limit > 0 && len(result) >= limit {
 			break
 		}
-		result = append(result, d.termInfo(index))
+		term, value := iterator.Current()
+		if value >= uint64(len(d.postings)) {
+			return []FTSTermInfo{}
+		}
+		result = append(result, d.termInfo(string(term), int(value)))
+		if err := iterator.Next(); errors.Is(err, vellum.ErrIteratorDone) {
+			break
+		} else if err != nil {
+			return []FTSTermInfo{}
+		}
 	}
 	return result
 }
 
-func (d *FTSTermDictionary) termInfo(index int) FTSTermInfo {
+func (d *FTSTermDictionary) termInfo(term string, index int) FTSTermInfo {
 	return FTSTermInfo{
-		Term:                 d.terms[index],
+		Term:                 term,
 		DocumentFrequency:    d.postings[index].DocumentFrequency(),
 		MaximumTermFrequency: d.maximumTF[index],
 	}
@@ -269,16 +296,23 @@ func (d *FTSTermDictionary) Encode(ctx context.Context) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if d == nil || len(d.terms) != len(d.postings) || len(d.terms) != len(d.maximumTF) || uint64(len(d.documentLengths)) != d.stats.TotalDocuments {
+	if d == nil || d.termIndex == nil || d.termIndex.Len() != len(d.postings) || d.termIndex.Len() != len(d.maximumTF) || uint64(len(d.documentLengths)) != d.stats.TotalDocuments {
 		return nil, fmt.Errorf("%w: inconsistent dictionary", ErrInvalidFTSDictionary)
 	}
-	if uint64(len(d.terms)) > math.MaxUint32 || uint64(len(d.documentLengths)) > math.MaxUint32 {
+	if uint64(d.termIndex.Len()) > math.MaxUint32 || uint64(len(d.documentLengths)) > math.MaxUint32 {
 		return nil, fmt.Errorf("%w: counts exceed uint32", ErrInvalidFTSDictionary)
+	}
+	terms, err := d.terms(ctx)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("%w: enumerate terms: %v", ErrInvalidFTSDictionary, err)
 	}
 	var termTable []byte
 	postingBytes := make([][]byte, len(d.postings))
 	previousTerm := ""
-	for index, term := range d.terms {
+	for index, term := range terms {
 		if index&4095 == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -321,7 +355,7 @@ func (d *FTSTermDictionary) Encode(ctx context.Context) ([]byte, error) {
 	copy(output[0:4], ftsDictionaryMagic[:])
 	binary.LittleEndian.PutUint16(output[4:6], ftsDictionaryVersion)
 	binary.LittleEndian.PutUint16(output[6:8], ftsDictionaryHeaderSize)
-	binary.LittleEndian.PutUint32(output[8:12], uint32(len(d.terms)))
+	binary.LittleEndian.PutUint32(output[8:12], uint32(len(terms)))
 	binary.LittleEndian.PutUint32(output[12:16], uint32(len(d.documentLengths)))
 	binary.LittleEndian.PutUint64(output[16:24], d.stats.TotalTokens)
 	binary.LittleEndian.PutUint32(output[24:28], ftsDictionaryHeaderSize)
@@ -387,7 +421,6 @@ func OpenFTSTermDictionary(ctx context.Context, data []byte) (*FTSTermDictionary
 	}
 	data = append([]byte(nil), data...)
 	dictionary := &FTSTermDictionary{
-		terms:           make([]string, 0, termCount),
 		postings:        make([]*FTSPostingList, 0, termCount),
 		maximumTF:       make([]uint32, 0, termCount),
 		documentLengths: make([]uint32, documentCount),
@@ -420,6 +453,7 @@ func OpenFTSTermDictionary(ctx context.Context, data []byte) (*FTSTermDictionary
 		maximumTF     uint32
 	}
 	records := make([]termRecord, 0, termCount)
+	terms := make([]string, 0, termCount)
 	cursor := int(termsOffset)
 	previousTerm := ""
 	for index := uint32(0); index < termCount; index++ {
@@ -449,7 +483,7 @@ func OpenFTSTermDictionary(ctx context.Context, data []byte) (*FTSTermDictionary
 		if index > 0 && previousTerm >= term {
 			return nil, fmt.Errorf("%w: terms are not strictly sorted", ErrCorruptFTSDictionary)
 		}
-		dictionary.terms = append(dictionary.terms, term)
+		terms = append(terms, term)
 		records = append(records, termRecord{uint32(postingLength), uint32(maximumTF)})
 		previousTerm = term
 	}
@@ -468,10 +502,10 @@ func OpenFTSTermDictionary(ctx context.Context, data []byte) (*FTSTermDictionary
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
-			return nil, fmt.Errorf("%w: term %q: %v", ErrCorruptFTSDictionary, dictionary.terms[index], err)
+			return nil, fmt.Errorf("%w: term %q: %v", ErrCorruptFTSDictionary, terms[index], err)
 		}
 		if postingList.DocumentFrequency() == 0 {
-			return nil, fmt.Errorf("%w: term %q has an empty posting", ErrCorruptFTSDictionary, dictionary.terms[index])
+			return nil, fmt.Errorf("%w: term %q has an empty posting", ErrCorruptFTSDictionary, terms[index])
 		}
 		var maximumTF uint32
 		iterator := postingList.Iterator()
@@ -483,12 +517,12 @@ func OpenFTSTermDictionary(ctx context.Context, data []byte) (*FTSTermDictionary
 			}
 			documentID := iterator.DocumentID()
 			if uint64(documentID) >= uint64(len(dictionary.documentLengths)) || iterator.DocumentLength() != dictionary.documentLengths[documentID] {
-				return nil, fmt.Errorf("%w: term %q has inconsistent document metadata", ErrCorruptFTSDictionary, dictionary.terms[index])
+				return nil, fmt.Errorf("%w: term %q has inconsistent document metadata", ErrCorruptFTSDictionary, terms[index])
 			}
 			maximumTF = max(maximumTF, iterator.TermFrequency())
 		}
 		if maximumTF != record.maximumTF {
-			return nil, fmt.Errorf("%w: term %q maximum frequency mismatch", ErrCorruptFTSDictionary, dictionary.terms[index])
+			return nil, fmt.Errorf("%w: term %q maximum frequency mismatch", ErrCorruptFTSDictionary, terms[index])
 		}
 		dictionary.postings = append(dictionary.postings, postingList)
 		dictionary.maximumTF = append(dictionary.maximumTF, maximumTF)
@@ -497,7 +531,83 @@ func OpenFTSTermDictionary(ctx context.Context, data []byte) (*FTSTermDictionary
 	if postingCursor != uint64(len(data)) {
 		return nil, fmt.Errorf("%w: posting section has trailing bytes", ErrCorruptFTSDictionary)
 	}
+	termIndex, err := buildFTSTermIndex(ctx, terms)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("%w: build term index: %v", ErrCorruptFTSDictionary, err)
+	}
+	dictionary.termIndex = termIndex
 	return dictionary, nil
+}
+
+func buildFTSTermIndex(ctx context.Context, terms []string) (*vellum.FST, error) {
+	var buffer bytes.Buffer
+	builder, err := vellum.New(&buffer, nil)
+	if err != nil {
+		return nil, err
+	}
+	for index, term := range terms {
+		if index&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		if err := builder.Insert([]byte(term), uint64(index)); err != nil {
+			return nil, err
+		}
+	}
+	if err := builder.Close(); err != nil {
+		return nil, err
+	}
+	return vellum.Load(buffer.Bytes())
+}
+
+func (d *FTSTermDictionary) terms(ctx context.Context) ([]string, error) {
+	if ctx == nil {
+		return nil, errors.New("nil context")
+	}
+	if d == nil || d.termIndex == nil {
+		return nil, errors.New("nil term index")
+	}
+	result := make([]string, 0, d.termIndex.Len())
+	iterator, err := d.termIndex.Iterator(nil, nil)
+	if errors.Is(err, vellum.ErrIteratorDone) {
+		return result, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer iterator.Close()
+	for {
+		if len(result)&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		term, value := iterator.Current()
+		if value != uint64(len(result)) {
+			return nil, errors.New("non-sequential term index")
+		}
+		result = append(result, string(term))
+		if err := iterator.Next(); errors.Is(err, vellum.ErrIteratorDone) {
+			return result, nil
+		} else if err != nil {
+			return nil, err
+		}
+	}
+}
+
+func ftsPrefixEnd(prefix []byte) []byte {
+	end := append([]byte(nil), prefix...)
+	for index := len(end) - 1; index >= 0; index-- {
+		if end[index] != 0xff {
+			end[index]++
+			return end[:index+1]
+		}
+	}
+	return nil
 }
 
 func commonFTSPrefixLength(left, right string) int {

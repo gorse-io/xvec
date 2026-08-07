@@ -16,6 +16,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -126,6 +127,37 @@ func TestFTSTermDictionaryBaselineFixture(t *testing.T) {
 	}
 }
 
+func TestFTSTermDictionaryVellumIndex(t *testing.T) {
+	dictionary := buildFTSTestDictionary(t, [][]Token{{
+		{Text: "banana", Position: 0},
+		{Text: "apple", Position: 1},
+		{Text: "band", Position: 2},
+		{Text: string([]byte{0xff}), Position: 3},
+		{Text: string([]byte{0xff, 0xff}), Position: 4},
+	}})
+	require.NotNil(t, dictionary.termIndex)
+
+	index, found, err := dictionary.termIndex.Get([]byte("banana"))
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, uint64(1), index)
+	require.Equal(t, []FTSTermInfo{
+		{Term: string([]byte{0xff}), DocumentFrequency: 1, MaximumTermFrequency: 1},
+		{Term: string([]byte{0xff, 0xff}), DocumentFrequency: 1, MaximumTermFrequency: 1},
+	}, dictionary.Prefix(string([]byte{0xff}), 0))
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = dictionary.terms(cancelled)
+	require.ErrorIs(t, err, context.Canceled)
+
+	encoded, err := dictionary.Encode(context.Background())
+	require.NoError(t, err)
+	reopened, err := OpenFTSTermDictionary(context.Background(), encoded)
+	require.NoError(t, err)
+	require.NotNil(t, reopened.termIndex)
+}
+
 func TestFTSTermDictionaryPrefixAndSnapshot(t *testing.T) {
 	builder := NewFTSFieldBuilder()
 	{
@@ -181,6 +213,8 @@ func TestFTSTermDictionaryEncodeReopen(t *testing.T) {
 	})
 	encoded, err := dictionary.Encode(context.Background())
 	require.NoError(t, err)
+	require.Equal(t, "e83febee60b88e8faacbafd6a6b67ca084c0b08d951ce16788b4b984e768c5af",
+		fmt.Sprintf("%x", sha256.Sum256(encoded)), "native v1 encoding changed")
 
 	encodedAgain, err := dictionary.Encode(context.Background())
 	require.NoError(t, err,
