@@ -31,9 +31,9 @@ indexed side of `AND` may be used alone as a superset of the final matches.
 Every selected row is then evaluated by the typed forward plan, so index
 routing cannot change SQL three-valued semantics.
 
-Postings are built once for a consistent live-document snapshot and reused by
-filtered Query, MultiQuery, and GroupByQuery calls. Flush and Optimize encode a
-checksummed INVERT artifact and publish its schema/document identity in the
-manifest. Reopen loads an exact match; an older manifest without the optional
-metadata rebuilds postings from documents. Mutations change the snapshot key,
-so a stale posting file is never selected.
+Postings are built per segment and reused by filtered Query, MultiQuery, and
+GroupByQuery calls. Flush encodes a checksummed INVERT artifact for each newly
+immutable segment and publishes its schema/segment identity in the manifest.
+Reopen loads an exact match; an older manifest without the optional metadata
+rebuilds postings from documents. Deleted or superseded versions are masked
+and then forward-evaluated, so immutable postings never need mutation.

@@ -30,52 +30,40 @@ import (
 
 var testCollectionSchema = json.RawMessage(`{"name":"books","fields":[]}`)
 
-func TestCollectionPublishIndexSnapshotAndPrune(t *testing.T) {
+func TestCollectionPublishSegmentIndexSnapshotsAndPrune(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{SegmentMaxDocuments: 4})
 	require.NoError(t, err)
+	_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "a", Payload: []byte("a")}})
+	require.NoError(t, err)
+	require.NoError(t, store.Flush(ctx))
+
 	indexDirectory := filepath.Join(dir, "indexes")
 	require.NoError(t, os.MkdirAll(indexDirectory, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(indexDirectory, "current.zvi"), []byte("current"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(indexDirectory, "segment.zvi"), []byte("segment"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(indexDirectory, "obsolete.zvi"), []byte("obsolete"), 0o600))
-	snapshot := &IndexSnapshotMetadata{
-		SchemaSHA256: strings.Repeat("a", 64), DocumentCount: 2, MaxDocumentID: 4,
-		Artifacts: []IndexArtifactMetadata{{Field: "embedding", Kind: "vector-2", File: "indexes/current.zvi"}},
-	}
-	committed, err := store.PublishIndexSnapshot(ctx, snapshot)
+	segment := store.Manifest().PersistedSegments[0]
+	snapshots := []SegmentIndexSnapshotMetadata{{
+		SegmentID: segment.ID, SchemaSHA256: strings.Repeat("a", 64),
+		DocumentCount: segment.DocCount, MinDocumentID: segment.MinDocID, MaxDocumentID: segment.MaxDocID,
+		Artifacts: []IndexArtifactMetadata{{Field: "embedding", Kind: "vector-2", File: "indexes/segment.zvi"}},
+	}}
+	committed, err := store.PublishSegmentIndexSnapshots(ctx, snapshots)
 	require.NoError(t, err)
 	require.True(t, committed)
-	require.Equal(t, snapshot, store.Manifest().IndexSnapshot)
-	snapshot.Artifacts[0].File = "changed"
-	require.Equal(t, "indexes/current.zvi", store.Manifest().IndexSnapshot.Artifacts[0].File)
+	require.Equal(t, snapshots, store.Manifest().SegmentIndexSnapshots)
+	snapshots[0].Artifacts[0].File = "changed"
+	require.Equal(t, "indexes/segment.zvi", store.Manifest().SegmentIndexSnapshots[0].Artifacts[0].File)
 
-	current := store.Manifest().IndexSnapshot
-	committed, err = store.PublishIndexSnapshot(ctx, current)
+	committed, err = store.PublishSegmentIndexSnapshots(ctx, store.Manifest().SegmentIndexSnapshots)
 	require.NoError(t, err)
 	require.False(t, committed)
-	missing := *current
-	missing.Artifacts = []IndexArtifactMetadata{{Field: "embedding", Kind: "vector-2", File: "indexes/missing.zvi"}}
-	committed, err = store.PublishIndexSnapshot(ctx, &missing)
-	require.Error(t, err)
-	require.False(t, committed)
-
 	require.NoError(t, store.PruneObsoleteArtifacts(ctx))
-	_, err = os.Stat(filepath.Join(indexDirectory, "current.zvi"))
-	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(indexDirectory, "obsolete.zvi"))
 	require.ErrorIs(t, err, os.ErrNotExist)
-	require.NoError(t, store.Close())
-
-	store, err = OpenCollection(ctx, dir, CollectionOptions{})
+	_, err = os.Stat(filepath.Join(indexDirectory, "segment.zvi"))
 	require.NoError(t, err)
-	require.Equal(t, "indexes/current.zvi", store.Manifest().IndexSnapshot.Artifacts[0].File)
-	committed, err = store.PublishIndexSnapshot(ctx, nil)
-	require.NoError(t, err)
-	require.True(t, committed)
-	require.NoError(t, store.PruneObsoleteArtifacts(ctx))
-	_, err = os.Stat(filepath.Join(indexDirectory, "current.zvi"))
-	require.ErrorIs(t, err, os.ErrNotExist)
 	require.NoError(t, store.Close())
 }
 

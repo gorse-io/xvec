@@ -94,7 +94,7 @@ type Collection struct {
 	closed  bool
 
 	indexMu         sync.Mutex
-	indexes         *collectionRuntimeIndexes
+	segmentIndexes  map[uint64]*collectionSegmentRuntime
 	indexBuildCount uint64
 }
 
@@ -116,6 +116,18 @@ type collectionRuntimeIndexes struct {
 	scalar       dbsql.IndexSet
 }
 
+type collectionSegmentDocuments struct {
+	metadata  db.SegmentMetadata
+	documents []Document
+	mutable   bool
+}
+
+type collectionSegmentRuntime struct {
+	segmentID uint64
+	key       collectionRuntimeKey
+	indexes   *collectionRuntimeIndexes
+}
+
 func collectionRuntimeKeyFor(schema CollectionSchema, documents []Document) (collectionRuntimeKey, error) {
 	encoded, err := marshalCollectionSchema(schema)
 	if err != nil {
@@ -128,31 +140,6 @@ func collectionRuntimeKeyFor(schema CollectionSchema, documents []Document) (col
 	return key, nil
 }
 
-func (c *Collection) runtimeIndexesLocked(ctx context.Context, documents []Document) (*collectionRuntimeIndexes, error) {
-	key, err := collectionRuntimeKeyFor(c.schema, documents)
-	if err != nil {
-		return nil, err
-	}
-	c.indexMu.Lock()
-	defer c.indexMu.Unlock()
-	if c.indexes != nil && c.indexes.key == key {
-		return c.indexes, nil
-	}
-	artifacts := c.indexArtifactPaths(key)
-	indexes, err := buildCollectionRuntimeIndexes(ctx, c.schema, documents, c.queryWorkers(), c.options.MaxBufferSize, c.options.EnableMmap, artifacts)
-	if err != nil {
-		return nil, err
-	}
-	indexes.key = key
-	previous := c.indexes
-	c.indexes = indexes
-	c.indexBuildCount++
-	if previous != nil {
-		_ = previous.Close()
-	}
-	return indexes, nil
-}
-
 func collectionIndexArtifactKey(field, kind string) string {
 	return field + "\x00" + kind
 }
@@ -161,18 +148,76 @@ func collectionVectorArtifactKind(indexType IndexType) string {
 	return "vector-" + strconv.FormatUint(uint64(indexType), 10)
 }
 
-func (c *Collection) indexArtifactPaths(key collectionRuntimeKey) map[string]string {
+func (c *Collection) segmentRuntimeIndexesLocked(
+	ctx context.Context,
+	segments []collectionSegmentDocuments,
+) ([]*collectionSegmentRuntime, error) {
+	c.indexMu.Lock()
+	defer c.indexMu.Unlock()
+	previous := c.segmentIndexes
+	next := make(map[uint64]*collectionSegmentRuntime, len(segments))
+	ordered := make([]*collectionSegmentRuntime, 0, len(segments))
+	created := make([]*collectionSegmentRuntime, 0)
+	fail := func(err error) ([]*collectionSegmentRuntime, error) {
+		for _, runtime := range created {
+			_ = runtime.indexes.Close()
+		}
+		return nil, err
+	}
+	for _, segment := range segments {
+		if len(segment.documents) == 0 {
+			continue
+		}
+		key, err := collectionRuntimeKeyFor(c.schema, segment.documents)
+		if err != nil {
+			return fail(err)
+		}
+		if cached := previous[segment.metadata.ID]; cached != nil && cached.key == key {
+			next[segment.metadata.ID] = cached
+			ordered = append(ordered, cached)
+			continue
+		}
+		artifacts := c.segmentIndexArtifactPaths(segment.metadata, key)
+		indexes, err := buildCollectionRuntimeIndexes(
+			ctx, c.schema, segment.documents, c.queryWorkers(), c.options.MaxBufferSize,
+			c.options.EnableMmap, artifacts,
+		)
+		if err != nil {
+			return fail(fmt.Errorf("open indexes for segment %d: %w", segment.metadata.ID, err))
+		}
+		indexes.key = key
+		runtime := &collectionSegmentRuntime{
+			segmentID: segment.metadata.ID, key: key, indexes: indexes,
+		}
+		created = append(created, runtime)
+		next[segment.metadata.ID] = runtime
+		ordered = append(ordered, runtime)
+		c.indexBuildCount++
+	}
+	for segmentID, runtime := range previous {
+		if next[segmentID] != runtime {
+			_ = runtime.indexes.Close()
+		}
+	}
+	c.segmentIndexes = next
+	return ordered, nil
+}
+
+func (c *Collection) segmentIndexArtifactPaths(metadata db.SegmentMetadata, key collectionRuntimeKey) map[string]string {
 	paths := make(map[string]string)
 	if c == nil || c.store == nil {
 		return paths
 	}
-	snapshot := c.store.Manifest().IndexSnapshot
-	if snapshot == nil || snapshot.SchemaSHA256 != hex.EncodeToString(key.schemaHash[:]) ||
-		snapshot.DocumentCount != uint64(key.count) || snapshot.MaxDocumentID != key.maxDocID {
-		return paths
-	}
-	for _, artifact := range snapshot.Artifacts {
-		paths[collectionIndexArtifactKey(artifact.Field, artifact.Kind)] = filepath.Join(c.path, filepath.FromSlash(artifact.File))
+	for _, snapshot := range c.store.Manifest().SegmentIndexSnapshots {
+		if snapshot.SegmentID != metadata.ID || snapshot.SchemaSHA256 != hex.EncodeToString(key.schemaHash[:]) ||
+			snapshot.DocumentCount != uint64(key.count) || snapshot.MinDocumentID != metadata.MinDocID ||
+			snapshot.MaxDocumentID != metadata.MaxDocID {
+			continue
+		}
+		for _, artifact := range snapshot.Artifacts {
+			paths[collectionIndexArtifactKey(artifact.Field, artifact.Kind)] = filepath.Join(c.path, filepath.FromSlash(artifact.File))
+		}
+		break
 	}
 	return paths
 }
@@ -274,39 +319,134 @@ func openCollectionFTSRuntime(ctx context.Context, path string, field FieldSchem
 	return &collectionFTSRuntime{analyzer: analyzer, dictionary: dictionary, scorer: scorer, documentIDs: documentIDs}, nil
 }
 
-func (c *Collection) refreshIndexArtifactsLocked(ctx context.Context) error {
-	documents, err := c.liveDocumentsLocked(ctx)
+func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSegmentDocuments, error) {
+	snapshots, err := c.store.SegmentSnapshots(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	indexes, err := c.runtimeIndexesLocked(ctx, documents)
-	if err != nil {
-		return err
+	segments := make([]collectionSegmentDocuments, len(snapshots))
+	for index, snapshot := range snapshots {
+		documents := make([]Document, len(snapshot.Documents))
+		for position, item := range snapshot.Documents {
+			document, decodeErr := decodeStoredDocument(item)
+			if decodeErr != nil {
+				return nil, decodeErr
+			}
+			if validateErr := document.Validate(c.schema); validateErr != nil {
+				return nil, fmt.Errorf("stored document %d violates schema: %w", item.DocID, validateErr)
+			}
+			documents[position] = document
+		}
+		segments[index] = collectionSegmentDocuments{metadata: snapshot.Metadata, documents: documents, mutable: snapshot.Mutable}
 	}
-	return c.publishIndexArtifactsLocked(ctx, indexes)
+	return segments, nil
 }
 
-func (c *Collection) publishIndexArtifactsLocked(ctx context.Context, indexes *collectionRuntimeIndexes) error {
-	if indexes == nil {
-		return errors.New("collection runtime indexes are nil")
+func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context) error {
+	segments, err := c.segmentDocumentsLocked(ctx)
+	if err != nil {
+		return err
 	}
-	current := c.store.Manifest().IndexSnapshot
-	if c.indexSnapshotFilesExist(indexes.key, current) {
-		return nil
+	manifest := c.store.Manifest()
+	existing := make(map[uint64]db.SegmentIndexSnapshotMetadata, len(manifest.SegmentIndexSnapshots))
+	for _, snapshot := range manifest.SegmentIndexSnapshots {
+		existing[snapshot.SegmentID] = snapshot
 	}
-	indexDirectory := filepath.Join(c.path, "indexes")
-	if err := os.MkdirAll(indexDirectory, 0o700); err != nil {
-		return fmt.Errorf("create index artifact directory: %w", err)
-	}
+	next := make([]db.SegmentIndexSnapshotMetadata, 0, len(segments))
 	created := make([]string, 0)
 	cleanup := func() {
 		for _, path := range created {
 			_ = os.Remove(path)
 		}
 	}
+	for _, segment := range segments {
+		if segment.mutable || len(segment.documents) == 0 {
+			continue
+		}
+		key, keyErr := collectionRuntimeKeyFor(c.schema, segment.documents)
+		if keyErr != nil {
+			cleanup()
+			return keyErr
+		}
+		if snapshot, found := existing[segment.metadata.ID]; found && c.segmentIndexSnapshotFilesExist(segment.metadata, key, snapshot) {
+			next = append(next, snapshot)
+			continue
+		}
+		c.indexMu.Lock()
+		cached := c.segmentIndexes[segment.metadata.ID]
+		c.indexMu.Unlock()
+		indexes := (*collectionRuntimeIndexes)(nil)
+		closeAfterWrite := false
+		if cached != nil && cached.key == key {
+			indexes = cached.indexes
+		} else {
+			var buildErr error
+			indexes, buildErr = buildCollectionRuntimeIndexes(ctx, c.schema, segment.documents, c.queryWorkers(), c.options.MaxBufferSize, c.options.EnableMmap, nil)
+			if buildErr != nil {
+				cleanup()
+				return fmt.Errorf("build indexes for segment %d: %w", segment.metadata.ID, buildErr)
+			}
+			indexes.key = key
+			closeAfterWrite = true
+		}
+		artifacts, paths, writeErr := c.writeSegmentRuntimeArtifacts(ctx, segment.metadata.ID, indexes)
+		var closeErr error
+		if closeAfterWrite {
+			closeErr = indexes.Close()
+		}
+		created = append(created, paths...)
+		if writeErr != nil || closeErr != nil {
+			cleanup()
+			return errors.Join(writeErr, closeErr)
+		}
+		if len(artifacts) == 0 {
+			continue
+		}
+		next = append(next, db.SegmentIndexSnapshotMetadata{
+			SegmentID: segment.metadata.ID, SchemaSHA256: hex.EncodeToString(key.schemaHash[:]),
+			DocumentCount: uint64(key.count), MinDocumentID: segment.metadata.MinDocID,
+			MaxDocumentID: segment.metadata.MaxDocID, Artifacts: artifacts,
+		})
+	}
+	if len(next) == 0 && len(manifest.SegmentIndexSnapshots) == 0 {
+		return nil
+	}
+	committed, publishErr := c.store.PublishSegmentIndexSnapshots(ctx, next)
+	if !committed {
+		cleanup()
+	}
+	if publishErr != nil {
+		return publishErr
+	}
+	if !committed {
+		return c.store.PruneObsoleteArtifacts(ctx)
+	}
+	return c.store.PruneObsoleteArtifacts(ctx)
+}
+
+func (c *Collection) segmentIndexSnapshotFilesExist(metadata db.SegmentMetadata, key collectionRuntimeKey, snapshot db.SegmentIndexSnapshotMetadata) bool {
+	if snapshot.SegmentID != metadata.ID || snapshot.SchemaSHA256 != hex.EncodeToString(key.schemaHash[:]) ||
+		snapshot.DocumentCount != uint64(key.count) || snapshot.MinDocumentID != metadata.MinDocID || snapshot.MaxDocumentID != metadata.MaxDocID {
+		return false
+	}
+	for _, artifact := range snapshot.Artifacts {
+		info, err := os.Lstat(filepath.Join(c.path, filepath.FromSlash(artifact.File)))
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Collection) writeSegmentRuntimeArtifacts(ctx context.Context, segmentID uint64, indexes *collectionRuntimeIndexes) ([]db.IndexArtifactMetadata, []string, error) {
+	indexDirectory := filepath.Join(c.path, "indexes")
+	if err := os.MkdirAll(indexDirectory, 0o700); err != nil {
+		return nil, nil, fmt.Errorf("create index artifact directory: %w", err)
+	}
+	created := make([]string, 0)
 	artifacts := make([]db.IndexArtifactMetadata, 0)
 	writeArtifact := func(field, kind string, write func(string) error) error {
-		file, err := os.CreateTemp(indexDirectory, "snapshot-*.zvi")
+		file, err := os.CreateTemp(indexDirectory, fmt.Sprintf("segment-%020d-*.zvi", segmentID))
 		if err != nil {
 			return err
 		}
@@ -330,51 +470,46 @@ func (c *Collection) publishIndexArtifactsLocked(ctx context.Context, indexes *c
 		artifacts = append(artifacts, db.IndexArtifactMetadata{Field: field, Kind: kind, File: filepath.ToSlash(relative)})
 		return nil
 	}
+	fail := func(err error) ([]db.IndexArtifactMetadata, []string, error) {
+		return nil, created, err
+	}
 	for _, field := range c.schema.Fields {
 		if field.DataType.IsVector() {
-			spec, err := resolveCollectionVectorIndex(field, "persist collection indexes", c.path)
+			spec, err := resolveCollectionVectorIndex(field, "persist segment indexes", c.path)
 			if err != nil {
-				cleanup()
-				return err
+				return fail(err)
 			}
 			if spec.indexType == IndexTypeFlat {
 				continue
 			}
 			kind := collectionVectorArtifactKind(spec.indexType)
 			if field.DataType.IsDenseVector() {
-				index := indexes.denseNative[field.Name]
-				saver, ok := index.(interface {
+				saver, ok := indexes.denseNative[field.Name].(interface {
 					Save(context.Context, string) error
 				})
 				if !ok {
-					cleanup()
-					return fmt.Errorf("dense index %q cannot be persisted", field.Name)
+					return fail(fmt.Errorf("dense index %q cannot be persisted", field.Name))
 				}
 				if err := writeArtifact(field.Name, kind, func(path string) error { return saver.Save(ctx, path) }); err != nil {
-					cleanup()
-					return fmt.Errorf("persist dense index %q: %w", field.Name, err)
+					return fail(fmt.Errorf("persist segment dense index %q: %w", field.Name, err))
 				}
 				continue
 			}
-			index := indexes.sparseNative[field.Name]
-			saver, ok := index.(interface {
+			saver, ok := indexes.sparseNative[field.Name].(interface {
 				Save(context.Context, string) error
 			})
 			if !ok {
-				cleanup()
-				return fmt.Errorf("sparse index %q cannot be persisted", field.Name)
+				return fail(fmt.Errorf("sparse index %q cannot be persisted", field.Name))
 			}
 			if err := writeArtifact(field.Name, kind, func(path string) error { return saver.Save(ctx, path) }); err != nil {
-				cleanup()
-				return fmt.Errorf("persist sparse index %q: %w", field.Name, err)
+				return fail(fmt.Errorf("persist segment sparse index %q: %w", field.Name, err))
 			}
 			continue
 		}
 		if field.IndexType() == IndexTypeFTS {
 			runtime := indexes.fts[field.Name]
 			if runtime == nil || runtime.dictionary == nil {
-				cleanup()
-				return fmt.Errorf("FTS index %q cannot be persisted", field.Name)
+				return fail(fmt.Errorf("FTS index %q cannot be persisted", field.Name))
 			}
 			if err := writeArtifact(field.Name, collectionFTSArtifactKind, func(path string) error {
 				encoded, err := runtime.dictionary.Encode(ctx)
@@ -383,16 +518,14 @@ func (c *Collection) publishIndexArtifactsLocked(ctx context.Context, indexes *c
 				}
 				return ailego.WriteFileAtomic(ctx, path, encoded, 0o600)
 			}); err != nil {
-				cleanup()
-				return fmt.Errorf("persist FTS index %q: %w", field.Name, err)
+				return fail(fmt.Errorf("persist segment FTS index %q: %w", field.Name, err))
 			}
 			continue
 		}
 		if field.IndexType() == IndexTypeInvert {
 			index := indexes.scalar[field.Name]
 			if index == nil {
-				cleanup()
-				return fmt.Errorf("INVERT index %q cannot be persisted", field.Name)
+				return fail(fmt.Errorf("INVERT index %q cannot be persisted", field.Name))
 			}
 			if err := writeArtifact(field.Name, collectionInvertArtifactKind, func(path string) error {
 				encoded, err := index.Encode(ctx)
@@ -401,45 +534,11 @@ func (c *Collection) publishIndexArtifactsLocked(ctx context.Context, indexes *c
 				}
 				return ailego.WriteFileAtomic(ctx, path, encoded, 0o600)
 			}); err != nil {
-				cleanup()
-				return fmt.Errorf("persist INVERT index %q: %w", field.Name, err)
+				return fail(fmt.Errorf("persist segment INVERT index %q: %w", field.Name, err))
 			}
 		}
 	}
-	if len(artifacts) == 0 && current == nil {
-		return nil
-	}
-	snapshot := &db.IndexSnapshotMetadata{
-		SchemaSHA256:  hex.EncodeToString(indexes.key.schemaHash[:]),
-		DocumentCount: uint64(indexes.key.count),
-		MaxDocumentID: indexes.key.maxDocID,
-		Artifacts:     artifacts,
-	}
-	committed, err := c.store.PublishIndexSnapshot(ctx, snapshot)
-	if !committed {
-		cleanup()
-	}
-	if err != nil {
-		return err
-	}
-	if !committed {
-		return errors.New("index snapshot publication did not commit")
-	}
-	return c.store.PruneObsoleteArtifacts(ctx)
-}
-
-func (c *Collection) indexSnapshotFilesExist(key collectionRuntimeKey, snapshot *db.IndexSnapshotMetadata) bool {
-	if snapshot == nil || snapshot.SchemaSHA256 != hex.EncodeToString(key.schemaHash[:]) ||
-		snapshot.DocumentCount != uint64(key.count) || snapshot.MaxDocumentID != key.maxDocID {
-		return false
-	}
-	for _, artifact := range snapshot.Artifacts {
-		info, err := os.Lstat(filepath.Join(c.path, filepath.FromSlash(artifact.File)))
-		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return false
-		}
-	}
-	return true
+	return artifacts, created, nil
 }
 
 func buildCollectionRuntimeIndexes(
@@ -788,7 +887,7 @@ func (c *Collection) Flush(ctx context.Context) error {
 	if err := c.store.Flush(ctx); err != nil {
 		return wrapCollectionError("flush collection", c.path, err)
 	}
-	return wrapCollectionError("flush collection", c.path, c.refreshIndexArtifactsLocked(ctx))
+	return wrapCollectionError("flush collection", c.path, c.refreshSegmentIndexArtifactsLocked(ctx))
 }
 
 // Close releases files and the cross-process collection lock. It is
@@ -804,12 +903,13 @@ func (c *Collection) Close() error {
 	}
 	c.closed = true
 	c.indexMu.Lock()
-	indexes := c.indexes
-	c.indexes = nil
+	segmentIndexes := c.segmentIndexes
+	c.segmentIndexes = nil
 	c.indexMu.Unlock()
+	segmentErr := closeCollectionSegmentRuntimes(segmentIndexes)
 	return errors.Join(
 		wrapCollectionError("close collection", c.path, c.store.Close()),
-		indexes.Close(),
+		segmentErr,
 	)
 }
 
@@ -838,13 +938,23 @@ func (c *Collection) Destroy(ctx context.Context) error {
 	}
 	c.closed = true
 	c.indexMu.Lock()
-	indexes := c.indexes
-	c.indexes = nil
+	segmentIndexes := c.segmentIndexes
+	c.segmentIndexes = nil
 	c.indexMu.Unlock()
-	indexErr := indexes.Close()
+	indexErr := closeCollectionSegmentRuntimes(segmentIndexes)
 	closeErr := c.store.Close()
 	removeErr := os.RemoveAll(c.path)
 	return wrapCollectionError("destroy collection", c.path, errors.Join(indexErr, closeErr, removeErr))
+}
+
+func closeCollectionSegmentRuntimes(runtimes map[uint64]*collectionSegmentRuntime) error {
+	errs := make([]error, 0, len(runtimes))
+	for _, runtime := range runtimes {
+		if runtime != nil && runtime.indexes != nil {
+			errs = append(errs, runtime.indexes.Close())
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (c *Collection) requireOpenLocked(op string) error {
@@ -2392,6 +2502,11 @@ type evaluatedFilter struct {
 	usedIndex bool
 }
 
+type evaluatedSegmentFilters struct {
+	global evaluatedFilter
+	local  map[uint64]evaluatedFilter
+}
+
 func (f evaluatedFilter) useBruteForce(ratio float32) bool {
 	return f.present && f.total > 0 && f.matched <= uint64(float64(f.total)*float64(ratio))
 }
@@ -2505,6 +2620,79 @@ func evaluateFilterDocuments(
 		ordinals: ordinals, matched: uint64(len(matched)), total: uint64(len(documents)),
 		present: true, usedIndex: candidatesUsed,
 	}, nil
+}
+
+func evaluateSegmentFilters(
+	ctx context.Context,
+	plan *dbsql.Plan,
+	liveDocuments []Document,
+	segments []collectionSegmentDocuments,
+	runtimes []*collectionSegmentRuntime,
+	invertToForwardRatio float32,
+) (evaluatedSegmentFilters, error) {
+	live := make(map[uint64]struct{}, len(liveDocuments))
+	for _, document := range liveDocuments {
+		live[document.DocID] = struct{}{}
+	}
+	runtimeByID := make(map[uint64]*collectionSegmentRuntime, len(runtimes))
+	for _, runtime := range runtimes {
+		runtimeByID[runtime.segmentID] = runtime
+	}
+	result := evaluatedSegmentFilters{local: make(map[uint64]evaluatedFilter, len(segments))}
+	matched := make(map[uint64]struct{}, len(liveDocuments))
+	for _, segment := range segments {
+		if len(segment.documents) == 0 {
+			continue
+		}
+		var cached dbsql.IndexSet
+		if runtime := runtimeByID[segment.metadata.ID]; runtime != nil {
+			cached = runtime.indexes.scalar
+		}
+		local, err := evaluateFilterDocuments(ctx, plan, segment.documents, invertToForwardRatio, cached)
+		if err != nil {
+			return evaluatedSegmentFilters{}, err
+		}
+		planPredicate := local.predicate
+		localMatches := make(map[uint64]struct{}, len(local.ordinals))
+		local.ordinals = local.ordinals[:0]
+		local.total = 0
+		local.matched = 0
+		for ordinal, document := range segment.documents {
+			if _, isLive := live[document.DocID]; !isLive {
+				continue
+			}
+			local.total++
+			if planPredicate != nil && !planPredicate(document.DocID) {
+				continue
+			}
+			localMatches[document.DocID] = struct{}{}
+			matched[document.DocID] = struct{}{}
+			local.ordinals = append(local.ordinals, uint32(ordinal))
+			local.matched++
+		}
+		local.predicate = func(key uint64) bool {
+			_, found := localMatches[key]
+			return found
+		}
+		result.local[segment.metadata.ID] = local
+	}
+	globalOrdinals := make([]uint32, 0, len(matched))
+	for ordinal, document := range liveDocuments {
+		if _, found := matched[document.DocID]; found {
+			globalOrdinals = append(globalOrdinals, uint32(ordinal))
+		}
+	}
+	result.global = evaluatedFilter{
+		predicate: func(key uint64) bool {
+			_, found := matched[key]
+			return found
+		},
+		ordinals: globalOrdinals, matched: uint64(len(matched)), total: uint64(len(liveDocuments)), present: plan != nil,
+	}
+	for _, local := range result.local {
+		result.global.usedIndex = result.global.usedIndex || local.usedIndex
+	}
+	return result, nil
 }
 
 func wrapFilterEvaluationError(op, path string, err error) error {
@@ -2792,16 +2980,19 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	indexes, err := c.runtimeIndexesLocked(ctx, documents)
+	segments, err := c.segmentDocumentsLocked(ctx)
+	if err != nil {
+		return nil, wrapCollectionError(op, c.path, err)
+	}
+	runtimes, err := c.segmentRuntimeIndexesLocked(ctx, segments)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
 	runtimeConfig := c.runtimeConfig()
-	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents, runtimeConfig.InvertToForwardScanRatio, indexes.scalar)
+	filters, err := evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
 	if err != nil {
 		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}
-
 	batches := make([]RerankBatch, len(query.Queries))
 	candidateIDs := make(map[uint64]struct{})
 	for index, subQuery := range query.Queries {
@@ -2837,22 +3028,14 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 			if err != nil {
 				break
 			}
-			results, err = c.searchVectorSnapshot(
+			results, err = c.searchVectorSegments(
 				ctx, op, field, dense, sparse,
-				candidateCount, subQuery.Params, documents, candidateFilter, indexes,
+				candidateCount, subQuery.Params, segments, runtimes, filters,
 			)
 		case multiQueryTargetFTS:
-			runtime := indexes.fts[field.Name]
-			if runtime == nil {
-				err = invalidArgument(op, "field %q is not an FTS-indexed STRING field", field.Name)
-			}
-			if err == nil {
-				runtime = runtime.withFilter(candidateFilter.predicate)
-				results, err = searchCollectionFTS(
-					ctx, runtime, subQuery.FTS, subQuery.Params, candidateCount,
-					candidateFilter.ordinals, candidateFilter.useBruteForce(runtimeConfig.FTSBruteForceByKeysRatio),
-				)
-			}
+			results, err = c.searchFTSSegments(
+				ctx, op, field, subQuery.FTS, subQuery.Params, candidateCount, documents, runtimes, filters,
+			)
 		}
 		if err != nil {
 			return nil, wrapMultiQueryBranchError(op, c.path, index, err)
@@ -3396,7 +3579,7 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 		// Publication is the durability boundary. A process can stop after the
 		// new manifest becomes current but before obsolete files are removed;
 		// a later no-op optimization must finish that safe cleanup.
-		if err := c.refreshIndexArtifactsLocked(ctx); err != nil {
+		if err := c.refreshSegmentIndexArtifactsLocked(ctx); err != nil {
 			return wrapCollectionError(op, c.path, err)
 		}
 		return wrapCollectionError(op, c.path, c.store.PruneObsoleteArtifacts(ctx))
@@ -3415,7 +3598,7 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 	}); err != nil {
 		return err
 	}
-	if err := c.refreshIndexArtifactsLocked(ctx); err != nil {
+	if err := c.refreshSegmentIndexArtifactsLocked(ctx); err != nil {
 		return wrapCollectionError(op, c.path, err)
 	}
 	return wrapCollectionError(op, c.path, c.store.PruneObsoleteArtifacts(ctx))
@@ -3525,15 +3708,20 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	indexes, err := c.runtimeIndexesLocked(ctx, documents)
+	segments, err := c.segmentDocumentsLocked(ctx)
+	if err != nil {
+		return nil, wrapCollectionError(op, c.path, err)
+	}
+	runtimes, err := c.segmentRuntimeIndexesLocked(ctx, segments)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
 	runtimeConfig := c.runtimeConfig()
-	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents, runtimeConfig.InvertToForwardScanRatio, indexes.scalar)
+	filters, err := evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
 	if err != nil {
 		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}
+	candidateFilter := filters.global
 	target, err := singleQueryTargetKind(query)
 	if err != nil {
 		return nil, invalidArgument(op, "%v", err)
@@ -3550,15 +3738,7 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 		if !found {
 			return nil, invalidArgument(op, "FTS field %q does not exist", query.Field)
 		}
-		runtime := indexes.fts[field.Name]
-		if runtime == nil {
-			return nil, invalidArgument(op, "field %q is not an FTS-indexed STRING field", field.Name)
-		}
-		runtime = runtime.withFilter(candidateFilter.predicate)
-		results, err = searchCollectionFTS(
-			ctx, runtime, query.FTS, query.Params, query.TopK,
-			candidateFilter.ordinals, candidateFilter.useBruteForce(runtimeConfig.FTSBruteForceByKeysRatio),
-		)
+		results, err = c.searchFTSSegments(ctx, op, field, query.FTS, query.Params, query.TopK, documents, runtimes, filters)
 	case singleQueryTargetDense, singleQueryTargetSparse, singleQueryTargetPrimaryKey:
 		field, found := c.schema.Field(query.Field)
 		if !found || !field.DataType.IsVector() {
@@ -3571,8 +3751,8 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 				return nil, err
 			}
 		}
-		results, err = c.searchVectorSnapshot(
-			ctx, op, field, dense, sparse, query.TopK, query.Params, documents, candidateFilter, indexes,
+		results, err = c.searchVectorSegments(
+			ctx, op, field, dense, sparse, query.TopK, query.Params, segments, runtimes, filters,
 		)
 	}
 	if err != nil {
@@ -3697,6 +3877,125 @@ func (c *Collection) searchVectorSnapshot(
 	return c.searchVectorSnapshotResolved(
 		ctx, op, field, dense, sparse, topK, documents, candidateFilter, vectorIndex, params, indexes,
 	)
+}
+
+func (c *Collection) searchVectorSegments(
+	ctx context.Context,
+	op string,
+	field FieldSchema,
+	dense DenseVector,
+	sparse SparseVector,
+	topK int,
+	queryParams QueryParams,
+	segments []collectionSegmentDocuments,
+	runtimes []*collectionSegmentRuntime,
+	filters evaluatedSegmentFilters,
+) ([]core.Result, error) {
+	vectorIndex, err := resolveCollectionVectorIndex(field, op, c.path)
+	if err != nil {
+		return nil, err
+	}
+	params, err := collectionQueryParams(queryParams, vectorIndex)
+	if err != nil {
+		return nil, err
+	}
+	segmentByID := make(map[uint64]collectionSegmentDocuments, len(segments))
+	for _, segment := range segments {
+		segmentByID[segment.metadata.ID] = segment
+	}
+	batches := make([][]core.Result, len(runtimes))
+	err = ailego.ParallelFor(ctx, len(runtimes), c.queryWorkers(), func(ctx context.Context, index int) error {
+		runtime := runtimes[index]
+		segment, found := segmentByID[runtime.segmentID]
+		if !found {
+			return fmt.Errorf("runtime references missing segment %d", runtime.segmentID)
+		}
+		local, found := filters.local[runtime.segmentID]
+		if !found {
+			return fmt.Errorf("candidate filter for segment %d is missing", runtime.segmentID)
+		}
+		results, err := c.searchVectorSnapshotResolved(
+			ctx, op, field, dense, sparse, topK, segment.documents, local,
+			vectorIndex, params, runtime.indexes,
+		)
+		if err != nil {
+			return err
+		}
+		batches[index] = results
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return core.MergeSearchResults(vectorIndex.metric, topK, batches...), nil
+}
+
+func (c *Collection) searchFTSSegments(
+	ctx context.Context,
+	op string,
+	field FieldSchema,
+	clause *FTSClause,
+	queryParams QueryParams,
+	topK int,
+	liveDocuments []Document,
+	runtimes []*collectionSegmentRuntime,
+	filters evaluatedSegmentFilters,
+) ([]core.Result, error) {
+	live := make(map[uint64]struct{}, len(liveDocuments))
+	for _, document := range liveDocuments {
+		live[document.DocID] = struct{}{}
+	}
+	views := make([]core.FTSSegmentView, len(runtimes))
+	for index, segment := range runtimes {
+		runtime := segment.indexes.fts[field.Name]
+		if runtime == nil {
+			return nil, invalidArgument(op, "field %q is not an FTS-indexed STRING field", field.Name)
+		}
+		deleted := ailego.NewBitmap(uint64(len(runtime.documentIDs)))
+		for ordinal, documentID := range runtime.documentIDs {
+			if _, found := live[documentID]; !found {
+				deleted.Set(uint64(ordinal))
+			}
+		}
+		views[index] = core.FTSSegmentView{Dictionary: runtime.dictionary, DeletedDocuments: deleted}
+	}
+	if len(views) == 0 {
+		return []core.Result{}, nil
+	}
+	stats, err := core.AggregateFTSCorpusStats(ctx, views)
+	if err != nil {
+		return nil, err
+	}
+	scorer, err := core.NewBM25Scorer(core.DefaultBM25Params(), stats)
+	if err != nil {
+		return nil, err
+	}
+	batches := make([][]core.Result, len(runtimes))
+	runtimeConfig := c.runtimeConfig()
+	err = ailego.ParallelFor(ctx, len(runtimes), c.queryWorkers(), func(ctx context.Context, index int) error {
+		segment := runtimes[index]
+		local, found := filters.local[segment.segmentID]
+		if !found {
+			return fmt.Errorf("candidate filter for segment %d is missing", segment.segmentID)
+		}
+		base := segment.indexes.fts[field.Name]
+		runtime := *base
+		runtime.scorer = scorer
+		filtered := runtime.withFilter(local.predicate)
+		results, err := searchCollectionFTS(
+			ctx, filtered, clause, queryParams, topK, local.ordinals,
+			local.useBruteForce(runtimeConfig.FTSBruteForceByKeysRatio),
+		)
+		if err != nil {
+			return err
+		}
+		batches[index] = results
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return core.MergeSearchResults(core.MetricIP, topK, batches...), nil
 }
 
 func (c *Collection) searchVectorSnapshotResolved(
@@ -3865,15 +4164,20 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	indexes, err := c.runtimeIndexesLocked(ctx, documents)
+	segments, err := c.segmentDocumentsLocked(ctx)
+	if err != nil {
+		return nil, wrapCollectionError(op, c.path, err)
+	}
+	runtimes, err := c.segmentRuntimeIndexesLocked(ctx, segments)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
 	runtimeConfig := c.runtimeConfig()
-	candidateFilter, err := evaluateFilterDocuments(ctx, filterPlan, documents, runtimeConfig.InvertToForwardScanRatio, indexes.scalar)
+	filters, err := evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
 	if err != nil {
 		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}
+	candidateFilter := filters.global
 	if candidateFilter.useBruteForce(runtimeConfig.BruteForceByKeysRatio) {
 		params.options.Linear = true
 	}
@@ -3892,11 +4196,64 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 			return nil, notSupported(op, c.path, fmt.Sprintf("group-by is not supported for %s graph traversal", vectorIndex.indexType))
 		}
 	}
+	segmentByID := make(map[uint64]collectionSegmentDocuments, len(segments))
+	for _, segment := range segments {
+		segmentByID[segment.metadata.ID] = segment
+	}
+	batches := make([][]core.GroupResult, len(runtimes))
+	err = ailego.ParallelFor(ctx, len(runtimes), c.queryWorkers(), func(ctx context.Context, index int) error {
+		runtime := runtimes[index]
+		segment, found := segmentByID[runtime.segmentID]
+		if !found {
+			return fmt.Errorf("runtime references missing segment %d", runtime.segmentID)
+		}
+		local, found := filters.local[runtime.segmentID]
+		if !found {
+			return fmt.Errorf("candidate filter for segment %d is missing", runtime.segmentID)
+		}
+		groups, err := c.searchGroupSegment(
+			ctx, op, field, groupField, dense, sparse, query, segment.documents,
+			local, runtime.indexes, vectorIndex, params,
+		)
+		if err != nil {
+			return err
+		}
+		batches[index] = groups
+		return nil
+	})
+	if err != nil {
+		return nil, wrapCollectionError(op, c.path, err)
+	}
+	metric := vectorIndex.metric
+	if !field.DataType.IsDenseVector() {
+		metric = core.MetricIP
+	}
+	groups := core.MergeGroupResults(metric, query.GroupCount, query.TopKPerGroup, batches...)
+	return c.materializeGroups(documents, groups, query.Projection)
+}
+
+func (c *Collection) searchGroupSegment(
+	ctx context.Context,
+	op string,
+	field FieldSchema,
+	groupField FieldSchema,
+	dense DenseVector,
+	sparse SparseVector,
+	query GroupByVectorQuery,
+	documents []Document,
+	candidateFilter evaluatedFilter,
+	indexes *collectionRuntimeIndexes,
+	vectorIndex collectionVectorIndex,
+	params collectionQueryConfig,
+) ([]core.GroupResult, error) {
+	if candidateFilter.useBruteForce(c.runtimeConfig().BruteForceByKeysRatio) {
+		params.options.Linear = true
+	}
 	groupValues := make(map[uint64]string, len(documents))
 	for _, document := range documents {
-		value, valueErr := encodeGroupValue(document.Fields[groupField.Name], groupField.DataType)
-		if valueErr != nil {
-			return nil, &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "stored group value is invalid", Err: valueErr}
+		value, err := encodeGroupValue(document.Fields[groupField.Name], groupField.DataType)
+		if err != nil {
+			return nil, &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "stored group value is invalid", Err: err}
 		}
 		groupValues[document.DocID] = value
 	}
@@ -3927,29 +4284,24 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 			index, compatible := indexes.denseNative[field.Name].(*core.HNSWRaBitQIndex)
 			if !compatible {
 				err = fmt.Errorf("dense HNSW-RaBitQ runtime index is incompatible")
+			} else if params.options.Linear {
+				groups, err = index.SearchGroups(ctx, queryVector, options)
 			} else {
-				if params.options.Linear {
-					groups, err = index.SearchGroups(ctx, queryVector, options)
-				} else {
-					groups, err = index.SearchHNSWRaBitQGroups(ctx, queryVector, core.HNSWGroupSearchOptions{
-						GroupByOptions: options, EF: params.ef,
-					})
-				}
+				groups, err = index.SearchHNSWRaBitQGroups(ctx, queryVector, core.HNSWGroupSearchOptions{
+					GroupByOptions: options, EF: params.ef,
+				})
 			}
 		} else if vectorIndex.indexType == IndexTypeHNSW && !params.options.Linear {
 			index, compatible := indexes.denseNative[field.Name].(collectionHNSWIndex)
 			if !compatible {
 				err = fmt.Errorf("dense HNSW runtime index is incompatible")
+			} else if groupIndex, compatible := index.(collectionHNSWGroupIndex); !compatible {
+				err = fmt.Errorf("dense HNSW builder returned an incompatible group searcher")
 			} else {
-				groupIndex, compatible := index.(collectionHNSWGroupIndex)
-				if !compatible {
-					err = fmt.Errorf("dense HNSW builder returned an incompatible group searcher")
-				} else {
-					groups, err = groupIndex.SearchHNSWGroups(ctx, queryVector, core.HNSWGroupSearchOptions{
-						GroupByOptions: options, EF: params.ef,
-						PrefetchOffset: params.prefetchOffset, PrefetchLines: params.prefetchLines,
-					})
-				}
+				groups, err = groupIndex.SearchHNSWGroups(ctx, queryVector, core.HNSWGroupSearchOptions{
+					GroupByOptions: options, EF: params.ef,
+					PrefetchOffset: params.prefetchOffset, PrefetchLines: params.prefetchLines,
+				})
 			}
 		} else {
 			index := indexes.denseFlat[field.Name]
@@ -3960,71 +4312,63 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 			}
 		}
 		if err != nil {
-			return nil, wrapCollectionError(op, c.path, err)
+			return nil, err
 		}
 		if searcher != nil {
 			groups, err = searcher.SearchGroups(ctx, queryVector, options)
-			if err != nil {
-				return nil, wrapCollectionError(op, c.path, err)
-			}
+		}
+		return groups, err
+	}
+	if dense != nil {
+		return nil, invalidArgument(op, "sparse field %q cannot use a dense query vector", field.Name)
+	}
+	queryVector, err := validateSparseQueryVector(field, sparse)
+	if err != nil {
+		return nil, err
+	}
+	var searcher core.SparseGroupSearcher
+	if params.options.UseRefiner {
+		searcher = indexes.sparseExact[field.Name]
+		if searcher == nil {
+			err = fmt.Errorf("sparse runtime refiner index is incompatible")
 		}
 	} else {
-		if dense != nil {
-			return nil, invalidArgument(op, "sparse field %q cannot use a dense query vector", field.Name)
+		if vectorIndex.quantize == QuantizeTypeFP16 {
+			queryVector, err = sparseFP16Vector(queryVector)
 		}
-		queryVector, err := validateSparseQueryVector(field, sparse)
-		if err != nil {
-			return nil, err
-		}
-		var searcher core.SparseGroupSearcher
-		if params.options.UseRefiner {
-			searcher = indexes.sparseExact[field.Name]
-			if searcher == nil {
-				err = fmt.Errorf("sparse runtime refiner index is incompatible")
+		if err == nil {
+			index := indexes.sparseNative[field.Name]
+			if params.options.Linear || vectorIndex.indexType == IndexTypeFlat {
+				index = indexes.sparseFlat[field.Name]
 			}
-		} else {
-			if vectorIndex.quantize == QuantizeTypeFP16 {
-				queryVector, err = sparseFP16Vector(queryVector)
-			}
-			if err == nil {
-				index := indexes.sparseNative[field.Name]
-				if params.options.Linear || vectorIndex.indexType == IndexTypeFlat {
-					index = indexes.sparseFlat[field.Name]
-				}
-				if index == nil {
-					err = fmt.Errorf("sparse runtime index is missing")
+			if index == nil {
+				err = fmt.Errorf("sparse runtime index is missing")
+			} else if !params.options.Linear {
+				hnsw, compatible := index.(*core.SparseHNSWIndex)
+				if !compatible {
+					err = fmt.Errorf("sparse HNSW builder returned an incompatible group searcher")
 				} else {
-					if !params.options.Linear {
-						hnsw, compatible := index.(*core.SparseHNSWIndex)
-						if !compatible {
-							err = fmt.Errorf("sparse HNSW builder returned an incompatible group searcher")
-						} else {
-							groups, err = hnsw.SearchSparseHNSWGroups(ctx, queryVector, core.HNSWGroupSearchOptions{
-								GroupByOptions: options, EF: params.ef,
-								PrefetchOffset: params.prefetchOffset, PrefetchLines: params.prefetchLines,
-							})
-						}
-					} else {
-						var compatible bool
-						searcher, compatible = index.(core.SparseGroupSearcher)
-						if !compatible {
-							err = fmt.Errorf("sparse Flat builder returned an incompatible group searcher")
-						}
-					}
+					groups, err = hnsw.SearchSparseHNSWGroups(ctx, queryVector, core.HNSWGroupSearchOptions{
+						GroupByOptions: options, EF: params.ef,
+						PrefetchOffset: params.prefetchOffset, PrefetchLines: params.prefetchLines,
+					})
 				}
-			}
-		}
-		if err != nil {
-			return nil, wrapCollectionError(op, c.path, err)
-		}
-		if searcher != nil {
-			groups, err = searcher.SearchSparseGroups(ctx, queryVector, options)
-			if err != nil {
-				return nil, wrapCollectionError(op, c.path, err)
+			} else {
+				var compatible bool
+				searcher, compatible = index.(core.SparseGroupSearcher)
+				if !compatible {
+					err = fmt.Errorf("sparse Flat builder returned an incompatible group searcher")
+				}
 			}
 		}
 	}
-	return c.materializeGroups(documents, groups, query.Projection)
+	if err != nil {
+		return nil, err
+	}
+	if searcher != nil {
+		groups, err = searcher.SearchSparseGroups(ctx, queryVector, options)
+	}
+	return groups, err
 }
 
 func (c *Collection) liveDocumentsLocked(ctx context.Context) ([]Document, error) {

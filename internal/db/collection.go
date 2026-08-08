@@ -75,6 +75,15 @@ type CollectionStore struct {
 	wal      *WAL
 }
 
+// SegmentSnapshot is an owned, stable view used by the collection index layer.
+// Immutable snapshots correspond to PersistedSegments; the final mutable
+// snapshot corresponds to the current WAL-backed writing segment.
+type SegmentSnapshot struct {
+	Metadata  SegmentMetadata
+	Documents []StoredDocument
+	Mutable   bool
+}
+
 // CreateCollection creates a native Go collection and returns its sole writer.
 func CreateCollection(ctx context.Context, dir string, schema json.RawMessage, options CollectionOptions) (*CollectionStore, error) {
 	if ctx == nil {
@@ -358,6 +367,38 @@ func (c *CollectionStore) LiveDocuments(ctx context.Context) ([]StoredDocument, 
 	return c.manager.LiveDocuments(ctx)
 }
 
+// SegmentSnapshots returns retained documents grouped by physical segment.
+// Logical deletions and superseded versions remain present so immutable index
+// artifacts never need rewriting; query-time live masks exclude them.
+func (c *CollectionStore) SegmentSnapshots(ctx context.Context) ([]SegmentSnapshot, error) {
+	if c == nil {
+		return nil, errors.New("db: nil collection")
+	}
+	if ctx == nil {
+		return nil, errors.New("db: nil segment-snapshot context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.closed {
+		return nil, ErrCollectionClosed
+	}
+	segments := c.manager.ImmutableSegments()
+	snapshots := make([]SegmentSnapshot, 0, len(segments)+1)
+	for _, segment := range segments {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, SegmentSnapshot{Metadata: segment.Metadata(), Documents: segment.Documents()})
+	}
+	if writing := c.manager.Writing(); writing != nil {
+		snapshots = append(snapshots, SegmentSnapshot{Metadata: writing.Metadata(), Documents: writing.Documents(), Mutable: true})
+	}
+	return snapshots, nil
+}
+
 // DocumentCount returns the number of live primary keys in memory.
 func (c *CollectionStore) DocumentCount() uint64 {
 	return c.Stats().DocumentCount
@@ -465,8 +506,8 @@ func (c *CollectionStore) PruneObsoleteArtifacts(ctx context.Context) error {
 			keep[filepath.Clean(collectionPath(c.dir, relative)+".lock")] = struct{}{}
 		}
 	}
-	if manifest.IndexSnapshot != nil {
-		for _, artifact := range manifest.IndexSnapshot.Artifacts {
+	for _, snapshot := range manifest.SegmentIndexSnapshots {
+		for _, artifact := range snapshot.Artifacts {
 			keepRelative(artifact.File)
 		}
 	}
@@ -790,54 +831,45 @@ func (c *CollectionStore) PublishSchema(ctx context.Context, schema json.RawMess
 	return committed, publishErr
 }
 
-// PublishIndexSnapshot atomically installs collection-snapshot index artifact
-// metadata. Every referenced artifact must already exist as a regular file
-// below the collection directory. Passing nil clears the current snapshot.
-func (c *CollectionStore) PublishIndexSnapshot(ctx context.Context, snapshot *IndexSnapshotMetadata) (committed bool, err error) {
+// PublishSegmentIndexSnapshots atomically installs immutable per-segment index
+// metadata. Artifacts must already exist as regular files below the collection
+// directory.
+func (c *CollectionStore) PublishSegmentIndexSnapshots(ctx context.Context, snapshots []SegmentIndexSnapshotMetadata) (committed bool, err error) {
 	if c == nil {
 		return false, errors.New("db: nil collection")
 	}
 	if ctx == nil {
-		return false, errors.New("db: nil publish index snapshot context")
+		return false, errors.New("db: nil publish segment indexes context")
 	}
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	if snapshot != nil {
-		copy := *snapshot
-		copy.Artifacts = slices.Clone(snapshot.Artifacts)
-		snapshot = &copy
-		candidate := Manifest{FormatVersion: DiskFormatVersion, Generation: 1, Schema: json.RawMessage(`{}`), SegmentMaxDocuments: 1, IndexSnapshot: snapshot}
-		if err := candidate.Validate(); err != nil {
-			return false, err
-		}
-		for _, artifact := range snapshot.Artifacts {
-			path := collectionPath(c.dir, artifact.File)
-			info, statErr := os.Lstat(path)
-			if statErr != nil {
-				return false, fmt.Errorf("db: inspect index artifact %q: %w", artifact.File, statErr)
-			}
-			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-				return false, fmt.Errorf("db: index artifact %q is not a regular file", artifact.File)
-			}
-		}
-	}
+	snapshots = cloneSegmentIndexSnapshots(snapshots)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireWritableLocked(); err != nil {
 		return false, err
 	}
 	current := c.versions.Current()
-	if reflect.DeepEqual(current.IndexSnapshot, snapshot) {
+	if reflect.DeepEqual(current.SegmentIndexSnapshots, snapshots) {
 		return false, nil
 	}
 	next := current.Clone()
-	if snapshot == nil {
-		next.IndexSnapshot = nil
-	} else {
-		copy := *snapshot
-		copy.Artifacts = slices.Clone(snapshot.Artifacts)
-		next.IndexSnapshot = &copy
+	next.SegmentIndexSnapshots = snapshots
+	if err := next.Validate(); err != nil {
+		return false, err
+	}
+	for _, snapshot := range snapshots {
+		for _, artifact := range snapshot.Artifacts {
+			path := collectionPath(c.dir, artifact.File)
+			info, statErr := os.Lstat(path)
+			if statErr != nil {
+				return false, fmt.Errorf("db: inspect segment index artifact %q: %w", artifact.File, statErr)
+			}
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return false, fmt.Errorf("db: segment index artifact %q is not a regular file", artifact.File)
+			}
+		}
 	}
 	_, publishErr := c.versions.Publish(ctx, next)
 	committed = c.versions.Current().Generation != current.Generation
@@ -1033,6 +1065,7 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 	nextManifest := current.Clone()
 	nextManifest.Schema = slices.Clone(schema)
 	nextManifest.PersistedSegments = segmentMetadata
+	nextManifest.SegmentIndexSnapshots = nil
 	nextManifest.WritingSegment = &SegmentMetadata{ID: writingID, Files: []string{walRelative}}
 	nextManifest.WritingSegmentStartDocID = nextDocID
 	nextManifest.IDMapGeneration = snapshotGeneration

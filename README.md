@@ -21,7 +21,7 @@ libraries.
 - Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, and DiskANN indexes.
 - L2, inner-product, cosine, and MIPS-L2 metrics with optional quantization and refinement.
 - Scalar filtering, full-text search, grouping, and hybrid multi-query retrieval.
-- Durable WAL-backed writes, crash recovery, immutable segments, and atomic compaction.
+- Durable WAL-backed writes, crash recovery, segment-native incremental indexes, and atomic compaction.
 - Pure Go on Linux, macOS, and Windows.
 
 ## Install
@@ -171,6 +171,7 @@ projections, ANN parameters, grouping, and refinement.
 - [Collection API](docs/collection-api.md)
 - [Vector query semantics](docs/vector-query.md)
 - [Hybrid MultiQuery](docs/multi-query.md)
+- [Segment-native indexes](docs/segment-native-indexes.md)
 - [Runtime configuration](docs/runtime-config.md)
 - [Native Go disk format](docs/disk-format.md)
 - [Disk compatibility and migrations](docs/disk-compatibility.md)

@@ -50,9 +50,10 @@ satisfied. The native runtime keeps a key map regardless of `UseIDMap` so
 Collection identity and refinement remain available; this only uses extra
 memory and does not change results.
 
-Until segment-native ANN artifacts are integrated, Collection reconstructs a
-query-local Vamana graph from its durable live snapshot. The standalone core
-index nevertheless supports native save/open and continued additions.
+Collection persists one Vamana graph per immutable data segment and performs a
+metric-aware merge across segment-local results. The WAL-backed segment is
+rebuilt in memory as it changes. The standalone core index also supports native
+save/open and continued additions.
 
 ## Native persistence
 

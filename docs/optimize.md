@@ -22,8 +22,8 @@ document ID.
 The current implementation supports Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, and
 DiskANN vector definitions, including implemented scalar quantization and
 rotation; scalar INVERT indexes whose value type is implemented by the filter
-runtime; FTS string indexes; and fields without indexes. The collection runtime
-reconstructs those indexes from the compacted live snapshot when queried.
+runtime; FTS string indexes; and fields without indexes. Optimize builds and
+publishes fresh index artifacts for the replacement immutable segments.
 HNSW-RaBitQ rebuilds its native
 model, codes, and graph deterministically from original FP32 vectors; Vamana
 rebuilds RobustPrune topology and its medoid, then recreates any configured

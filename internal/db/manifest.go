@@ -58,7 +58,7 @@ type SegmentMetadata struct {
 	Files    []string `json:"files,omitempty"`
 }
 
-// IndexArtifactMetadata identifies one collection-snapshot index file. Kind is
+// IndexArtifactMetadata identifies one collection index file. Kind is
 // interpreted by the public collection layer; the storage layer owns only its
 // portable path and publication lifecycle.
 type IndexArtifactMetadata struct {
@@ -67,11 +67,14 @@ type IndexArtifactMetadata struct {
 	File  string `json:"file"`
 }
 
-// IndexSnapshotMetadata describes index artifacts built from one exact live
-// document snapshot. Older manifests omit this value and remain readable.
-type IndexSnapshotMetadata struct {
+// SegmentIndexSnapshotMetadata identifies indexes owned by one immutable data
+// segment. Document bounds bind the artifacts to the exact segment payload;
+// SchemaSHA256 binds their interpretation to one collection schema.
+type SegmentIndexSnapshotMetadata struct {
+	SegmentID     uint64                  `json:"segment_id"`
 	SchemaSHA256  string                  `json:"schema_sha256"`
 	DocumentCount uint64                  `json:"document_count"`
+	MinDocumentID uint64                  `json:"min_document_id"`
 	MaxDocumentID uint64                  `json:"max_document_id"`
 	Artifacts     []IndexArtifactMetadata `json:"artifacts,omitempty"`
 }
@@ -80,18 +83,18 @@ type IndexSnapshotMetadata struct {
 // versioned JSON representation owned by the schema codec; the manifest layer
 // preserves it without importing the public package.
 type Manifest struct {
-	FormatVersion            uint32                 `json:"format_version"`
-	Generation               uint64                 `json:"generation"`
-	Schema                   json.RawMessage        `json:"schema"`
-	EnableMmap               bool                   `json:"enable_mmap"`
-	SegmentMaxDocuments      uint64                 `json:"segment_max_documents"`
-	PersistedSegments        []SegmentMetadata      `json:"persisted_segments,omitempty"`
-	WritingSegment           *SegmentMetadata       `json:"writing_segment,omitempty"`
-	WritingSegmentStartDocID uint64                 `json:"writing_segment_start_doc_id,omitempty"`
-	IDMapGeneration          uint64                 `json:"id_map_generation"`
-	DeleteSnapshotGeneration uint64                 `json:"delete_snapshot_generation"`
-	NextSegmentID            uint64                 `json:"next_segment_id"`
-	IndexSnapshot            *IndexSnapshotMetadata `json:"index_snapshot,omitempty"`
+	FormatVersion            uint32                         `json:"format_version"`
+	Generation               uint64                         `json:"generation"`
+	Schema                   json.RawMessage                `json:"schema"`
+	EnableMmap               bool                           `json:"enable_mmap"`
+	SegmentMaxDocuments      uint64                         `json:"segment_max_documents"`
+	PersistedSegments        []SegmentMetadata              `json:"persisted_segments,omitempty"`
+	WritingSegment           *SegmentMetadata               `json:"writing_segment,omitempty"`
+	WritingSegmentStartDocID uint64                         `json:"writing_segment_start_doc_id,omitempty"`
+	IDMapGeneration          uint64                         `json:"id_map_generation"`
+	DeleteSnapshotGeneration uint64                         `json:"delete_snapshot_generation"`
+	NextSegmentID            uint64                         `json:"next_segment_id"`
+	SegmentIndexSnapshots    []SegmentIndexSnapshotMetadata `json:"segment_index_snapshots,omitempty"`
 }
 
 // Clone returns a deep copy of m.
@@ -103,11 +106,7 @@ func (m Manifest) Clone() Manifest {
 		writing := cloneSegment(*m.WritingSegment)
 		clone.WritingSegment = &writing
 	}
-	if m.IndexSnapshot != nil {
-		snapshot := *m.IndexSnapshot
-		snapshot.Artifacts = slices.Clone(m.IndexSnapshot.Artifacts)
-		clone.IndexSnapshot = &snapshot
-	}
+	clone.SegmentIndexSnapshots = cloneSegmentIndexSnapshots(m.SegmentIndexSnapshots)
 	return clone
 }
 
@@ -158,31 +157,47 @@ func (m Manifest) Validate() error {
 			return fmt.Errorf("%w: next segment ID %d must exceed %d", ErrManifestCorrupt, m.NextSegmentID, maxSegmentID)
 		}
 	}
-	if m.IndexSnapshot != nil {
-		if len(m.IndexSnapshot.SchemaSHA256) != sha256.Size*2 {
-			return fmt.Errorf("%w: invalid index snapshot schema hash", ErrManifestCorrupt)
+	segmentByID := make(map[uint64]SegmentMetadata, len(m.PersistedSegments))
+	for _, segment := range m.PersistedSegments {
+		segmentByID[segment.ID] = segment
+	}
+	seenSegmentIndexes := make(map[uint64]struct{}, len(m.SegmentIndexSnapshots))
+	seenSegmentFiles := make(map[string]struct{})
+	for index, snapshot := range m.SegmentIndexSnapshots {
+		segment, found := segmentByID[snapshot.SegmentID]
+		if !found {
+			return fmt.Errorf("%w: segment index snapshot %d references missing segment %d", ErrManifestCorrupt, index, snapshot.SegmentID)
 		}
-		if _, err := hex.DecodeString(m.IndexSnapshot.SchemaSHA256); err != nil {
-			return fmt.Errorf("%w: invalid index snapshot schema hash: %v", ErrManifestCorrupt, err)
+		if _, duplicate := seenSegmentIndexes[snapshot.SegmentID]; duplicate {
+			return fmt.Errorf("%w: duplicate index snapshot for segment %d", ErrManifestCorrupt, snapshot.SegmentID)
 		}
-		seenArtifacts := make(map[string]struct{}, len(m.IndexSnapshot.Artifacts))
-		seenFiles := make(map[string]struct{}, len(m.IndexSnapshot.Artifacts))
-		for index, artifact := range m.IndexSnapshot.Artifacts {
+		seenSegmentIndexes[snapshot.SegmentID] = struct{}{}
+		if snapshot.DocumentCount != segment.DocCount || snapshot.MinDocumentID != segment.MinDocID || snapshot.MaxDocumentID != segment.MaxDocID {
+			return fmt.Errorf("%w: index snapshot for segment %d has mismatched document bounds", ErrManifestCorrupt, snapshot.SegmentID)
+		}
+		if len(snapshot.SchemaSHA256) != sha256.Size*2 {
+			return fmt.Errorf("%w: invalid segment index schema hash", ErrManifestCorrupt)
+		}
+		if _, err := hex.DecodeString(snapshot.SchemaSHA256); err != nil {
+			return fmt.Errorf("%w: invalid segment index schema hash: %v", ErrManifestCorrupt, err)
+		}
+		seenArtifacts := make(map[string]struct{}, len(snapshot.Artifacts))
+		for artifactIndex, artifact := range snapshot.Artifacts {
 			if artifact.Field == "" || artifact.Kind == "" {
-				return fmt.Errorf("%w: index artifact %d has an empty field or kind", ErrManifestCorrupt, index)
+				return fmt.Errorf("%w: segment %d index artifact %d has an empty field or kind", ErrManifestCorrupt, snapshot.SegmentID, artifactIndex)
 			}
 			if err := validatePortableRelativePath(artifact.File); err != nil {
-				return fmt.Errorf("%w: index artifact %d: %v", ErrManifestCorrupt, index, err)
+				return fmt.Errorf("%w: segment %d index artifact %d: %v", ErrManifestCorrupt, snapshot.SegmentID, artifactIndex, err)
 			}
 			key := artifact.Field + "\x00" + artifact.Kind
 			if _, duplicate := seenArtifacts[key]; duplicate {
-				return fmt.Errorf("%w: duplicate index artifact for field %q kind %q", ErrManifestCorrupt, artifact.Field, artifact.Kind)
+				return fmt.Errorf("%w: duplicate segment %d index artifact for field %q kind %q", ErrManifestCorrupt, snapshot.SegmentID, artifact.Field, artifact.Kind)
 			}
 			seenArtifacts[key] = struct{}{}
-			if _, duplicate := seenFiles[artifact.File]; duplicate {
-				return fmt.Errorf("%w: duplicate index artifact file %q", ErrManifestCorrupt, artifact.File)
+			if _, duplicate := seenSegmentFiles[artifact.File]; duplicate {
+				return fmt.Errorf("%w: duplicate segment index artifact file %q", ErrManifestCorrupt, artifact.File)
 			}
-			seenFiles[artifact.File] = struct{}{}
+			seenSegmentFiles[artifact.File] = struct{}{}
 		}
 	}
 	return nil
@@ -300,6 +315,18 @@ func cloneSegments(segments []SegmentMetadata) []SegmentMetadata {
 func cloneSegment(segment SegmentMetadata) SegmentMetadata {
 	segment.Files = slices.Clone(segment.Files)
 	return segment
+}
+
+func cloneSegmentIndexSnapshots(snapshots []SegmentIndexSnapshotMetadata) []SegmentIndexSnapshotMetadata {
+	if snapshots == nil {
+		return nil
+	}
+	cloned := make([]SegmentIndexSnapshotMetadata, len(snapshots))
+	for index := range snapshots {
+		cloned[index] = snapshots[index]
+		cloned[index].Artifacts = slices.Clone(snapshots[index].Artifacts)
+	}
+	return cloned
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {

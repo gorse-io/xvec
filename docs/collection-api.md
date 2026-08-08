@@ -82,14 +82,12 @@ apply to Flat, HNSW, IVF, Vamana, and DiskANN. On DiskANN, public scalar codes
 determine first-stage scores and feed the separately configured internal PQ
 used for graph traversal; exact refinement continues to use original vectors.
 
-Collection indexes are cached for the exact live schema/document snapshot, so
-repeated Query, MultiQuery, and GroupByQuery calls reuse vector, FTS, and
-INVERT state until a mutation changes that snapshot. `Flush` and `Optimize`
-publish checksummed HNSW, HNSW-RaBitQ, IVF, Vamana, DiskANN, sparse HNSW, FTS,
-and INVERT artifacts together with snapshot identity in the manifest. Reopen
-loads matching artifacts and automatically rebuilds when opening an older
-format-1 manifest that has no index snapshot. DiskANN uses the collection's
-persisted `EnableMmap` option for its immutable random-access artifact.
+Collection indexes are cached per segment, so repeated Query, MultiQuery, and
+GroupByQuery calls keep immutable vector, FTS, and INVERT state while only the
+WAL-backed segment changes. `Flush` publishes checksummed HNSW, HNSW-RaBitQ,
+IVF, Vamana, DiskANN, sparse HNSW, FTS, and INVERT artifacts for newly sealed
+segments. Reopen loads matching artifacts. DiskANN uses the collection's
+persisted `EnableMmap` option for immutable random-access files.
 
 WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
 publishes an immutable segment and rotates the WAL. `Open` can acquire either
