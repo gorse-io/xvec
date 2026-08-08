@@ -67,8 +67,9 @@ func MergeFTSTermDictionaries(ctx context.Context, sources []FTSSegmentView) (*F
 		}
 		var deletedWords []uint64
 		if source.DeletedDocuments != nil {
-			deletedWords = source.DeletedDocuments.Snapshot()
-			if invalidFTSDeletionBits(deletedWords, uint64(len(dictionary.documentLengths))) {
+			var valid bool
+			deletedWords, valid = source.DeletedDocuments.SnapshotWithin(uint64(len(dictionary.documentLengths)))
+			if !valid {
 				return nil, fmt.Errorf("%w: segment %d deletion is outside its document domain", ErrInvalidFTSMerge, segmentIndex)
 			}
 		}

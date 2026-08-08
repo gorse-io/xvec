@@ -17,6 +17,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -129,11 +130,18 @@ func TestFTSQueryIteratorDeletionSnapshot(t *testing.T) {
 	}
 
 	invalid := ailego.NewBitmap(0)
-	invalid.Set(uint64(len(ftsQueryTestDocuments)))
+	invalid.Set(1 << 26)
 	{
+		runtime.GC()
+		var before runtime.MemStats
+		runtime.ReadMemStats(&before)
 		got, err := NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{DeletedDocuments: invalid})
+		var after runtime.MemStats
+		runtime.ReadMemStats(&after)
 		require.Nil(t, got)
 		require.ErrorIs(t, err, ErrInvalidFTSQueryExecution)
+		require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(1<<20),
+			"out-of-domain deletion validation allocated a dense bitmap")
 	}
 }
 

@@ -15,116 +15,123 @@
 package ailego
 
 import (
-	"math/bits"
 	"sync"
+
+	"github.com/RoaringBitmap/roaring/v2/roaring64"
 )
 
-// Bitmap is a growable, concurrent-safe dense bitmap.
+// Bitmap is a growable, concurrent-safe compressed bitmap.
 type Bitmap struct {
-	mu    sync.RWMutex
-	words []uint64
+	mu           sync.RWMutex
+	bitmap       roaring64.Bitmap
+	logicalWords int
 }
 
-// NewBitmap returns a bitmap with capacity for bitCount bits. All bits are
-// initially clear.
+// NewBitmap returns a bitmap with a logical capacity for bitCount bits. All
+// bits are initially clear. Storage remains sparse until bits are set.
 func NewBitmap(bitCount uint64) *Bitmap {
-	wordCount := wordsForBits(bitCount)
-	return &Bitmap{words: make([]uint64, wordCount)}
+	return &Bitmap{logicalWords: wordsForBits(bitCount)}
 }
 
-// Set sets bit and reports whether its value changed. The bitmap grows when
-// necessary.
+// Set sets bit and reports whether its value changed.
 func (b *Bitmap) Set(bit uint64) bool {
 	word := bitmapWordIndex(bit)
-	mask := uint64(1) << (bit & 63)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if word >= len(b.words) {
-		b.words = append(b.words, make([]uint64, word+1-len(b.words))...)
-	}
-	changed := b.words[word]&mask == 0
-	b.words[word] |= mask
-	return changed
+	b.logicalWords = max(b.logicalWords, word+1)
+	return b.bitmap.CheckedAdd(bit)
 }
 
 // Clear clears bit and reports whether its value changed.
 func (b *Bitmap) Clear(bit uint64) bool {
-	word := bitmapWordIndex(bit)
-	mask := uint64(1) << (bit & 63)
+	bitmapWordIndex(bit)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if word >= len(b.words) || b.words[word]&mask == 0 {
-		return false
-	}
-	b.words[word] &^= mask
-	return true
+	return b.bitmap.CheckedRemove(bit)
 }
 
 // Contains reports whether bit is set.
 func (b *Bitmap) Contains(bit uint64) bool {
-	word := bitmapWordIndex(bit)
-	mask := uint64(1) << (bit & 63)
+	bitmapWordIndex(bit)
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return word < len(b.words) && b.words[word]&mask != 0
+	return b.bitmap.Contains(bit)
 }
 
 // Count returns the number of set bits.
 func (b *Bitmap) Count() uint64 {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	var count uint64
-	for _, word := range b.words {
-		count += uint64(bits.OnesCount64(word))
-	}
-	return count
+	return b.bitmap.GetCardinality()
 }
 
-// Snapshot returns a copy of the bitmap words in little bit order.
+// Snapshot returns a dense copy of the bitmap words in little bit order.
+// Its memory use is proportional to the highest bit ever set or NewBitmap's
+// logical capacity; sparse callers should prefer Clone or Range.
 func (b *Bitmap) Snapshot() []uint64 {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return append([]uint64(nil), b.words...)
+	return b.snapshotWords(b.logicalWords)
+}
+
+// SnapshotWithin returns a dense snapshot bounded to bitCount bits. It reports
+// false without allocating the dense snapshot when a set bit is outside the
+// requested domain.
+func (b *Bitmap) SnapshotWithin(bitCount uint64) ([]uint64, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if !b.bitmap.IsEmpty() && (bitCount == 0 || b.bitmap.Maximum() >= bitCount) {
+		return nil, false
+	}
+	return b.snapshotWords(min(b.logicalWords, wordsForBits(bitCount))), true
+}
+
+func (b *Bitmap) snapshotWords(wordCount int) []uint64 {
+	if wordCount == 0 {
+		return nil
+	}
+	words := make([]uint64, wordCount)
+	iterator := b.bitmap.Iterator()
+	for iterator.HasNext() {
+		bit := iterator.Next()
+		words[bitmapWordIndex(bit)] |= uint64(1) << (bit & 63)
+	}
+	return words
 }
 
 // Clone returns an independent copy of b.
-func (b *Bitmap) Clone() *Bitmap { return &Bitmap{words: b.Snapshot()} }
+func (b *Bitmap) Clone() *Bitmap {
+	bitmap, logicalWords := b.snapshot()
+	return &Bitmap{bitmap: *bitmap, logicalWords: logicalWords}
+}
 
 // Or sets every bit present in other.
 func (b *Bitmap) Or(other *Bitmap) {
 	if other == nil || b == other {
 		return
 	}
-	words := other.Snapshot()
+	bitmap, logicalWords := other.snapshot()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(words) > len(b.words) {
-		b.words = append(b.words, make([]uint64, len(words)-len(b.words))...)
-	}
-	for index, word := range words {
-		b.words[index] |= word
-	}
+	b.bitmap.Or(bitmap)
+	b.logicalWords = max(b.logicalWords, logicalWords)
 }
 
 // And retains only bits also present in other.
 func (b *Bitmap) And(other *Bitmap) {
 	if other == nil {
 		b.mu.Lock()
-		clear(b.words)
+		b.bitmap.Clear()
 		b.mu.Unlock()
 		return
 	}
 	if b == other {
 		return
 	}
-	words := other.Snapshot()
+	bitmap, _ := other.snapshot()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	common := min(len(b.words), len(words))
-	for index := 0; index < common; index++ {
-		b.words[index] &= words[index]
-	}
-	clear(b.words[common:])
+	b.bitmap.And(bitmap)
 }
 
 // AndNot clears every bit present in other.
@@ -134,19 +141,14 @@ func (b *Bitmap) AndNot(other *Bitmap) {
 	}
 	if b == other {
 		b.mu.Lock()
-		clear(b.words)
+		b.bitmap.Clear()
 		b.mu.Unlock()
 		return
 	}
-	words := other.Snapshot()
+	bitmap, _ := other.snapshot()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for index, word := range words {
-		if index >= len(b.words) {
-			break
-		}
-		b.words[index] &^= word
-	}
+	b.bitmap.AndNot(bitmap)
 }
 
 // Range calls yield for set bits in ascending order and stops when yield
@@ -155,15 +157,19 @@ func (b *Bitmap) Range(yield func(bit uint64) bool) {
 	if yield == nil {
 		return
 	}
-	for wordIndex, word := range b.Snapshot() {
-		for word != 0 {
-			bit := bits.TrailingZeros64(word)
-			if !yield(uint64(wordIndex)*64 + uint64(bit)) {
-				return
-			}
-			word &= word - 1
+	bitmap, _ := b.snapshot()
+	iterator := bitmap.Iterator()
+	for iterator.HasNext() {
+		if !yield(iterator.Next()) {
+			return
 		}
 	}
+}
+
+func (b *Bitmap) snapshot() (*roaring64.Bitmap, int) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.bitmap.Clone(), b.logicalWords
 }
 
 func wordsForBits(bitCount uint64) int {
