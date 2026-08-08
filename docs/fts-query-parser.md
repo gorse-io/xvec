@@ -130,9 +130,9 @@ error priority, ownership, deletion snapshots, seek behavior, cancellation,
 concurrency, fuzzing, and resource bounds.
 
 `NewFTSQueryIterator` intentionally remains score-free;
-`NewFTSScoredQueryIterator`, block-max BM25 top-k search, and physical FTS index
-merging are documented separately. Collection Query and MultiQuery integration
-is complete.
+`NewFTSScoredQueryIterator`, block-max WAND BM25 top-k search, and physical FTS
+index merging are documented separately. Collection Query and MultiQuery
+integration is complete.
 
 ```sh
 go test ./internal/core -run '^Test(FTSQuery|LexFTS|ParseFTS|AnalyzeFTS|FTSTokenizer)'

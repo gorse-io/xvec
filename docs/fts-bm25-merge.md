@@ -50,12 +50,14 @@ The original `NewFTSQueryIterator` remains a score-free exact iterator and
 returns zero from `Score`.
 
 `SearchFTS` keeps a bounded top-k heap and remains exact. Once that heap is
-full, it computes safe BM25 upper bounds lazily for the current 128-posting
+full, a root disjunction uses MaxScore WAND pivots to bypass candidates whose
+matching children cannot reach the minimum competitive score. An aligned
+pivot then computes safe BM25 upper bounds lazily for the current 128-posting
 blocks and seeks past a shared document range only when its bound is strictly
-below the minimum competitive score. Results use descending score and ascending
-document ID for deterministic ties. A zero `TopK` returns immediately after
-validating the dictionary and scorer. Non-positive scores are omitted,
-matching the baseline search boundary.
+below the threshold. Results use descending score and ascending document ID
+for deterministic ties. A zero `TopK` returns immediately after validating the
+dictionary and scorer. Non-positive scores are omitted, matching the baseline
+search boundary.
 
 ```go
 results, err := core.SearchFTS(
@@ -78,8 +80,14 @@ term iterator, so no posting-format migration is required and separately
 searched segments retain comparable bounds. AND, optional, OR, and phrase
 trees add non-negative child bounds over the shortest shared range; negative
 clauses never contribute. A strict comparison preserves score ties and their
-ascending-document-ID order. Disjunctive WAND pivot scheduling remains a
-separate potential optimization.
+ascending-document-ID order.
+
+WAND uses conservatively rounded tf-to-infinity term bounds and caches the
+result on the query-local disjunction. Non-finite potential disables pruning
+instead of hiding the existing invalid-score error. Competitive scheduling is
+separate from ordinary `Advance(target)`: nested disjunctions therefore retain
+exact seek behavior when an AND parent requests an optional score at a chosen
+document.
 
 ## Native segment merge
 
@@ -144,4 +152,4 @@ go test ./internal/core -run '^$' -bench '^(BenchmarkSearchFTSBM25|BenchmarkMerg
 Collection Query and MultiQuery use deletion-aware BM25 and persist one FTS
 dictionary per immutable data segment. They aggregate global live-corpus stats
 without merging the dictionaries. Mixed vector/sparse/FTS fusion and exact
-query-local block-max pruning are available through MultiQuery.
+query-local block-max WAND pruning are available through MultiQuery.
