@@ -3,6 +3,7 @@ module github.com/gorse-io/zvec
 go 1.26
 
 require (
+	github.com/RoaringBitmap/roaring/v2 v2.24.0
 	github.com/blevesearch/mmap-go v1.2.0
 	github.com/parquet-go/parquet-go v0.30.1
 	github.com/stretchr/testify v1.11.1
@@ -12,9 +13,11 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.1.1 // indirect
+	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
+	github.com/mschoch/smat v0.2.0 // indirect
 	github.com/parquet-go/bitpack v1.0.0 // indirect
 	github.com/parquet-go/jsonlite v1.0.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect

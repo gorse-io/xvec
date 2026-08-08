@@ -94,8 +94,9 @@ func AggregateFTSCorpusStats(ctx context.Context, segments []FTSSegmentView) (FT
 		documentCount := len(segment.Dictionary.documentLengths)
 		deletedWords := []uint64(nil)
 		if segment.DeletedDocuments != nil {
-			deletedWords = segment.DeletedDocuments.Snapshot()
-			if invalidFTSDeletionBits(deletedWords, uint64(documentCount)) {
+			var valid bool
+			deletedWords, valid = segment.DeletedDocuments.SnapshotWithin(uint64(documentCount))
+			if !valid {
 				return FTSCorpusStats{}, fmt.Errorf("%w: segment %d deletion is outside its document domain", ErrInvalidFTSStats, segmentIndex)
 			}
 		}
@@ -150,26 +151,4 @@ func AggregateFTSCorpusStats(ctx context.Context, segments []FTSSegmentView) (FT
 func ftsDeleted(words []uint64, documentID uint32) bool {
 	word := uint64(documentID) >> 6
 	return word < uint64(len(words)) && words[word]&(uint64(1)<<(documentID&63)) != 0
-}
-
-func invalidFTSDeletionBits(words []uint64, documentCount uint64) bool {
-	fullWords := documentCount >> 6
-	remainingBits := documentCount & 63
-	for index, word := range words {
-		wordIndex := uint64(index)
-		switch {
-		case wordIndex < fullWords:
-			continue
-		case wordIndex == fullWords && remainingBits != 0:
-			validMask := (uint64(1) << remainingBits) - 1
-			if word&^validMask != 0 {
-				return true
-			}
-		default:
-			if word != 0 {
-				return true
-			}
-		}
-	}
-	return false
 }

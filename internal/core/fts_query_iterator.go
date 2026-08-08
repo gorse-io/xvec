@@ -86,8 +86,9 @@ func newFTSQueryIterator(ctx context.Context, dictionary *FTSTermDictionary, nod
 	}
 	var deletedWords []uint64
 	if options.DeletedDocuments != nil {
-		deletedWords = options.DeletedDocuments.Snapshot()
-		if invalidFTSDeletionBits(deletedWords, uint64(len(dictionary.documentLengths))) {
+		var valid bool
+		deletedWords, valid = options.DeletedDocuments.SnapshotWithin(uint64(len(dictionary.documentLengths)))
+		if !valid {
 			return nil, fmt.Errorf("%w: deletion is outside the document domain", ErrInvalidFTSQueryExecution)
 		}
 	}
