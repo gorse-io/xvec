@@ -11,17 +11,15 @@ Each metadata snapshot is stored in an immutable file named
 `MANIFEST-<20-digit generation>`. A binary header records the `ZVECMAN` magic,
 disk-format version, header size, generation, JSON payload length, and CRC32C of
 the payload. The JSON contains schema bytes, persisted segment capacity,
-segment metadata, snapshot generations, and the next segment ID.
-Newer format-1 manifests also persist the first document ID reserved by the
-current writing segment. Readers still derive that value for older manifests;
-the explicit field prevents ID reuse when a rewrite reclaims the highest
-deleted or superseded versions.
+segment metadata, snapshot generations, the next segment ID, and the first
+document ID reserved by the current writing segment. Readers require that
+reserved document ID explicitly and reject manifests that omit it, preventing
+ID reuse when a rewrite reclaims the highest deleted or superseded versions.
 
 Optional segment index snapshots record the schema SHA-256, owning segment ID,
 document count and bounds, and field/kind/file metadata for immutable files in
 `indexes/`. Every identity component must match before a file is opened.
-Manifests with no index metadata rebuild from segment documents, so this does not
-require a disk-format version change.
+When index metadata is absent, indexes rebuild from segment documents.
 
 `CURRENT` is the commit point. It is itself framed and checksummed and names one
 manifest. Publication writes and synchronizes the immutable manifest first,

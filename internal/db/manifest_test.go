@@ -170,7 +170,7 @@ func TestManifestRejectsUnknownPayloadField(t *testing.T) {
 	require.ErrorIs(t, err, ErrManifestCorrupt)
 }
 
-func TestManifestRejectsLegacyIndexSnapshot(t *testing.T) {
+func TestManifestRejectsCollectionWideIndexSnapshot(t *testing.T) {
 	t.Parallel()
 
 	encoded, err := manifestWithPayloadField("index_snapshot", map[string]any{
@@ -186,6 +186,53 @@ func TestManifestRejectsLegacyIndexSnapshot(t *testing.T) {
 	require.ErrorIs(t, err, ErrManifestCorrupt)
 }
 
+func TestManifestRequiresWritingSegmentStartDocumentID(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := manifestWithoutPayloadField("writing_segment_start_doc_id")
+	require.NoError(t, err)
+	_, err = UnmarshalManifest(encoded)
+	require.ErrorIs(t, err, ErrManifestCorrupt)
+}
+
+func TestManifestRejectsNullWritingSegmentStartDocumentID(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := manifestWithPayloadField("writing_segment_start_doc_id", nil)
+	require.NoError(t, err)
+	_, err = UnmarshalManifest(encoded)
+	require.ErrorIs(t, err, ErrManifestCorrupt)
+}
+
+func TestManifestAcceptsZeroWritingSegmentStartDocumentID(t *testing.T) {
+	t.Parallel()
+
+	manifest := sampleManifest(1)
+	manifest.PersistedSegments = nil
+	manifest.SegmentIndexSnapshots = nil
+	manifest.WritingSegment.MinDocID = 0
+	manifest.WritingSegment.MaxDocID = 0
+	manifest.WritingSegment.DocCount = 0
+	manifest.WritingSegmentStartDocID = 0
+	encoded, err := MarshalManifest(manifest)
+	require.NoError(t, err)
+	decoded, err := UnmarshalManifest(encoded)
+	require.NoError(t, err)
+	require.Zero(t, decoded.WritingSegmentStartDocID)
+}
+
+func TestLifecycleManifestRejectsWritingSegmentBeforePersistedDocuments(t *testing.T) {
+	t.Parallel()
+
+	manifest := sampleManifest(1)
+	manifest.WritingSegment.MinDocID = 0
+	manifest.WritingSegment.MaxDocID = 0
+	manifest.WritingSegment.DocCount = 0
+	manifest.WritingSegmentStartDocID = 0
+	err := validateLifecycleManifest(manifest)
+	require.ErrorIs(t, err, ErrCollectionCorrupt)
+}
+
 func manifestWithPayloadField(name string, value any) ([]byte, error) {
 	encoded, err := MarshalManifest(sampleManifest(1))
 	if err != nil {
@@ -196,6 +243,26 @@ func manifestWithPayloadField(name string, value any) ([]byte, error) {
 		return nil, err
 	}
 	payload[name] = value
+	newPayload, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	encoded = append(encoded[:manifestHeaderSize], newPayload...)
+	binary.LittleEndian.PutUint64(encoded[20:28], uint64(len(newPayload)))
+	binary.LittleEndian.PutUint32(encoded[28:32], ailego.CRC32C(newPayload))
+	return encoded, nil
+}
+
+func manifestWithoutPayloadField(name string) ([]byte, error) {
+	encoded, err := MarshalManifest(sampleManifest(1))
+	if err != nil {
+		return nil, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded[manifestHeaderSize:], &payload); err != nil {
+		return nil, err
+	}
+	delete(payload, name)
 	newPayload, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err

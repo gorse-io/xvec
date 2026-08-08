@@ -34,6 +34,6 @@ routing cannot change SQL three-valued semantics.
 Postings are built per segment and reused by filtered Query, MultiQuery, and
 GroupByQuery calls. Flush encodes a checksummed INVERT artifact for each newly
 immutable segment and publishes its schema/segment identity in the manifest.
-Reopen loads an exact match; an older manifest without the optional metadata
+Reopen loads an exact match; when optional artifact metadata is absent, it
 rebuilds postings from documents. Deleted or superseded versions are masked
 and then forward-evaluated, so immutable postings never need mutation.

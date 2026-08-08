@@ -93,10 +93,9 @@ WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
 publishes an immutable segment and rotates the WAL. `Open` can acquire either
 the sole writer lock or one of multiple read-only locks. `Destroy` is available
 only from a writable handle and removes the collection directory after closing
-its files. Native format-1 collections remain readable from v0.1 onward; the
-[disk compatibility policy and historical migration gate](disk-compatibility.md)
-cover old manifests, immutable snapshots, WAL recovery, continued document IDs,
-and atomic publication by current code.
+its files. `Open` requires the current format-1 manifest fields, including the
+first document ID reserved by the writing segment; older manifests that omit
+required fields are rejected.
 
 [`RuntimeConfig`](runtime-config.md) installs process-wide query and
 maintenance admission, planner thresholds, conservative scratch-memory

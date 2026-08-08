@@ -70,8 +70,8 @@ out-of-range centroid assignments. Reopened artifacts preserve topology,
 scores, and incremental-add behavior.
 
 Collection Flush and Optimize publish this artifact for the exact live
-snapshot, and reopen validates the manifest identity before loading it. Older
-collections rebuild once from durable documents. No operation silently
+snapshot, and reopen validates the manifest identity before loading it. Missing
+artifact metadata is rebuilt from durable documents. No operation silently
 substitutes Flat or another index.
 
 ## Verification

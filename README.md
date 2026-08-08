@@ -174,14 +174,13 @@ projections, ANN parameters, grouping, and refinement.
 - [Segment-native indexes](docs/segment-native-indexes.md)
 - [Runtime configuration](docs/runtime-config.md)
 - [Native Go disk format](docs/disk-format.md)
-- [Disk compatibility and migrations](docs/disk-compatibility.md)
 - [VectorDBBench-compatible Go benchmark](cmd/vector-db-bench/README.md)
 
 ## Compatibility
 
 The root `zvec` package is the public API. zvec uses its own versioned native Go
-disk format and does not read C++ zvec collection files. Compatibility fixtures
-for supported historical Go formats are exercised by the test suite.
+disk format and does not read C++ zvec collection files. Readers require the
+current manifest's required fields and reject older manifests that omit them.
 
 ## License
 

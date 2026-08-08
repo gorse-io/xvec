@@ -90,7 +90,7 @@ type Manifest struct {
 	SegmentMaxDocuments      uint64                         `json:"segment_max_documents"`
 	PersistedSegments        []SegmentMetadata              `json:"persisted_segments,omitempty"`
 	WritingSegment           *SegmentMetadata               `json:"writing_segment,omitempty"`
-	WritingSegmentStartDocID uint64                         `json:"writing_segment_start_doc_id,omitempty"`
+	WritingSegmentStartDocID uint64                         `json:"writing_segment_start_doc_id"`
 	IDMapGeneration          uint64                         `json:"id_map_generation"`
 	DeleteSnapshotGeneration uint64                         `json:"delete_snapshot_generation"`
 	NextSegmentID            uint64                         `json:"next_segment_id"`
@@ -255,6 +255,14 @@ func UnmarshalManifest(encoded []byte) (Manifest, error) {
 	expectedCRC := binary.LittleEndian.Uint32(encoded[28:32])
 	if actualCRC := ailego.CRC32C(payload); actualCRC != expectedCRC {
 		return Manifest{}, fmt.Errorf("%w: checksum got %08x, want %08x", ErrManifestCorrupt, actualCRC, expectedCRC)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return Manifest{}, fmt.Errorf("%w: decode payload: %v", ErrManifestCorrupt, err)
+	}
+	startDocumentID, exists := fields["writing_segment_start_doc_id"]
+	if !exists || bytes.Equal(bytes.TrimSpace(startDocumentID), []byte("null")) {
+		return Manifest{}, fmt.Errorf("%w: missing writing_segment_start_doc_id", ErrManifestCorrupt)
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(payload))

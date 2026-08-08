@@ -229,7 +229,6 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 		return fail(fmt.Errorf("%w: load delete snapshot: %v", ErrCollectionCorrupt, err), nil)
 	}
 	manager := NewSegmentManager(primary, deletes)
-	nextDocID := uint64(0)
 	for _, metadata := range manifest.PersistedSegments {
 		segment, err := OpenImmutableSegment(ctx, dir, metadata)
 		if err != nil {
@@ -238,19 +237,8 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 		if err := manager.AddImmutable(segment); err != nil {
 			return fail(fmt.Errorf("%w: add segment %d: %v", ErrCollectionCorrupt, metadata.ID, err), nil)
 		}
-		if metadata.DocCount > 0 {
-			if metadata.MaxDocID == math.MaxUint64 {
-				return fail(fmt.Errorf("%w: document ID space is exhausted", ErrCollectionCorrupt), nil)
-			}
-			nextDocID = max(nextDocID, metadata.MaxDocID+1)
-		}
 	}
-	if manifest.WritingSegmentStartDocID != 0 {
-		if manifest.WritingSegmentStartDocID < nextDocID {
-			return fail(fmt.Errorf("%w: writing segment starts at document %d before persisted document %d", ErrCollectionCorrupt, manifest.WritingSegmentStartDocID, nextDocID), nil)
-		}
-		nextDocID = manifest.WritingSegmentStartDocID
-	}
+	nextDocID := manifest.WritingSegmentStartDocID
 	writing, err := NewWriteSegment(manifest.WritingSegment.ID, nextDocID, manifest.SegmentMaxDocuments)
 	if err != nil {
 		return fail(fmt.Errorf("%w: create writing segment: %v", ErrCollectionCorrupt, err), nil)
@@ -1285,6 +1273,11 @@ func validateLifecycleManifest(manifest Manifest) error {
 	}
 	if manifest.WritingSegment == nil || manifest.WritingSegment.DocCount != 0 || len(manifest.WritingSegment.Files) != 1 {
 		return fmt.Errorf("%w: invalid writing segment metadata", ErrCollectionCorrupt)
+	}
+	for _, segment := range manifest.PersistedSegments {
+		if segment.DocCount > 0 && manifest.WritingSegmentStartDocID <= segment.MaxDocID {
+			return fmt.Errorf("%w: writing segment starts at document %d, not after persisted document %d", ErrCollectionCorrupt, manifest.WritingSegmentStartDocID, segment.MaxDocID)
+		}
 	}
 	return nil
 }
