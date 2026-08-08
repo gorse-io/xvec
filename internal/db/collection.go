@@ -26,13 +26,15 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"time"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gofrs/flock"
 )
 
 const (
 	collectionLockName         = ".collection.lock"
 	DefaultSegmentMaxDocuments = uint64(65_536)
+	fileLockRetryDelay         = 10 * time.Millisecond
 )
 
 var (
@@ -68,7 +70,7 @@ type CollectionStore struct {
 	dir      string
 	readOnly bool
 	closed   bool
-	lock     *ailego.FileLock
+	lock     *flock.Flock
 	versions *VersionManager
 	manager  *SegmentManager
 	engine   *WriteEngine
@@ -108,9 +110,13 @@ func CreateCollection(ctx context.Context, dir string, schema json.RawMessage, o
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("db: create collection directory: %w", err)
 	}
-	lock, err := ailego.AcquireFileLock(ctx, filepath.Join(dir, collectionLockName), ailego.LockExclusive)
+	lock := flock.New(filepath.Join(dir, collectionLockName))
+	locked, err := lock.TryLockContext(ctx, fileLockRetryDelay)
 	if err != nil {
 		return nil, fmt.Errorf("db: lock collection creation: %w", err)
+	}
+	if !locked {
+		return nil, errors.New("db: collection creation lock unavailable")
 	}
 	fail := func(err error, wal *WAL, created ...string) (*CollectionStore, error) {
 		if wal != nil {
@@ -197,13 +203,18 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 	if !info.IsDir() {
 		return nil, fmt.Errorf("db: collection path %q is not a directory", dir)
 	}
-	mode := ailego.LockExclusive
+	lock := flock.New(filepath.Join(dir, collectionLockName))
+	var locked bool
 	if options.ReadOnly {
-		mode = ailego.LockShared
+		locked, err = lock.TryRLockContext(ctx, fileLockRetryDelay)
+	} else {
+		locked, err = lock.TryLockContext(ctx, fileLockRetryDelay)
 	}
-	lock, err := ailego.AcquireFileLock(ctx, filepath.Join(dir, collectionLockName), mode)
 	if err != nil {
 		return nil, fmt.Errorf("db: lock collection open: %w", err)
+	}
+	if !locked {
+		return nil, errors.New("db: collection open lock unavailable")
 	}
 	fail := func(err error, wal *WAL) (*CollectionStore, error) {
 		if wal != nil {

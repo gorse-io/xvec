@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gofrs/flock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -219,8 +219,10 @@ func TestCollectionFailedFlushLeavesPublishedStateAndWriterUsable(t *testing.T) 
 		require.NoError(t, err)
 	}
 
-	versionLock, err := ailego.AcquireFileLock(context.Background(), filepath.Join(dir, versionLockName), ailego.LockExclusive)
+	versionLock := flock.New(filepath.Join(dir, versionLockName))
+	locked, err := versionLock.TryLock()
 	require.NoError(t, err)
+	require.True(t, locked)
 
 	deadline, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
 	err = store.Flush(deadline)
@@ -284,8 +286,10 @@ func TestCollectionRewriteDocumentsIsAtomicAndRecoverable(t *testing.T) {
 	}
 	nextSchema := json.RawMessage(`{"name":"books-v2","fields":[]}`)
 
-	versionLock, err := ailego.AcquireFileLock(ctx, filepath.Join(dir, versionLockName), ailego.LockExclusive)
+	versionLock := flock.New(filepath.Join(dir, versionLockName))
+	locked, err := versionLock.TryLock()
 	require.NoError(t, err)
+	require.True(t, locked)
 
 	deadline, cancel := context.WithTimeout(ctx, 75*time.Millisecond)
 	committed, err := store.RewriteDocuments(deadline, nextSchema, rewritten)

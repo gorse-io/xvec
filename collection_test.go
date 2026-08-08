@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/gorse-io/zvec/internal/ailego"
 	"github.com/gorse-io/zvec/internal/core"
 	"github.com/gorse-io/zvec/internal/db"
@@ -1108,8 +1109,10 @@ func TestAlterColumnValidationAndPublicationRollback(t *testing.T) {
 		require.ErrorIs(t, err, context.Canceled)
 	}
 
-	versionLock, err := ailego.AcquireFileLock(ctx, filepath.Join(path, ".version.lock"), ailego.LockExclusive)
+	versionLock := flock.New(filepath.Join(path, ".version.lock"))
+	locked, err := versionLock.TryLock()
 	require.NoError(t, err)
+	require.True(t, locked)
 
 	deadline, cancel := context.WithTimeout(ctx, 75*time.Millisecond)
 	err = collection.AlterColumn(deadline, "count", "renamed", nil, AlterColumnOptions{Concurrency: 2})
@@ -2370,8 +2373,10 @@ func TestAtomicDDLAndOptimizeCrashRecovery(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Run("before_current", func(t *testing.T) {
 				path, generation, current, initialSegments := createAtomicRecoveryFixture(t)
-				versionLock, err := ailego.AcquireFileLock(context.Background(), filepath.Join(path, ".version.lock"), ailego.LockExclusive)
+				versionLock := flock.New(filepath.Join(path, ".version.lock"))
+				locked, err := versionLock.TryLock()
 				require.NoError(t, err)
+				require.True(t, locked)
 
 				lockClosed := false
 				defer func() {
@@ -3559,8 +3564,10 @@ func TestDropColumnValidationAndPublicationRollback(t *testing.T) {
 		require.ErrorIs(t, err, context.Canceled)
 	}
 
-	versionLock, err := ailego.AcquireFileLock(ctx, filepath.Join(path, ".version.lock"), ailego.LockExclusive)
+	versionLock := flock.New(filepath.Join(path, ".version.lock"))
+	locked, err := versionLock.TryLock()
 	require.NoError(t, err)
+	require.True(t, locked)
 
 	deadline, cancel := context.WithTimeout(ctx, 75*time.Millisecond)
 	err = collection.DropColumn(deadline, "rating")
@@ -5691,8 +5698,10 @@ func TestOptimizeValidationAndRollback(t *testing.T) {
 	}
 
 	initialGeneration = collection.store.Manifest().Generation
-	versionLock, err := ailego.AcquireFileLock(ctx, filepath.Join(path, ".version.lock"), ailego.LockExclusive)
+	versionLock := flock.New(filepath.Join(path, ".version.lock"))
+	locked, err := versionLock.TryLock()
 	require.NoError(t, err)
+	require.True(t, locked)
 
 	deadline, cancel := context.WithTimeout(ctx, 75*time.Millisecond)
 	err = collection.Optimize(deadline, OptimizeOptions{Concurrency: 2})

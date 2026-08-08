@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gofrs/flock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -255,8 +255,10 @@ func TestVersionManagerContextCancellation(t *testing.T) {
 	require.True(t, manifestCount(t, dir) == 1,
 		"canceled publish changed the version")
 
-	lock, err := ailego.AcquireFileLock(context.Background(), filepath.Join(dir, versionLockName), ailego.LockExclusive)
+	lock := flock.New(filepath.Join(dir, versionLockName))
+	locked, err := lock.TryLock()
 	require.NoError(t, err)
+	require.True(t, locked)
 
 	defer lock.Close()
 	deadline, cancelDeadline := context.WithTimeout(context.Background(), 25*time.Millisecond)

@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/gofrs/flock"
 	"github.com/gorse-io/zvec/internal/ailego"
 )
 
@@ -76,7 +77,7 @@ type WALRecord struct {
 type WAL struct {
 	path string
 	file *os.File
-	lock *ailego.FileLock
+	lock *flock.Flock
 
 	mu           sync.Mutex
 	options      WALOptions
@@ -106,9 +107,13 @@ func CreateWAL(ctx context.Context, name string, options WALOptions) (*WAL, erro
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("db: stat WAL before create: %w", err)
 	}
-	lock, err := ailego.AcquireFileLock(ctx, name+".lock", ailego.LockExclusive)
+	lock := flock.New(name + ".lock")
+	locked, err := lock.TryLockContext(ctx, fileLockRetryDelay)
 	if err != nil {
 		return nil, fmt.Errorf("db: lock WAL creation: %w", err)
+	}
+	if !locked {
+		return nil, errors.New("db: WAL creation lock unavailable")
 	}
 	file, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err != nil {
@@ -167,15 +172,21 @@ func openWAL(ctx context.Context, name string, options WALOptions, readOnly bool
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	lockMode := ailego.LockExclusive
 	openFlags := os.O_RDWR
+	lock := flock.New(name + ".lock")
+	var locked bool
+	var lockErr error
 	if readOnly {
-		lockMode = ailego.LockShared
 		openFlags = os.O_RDONLY
+		locked, lockErr = lock.TryRLockContext(ctx, fileLockRetryDelay)
+	} else {
+		locked, lockErr = lock.TryLockContext(ctx, fileLockRetryDelay)
 	}
-	lock, err := ailego.AcquireFileLock(ctx, name+".lock", lockMode)
-	if err != nil {
-		return nil, fmt.Errorf("db: lock WAL open: %w", err)
+	if lockErr != nil {
+		return nil, fmt.Errorf("db: lock WAL open: %w", lockErr)
+	}
+	if !locked {
+		return nil, errors.New("db: WAL open lock unavailable")
 	}
 	file, err := os.OpenFile(name, openFlags, 0)
 	if err != nil {

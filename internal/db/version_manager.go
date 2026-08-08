@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gofrs/flock"
 	"github.com/gorse-io/zvec/internal/ailego"
 )
 
@@ -67,9 +68,13 @@ func CreateVersionManager(ctx context.Context, dir string, initial Manifest) (*V
 		return nil, fmt.Errorf("db: create collection directory: %w", err)
 	}
 
-	lock, err := ailego.AcquireFileLock(ctx, filepath.Join(dir, versionLockName), ailego.LockExclusive)
+	lock := flock.New(filepath.Join(dir, versionLockName))
+	locked, err := lock.TryLockContext(ctx, fileLockRetryDelay)
 	if err != nil {
 		return nil, fmt.Errorf("db: lock manifest creation: %w", err)
+	}
+	if !locked {
+		return nil, errors.New("db: manifest creation lock unavailable")
 	}
 	defer lock.Close()
 
@@ -156,9 +161,13 @@ func (m *VersionManager) Publish(ctx context.Context, next Manifest) (Manifest, 
 }
 
 func (m *VersionManager) publishManagerLocked(ctx context.Context, next Manifest) (Manifest, error) {
-	lock, err := ailego.AcquireFileLock(ctx, filepath.Join(m.dir, versionLockName), ailego.LockExclusive)
+	lock := flock.New(filepath.Join(m.dir, versionLockName))
+	locked, err := lock.TryLockContext(ctx, fileLockRetryDelay)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("db: lock manifest publication: %w", err)
+	}
+	if !locked {
+		return Manifest{}, errors.New("db: manifest publication lock unavailable")
 	}
 	defer lock.Close()
 
