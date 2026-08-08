@@ -7,7 +7,9 @@ an offline conversion step.
 
 `Open` treats the manifest, schema, immutable segments, primary-key and delete
 snapshots, and the valid WAL prefix as one versioned unit. Fields added to the
-format-1 manifest are optional on read. In particular, a v0.1 manifest has no
+format-1 manifest are optional on read. The removed pre-release collection-wide
+`index_snapshot` field is not accepted; index metadata must use
+`segment_index_snapshots`. In particular, a v0.1 manifest has no
 `writing_segment_start_doc_id`; the reader derives the initial writable ID from
 persisted segments and advances it while replaying the historical WAL. The
 next insert therefore remains monotonic even when the old WAL contains updated

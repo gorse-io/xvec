@@ -408,7 +408,7 @@ func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context) err
 			MaxDocumentID: segment.metadata.MaxDocID, Artifacts: artifacts,
 		})
 	}
-	if len(next) == 0 && len(manifest.SegmentIndexSnapshots) == 0 && manifest.IndexSnapshot == nil {
+	if len(next) == 0 && len(manifest.SegmentIndexSnapshots) == 0 {
 		return nil
 	}
 	committed, publishErr := c.store.PublishSegmentIndexSnapshots(ctx, next)

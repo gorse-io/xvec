@@ -10,17 +10,14 @@ records already provide the exact representation.
 for immutable segments that do not already have matching metadata and regular
 files. Existing segment metadata and paths are copied unchanged into the next
 manifest generation. The artifact set is published atomically and obsolete
-collection-wide or compacted-segment artifacts are pruned after publication.
+compacted-segment artifacts are pruned after publication.
 If a process stops between the data-segment and index-manifest publications,
 the data remains committed; a later `Flush` or `Optimize` completes the missing
 index build.
 
 Open and query maintain one runtime cache entry per segment. Immutable entries
 are reused across inserts, updates, deletes, and later flushes. Only the
-WAL-backed mutable entry changes as new document versions are appended. A
-format-1 manifest containing the older collection-wide snapshot remains
-readable; queries rebuild safely from segment records, and the next `Flush` or
-`Optimize` replaces that metadata with segment-native artifacts.
+WAL-backed mutable entry changes as new document versions are appended.
 
 Query, MultiQuery, and GroupByQuery search each segment independently and then
 apply the metric-aware global merge. Segment artifacts deliberately retain

@@ -388,7 +388,6 @@ func TestCollectionPersistsAndReopensSnapshotIndexes(t *testing.T) {
 	require.NoError(t, collection.Flush(ctx))
 
 	manifest := collection.store.Manifest()
-	require.Nil(t, manifest.IndexSnapshot)
 	require.Len(t, manifest.SegmentIndexSnapshots, 1)
 	snapshot := manifest.SegmentIndexSnapshots[0]
 	require.Equal(t, manifest.PersistedSegments[0].ID, snapshot.SegmentID)

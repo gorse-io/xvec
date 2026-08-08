@@ -19,10 +19,8 @@ deleted or superseded versions.
 
 Optional segment index snapshots record the schema SHA-256, owning segment ID,
 document count and bounds, and field/kind/file metadata for immutable files in
-`indexes/`. Every identity component must match before a file is opened. The
-older optional collection-wide index snapshot remains readable for format-1
-compatibility and is replaced on the next Flush or Optimize. Manifests with no
-index metadata rebuild from segment documents, so this addition does not
+`indexes/`. Every identity component must match before a file is opened.
+Manifests with no index metadata rebuild from segment documents, so this does not
 require a disk-format version change.
 
 `CURRENT` is the commit point. It is itself framed and checksummed and names one

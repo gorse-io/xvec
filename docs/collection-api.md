@@ -86,9 +86,8 @@ Collection indexes are cached per segment, so repeated Query, MultiQuery, and
 GroupByQuery calls keep immutable vector, FTS, and INVERT state while only the
 WAL-backed segment changes. `Flush` publishes checksummed HNSW, HNSW-RaBitQ,
 IVF, Vamana, DiskANN, sparse HNSW, FTS, and INVERT artifacts for newly sealed
-segments. Reopen loads matching artifacts and automatically rebuilds older
-format-1 manifests without segment index metadata. DiskANN uses the
-collection's persisted `EnableMmap` option for immutable random-access files.
+segments. Reopen loads matching artifacts. DiskANN uses the collection's
+persisted `EnableMmap` option for immutable random-access files.
 
 WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
 publishes an immutable segment and rotates the WAL. `Open` can acquire either

@@ -45,7 +45,6 @@ func TestManifestCloneIsIndependent(t *testing.T) {
 	clone.Schema[0] = '['
 	clone.PersistedSegments[0].Files[0] = "changed"
 	clone.WritingSegment.Files[0] = "changed"
-	clone.IndexSnapshot.Artifacts[0].File = "changed"
 	clone.SegmentIndexSnapshots[0].Artifacts[0].File = "changed"
 	require.False(t, json.Valid(clone.Schema),
 		"schema clone shares storage")
@@ -55,8 +54,6 @@ func TestManifestCloneIsIndependent(t *testing.T) {
 		"persisted segment clone shares files")
 	require.False(t, original.WritingSegment.Files[0] == "changed",
 		"writing segment clone shares files")
-	require.False(t, original.IndexSnapshot.Artifacts[0].File == "changed",
-		"index snapshot clone shares artifacts")
 	require.False(t, original.SegmentIndexSnapshots[0].Artifacts[0].File == "changed",
 		"segment index snapshot clone shares artifacts")
 }
@@ -86,16 +83,6 @@ func TestManifestValidation(t *testing.T) {
 		{name: "unclean file", mutate: func(m *Manifest) { m.WritingSegment.Files = []string{"segment/../data.seg"} }, expected: ErrManifestCorrupt},
 		{name: "windows separator", mutate: func(m *Manifest) { m.WritingSegment.Files = []string{`segment\data.seg`} }, expected: ErrManifestCorrupt},
 		{name: "duplicate file", mutate: func(m *Manifest) { m.WritingSegment.Files = []string{"data.seg", "data.seg"} }, expected: ErrManifestCorrupt},
-		{name: "short index hash", mutate: func(m *Manifest) { m.IndexSnapshot.SchemaSHA256 = "00" }, expected: ErrManifestCorrupt},
-		{name: "invalid index hash", mutate: func(m *Manifest) { m.IndexSnapshot.SchemaSHA256 = strings.Repeat("z", 64) }, expected: ErrManifestCorrupt},
-		{name: "empty index field", mutate: func(m *Manifest) { m.IndexSnapshot.Artifacts[0].Field = "" }, expected: ErrManifestCorrupt},
-		{name: "parent index file", mutate: func(m *Manifest) { m.IndexSnapshot.Artifacts[0].File = "../index.zvi" }, expected: ErrManifestCorrupt},
-		{name: "duplicate index artifact", mutate: func(m *Manifest) {
-			m.IndexSnapshot.Artifacts = append(m.IndexSnapshot.Artifacts, m.IndexSnapshot.Artifacts[0])
-		}, expected: ErrManifestCorrupt},
-		{name: "duplicate index file", mutate: func(m *Manifest) {
-			m.IndexSnapshot.Artifacts = append(m.IndexSnapshot.Artifacts, IndexArtifactMetadata{Field: "text", Kind: "fts", File: m.IndexSnapshot.Artifacts[0].File})
-		}, expected: ErrManifestCorrupt},
 		{name: "missing indexed segment", mutate: func(m *Manifest) { m.SegmentIndexSnapshots[0].SegmentID = 99 }, expected: ErrManifestCorrupt},
 		{name: "duplicate segment index", mutate: func(m *Manifest) {
 			m.SegmentIndexSnapshots = append(m.SegmentIndexSnapshots, m.SegmentIndexSnapshots[0])
@@ -106,9 +93,6 @@ func TestManifestValidation(t *testing.T) {
 		{name: "short segment index hash", mutate: func(m *Manifest) { m.SegmentIndexSnapshots[0].SchemaSHA256 = "00" }, expected: ErrManifestCorrupt},
 		{name: "duplicate segment artifact", mutate: func(m *Manifest) {
 			m.SegmentIndexSnapshots[0].Artifacts = append(m.SegmentIndexSnapshots[0].Artifacts, m.SegmentIndexSnapshots[0].Artifacts[0])
-		}, expected: ErrManifestCorrupt},
-		{name: "duplicate global index file", mutate: func(m *Manifest) {
-			m.SegmentIndexSnapshots[0].Artifacts[0].File = m.IndexSnapshot.Artifacts[0].File
 		}, expected: ErrManifestCorrupt},
 	}
 
@@ -180,26 +164,46 @@ func TestManifestDetectsCorruptionAndTruncation(t *testing.T) {
 func TestManifestRejectsUnknownPayloadField(t *testing.T) {
 	t.Parallel()
 
+	encoded, err := manifestWithPayloadField("future_field", true)
+	require.NoError(t, err)
+	_, err = UnmarshalManifest(encoded)
+	require.ErrorIs(t, err, ErrManifestCorrupt)
+}
+
+func TestManifestRejectsLegacyIndexSnapshot(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := manifestWithPayloadField("index_snapshot", map[string]any{
+		"schema_sha256":   strings.Repeat("a", 64),
+		"document_count":  8,
+		"max_document_id": 19,
+		"artifacts": []any{map[string]any{
+			"field": "embedding", "kind": "vector-2", "file": "indexes/embedding.zvi",
+		}},
+	})
+	require.NoError(t, err)
+	_, err = UnmarshalManifest(encoded)
+	require.ErrorIs(t, err, ErrManifestCorrupt)
+}
+
+func manifestWithPayloadField(name string, value any) ([]byte, error) {
 	encoded, err := MarshalManifest(sampleManifest(1))
-	require.NoError(t, err)
-
-	var payload map[string]any
-	{
-		err := json.Unmarshal(encoded[manifestHeaderSize:], &payload)
-		require.NoError(t, err)
+	if err != nil {
+		return nil, err
 	}
-
-	payload["future_field"] = true
+	var payload map[string]any
+	if err := json.Unmarshal(encoded[manifestHeaderSize:], &payload); err != nil {
+		return nil, err
+	}
+	payload[name] = value
 	newPayload, err := json.Marshal(payload)
-	require.NoError(t, err)
-
+	if err != nil {
+		return nil, err
+	}
 	encoded = append(encoded[:manifestHeaderSize], newPayload...)
 	binary.LittleEndian.PutUint64(encoded[20:28], uint64(len(newPayload)))
 	binary.LittleEndian.PutUint32(encoded[28:32], ailego.CRC32C(newPayload))
-	{
-		_, err := UnmarshalManifest(encoded)
-		require.ErrorIs(t, err, ErrManifestCorrupt)
-	}
+	return encoded, nil
 }
 
 func FuzzUnmarshalManifest(f *testing.F) {
@@ -239,10 +243,6 @@ func sampleManifest(generation uint64) Manifest {
 		IDMapGeneration:          5,
 		DeleteSnapshotGeneration: 6,
 		NextSegmentID:            5,
-		IndexSnapshot: &IndexSnapshotMetadata{
-			SchemaSHA256: strings.Repeat("a", 64), DocumentCount: 8, MaxDocumentID: 19,
-			Artifacts: []IndexArtifactMetadata{{Field: "embedding", Kind: "vector-2", File: "indexes/embedding.zvi"}},
-		},
 		SegmentIndexSnapshots: []SegmentIndexSnapshotMetadata{{
 			SegmentID: 3, SchemaSHA256: strings.Repeat("b", 64), DocumentCount: 8,
 			MinDocumentID: 10, MaxDocumentID: 19,

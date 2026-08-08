@@ -506,11 +506,6 @@ func (c *CollectionStore) PruneObsoleteArtifacts(ctx context.Context) error {
 			keep[filepath.Clean(collectionPath(c.dir, relative)+".lock")] = struct{}{}
 		}
 	}
-	if manifest.IndexSnapshot != nil {
-		for _, artifact := range manifest.IndexSnapshot.Artifacts {
-			keepRelative(artifact.File)
-		}
-	}
 	for _, snapshot := range manifest.SegmentIndexSnapshots {
 		for _, artifact := range snapshot.Artifacts {
 			keepRelative(artifact.File)
@@ -836,63 +831,9 @@ func (c *CollectionStore) PublishSchema(ctx context.Context, schema json.RawMess
 	return committed, publishErr
 }
 
-// PublishIndexSnapshot atomically installs collection-snapshot index artifact
-// metadata. Every referenced artifact must already exist as a regular file
-// below the collection directory. Passing nil clears the current snapshot.
-func (c *CollectionStore) PublishIndexSnapshot(ctx context.Context, snapshot *IndexSnapshotMetadata) (committed bool, err error) {
-	if c == nil {
-		return false, errors.New("db: nil collection")
-	}
-	if ctx == nil {
-		return false, errors.New("db: nil publish index snapshot context")
-	}
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	if snapshot != nil {
-		copy := *snapshot
-		copy.Artifacts = slices.Clone(snapshot.Artifacts)
-		snapshot = &copy
-		candidate := Manifest{FormatVersion: DiskFormatVersion, Generation: 1, Schema: json.RawMessage(`{}`), SegmentMaxDocuments: 1, IndexSnapshot: snapshot}
-		if err := candidate.Validate(); err != nil {
-			return false, err
-		}
-		for _, artifact := range snapshot.Artifacts {
-			path := collectionPath(c.dir, artifact.File)
-			info, statErr := os.Lstat(path)
-			if statErr != nil {
-				return false, fmt.Errorf("db: inspect index artifact %q: %w", artifact.File, statErr)
-			}
-			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-				return false, fmt.Errorf("db: index artifact %q is not a regular file", artifact.File)
-			}
-		}
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err := c.requireWritableLocked(); err != nil {
-		return false, err
-	}
-	current := c.versions.Current()
-	if reflect.DeepEqual(current.IndexSnapshot, snapshot) {
-		return false, nil
-	}
-	next := current.Clone()
-	if snapshot == nil {
-		next.IndexSnapshot = nil
-	} else {
-		copy := *snapshot
-		copy.Artifacts = slices.Clone(snapshot.Artifacts)
-		next.IndexSnapshot = &copy
-	}
-	_, publishErr := c.versions.Publish(ctx, next)
-	committed = c.versions.Current().Generation != current.Generation
-	return committed, publishErr
-}
-
 // PublishSegmentIndexSnapshots atomically installs immutable per-segment index
-// metadata and clears the legacy collection-wide index snapshot. Artifacts
-// must already exist as regular files below the collection directory.
+// metadata. Artifacts must already exist as regular files below the collection
+// directory.
 func (c *CollectionStore) PublishSegmentIndexSnapshots(ctx context.Context, snapshots []SegmentIndexSnapshotMetadata) (committed bool, err error) {
 	if c == nil {
 		return false, errors.New("db: nil collection")
@@ -910,11 +851,10 @@ func (c *CollectionStore) PublishSegmentIndexSnapshots(ctx context.Context, snap
 		return false, err
 	}
 	current := c.versions.Current()
-	if current.IndexSnapshot == nil && reflect.DeepEqual(current.SegmentIndexSnapshots, snapshots) {
+	if reflect.DeepEqual(current.SegmentIndexSnapshots, snapshots) {
 		return false, nil
 	}
 	next := current.Clone()
-	next.IndexSnapshot = nil
 	next.SegmentIndexSnapshots = snapshots
 	if err := next.Validate(); err != nil {
 		return false, err
