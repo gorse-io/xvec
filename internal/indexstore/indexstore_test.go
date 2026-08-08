@@ -92,6 +92,40 @@ func TestStoreRejectsSymlink(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestStoreRejectsInvalidPathsMarkersAndClosedOperations(t *testing.T) {
+	_, err := Open("", Options{})
+	require.Error(t, err)
+	file := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(file, []byte("not a directory"), 0o600))
+	_, err = Open(file, Options{})
+	require.Error(t, err)
+
+	path := filepath.Join(t.TempDir(), "closed.pebble")
+	store, err := Open(path, Options{})
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+	_, err = store.Get([]byte("key"))
+	require.ErrorIs(t, err, ErrClosed)
+	require.ErrorIs(t, store.Set([]byte("key"), []byte("value")), ErrClosed)
+	require.ErrorIs(t, store.Delete([]byte("key")), ErrClosed)
+	require.ErrorIs(t, store.Flush(), ErrClosed)
+	require.ErrorIs(t, store.Compact([]byte("a"), []byte("b")), ErrClosed)
+	require.ErrorIs(t, store.Checkpoint(filepath.Join(t.TempDir(), "checkpoint")), ErrClosed)
+	_, err = store.NewPrefixIterator([]byte("key"))
+	require.ErrorIs(t, err, ErrClosed)
+	_, err = store.NewRangeIterator([]byte("a"), []byte("b"))
+	require.ErrorIs(t, err, ErrClosed)
+	batch := store.NewBatch()
+	require.ErrorIs(t, batch.Set([]byte("key"), []byte("value")), ErrClosed)
+	require.ErrorIs(t, batch.Delete([]byte("key")), ErrClosed)
+	require.ErrorIs(t, batch.Commit(), ErrClosed)
+	require.NoError(t, batch.Close())
+
+	require.NoError(t, os.WriteFile(filepath.Join(path, indexstoreMarkerName), []byte("corrupt\n"), 0o600))
+	_, err = Open(path, Options{ReadOnly: true})
+	require.Error(t, err)
+}
+
 func collectIterator(t *testing.T, iterator *Iterator) [][2]string {
 	t.Helper()
 	defer func() { require.NoError(t, iterator.Close()) }()
