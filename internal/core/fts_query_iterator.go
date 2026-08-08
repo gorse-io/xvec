@@ -237,11 +237,100 @@ type ftsDocumentIterator interface {
 	score(context.Context) (float32, error)
 }
 
+type ftsBlockMaxInfo struct {
+	score   float32
+	lastDoc uint32
+}
+
+// ftsIteratorBlockMaxInfo returns a safe score upper bound for every document
+// from target through lastDoc. Posting blocks are decoded lazily by term
+// iterators; composite bounds add their non-negative child bounds over the
+// shortest shared range.
+func ftsIteratorBlockMaxInfo(iterator ftsDocumentIterator, target uint32) ftsBlockMaxInfo {
+	switch typed := iterator.(type) {
+	case *ftsTermDocumentIterator:
+		return typed.blockMaxInfo(target)
+	case *ftsPhraseDocumentIterator:
+		if typed == nil || typed.conjunction == nil {
+			return ftsBlockMaxInfo{lastDoc: math.MaxUint32}
+		}
+		return ftsIteratorBlockMaxInfo(typed.conjunction, target)
+	case *ftsAndDocumentIterator:
+		if typed == nil || len(typed.must) == 0 {
+			return ftsBlockMaxInfo{lastDoc: math.MaxUint32}
+		}
+		info := ftsBlockMaxInfo{lastDoc: math.MaxUint32}
+		for _, child := range typed.must {
+			info = addFTSBlockMaxInfo(info, ftsIteratorBlockMaxInfo(child, target))
+		}
+		for _, child := range typed.should {
+			info = addFTSBlockMaxInfo(info, ftsIteratorBlockMaxInfo(child, target))
+		}
+		return info
+	case *ftsOrDocumentIterator:
+		if typed == nil || len(typed.children) == 0 {
+			return ftsBlockMaxInfo{lastDoc: math.MaxUint32}
+		}
+		info := ftsBlockMaxInfo{lastDoc: math.MaxUint32}
+		for _, child := range typed.children {
+			info = addFTSBlockMaxInfo(info, ftsIteratorBlockMaxInfo(child, target))
+		}
+		return info
+	default:
+		// Unknown iterator implementations disable pruning over this one-ID
+		// range rather than risk underestimating their score.
+		return ftsBlockMaxInfo{score: math.MaxFloat32, lastDoc: target}
+	}
+}
+
+func addFTSBlockMaxInfo(left, right ftsBlockMaxInfo) ftsBlockMaxInfo {
+	left.score += right.score
+	if right.lastDoc < left.lastDoc {
+		left.lastDoc = right.lastDoc
+	}
+	return left
+}
+
 type ftsTermDocumentIterator struct {
-	posting *FTSPostingIterator
-	scorer  *BM25Scorer
-	idf     float32
-	boost   float32
+	posting         *FTSPostingIterator
+	scorer          *BM25Scorer
+	idf             float32
+	boost           float32
+	blockMaxScores  []float32
+	blockMaxDecoded []bool
+}
+
+func (i *ftsTermDocumentIterator) blockMaxInfo(target uint32) ftsBlockMaxInfo {
+	if i == nil || i.posting == nil || i.posting.list == nil || i.scorer == nil {
+		return ftsBlockMaxInfo{lastDoc: math.MaxUint32}
+	}
+	blocks := i.posting.list.blocks
+	blockIndex := sort.Search(len(blocks), func(index int) bool { return blocks[index].maxDocumentID >= target })
+	if blockIndex == len(blocks) {
+		return ftsBlockMaxInfo{lastDoc: math.MaxUint32}
+	}
+	if len(i.blockMaxScores) == 0 {
+		i.blockMaxScores = make([]float32, len(blocks))
+		i.blockMaxDecoded = make([]bool, len(blocks))
+	}
+	if !i.blockMaxDecoded[blockIndex] {
+		probe := i.posting.list.Iterator()
+		probe.loadBlock(blockIndex)
+		var maximum float32
+		for index := range probe.termFrequencies {
+			score := i.scorer.ScoreWithIDFAndBoost(i.idf, probe.termFrequencies[index], probe.documentLengths[index], i.boost)
+			if math.IsNaN(float64(score)) || math.IsInf(float64(score), 0) {
+				maximum = math.MaxFloat32
+				break
+			}
+			if score > maximum {
+				maximum = score
+			}
+		}
+		i.blockMaxScores[blockIndex] = maximum
+		i.blockMaxDecoded[blockIndex] = true
+	}
+	return ftsBlockMaxInfo{score: i.blockMaxScores[blockIndex], lastDoc: blocks[blockIndex].maxDocumentID}
 }
 
 func (i *ftsTermDocumentIterator) next(ctx context.Context) (uint32, bool, error) {

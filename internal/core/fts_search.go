@@ -32,7 +32,7 @@ type FTSResult struct {
 	Score      float32
 }
 
-// FTSSearchOptions configures exhaustive exact BM25 retrieval.
+// FTSSearchOptions configures exact BM25 top-k retrieval.
 type FTSSearchOptions struct {
 	TopK int
 	FTSQueryExecutionOptions
@@ -40,56 +40,94 @@ type FTSSearchOptions struct {
 
 // SearchFTS executes an exact term, phrase, and boolean query and returns at
 // most TopK results by descending BM25 score, breaking ties by ascending
-// document ID. Scorer may hold deletion-aware statistics across multiple
-// segments so independently searched segments remain score-comparable.
+// document ID. Once the heap is full, safe posting-block score bounds skip
+// ranges that cannot beat its minimum. Scorer may hold deletion-aware
+// statistics across multiple segments so independently searched segments
+// remain score-comparable.
 func SearchFTS(ctx context.Context, dictionary *FTSTermDictionary, node FTSQueryNode, scorer *BM25Scorer, options FTSSearchOptions) ([]FTSResult, error) {
+	results, _, err := searchFTSWithStats(ctx, dictionary, node, scorer, options)
+	return results, err
+}
+
+type ftsSearchStats struct {
+	scoredDocuments uint64
+	blockMaxSkips   uint64
+}
+
+func searchFTSWithStats(ctx context.Context, dictionary *FTSTermDictionary, node FTSQueryNode, scorer *BM25Scorer, options FTSSearchOptions) ([]FTSResult, ftsSearchStats, error) {
+	var stats ftsSearchStats
 	if ctx == nil {
-		return nil, fmt.Errorf("%w: nil context", ErrInvalidFTSSearch)
+		return nil, stats, fmt.Errorf("%w: nil context", ErrInvalidFTSSearch)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, stats, err
 	}
 	if options.TopK < 0 {
-		return nil, fmt.Errorf("%w: TopK must be non-negative", ErrInvalidFTSSearch)
+		return nil, stats, fmt.Errorf("%w: TopK must be non-negative", ErrInvalidFTSSearch)
 	}
 	if dictionary == nil {
-		return nil, fmt.Errorf("%w: dictionary is nil", ErrInvalidFTSQueryExecution)
+		return nil, stats, fmt.Errorf("%w: dictionary is nil", ErrInvalidFTSQueryExecution)
 	}
 	if scorer == nil {
-		return nil, fmt.Errorf("%w: BM25 scorer is nil", ErrInvalidFTSQueryExecution)
+		return nil, stats, fmt.Errorf("%w: BM25 scorer is nil", ErrInvalidFTSQueryExecution)
 	}
 	if options.TopK == 0 {
-		return []FTSResult{}, nil
+		return []FTSResult{}, stats, nil
 	}
 	iterator, err := NewFTSScoredQueryIterator(ctx, dictionary, node, scorer, options.FTSQueryExecutionOptions)
 	if err != nil {
-		return nil, err
+		return nil, stats, err
 	}
 	results := make(ftsResultHeap, 0, min(options.TopK, 64))
 	heap.Init(&results)
-	for iterator.Next(ctx) {
+	target := uint32(0)
+	for {
+		exhausted := false
+		if len(results) == options.TopK {
+			for {
+				block := ftsIteratorBlockMaxInfo(iterator.root, target)
+				if block.lastDoc < target || !(block.score < results[0].Score) {
+					break
+				}
+				stats.blockMaxSkips++
+				if block.lastDoc == math.MaxUint32 {
+					exhausted = true
+					break
+				}
+				target = block.lastDoc + 1
+			}
+		}
+		if exhausted {
+			break
+		}
+		if !iterator.Advance(ctx, target) {
+			break
+		}
+		stats.scoredDocuments++
 		score := iterator.Score()
 		if float64Score := float64(score); math.IsNaN(float64Score) || math.IsInf(float64Score, 0) {
-			return nil, fmt.Errorf("%w: document %d has non-finite score", ErrInvalidFTSSearch, iterator.DocumentID())
+			return nil, stats, fmt.Errorf("%w: document %d has non-finite score", ErrInvalidFTSSearch, iterator.DocumentID())
 		}
-		if score <= 0 {
-			continue
+		documentID := iterator.DocumentID()
+		if score > 0 {
+			candidate := FTSResult{DocumentID: documentID, Score: score}
+			if len(results) < options.TopK {
+				heap.Push(&results, candidate)
+			} else if ftsResultBetter(candidate, results[0]) {
+				results[0] = candidate
+				heap.Fix(&results, 0)
+			}
 		}
-		candidate := FTSResult{DocumentID: iterator.DocumentID(), Score: score}
-		if len(results) < options.TopK {
-			heap.Push(&results, candidate)
-			continue
+		if documentID == math.MaxUint32 {
+			break
 		}
-		if ftsResultBetter(candidate, results[0]) {
-			results[0] = candidate
-			heap.Fix(&results, 0)
-		}
+		target = documentID + 1
 	}
 	if err := iterator.Err(); err != nil {
-		return nil, err
+		return nil, stats, err
 	}
 	sort.Slice(results, func(left, right int) bool { return ftsResultBetter(results[left], results[right]) })
-	return []FTSResult(results), nil
+	return []FTSResult(results), stats, nil
 }
 
 func ftsResultBetter(left, right FTSResult) bool {
