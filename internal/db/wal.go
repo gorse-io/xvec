@@ -78,6 +78,8 @@ type WAL struct {
 	path string
 	file *os.File
 	lock *flock.Flock
+	// syncFile is file.Sync by default and is replaceable by package tests.
+	syncFile func() error
 
 	mu           sync.Mutex
 	options      WALOptions
@@ -144,7 +146,7 @@ func CreateWAL(ctx context.Context, name string, options WALOptions) (*WAL, erro
 	keep = true
 	recovery := WALRecovery{ValidBytes: walFileHeaderSize}
 	return &WAL{
-		path: name, file: file, lock: lock, options: options,
+		path: name, file: file, lock: lock, syncFile: file.Sync, options: options,
 		recovery: recovery, size: walFileHeaderSize,
 	}, nil
 }
@@ -218,7 +220,7 @@ func openWAL(ctx context.Context, name string, options WALOptions, readOnly bool
 		}
 	}
 	return &WAL{
-		path: name, file: file, lock: lock, options: options,
+		path: name, file: file, lock: lock, syncFile: file.Sync, options: options,
 		recovery: recovery, size: recovery.ValidBytes, lastLSN: recovery.LastLSN,
 		readOnly: readOnly,
 	}, nil
@@ -245,8 +247,8 @@ func (w *WAL) HasRecords() bool {
 }
 
 // Append writes one opaque payload and returns its monotonically increasing
-// LSN. Once a write fails, the handle is poisoned and must be closed and
-// reopened so tail recovery can establish a safe append offset.
+// LSN. Once a write or automatic synchronization fails, the handle is poisoned
+// and must be closed and reopened so recovery can establish a safe state.
 func (w *WAL) Append(ctx context.Context, payload []byte) (uint64, error) {
 	if w == nil {
 		return 0, errors.New("db: nil WAL")
@@ -288,15 +290,17 @@ func (w *WAL) Append(ctx context.Context, payload []byte) (uint64, error) {
 	w.lastLSN = lsn
 	w.dirtyRecords++
 	if w.options.SyncEvery > 0 && w.dirtyRecords >= w.options.SyncEvery {
-		if err := w.file.Sync(); err != nil {
-			return lsn, fmt.Errorf("db: sync WAL at LSN %d: %w", lsn, err)
+		if err := w.syncFile(); err != nil {
+			w.poisoned = fmt.Errorf("%w: sync record %d: %w", ErrWALPoisoned, lsn, err)
+			return lsn, w.poisoned
 		}
 		w.dirtyRecords = 0
 	}
 	return lsn, nil
 }
 
-// Sync makes every successfully appended record durable before returning.
+// Sync makes every successfully appended record durable before returning. A
+// synchronization failure poisons the handle because durability is uncertain.
 func (w *WAL) Sync(ctx context.Context) error {
 	if w == nil {
 		return errors.New("db: nil WAL")
@@ -318,8 +322,9 @@ func (w *WAL) Sync(ctx context.Context) error {
 	if w.poisoned != nil {
 		return w.poisoned
 	}
-	if err := w.file.Sync(); err != nil {
-		return fmt.Errorf("db: sync WAL: %w", err)
+	if err := w.syncFile(); err != nil {
+		w.poisoned = fmt.Errorf("%w: sync WAL: %w", ErrWALPoisoned, err)
+		return w.poisoned
 	}
 	w.dirtyRecords = 0
 	return nil
@@ -383,7 +388,7 @@ func (w *WAL) Replay(ctx context.Context, apply func(WALRecord) error) error {
 }
 
 // Close syncs complete records, closes the file, and releases the writer lock.
-// It is idempotent. A poisoned log is closed without syncing its partial tail.
+// It is idempotent. A poisoned log is closed without another synchronization.
 func (w *WAL) Close() error {
 	if w == nil {
 		return nil
@@ -396,7 +401,7 @@ func (w *WAL) Close() error {
 	w.closed = true
 	var syncErr error
 	if !w.readOnly && w.poisoned == nil && w.dirtyRecords > 0 {
-		if err := w.file.Sync(); err != nil {
+		if err := w.syncFile(); err != nil {
 			syncErr = fmt.Errorf("db: sync WAL on close: %w", err)
 		}
 	}

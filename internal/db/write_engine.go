@@ -80,14 +80,17 @@ func (e *BatchWriteError) Error() string {
 
 func (e *BatchWriteError) Unwrap() []error { return slices.Clone(e.causes) }
 
-// WriteEngine serializes WAL-backed mutations over a SegmentManager.
+// WriteEngine serializes WAL-backed mutations over a SegmentManager. When an
+// automatic synchronization fails after a complete append, the engine still
+// applies that record, returns the synchronization error, and relies on the
+// poisoned WAL to reject later mutations until reopen.
 type WriteEngine struct {
 	mu      sync.Mutex
 	manager *SegmentManager
 	wal     *WAL
 }
 
-// NewWriteEngine validates the dependencies required for durable mutations.
+// NewWriteEngine validates the dependencies required for WAL-backed mutations.
 func NewWriteEngine(manager *SegmentManager, wal *WAL) (*WriteEngine, error) {
 	if manager == nil {
 		return nil, errors.New("db: nil segment manager")
@@ -101,9 +104,10 @@ func NewWriteEngine(manager *SegmentManager, wal *WAL) (*WriteEngine, error) {
 	return &WriteEngine{manager: manager, wal: wal}, nil
 }
 
-// Insert durably appends documents whose primary keys do not exist. Validation
-// and duplicate errors are reported per input; every failure is also included
-// in the returned BatchWriteError.
+// Insert appends documents whose primary keys do not exist to the WAL before
+// applying them. WALOptions controls when appended records are synchronized.
+// Validation and duplicate errors are reported per input; every failure is
+// also included in the returned BatchWriteError.
 func (e *WriteEngine) Insert(ctx context.Context, inputs []WriteInput) ([]WriteResult, error) {
 	if e == nil {
 		return nil, errors.New("db: nil write engine")
@@ -142,8 +146,8 @@ func (e *WriteEngine) Insert(ctx context.Context, inputs []WriteInput) ([]WriteR
 	return results, nil
 }
 
-// Upsert durably appends a new document version. If the key already exists,
-// its prior document ID is logically deleted after the WAL is synchronized.
+// Upsert appends a new document version to the WAL. If the key already exists,
+// its prior document ID is logically deleted after the WAL append succeeds.
 func (e *WriteEngine) Upsert(ctx context.Context, inputs []WriteInput) ([]WriteResult, error) {
 	if e == nil {
 		return nil, errors.New("db: nil write engine")
@@ -182,7 +186,7 @@ func (e *WriteEngine) Upsert(ctx context.Context, inputs []WriteInput) ([]WriteR
 	return results, nil
 }
 
-// Update durably appends replacement document versions for existing keys.
+// Update appends replacement document versions for existing keys to the WAL.
 func (e *WriteEngine) Update(ctx context.Context, inputs []WriteInput) ([]WriteResult, error) {
 	if e == nil {
 		return nil, errors.New("db: nil write engine")
@@ -221,8 +225,9 @@ func (e *WriteEngine) Update(ctx context.Context, inputs []WriteInput) ([]WriteR
 	return results, nil
 }
 
-// Delete durably removes primary-key mappings and logically deletes their
-// current document IDs. Immutable segment bytes are never rewritten.
+// Delete appends removals to the WAL before updating primary-key mappings and
+// logically deleting current document IDs. Immutable segment bytes are never
+// rewritten.
 func (e *WriteEngine) Delete(ctx context.Context, primaryKeys []string) ([]WriteResult, error) {
 	if e == nil {
 		return nil, errors.New("db: nil write engine")
@@ -287,21 +292,19 @@ func (e *WriteEngine) insertOneLocked(ctx context.Context, input WriteInput) (ui
 	if err != nil {
 		return 0, err
 	}
-	if _, err := e.wal.Append(ctx, encoded); err != nil {
-		return 0, err
-	}
-	if err := e.wal.Sync(ctx); err != nil {
-		return 0, err
+	lsn, syncErr := e.wal.Append(ctx, encoded)
+	if syncErr != nil && lsn == 0 {
+		return 0, syncErr
 	}
 	applyContext := context.WithoutCancel(ctx)
 	doc, err := writing.AppendExpected(applyContext, docID, input.PrimaryKey, input.Payload)
 	if err != nil {
-		return 0, fmt.Errorf("db: apply WAL insert: %w", err)
+		return 0, errors.Join(syncErr, fmt.Errorf("db: apply WAL insert: %w", err))
 	}
 	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, DocumentLocation{SegmentID: writing.ID(), DocID: doc.DocID}); err != nil {
-		return 0, fmt.Errorf("db: index WAL insert: %w", err)
+		return 0, errors.Join(syncErr, fmt.Errorf("db: index WAL insert: %w", err))
 	}
-	return doc.DocID, nil
+	return doc.DocID, syncErr
 }
 
 func (e *WriteEngine) upsertOneLocked(ctx context.Context, input WriteInput) (uint64, error) {
@@ -328,26 +331,24 @@ func (e *WriteEngine) upsertOneLocked(ctx context.Context, input WriteInput) (ui
 	if err != nil {
 		return 0, err
 	}
-	if _, err := e.wal.Append(ctx, encoded); err != nil {
-		return 0, err
-	}
-	if err := e.wal.Sync(ctx); err != nil {
-		return 0, err
+	lsn, syncErr := e.wal.Append(ctx, encoded)
+	if syncErr != nil && lsn == 0 {
+		return 0, syncErr
 	}
 	applyContext := context.WithoutCancel(ctx)
 	doc, err := writing.AppendExpected(applyContext, docID, input.PrimaryKey, input.Payload)
 	if err != nil {
-		return 0, fmt.Errorf("db: apply WAL upsert: %w", err)
+		return 0, errors.Join(syncErr, fmt.Errorf("db: apply WAL upsert: %w", err))
 	}
 	if existed {
 		if _, err := e.manager.Deletes().MarkDeleted(applyContext, previous.DocID); err != nil {
-			return 0, fmt.Errorf("db: delete prior upsert version: %w", err)
+			return 0, errors.Join(syncErr, fmt.Errorf("db: delete prior upsert version: %w", err))
 		}
 	}
 	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, DocumentLocation{SegmentID: writing.ID(), DocID: doc.DocID}); err != nil {
-		return 0, fmt.Errorf("db: index WAL upsert: %w", err)
+		return 0, errors.Join(syncErr, fmt.Errorf("db: index WAL upsert: %w", err))
 	}
-	return doc.DocID, nil
+	return doc.DocID, syncErr
 }
 
 func (e *WriteEngine) updateOneLocked(ctx context.Context, input WriteInput) (uint64, error) {
@@ -376,24 +377,22 @@ func (e *WriteEngine) updateOneLocked(ctx context.Context, input WriteInput) (ui
 	if err != nil {
 		return 0, err
 	}
-	if _, err := e.wal.Append(ctx, encoded); err != nil {
-		return 0, err
-	}
-	if err := e.wal.Sync(ctx); err != nil {
-		return 0, err
+	lsn, syncErr := e.wal.Append(ctx, encoded)
+	if syncErr != nil && lsn == 0 {
+		return 0, syncErr
 	}
 	applyContext := context.WithoutCancel(ctx)
 	doc, err := writing.AppendExpected(applyContext, docID, input.PrimaryKey, input.Payload)
 	if err != nil {
-		return 0, fmt.Errorf("db: apply WAL update: %w", err)
+		return 0, errors.Join(syncErr, fmt.Errorf("db: apply WAL update: %w", err))
 	}
 	if _, err := e.manager.Deletes().MarkDeleted(applyContext, previous.DocID); err != nil {
-		return 0, fmt.Errorf("db: delete prior update version: %w", err)
+		return 0, errors.Join(syncErr, fmt.Errorf("db: delete prior update version: %w", err))
 	}
 	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, DocumentLocation{SegmentID: writing.ID(), DocID: doc.DocID}); err != nil {
-		return 0, fmt.Errorf("db: index WAL update: %w", err)
+		return 0, errors.Join(syncErr, fmt.Errorf("db: index WAL update: %w", err))
 	}
-	return doc.DocID, nil
+	return doc.DocID, syncErr
 }
 
 func (e *WriteEngine) deleteOneLocked(ctx context.Context, primaryKey string) (uint64, error) {
@@ -411,24 +410,22 @@ func (e *WriteEngine) deleteOneLocked(ctx context.Context, primaryKey string) (u
 	if err != nil {
 		return 0, err
 	}
-	if _, err := e.wal.Append(ctx, encoded); err != nil {
-		return 0, err
-	}
-	if err := e.wal.Sync(ctx); err != nil {
-		return 0, err
+	lsn, syncErr := e.wal.Append(ctx, encoded)
+	if syncErr != nil && lsn == 0 {
+		return 0, syncErr
 	}
 	applyContext := context.WithoutCancel(ctx)
 	if _, err := e.manager.Deletes().MarkDeleted(applyContext, location.DocID); err != nil {
-		return 0, fmt.Errorf("db: apply WAL delete: %w", err)
+		return 0, errors.Join(syncErr, fmt.Errorf("db: apply WAL delete: %w", err))
 	}
 	removed, found, err := e.manager.PrimaryKeys().Delete(applyContext, primaryKey)
 	if err != nil {
-		return 0, fmt.Errorf("db: remove deleted primary key: %w", err)
+		return 0, errors.Join(syncErr, fmt.Errorf("db: remove deleted primary key: %w", err))
 	}
 	if !found || removed != location {
-		return 0, errors.New("db: primary-key map changed while applying delete")
+		return 0, errors.Join(syncErr, errors.New("db: primary-key map changed while applying delete"))
 	}
-	return location.DocID, nil
+	return location.DocID, syncErr
 }
 
 func (e *BatchWriteError) add(err error) {

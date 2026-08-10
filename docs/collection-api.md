@@ -89,7 +89,10 @@ IVF, Vamana, DiskANN, sparse HNSW, FTS, and INVERT artifacts for newly sealed
 segments. Reopen loads matching artifacts. DiskANN uses the collection's
 persisted `EnableMmap` option for immutable random-access files.
 
-WAL-backed mutations survive `Close` without `Flush`. `Flush` atomically
+WAL-backed mutations survive a successful `Close` without `Flush` because Close
+synchronizes pending records. `WALSyncEvery` optionally establishes earlier
+record-count synchronization boundaries; zero disables automatic synchronization,
+so a process or host failure can lose pending records. `Flush` atomically
 publishes an immutable segment and rotates the WAL. `Open` can acquire either
 the sole writer lock or one of multiple read-only locks. `Destroy` is available
 only from a writable handle and removes the collection directory after closing

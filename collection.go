@@ -55,7 +55,10 @@ type CollectionOptions struct {
 	ReadOnly      bool
 	EnableMmap    bool
 	MaxBufferSize uint32
-	WALSyncEvery  uint64
+	// WALSyncEvery synchronizes the WAL after this many successful records.
+	// Zero disables automatic record-count-based synchronization; Flush and
+	// Close still synchronize pending WAL records.
+	WALSyncEvery uint64
 }
 
 // NewCollectionOptions returns baseline-compatible handle defaults.
@@ -897,7 +900,8 @@ func (c *Collection) Flush(ctx context.Context) error {
 }
 
 // Close releases files and the cross-process collection lock. It is
-// idempotent; WAL-backed writes remain recoverable without an explicit Flush.
+// idempotent; Close synchronizes pending WAL records, so writes remain
+// recoverable without an explicit Flush.
 func (c *Collection) Close() error {
 	if c == nil {
 		return nil
@@ -4644,8 +4648,9 @@ type WriteResult struct {
 	Err        error
 }
 
-// Insert durably writes new primary keys. Valid documents in a mixed batch
-// are committed even when other entries fail validation or already exist.
+// Insert writes new primary keys through the WAL. WALSyncEvery controls when
+// records become durable. Valid documents in a mixed batch are committed even
+// when other entries fail validation or already exist.
 func (c *Collection) Insert(ctx context.Context, documents []Document) ([]WriteResult, error) {
 	return c.writeDocuments(ctx, OperatorInsert, documents)
 }
@@ -4799,7 +4804,8 @@ func (c *Collection) callStoreWriteLocked(ctx context.Context, operator Operator
 	}
 }
 
-// Delete durably removes the current versions of the requested primary keys.
+// Delete removes current versions through the WAL. WALSyncEvery controls when
+// records become durable.
 func (c *Collection) Delete(ctx context.Context, primaryKeys []string) ([]WriteResult, error) {
 	const op = "DELETE"
 	if c == nil {
@@ -4855,10 +4861,10 @@ func (c *Collection) Delete(ctx context.Context, primaryKeys []string) ([]WriteR
 	return results, nil
 }
 
-// DeleteByFilter durably removes every live document for which filter
-// evaluates to SQL TRUE. Selection and WAL-backed deletion are serialized
-// under the collection write lock, so a matched version cannot be replaced
-// between those two phases.
+// DeleteByFilter removes every live document for which filter evaluates to SQL
+// TRUE through the WAL. Selection and WAL-backed deletion are serialized under
+// the collection write lock, so a matched version cannot be replaced between
+// those two phases. WALSyncEvery controls when records become durable.
 func (c *Collection) DeleteByFilter(ctx context.Context, filter string) error {
 	const op = "delete by filter"
 	if c == nil {
