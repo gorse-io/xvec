@@ -479,6 +479,22 @@ func TestWALArgumentAndClosedValidation(t *testing.T) {
 	}
 }
 
+func TestWALSyncFailurePoisonsHandle(t *testing.T) {
+	wal, err := CreateWAL(context.Background(), filepath.Join(t.TempDir(), "data.wal"), WALOptions{})
+	require.NoError(t, err)
+	defer wal.Close()
+	_, err = wal.Append(context.Background(), []byte("record"))
+	require.NoError(t, err)
+	syncError := errors.New("injected sync failure")
+	wal.syncFile = func() error { return syncError }
+
+	err = wal.Sync(context.Background())
+	require.ErrorIs(t, err, syncError)
+	require.ErrorIs(t, err, ErrWALPoisoned)
+	_, err = wal.Append(context.Background(), []byte("next"))
+	require.ErrorIs(t, err, ErrWALPoisoned)
+}
+
 func TestWALReaderDetectsPostOpenCorruption(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "data.wal")
 	wal, err := CreateWAL(context.Background(), name, WALOptions{})

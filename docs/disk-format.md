@@ -151,14 +151,17 @@ remaining obsolete artifacts without publishing another manifest.
 `.collection.lock` controls handle ownership across processes. A writable
 collection holds it exclusively for its lifetime. Read-only collections hold
 shared locks, allowing multiple readers while preventing a concurrent writer.
-Closing without Flush is safe because each successful mutation synchronizes
-its WAL record before changing memory.
+Closing without Flush is safe because Close synchronizes pending WAL records
+before releasing the collection lock. A process or host failure can lose records
+that have not reached `WALSyncEvery`; zero disables automatic record-count-based
+synchronization.
 
 ## WAL operations
 
 Collection mutations inside WAL records use a separate `ZOP1` frame. It stores
 the operation kind, target segment ID, assigned global document ID, primary-key
 and document-payload lengths, and a CRC32C covering the header, key, and
-payload. Insert reserves the next contiguous document ID, synchronizes this WAL
+payload. Insert reserves the next contiguous document ID, appends this WAL
 operation, and only then applies the document to the write segment and
-primary-key map.
+primary-key map. WAL synchronization happens when `WALSyncEvery` records have
+accumulated, or when Flush or Close explicitly synchronizes pending records.

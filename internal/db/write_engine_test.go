@@ -67,6 +67,48 @@ func TestWriteEngineInsert(t *testing.T) {
 	require.True(t, operations[0].PrimaryKey == "one")
 }
 
+func TestWriteEngineBatchesWALSync(t *testing.T) {
+	engine, _, wal := newTestWriteEngine(t, 0, 10)
+	defer wal.Close()
+	wal.options.SyncEvery = 4
+
+	_, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "key"}})
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), wal.dirtyRecords)
+
+	_, err = engine.Upsert(context.Background(), []WriteInput{{PrimaryKey: "key"}})
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), wal.dirtyRecords)
+
+	_, err = engine.Update(context.Background(), []WriteInput{{PrimaryKey: "key"}})
+	require.NoError(t, err)
+	require.Equal(t, uint64(3), wal.dirtyRecords)
+
+	_, err = engine.Delete(context.Background(), []string{"key"})
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), wal.dirtyRecords)
+}
+
+func TestWriteEngineAppliesRecordWhenAutomaticSyncFails(t *testing.T) {
+	engine, manager, wal := newTestWriteEngine(t, 0, 10)
+	defer wal.Close()
+	wal.options.SyncEvery = 1
+	syncError := errors.New("injected WAL sync failure")
+	wal.syncFile = func() error { return syncError }
+
+	results, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "key"}})
+	require.ErrorIs(t, err, syncError)
+	require.ErrorIs(t, err, ErrWALPoisoned)
+	require.Len(t, results, 1)
+	require.ErrorIs(t, results[0].Err, syncError)
+	document, found := manager.DocumentByPrimaryKey("key")
+	require.True(t, found)
+	require.Equal(t, uint64(0), document.DocID)
+
+	_, err = engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "next"}})
+	require.ErrorIs(t, err, ErrWALPoisoned)
+}
+
 func TestWriteEngineInsertReportsPerDocumentFailures(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 0, 10)
 	defer wal.Close()

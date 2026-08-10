@@ -21,7 +21,7 @@ libraries.
 - Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, and DiskANN indexes.
 - L2, inner-product, cosine, and MIPS-L2 metrics with optional quantization and refinement.
 - Scalar filtering, block-max WAND BM25 full-text search, grouping, and hybrid multi-query retrieval.
-- Durable WAL-backed writes, crash recovery, segment-native incremental indexes, and atomic compaction.
+- Configurable WAL durability batching, crash recovery, segment-native incremental indexes, and atomic compaction.
 - Pure Go on Linux, macOS, and Windows.
 
 ## Install
@@ -144,10 +144,12 @@ collection, err := zvec.Open(
 
 Use `Insert`, `Upsert`, `Update`, and `Delete` for document mutations. Call
 `Flush` to publish an immutable segment and `Optimize` to compact stored data;
-WAL-backed writes remain recoverable even without an explicit flush. `Query`
-also accepts `PrimaryKey` as a vector target, a single `FTS` clause, or a
-filter-only request with no target. `MultiQuery` fuses dense, sparse,
-primary-key-vector, and FTS branches over one snapshot.
+`Close` synchronizes pending WAL records. Set `CollectionOptions.WALSyncEvery`
+to synchronize automatically after a chosen number of successful records; zero
+disables automatic record-count-based synchronization. `Query` also accepts
+`PrimaryKey` as a vector target, a single `FTS` clause, or a filter-only request
+with no target. `MultiQuery` fuses dense, sparse, primary-key-vector, and FTS
+branches over one snapshot.
 
 ### Choosing an index
 

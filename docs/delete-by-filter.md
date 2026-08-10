@@ -13,11 +13,13 @@ version to be deleted. INVERT fields use the same conservative candidate
 planner as vector queries, and every candidate is forward-verified before its
 key is selected.
 
-Each selected primary key is deleted through the checksummed WAL before its
-in-memory mapping and deletion bitmap are changed. The result therefore
-survives Close or process restart without requiring Flush, including matches
-from immutable and current writing segments. Flush later publishes the normal
-deletion snapshot.
+Each selected primary key is appended to the checksummed WAL before its
+in-memory mapping and deletion bitmap are changed. `WALSyncEvery` controls when
+those records are synchronized automatically; zero disables automatic
+record-count-based synchronization. Flush synchronizes the WAL and publishes
+the normal deletion snapshot, while graceful Close synchronizes pending WAL
+records. A process or host failure can lose deletions that have not reached a
+synchronization boundary.
 
 ```go
 err := collection.DeleteByFilter(ctx,
@@ -27,5 +29,6 @@ err := collection.DeleteByFilter(ctx,
 
 Deletion follows the library's existing batch-write cancellation model. The
 context is checked during selection and before each selected key; if it is
-canceled after some WAL records have committed, those completed deletions
-remain durable and the method returns the cancellation error.
+canceled after some WAL records have been appended, those completed deletions
+remain applied and WAL-backed, and the method returns the cancellation error.
+Their crash durability follows the configured synchronization boundary.

@@ -286,7 +286,7 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 	return store, nil
 }
 
-// Insert delegates a durable batch insert to the current WAL writer.
+// Insert delegates a batch insert to the current WAL writer.
 func (c *CollectionStore) Insert(ctx context.Context, inputs []WriteInput) ([]WriteResult, error) {
 	if c == nil {
 		return nil, errors.New("db: nil collection")
@@ -299,7 +299,7 @@ func (c *CollectionStore) Insert(ctx context.Context, inputs []WriteInput) ([]Wr
 	return c.engine.Insert(ctx, inputs)
 }
 
-// Upsert delegates a durable batch upsert to the current WAL writer.
+// Upsert delegates a batch upsert to the current WAL writer.
 func (c *CollectionStore) Upsert(ctx context.Context, inputs []WriteInput) ([]WriteResult, error) {
 	if c == nil {
 		return nil, errors.New("db: nil collection")
@@ -312,7 +312,7 @@ func (c *CollectionStore) Upsert(ctx context.Context, inputs []WriteInput) ([]Wr
 	return c.engine.Upsert(ctx, inputs)
 }
 
-// Update delegates a durable batch update to the current WAL writer.
+// Update delegates a batch update to the current WAL writer.
 func (c *CollectionStore) Update(ctx context.Context, inputs []WriteInput) ([]WriteResult, error) {
 	if c == nil {
 		return nil, errors.New("db: nil collection")
@@ -325,7 +325,7 @@ func (c *CollectionStore) Update(ctx context.Context, inputs []WriteInput) ([]Wr
 	return c.engine.Update(ctx, inputs)
 }
 
-// Delete delegates a durable primary-key batch delete to the current writer.
+// Delete delegates a primary-key batch delete to the current WAL writer.
 func (c *CollectionStore) Delete(ctx context.Context, primaryKeys []string) ([]WriteResult, error) {
 	if c == nil {
 		return nil, errors.New("db: nil collection")
@@ -1143,8 +1143,8 @@ func (c *CollectionStore) ReadOnly() bool {
 	return c.readOnly
 }
 
-// Close releases the WAL and collection lock. WAL-backed writes are already
-// durable and will be replayed even when Flush was not called.
+// Close synchronizes and releases the WAL, then releases the collection lock.
+// WAL-backed writes will be replayed even when Flush was not called.
 func (c *CollectionStore) Close() error {
 	if c == nil {
 		return nil
