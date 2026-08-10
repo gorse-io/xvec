@@ -67,12 +67,29 @@ func TestManifestValidation(t *testing.T) {
 		expected error
 	}{
 		{name: "legacy format", mutate: func(m *Manifest) { m.FormatVersion = 1 }, expected: ErrUnsupportedFormatVersion},
-		{name: "future format", mutate: func(m *Manifest) { m.FormatVersion = 3 }, expected: ErrUnsupportedFormatVersion},
+		{name: "v2 format", mutate: func(m *Manifest) { m.FormatVersion = 2 }, expected: ErrUnsupportedFormatVersion},
+		{name: "future format", mutate: func(m *Manifest) { m.FormatVersion = 4 }, expected: ErrUnsupportedFormatVersion},
 		{name: "zero generation", mutate: func(m *Manifest) { m.Generation = 0 }, expected: ErrManifestCorrupt},
 		{name: "invalid schema", mutate: func(m *Manifest) { m.Schema = json.RawMessage(`{`) }, expected: ErrManifestCorrupt},
 		{name: "null schema", mutate: func(m *Manifest) { m.Schema = json.RawMessage(`null`) }, expected: ErrManifestCorrupt},
 		{name: "array schema", mutate: func(m *Manifest) { m.Schema = json.RawMessage(`[]`) }, expected: ErrManifestCorrupt},
 		{name: "zero segment capacity", mutate: func(m *Manifest) { m.SegmentMaxDocuments = 0 }, expected: ErrManifestCorrupt},
+		{name: "working IDMap", mutate: func(m *Manifest) { m.IDMap = "idmap/.working-1-1.pebble" }, expected: ErrManifestCorrupt},
+		{name: "IDMap outside owned directory", mutate: func(m *Manifest) { m.IDMap = "indexes/idmap-00000000000000000001.pebble" }, expected: ErrManifestCorrupt},
+		{name: "zero delete snapshot generation", mutate: func(m *Manifest) { m.DeleteSnapshotGeneration = 0 }, expected: ErrManifestCorrupt},
+		{name: "delete snapshot artifact conflict", mutate: func(m *Manifest) {
+			m.PersistedSegments[0].Files[0] = deleteSnapshotName(m.DeleteSnapshotGeneration)
+		}, expected: ErrManifestCorrupt},
+		{name: "empty persisted segment", mutate: func(m *Manifest) {
+			m.PersistedSegments[0].DocCount = 0
+			m.PersistedSegments[0].MinDocID = 0
+			m.PersistedSegments[0].MaxDocID = 0
+		}, expected: ErrManifestCorrupt},
+		{name: "unsorted persisted segments", mutate: func(m *Manifest) {
+			m.PersistedSegments = append([]SegmentMetadata{{
+				ID: 2, MinDocID: 30, MaxDocID: 31, DocCount: 2, Files: []string{"segments/2/data.seg"},
+			}}, m.PersistedSegments...)
+		}, expected: ErrManifestCorrupt},
 		{name: "duplicate segment", mutate: func(m *Manifest) { m.PersistedSegments = append(m.PersistedSegments, m.PersistedSegments[0]) }, expected: ErrManifestCorrupt},
 		{name: "writing already persisted", mutate: func(m *Manifest) { m.WritingSegment.ID = m.PersistedSegments[0].ID }, expected: ErrManifestCorrupt},
 		{name: "next ID not advanced", mutate: func(m *Manifest) { m.NextSegmentID = m.WritingSegment.ID }, expected: ErrManifestCorrupt},
@@ -98,6 +115,9 @@ func TestManifestValidation(t *testing.T) {
 		{name: "legacy FTS artifact", mutate: func(m *Manifest) {
 			m.SegmentIndexSnapshots[0].Artifacts[0].File = "indexes/legacy.zvi"
 		}, expected: ErrManifestCorrupt},
+		{name: "IDMap artifact conflict", mutate: func(m *Manifest) {
+			m.SegmentIndexSnapshots[0].Artifacts[0].File = m.IDMap
+		}, expected: ErrManifestCorrupt},
 	}
 
 	for _, testCase := range tests {
@@ -112,10 +132,12 @@ func TestManifestValidation(t *testing.T) {
 	}
 
 	fullRange := Manifest{
-		FormatVersion:       DiskFormatVersion,
-		Generation:          1,
-		Schema:              json.RawMessage(`{}`),
-		SegmentMaxDocuments: 1,
+		FormatVersion:            DiskFormatVersion,
+		Generation:               1,
+		Schema:                   json.RawMessage(`{}`),
+		SegmentMaxDocuments:      1,
+		IDMap:                    idMapCheckpointName(1),
+		DeleteSnapshotGeneration: 1,
 		PersistedSegments: []SegmentMetadata{{
 			ID: 1, MinDocID: 0, MaxDocID: math.MaxUint64, DocCount: math.MaxUint64,
 		}},
@@ -147,7 +169,8 @@ func TestManifestDetectsCorruptionAndTruncation(t *testing.T) {
 	}{
 		{name: "magic", mutate: func(data []byte) []byte { data[0] ^= 0xff; return data }, expected: ErrManifestCorrupt},
 		{name: "legacy format", mutate: func(data []byte) []byte { binary.LittleEndian.PutUint16(data[8:10], 1); return data }, expected: ErrUnsupportedFormatVersion},
-		{name: "future format", mutate: func(data []byte) []byte { binary.LittleEndian.PutUint16(data[8:10], 3); return data }, expected: ErrUnsupportedFormatVersion},
+		{name: "v2 format", mutate: func(data []byte) []byte { binary.LittleEndian.PutUint16(data[8:10], 2); return data }, expected: ErrUnsupportedFormatVersion},
+		{name: "future format", mutate: func(data []byte) []byte { binary.LittleEndian.PutUint16(data[8:10], 4); return data }, expected: ErrUnsupportedFormatVersion},
 		{name: "header size", mutate: func(data []byte) []byte { binary.LittleEndian.PutUint16(data[10:12], 31); return data }, expected: ErrManifestCorrupt},
 		{name: "generation", mutate: func(data []byte) []byte { binary.LittleEndian.PutUint64(data[12:20], 8); return data }, expected: ErrManifestCorrupt},
 		{name: "huge length", mutate: func(data []byte) []byte { binary.LittleEndian.PutUint64(data[20:28], math.MaxUint64); return data }, expected: ErrManifestCorrupt},
@@ -312,7 +335,7 @@ func sampleManifest(generation uint64) Manifest {
 			Files: []string{"segments/4/data.wal"},
 		},
 		WritingSegmentStartDocID: 20,
-		IDMapGeneration:          5,
+		IDMap:                    "idmap/idmap-00000000000000000005.pebble",
 		DeleteSnapshotGeneration: 6,
 		NextSegmentID:            5,
 		SegmentIndexSnapshots: []SegmentIndexSnapshotMetadata{{

@@ -773,6 +773,9 @@ func CreateAndOpen(ctx context.Context, path string, schema CollectionSchema, op
 		WAL:                 db.WALOptions{SyncEvery: options.WALSyncEvery},
 	})
 	if err != nil {
+		if store != nil {
+			_ = store.Close()
+		}
 		return nil, wrapCollectionError("create collection", absolute, err)
 	}
 	return &Collection{

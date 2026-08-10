@@ -27,15 +27,16 @@ import (
 )
 
 const (
-	writeOperationVersion    uint16 = 1
-	writeOperationHeaderSize        = 32
+	writeOperationVersion    uint16 = 3
+	writeOperationHeaderSize        = 24
 )
 
 var (
 	writeOperationMagic = [4]byte{'Z', 'O', 'P', '1'}
 
-	ErrPrimaryKeyExists   = errors.New("db: primary key already exists")
-	ErrPrimaryKeyNotFound = errors.New("db: primary key not found")
+	ErrPrimaryKeyExists    = errors.New("db: primary key already exists")
+	ErrPrimaryKeyNotFound  = errors.New("db: primary key not found")
+	ErrWriteEnginePoisoned = errors.New("db: write engine requires reopen")
 )
 
 type writeOperationType uint8
@@ -49,7 +50,6 @@ const (
 
 type writeOperation struct {
 	Type       writeOperationType
-	SegmentID  uint64
 	DocID      uint64
 	PrimaryKey string
 	Payload    []byte
@@ -85,9 +85,22 @@ func (e *BatchWriteError) Unwrap() []error { return slices.Clone(e.causes) }
 // applies that record, returns the synchronization error, and relies on the
 // poisoned WAL to reject later mutations until reopen.
 type WriteEngine struct {
-	mu      sync.Mutex
-	manager *SegmentManager
-	wal     *WAL
+	mu       sync.Mutex
+	manager  *SegmentManager
+	wal      *WAL
+	poisoned error
+}
+
+// Err reports whether a record reached the outer WAL but failed to apply
+// completely. Such a handle must be reopened and replayed before more writes
+// or publication operations are safe.
+func (e *WriteEngine) Err() error {
+	if e == nil {
+		return errors.New("db: nil write engine")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.poisoned
 }
 
 // NewWriteEngine validates the dependencies required for WAL-backed mutations.
@@ -267,13 +280,18 @@ func (e *WriteEngine) Delete(ctx context.Context, primaryKeys []string) ([]Write
 }
 
 func (e *WriteEngine) insertOneLocked(ctx context.Context, input WriteInput) (uint64, error) {
+	if e.poisoned != nil {
+		return 0, e.poisoned
+	}
 	if err := validatePrimaryKey(input.PrimaryKey); err != nil {
 		return 0, err
 	}
 	if len(input.Payload) > MaxDocumentPayloadSize {
 		return 0, fmt.Errorf("db: document payload is %d bytes, maximum %d", len(input.Payload), MaxDocumentPayloadSize)
 	}
-	if _, exists := e.manager.PrimaryKeys().Get(input.PrimaryKey); exists {
+	if _, exists, err := e.manager.PrimaryKeys().Get(input.PrimaryKey); err != nil {
+		return 0, err
+	} else if exists {
 		return 0, fmt.Errorf("%w: %q", ErrPrimaryKeyExists, input.PrimaryKey)
 	}
 	writing := e.manager.Writing()
@@ -285,7 +303,7 @@ func (e *WriteEngine) insertOneLocked(ctx context.Context, input WriteInput) (ui
 		return 0, err
 	}
 	operation := writeOperation{
-		Type: writeOperationInsert, SegmentID: writing.ID(), DocID: docID,
+		Type: writeOperationInsert, DocID: docID,
 		PrimaryKey: input.PrimaryKey, Payload: slices.Clone(input.Payload),
 	}
 	encoded, err := encodeWriteOperation(operation)
@@ -299,22 +317,31 @@ func (e *WriteEngine) insertOneLocked(ctx context.Context, input WriteInput) (ui
 	applyContext := context.WithoutCancel(ctx)
 	doc, err := writing.AppendExpected(applyContext, docID, input.PrimaryKey, input.Payload)
 	if err != nil {
-		return 0, errors.Join(syncErr, fmt.Errorf("db: apply WAL insert: %w", err))
+		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: apply WAL insert: %w", err)))
 	}
-	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, DocumentLocation{SegmentID: writing.ID(), DocID: doc.DocID}); err != nil {
-		return 0, errors.Join(syncErr, fmt.Errorf("db: index WAL insert: %w", err))
+	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, doc.DocID); err != nil {
+		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: index WAL insert: %w", err)))
+	}
+	if syncErr != nil {
+		return doc.DocID, e.poisonLocked(syncErr)
 	}
 	return doc.DocID, syncErr
 }
 
 func (e *WriteEngine) upsertOneLocked(ctx context.Context, input WriteInput) (uint64, error) {
+	if e.poisoned != nil {
+		return 0, e.poisoned
+	}
 	if err := validatePrimaryKey(input.PrimaryKey); err != nil {
 		return 0, err
 	}
 	if len(input.Payload) > MaxDocumentPayloadSize {
 		return 0, fmt.Errorf("db: document payload is %d bytes, maximum %d", len(input.Payload), MaxDocumentPayloadSize)
 	}
-	previous, existed := e.manager.PrimaryKeys().Get(input.PrimaryKey)
+	previous, existed, err := e.manager.PrimaryKeys().Get(input.PrimaryKey)
+	if err != nil {
+		return 0, err
+	}
 	writing := e.manager.Writing()
 	if writing == nil {
 		return 0, errors.New("db: no writing segment")
@@ -324,7 +351,7 @@ func (e *WriteEngine) upsertOneLocked(ctx context.Context, input WriteInput) (ui
 		return 0, err
 	}
 	operation := writeOperation{
-		Type: writeOperationUpsert, SegmentID: writing.ID(), DocID: docID,
+		Type: writeOperationUpsert, DocID: docID,
 		PrimaryKey: input.PrimaryKey, Payload: slices.Clone(input.Payload),
 	}
 	encoded, err := encodeWriteOperation(operation)
@@ -338,27 +365,36 @@ func (e *WriteEngine) upsertOneLocked(ctx context.Context, input WriteInput) (ui
 	applyContext := context.WithoutCancel(ctx)
 	doc, err := writing.AppendExpected(applyContext, docID, input.PrimaryKey, input.Payload)
 	if err != nil {
-		return 0, errors.Join(syncErr, fmt.Errorf("db: apply WAL upsert: %w", err))
+		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: apply WAL upsert: %w", err)))
 	}
 	if existed {
-		if _, err := e.manager.Deletes().MarkDeleted(applyContext, previous.DocID); err != nil {
-			return 0, errors.Join(syncErr, fmt.Errorf("db: delete prior upsert version: %w", err))
+		if _, err := e.manager.Deletes().MarkDeleted(applyContext, previous); err != nil {
+			return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: delete prior upsert version: %w", err)))
 		}
 	}
-	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, DocumentLocation{SegmentID: writing.ID(), DocID: doc.DocID}); err != nil {
-		return 0, errors.Join(syncErr, fmt.Errorf("db: index WAL upsert: %w", err))
+	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, doc.DocID); err != nil {
+		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: index WAL upsert: %w", err)))
+	}
+	if syncErr != nil {
+		return doc.DocID, e.poisonLocked(syncErr)
 	}
 	return doc.DocID, syncErr
 }
 
 func (e *WriteEngine) updateOneLocked(ctx context.Context, input WriteInput) (uint64, error) {
+	if e.poisoned != nil {
+		return 0, e.poisoned
+	}
 	if err := validatePrimaryKey(input.PrimaryKey); err != nil {
 		return 0, err
 	}
 	if len(input.Payload) > MaxDocumentPayloadSize {
 		return 0, fmt.Errorf("db: document payload is %d bytes, maximum %d", len(input.Payload), MaxDocumentPayloadSize)
 	}
-	previous, existed := e.manager.PrimaryKeys().Get(input.PrimaryKey)
+	previous, existed, err := e.manager.PrimaryKeys().Get(input.PrimaryKey)
+	if err != nil {
+		return 0, err
+	}
 	if !existed {
 		return 0, fmt.Errorf("%w: %q", ErrPrimaryKeyNotFound, input.PrimaryKey)
 	}
@@ -371,7 +407,7 @@ func (e *WriteEngine) updateOneLocked(ctx context.Context, input WriteInput) (ui
 		return 0, err
 	}
 	encoded, err := encodeWriteOperation(writeOperation{
-		Type: writeOperationUpdate, SegmentID: writing.ID(), DocID: docID,
+		Type: writeOperationUpdate, DocID: docID,
 		PrimaryKey: input.PrimaryKey, Payload: slices.Clone(input.Payload),
 	})
 	if err != nil {
@@ -384,28 +420,36 @@ func (e *WriteEngine) updateOneLocked(ctx context.Context, input WriteInput) (ui
 	applyContext := context.WithoutCancel(ctx)
 	doc, err := writing.AppendExpected(applyContext, docID, input.PrimaryKey, input.Payload)
 	if err != nil {
-		return 0, errors.Join(syncErr, fmt.Errorf("db: apply WAL update: %w", err))
+		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: apply WAL update: %w", err)))
 	}
-	if _, err := e.manager.Deletes().MarkDeleted(applyContext, previous.DocID); err != nil {
-		return 0, errors.Join(syncErr, fmt.Errorf("db: delete prior update version: %w", err))
+	if _, err := e.manager.Deletes().MarkDeleted(applyContext, previous); err != nil {
+		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: delete prior update version: %w", err)))
 	}
-	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, DocumentLocation{SegmentID: writing.ID(), DocID: doc.DocID}); err != nil {
-		return 0, errors.Join(syncErr, fmt.Errorf("db: index WAL update: %w", err))
+	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, doc.DocID); err != nil {
+		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: index WAL update: %w", err)))
+	}
+	if syncErr != nil {
+		return doc.DocID, e.poisonLocked(syncErr)
 	}
 	return doc.DocID, syncErr
 }
 
 func (e *WriteEngine) deleteOneLocked(ctx context.Context, primaryKey string) (uint64, error) {
+	if e.poisoned != nil {
+		return 0, e.poisoned
+	}
 	if err := validatePrimaryKey(primaryKey); err != nil {
 		return 0, err
 	}
-	location, existed := e.manager.PrimaryKeys().Get(primaryKey)
+	docID, existed, err := e.manager.PrimaryKeys().Get(primaryKey)
+	if err != nil {
+		return 0, err
+	}
 	if !existed {
 		return 0, fmt.Errorf("%w: %q", ErrPrimaryKeyNotFound, primaryKey)
 	}
 	encoded, err := encodeWriteOperation(writeOperation{
-		Type: writeOperationDelete, SegmentID: location.SegmentID,
-		DocID: location.DocID, PrimaryKey: primaryKey,
+		Type: writeOperationDelete, DocID: docID, PrimaryKey: primaryKey,
 	})
 	if err != nil {
 		return 0, err
@@ -415,17 +459,30 @@ func (e *WriteEngine) deleteOneLocked(ctx context.Context, primaryKey string) (u
 		return 0, syncErr
 	}
 	applyContext := context.WithoutCancel(ctx)
-	if _, err := e.manager.Deletes().MarkDeleted(applyContext, location.DocID); err != nil {
-		return 0, errors.Join(syncErr, fmt.Errorf("db: apply WAL delete: %w", err))
+	if _, err := e.manager.Deletes().MarkDeleted(applyContext, docID); err != nil {
+		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: apply WAL delete: %w", err)))
 	}
 	removed, found, err := e.manager.PrimaryKeys().Delete(applyContext, primaryKey)
 	if err != nil {
-		return 0, errors.Join(syncErr, fmt.Errorf("db: remove deleted primary key: %w", err))
+		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: remove deleted primary key: %w", err)))
 	}
-	if !found || removed != location {
-		return 0, errors.Join(syncErr, errors.New("db: primary-key map changed while applying delete"))
+	if !found || removed != docID {
+		return 0, e.poisonLocked(errors.Join(syncErr, errors.New("db: IDMap changed while applying delete")))
 	}
-	return location.DocID, syncErr
+	if syncErr != nil {
+		return docID, e.poisonLocked(syncErr)
+	}
+	return docID, syncErr
+}
+
+func (e *WriteEngine) poisonLocked(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	if e.poisoned == nil {
+		e.poisoned = errors.Join(ErrWriteEnginePoisoned, cause)
+	}
+	return e.poisoned
 }
 
 func (e *BatchWriteError) add(err error) {
@@ -447,10 +504,9 @@ func encodeWriteOperation(operation writeOperation) ([]byte, error) {
 	copy(encoded[:4], writeOperationMagic[:])
 	binary.LittleEndian.PutUint16(encoded[4:6], writeOperationVersion)
 	encoded[6] = byte(operation.Type)
-	binary.LittleEndian.PutUint64(encoded[8:16], operation.SegmentID)
-	binary.LittleEndian.PutUint64(encoded[16:24], operation.DocID)
-	binary.LittleEndian.PutUint32(encoded[24:28], uint32(len(operation.PrimaryKey)))
-	binary.LittleEndian.PutUint32(encoded[28:32], uint32(len(operation.Payload)))
+	binary.LittleEndian.PutUint64(encoded[8:16], operation.DocID)
+	binary.LittleEndian.PutUint32(encoded[16:20], uint32(len(operation.PrimaryKey)))
+	binary.LittleEndian.PutUint32(encoded[20:24], uint32(len(operation.Payload)))
 	keyStart := writeOperationHeaderSize + 4
 	copy(encoded[keyStart:keyStart+len(operation.PrimaryKey)], operation.PrimaryKey)
 	copy(encoded[keyStart+len(operation.PrimaryKey):], operation.Payload)
@@ -474,8 +530,8 @@ func decodeWriteOperation(encoded []byte) (writeOperation, error) {
 	if operationType < writeOperationInsert || operationType > writeOperationDelete || encoded[7] != 0 {
 		return writeOperation{}, errors.New("db: invalid write operation type or flags")
 	}
-	keyLength := uint64(binary.LittleEndian.Uint32(encoded[24:28]))
-	payloadLength := uint64(binary.LittleEndian.Uint32(encoded[28:32]))
+	keyLength := uint64(binary.LittleEndian.Uint32(encoded[16:20]))
+	payloadLength := uint64(binary.LittleEndian.Uint32(encoded[20:24]))
 	if keyLength == 0 || keyLength > maxPrimaryKeyBytes || payloadLength > MaxDocumentPayloadSize || keyLength+payloadLength != uint64(len(encoded)-writeOperationHeaderSize-4) {
 		return writeOperation{}, errors.New("db: invalid write operation lengths")
 	}
@@ -491,8 +547,7 @@ func decodeWriteOperation(encoded []byte) (writeOperation, error) {
 		return writeOperation{}, err
 	}
 	return writeOperation{
-		Type: operationType, SegmentID: binary.LittleEndian.Uint64(encoded[8:16]),
-		DocID: binary.LittleEndian.Uint64(encoded[16:24]), PrimaryKey: key,
+		Type: operationType, DocID: binary.LittleEndian.Uint64(encoded[8:16]), PrimaryKey: key,
 		Payload: slices.Clone(encoded[keyStart+int(keyLength):]),
 	}, nil
 }

@@ -75,15 +75,17 @@ func TestSegmentManagerLifecycleAndLookup(t *testing.T) {
 			"reserved write range overlap succeeded")
 	}
 
-	_, _, _ = primary.Put(context.Background(), "zero", DocumentLocation{SegmentID: 1, DocID: 0})
-	_, _, _ = primary.Put(context.Background(), "twenty", DocumentLocation{SegmentID: 3, DocID: written.DocID})
+	_, _, _ = primary.Put(context.Background(), "zero", 0)
+	_, _, _ = primary.Put(context.Background(), "twenty", written.DocID)
 	{
-		doc, found := manager.DocumentByPrimaryKey("zero")
+		doc, found, err := manager.DocumentByPrimaryKey("zero")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.True(t, doc.DocID == 0)
 	}
 	{
-		doc, found := manager.DocumentByPrimaryKey("twenty")
+		doc, found, err := manager.DocumentByPrimaryKey("twenty")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.True(t, string(doc.Payload) == "live")
 	}
@@ -95,7 +97,8 @@ func TestSegmentManagerLifecycleAndLookup(t *testing.T) {
 			"deleted document is visible by ID")
 	}
 	{
-		_, found := manager.DocumentByPrimaryKey("zero")
+		_, found, err := manager.DocumentByPrimaryKey("zero")
+		require.NoError(t, err)
 		require.False(t, found,
 			"deleted document is visible by key")
 	}
@@ -120,6 +123,124 @@ func TestSegmentManagerLifecycleAndLookup(t *testing.T) {
 		"manager replaced stores")
 }
 
+func TestSegmentManagerLocatesImmutableBoundariesAndGaps(t *testing.T) {
+	manager := NewSegmentManager(nil, nil)
+	t.Cleanup(func() { require.NoError(t, manager.PrimaryKeys().Close()) })
+	for _, segment := range []*ImmutableSegment{
+		testImmutableSegment(3, 20, "twenty", "twenty-one", "twenty-two"),
+		testImmutableSegment(1, 0, "zero", "one"),
+		testImmutableSegment(2, 10, "ten", "eleven", "twelve"),
+	} {
+		require.NoError(t, manager.AddImmutable(segment))
+	}
+
+	require.Equal(t, []uint64{1, 2, 3}, []uint64{
+		manager.ImmutableMetadata()[0].ID,
+		manager.ImmutableMetadata()[1].ID,
+		manager.ImmutableMetadata()[2].ID,
+	})
+	for _, test := range []struct {
+		docID uint64
+		key   string
+		found bool
+	}{
+		{0, "zero", true},
+		{1, "one", true},
+		{2, "", false},
+		{9, "", false},
+		{10, "ten", true},
+		{12, "twelve", true},
+		{13, "", false},
+		{19, "", false},
+		{20, "twenty", true},
+		{22, "twenty-two", true},
+		{23, "", false},
+		{^uint64(0), "", false},
+	} {
+		document, found := manager.Document(test.docID)
+		require.Equal(t, test.found, found, "document %d", test.docID)
+		if test.found {
+			require.Equal(t, test.key, document.PrimaryKey)
+		}
+	}
+}
+
+func TestSegmentManagerRotationFailuresAreAtomic(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		prepare   func(*SegmentManager)
+		currentID uint64
+		immutable *ImmutableSegment
+		next      func() *WriteSegment
+	}{
+		{
+			name: "writing segment changed", currentID: 9,
+			immutable: testImmutableSegment(1, 10, "ten"),
+			next:      func() *WriteSegment { segment, _ := NewWriteSegment(2, 20, 2); return segment },
+		},
+		{
+			name: "immutable ID mismatch", currentID: 1,
+			immutable: testImmutableSegment(9, 10, "ten"),
+			next:      func() *WriteSegment { segment, _ := NewWriteSegment(2, 20, 2); return segment },
+		},
+		{
+			name: "next ID reused", currentID: 1,
+			immutable: testImmutableSegment(1, 10, "ten"),
+			next:      func() *WriteSegment { segment, _ := NewWriteSegment(1, 20, 2); return segment },
+		},
+		{
+			name: "next ID already immutable", currentID: 1,
+			prepare: func(manager *SegmentManager) {
+				require.NoError(t, manager.AddImmutable(testImmutableSegment(3, 100, "hundred")))
+			},
+			immutable: testImmutableSegment(1, 10, "ten"),
+			next:      func() *WriteSegment { segment, _ := NewWriteSegment(3, 20, 2); return segment },
+		},
+		{
+			name: "empty immutable", currentID: 1,
+			immutable: testImmutableSegment(1, 10),
+			next:      func() *WriteSegment { segment, _ := NewWriteSegment(2, 20, 2); return segment },
+		},
+		{
+			name: "immutable range overlaps retained segment", currentID: 1,
+			prepare: func(manager *SegmentManager) {
+				require.NoError(t, manager.AddImmutable(testImmutableSegment(3, 100, "hundred")))
+			},
+			immutable: testImmutableSegment(1, 100, "replacement"),
+			next:      func() *WriteSegment { segment, _ := NewWriteSegment(2, 200, 2); return segment },
+		},
+		{
+			name: "next range overlaps flushed segment", currentID: 1,
+			immutable: testImmutableSegment(1, 10, "ten", "eleven"),
+			next:      func() *WriteSegment { segment, _ := NewWriteSegment(2, 11, 2); return segment },
+		},
+		{
+			name: "next range overlaps retained segment", currentID: 1,
+			prepare: func(manager *SegmentManager) {
+				require.NoError(t, manager.AddImmutable(testImmutableSegment(3, 100, "hundred")))
+			},
+			immutable: testImmutableSegment(1, 10, "ten"),
+			next:      func() *WriteSegment { segment, _ := NewWriteSegment(2, 100, 2); return segment },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager := NewSegmentManager(nil, nil)
+			t.Cleanup(func() { require.NoError(t, manager.PrimaryKeys().Close()) })
+			writing, err := NewWriteSegment(1, 10, 4)
+			require.NoError(t, err)
+			require.NoError(t, manager.SetWriting(writing))
+			if test.prepare != nil {
+				test.prepare(manager)
+			}
+			before := manager.ImmutableMetadata()
+			err = manager.RotateWriting(test.currentID, test.immutable, test.next())
+			require.Error(t, err)
+			require.Same(t, writing, manager.Writing())
+			require.Equal(t, before, manager.ImmutableMetadata())
+		})
+	}
+}
+
 func TestSegmentManagerRejectsWritingReservedOverlap(t *testing.T) {
 	manager := NewSegmentManager(nil, nil)
 	{
@@ -135,6 +256,11 @@ func TestSegmentManagerRejectsWritingReservedOverlap(t *testing.T) {
 	}
 }
 
+func TestSegmentManagerRejectsEmptyImmutableSegment(t *testing.T) {
+	manager := NewSegmentManager(nil, nil)
+	require.Error(t, manager.AddImmutable(testImmutableSegment(1, 0)))
+}
+
 func TestSegmentManagerValidatesStalePrimaryLocation(t *testing.T) {
 	manager := NewSegmentManager(nil, nil)
 	segment := testImmutableSegment(1, 0, "zero")
@@ -143,16 +269,18 @@ func TestSegmentManagerValidatesStalePrimaryLocation(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "wrong", DocumentLocation{SegmentID: 1, DocID: 0})
+	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "wrong", 0)
 	{
-		_, found := manager.DocumentByPrimaryKey("wrong")
+		_, found, err := manager.DocumentByPrimaryKey("wrong")
+		require.NoError(t, err)
 		require.False(t, found,
 			"stale primary-key location returned another document")
 	}
 
-	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "zero", DocumentLocation{SegmentID: 99, DocID: 0})
+	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "zero", 99)
 	{
-		_, found := manager.DocumentByPrimaryKey("zero")
+		_, found, err := manager.DocumentByPrimaryKey("zero")
+		require.NoError(t, err)
 		require.False(t, found,
 			"missing segment location returned a document")
 	}
@@ -166,8 +294,8 @@ func TestSegmentManagerFetch(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "five", DocumentLocation{SegmentID: 1, DocID: 5})
-	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "six", DocumentLocation{SegmentID: 1, DocID: 6})
+	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "five", 5)
+	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "six", 6)
 	_, _ = manager.Deletes().MarkDeleted(context.Background(), 6)
 	results, err := manager.Fetch(context.Background(), []string{"missing", "five", "six", "five"})
 	require.NoError(t, err)

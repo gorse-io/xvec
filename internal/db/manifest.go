@@ -25,6 +25,7 @@ import (
 	"io"
 	"path"
 	"slices"
+	"strings"
 
 	"github.com/gorse-io/zvec/internal/ailego"
 )
@@ -32,7 +33,7 @@ import (
 const (
 	// DiskFormatVersion is the Pebble-backed native Go collection format. It is
 	// not compatible with v1 or the C++ collection format.
-	DiskFormatVersion uint32 = 2
+	DiskFormatVersion uint32 = 3
 
 	manifestHeaderSize = 32
 	maxManifestSize    = 64 << 20
@@ -92,7 +93,7 @@ type Manifest struct {
 	PersistedSegments        []SegmentMetadata              `json:"persisted_segments,omitempty"`
 	WritingSegment           *SegmentMetadata               `json:"writing_segment,omitempty"`
 	WritingSegmentStartDocID uint64                         `json:"writing_segment_start_doc_id"`
-	IDMapGeneration          uint64                         `json:"id_map_generation"`
+	IDMap                    string                         `json:"id_map"`
 	DeleteSnapshotGeneration uint64                         `json:"delete_snapshot_generation"`
 	NextSegmentID            uint64                         `json:"next_segment_id"`
 	SegmentIndexSnapshots    []SegmentIndexSnapshotMetadata `json:"segment_index_snapshots,omitempty"`
@@ -126,23 +127,51 @@ func (m Manifest) Validate() error {
 	if m.SegmentMaxDocuments == 0 {
 		return fmt.Errorf("%w: segment capacity must be positive", ErrManifestCorrupt)
 	}
+	if err := validatePortableRelativePath(m.IDMap); err != nil {
+		return fmt.Errorf("%w: invalid IDMap path: %v", ErrManifestCorrupt, err)
+	}
+	if path.Dir(m.IDMap) != "idmap" || !isOwnedIDMapName(path.Base(m.IDMap)) || strings.HasPrefix(path.Base(m.IDMap), ".working-") {
+		return fmt.Errorf("%w: IDMap must name an immutable package-owned Pebble checkpoint", ErrManifestCorrupt)
+	}
+	if m.DeleteSnapshotGeneration == 0 {
+		return fmt.Errorf("%w: delete snapshot generation must be positive", ErrManifestCorrupt)
+	}
 	var schemaObject map[string]json.RawMessage
 	if err := json.Unmarshal(m.Schema, &schemaObject); err != nil || schemaObject == nil {
 		return fmt.Errorf("%w: schema must be a JSON object", ErrManifestCorrupt)
 	}
 
 	ids := make(map[uint64]struct{}, len(m.PersistedSegments)+1)
+	resources := map[string]string{
+		m.IDMap: "IDMap",
+		deleteSnapshotName(m.DeleteSnapshotGeneration): "delete snapshot",
+	}
 	maxSegmentID := uint64(0)
 	for index := range m.PersistedSegments {
 		segment := &m.PersistedSegments[index]
 		if err := validateSegment(*segment); err != nil {
 			return fmt.Errorf("%w: persisted segment %d: %v", ErrManifestCorrupt, index, err)
 		}
+		if segment.DocCount == 0 {
+			return fmt.Errorf("%w: persisted segment %d is empty", ErrManifestCorrupt, index)
+		}
 		if _, exists := ids[segment.ID]; exists {
 			return fmt.Errorf("%w: duplicate segment ID %d", ErrManifestCorrupt, segment.ID)
 		}
 		ids[segment.ID] = struct{}{}
 		maxSegmentID = max(maxSegmentID, segment.ID)
+		if index > 0 {
+			previous := m.PersistedSegments[index-1]
+			if previous.DocCount > 0 && segment.DocCount > 0 && previous.MaxDocID >= segment.MinDocID {
+				return fmt.Errorf("%w: persisted segments are not sorted into non-overlapping document ranges", ErrManifestCorrupt)
+			}
+		}
+		for _, name := range segment.Files {
+			if owner, exists := resources[name]; exists {
+				return fmt.Errorf("%w: persisted segment artifact %q conflicts with %s", ErrManifestCorrupt, name, owner)
+			}
+			resources[name] = fmt.Sprintf("segment %d", segment.ID)
+		}
 	}
 	if m.WritingSegment != nil {
 		if err := validateSegment(*m.WritingSegment); err != nil {
@@ -152,6 +181,12 @@ func (m Manifest) Validate() error {
 			return fmt.Errorf("%w: writing segment ID %d is already persisted", ErrManifestCorrupt, m.WritingSegment.ID)
 		}
 		maxSegmentID = max(maxSegmentID, m.WritingSegment.ID)
+		for _, name := range m.WritingSegment.Files {
+			if owner, exists := resources[name]; exists {
+				return fmt.Errorf("%w: writing segment artifact %q conflicts with %s", ErrManifestCorrupt, name, owner)
+			}
+			resources[name] = fmt.Sprintf("writing segment %d", m.WritingSegment.ID)
+		}
 	}
 	if len(m.PersistedSegments) > 0 || m.WritingSegment != nil {
 		if m.NextSegmentID <= maxSegmentID {
@@ -201,7 +236,11 @@ func (m Manifest) Validate() error {
 			if _, duplicate := seenSegmentFiles[artifact.File]; duplicate {
 				return fmt.Errorf("%w: duplicate segment index artifact file %q", ErrManifestCorrupt, artifact.File)
 			}
+			if owner, exists := resources[artifact.File]; exists {
+				return fmt.Errorf("%w: segment index artifact %q conflicts with %s", ErrManifestCorrupt, artifact.File, owner)
+			}
 			seenSegmentFiles[artifact.File] = struct{}{}
+			resources[artifact.File] = fmt.Sprintf("index for segment %d", snapshot.SegmentID)
 		}
 	}
 	return nil

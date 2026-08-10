@@ -5773,7 +5773,7 @@ func assertOptimizeArtifacts(t *testing.T, path string, segments int) {
 		filepath.Join(path, "segments", "*", "data-*.seg"): segments,
 		filepath.Join(path, "wal", "*.wal"):                1,
 		filepath.Join(path, "wal", "*.wal.lock"):           1,
-		filepath.Join(path, "snapshots", "primary-*.snap"): 1,
+		filepath.Join(path, "idmap", "idmap-*.pebble"):     1,
 		filepath.Join(path, "snapshots", "delete-*.snap"):  1,
 	}
 	for pattern, want := range patterns {

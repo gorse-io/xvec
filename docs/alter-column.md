@@ -30,8 +30,8 @@ remains omitted.
 
 `Concurrency` bounds parallel value conversion; zero selects the library
 default and a negative value is invalid. AlterColumn holds the collection write
-lock and publishes the converted live snapshot, primary-key state, empty delete
-snapshot, new WAL, and schema through one manifest commit. Live document IDs
+lock and publishes the converted live snapshot, immutable IDMap checkpoint,
+empty delete snapshot, new WAL, and schema through one manifest commit. Live document IDs
 and the next writable ID are preserved. A failure before `CURRENT` changes
 leaves the prior name, types, values, and manifest active; a successful change
 survives reopen without Flush. Later Insert and Upsert calls must use the new

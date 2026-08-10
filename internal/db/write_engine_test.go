@@ -16,6 +16,7 @@ package db
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/cockroachdb/pebble/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,7 +45,8 @@ func TestWriteEngineInsert(t *testing.T) {
 
 	payload[0] = '['
 	{
-		doc, found := manager.DocumentByPrimaryKey("one")
+		doc, found, err := manager.DocumentByPrimaryKey("one")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.True(t, string(doc.Payload) == `{"title":"one"}`)
 	}
@@ -62,7 +65,6 @@ func TestWriteEngineInsert(t *testing.T) {
 	}
 	require.Len(t, operations, 2)
 	require.Equal(t, writeOperationInsert, operations[0].Type)
-	require.True(t, operations[0].SegmentID == 1)
 	require.True(t, operations[0].DocID == 10)
 	require.True(t, operations[0].PrimaryKey == "one")
 }
@@ -101,12 +103,265 @@ func TestWriteEngineAppliesRecordWhenAutomaticSyncFails(t *testing.T) {
 	require.ErrorIs(t, err, ErrWALPoisoned)
 	require.Len(t, results, 1)
 	require.ErrorIs(t, results[0].Err, syncError)
-	document, found := manager.DocumentByPrimaryKey("key")
+	document, found, lookupErr := manager.DocumentByPrimaryKey("key")
+	require.NoError(t, lookupErr)
 	require.True(t, found)
 	require.Equal(t, uint64(0), document.DocID)
 
 	_, err = engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "next"}})
 	require.ErrorIs(t, err, ErrWALPoisoned)
+}
+
+func TestWriteEnginePoisonsWhenSegmentApplyFailsAfterWALAppend(t *testing.T) {
+	ctx := context.Background()
+	engine, manager, wal := newTestWriteEngine(t, 0, 4)
+	defer wal.Close()
+
+	originalSync := wal.syncFile
+	wal.options.SyncEvery = 1
+	wal.syncFile = func() error {
+		if err := originalSync(); err != nil {
+			return err
+		}
+		_, err := manager.Writing().Append(ctx, "interloper", nil)
+		return err
+	}
+	results, err := engine.Insert(ctx, []WriteInput{{PrimaryKey: "durable", Payload: []byte("payload")}})
+	wal.syncFile = originalSync
+	require.ErrorIs(t, err, ErrWriteEnginePoisoned)
+	require.ErrorIs(t, engine.Err(), ErrWriteEnginePoisoned)
+	require.Contains(t, results[0].Err.Error(), "next document ID is 1, expected 0")
+	_, found, lookupErr := manager.PrimaryKeys().Get("durable")
+	require.NoError(t, lookupErr)
+	require.False(t, found)
+
+	_, err = engine.Insert(ctx, []WriteInput{{PrimaryKey: "rejected"}})
+	require.ErrorIs(t, err, ErrWriteEnginePoisoned)
+
+	recoveredWriting, err := NewWriteSegment(2, 0, 4)
+	require.NoError(t, err)
+	recovered := NewSegmentManager(nil, nil)
+	t.Cleanup(func() { require.NoError(t, recovered.PrimaryKeys().Close()) })
+	require.NoError(t, recovered.SetWriting(recoveredWriting))
+	require.NoError(t, replayWriteWAL(ctx, wal, recovered))
+	document, found, err := recovered.DocumentByPrimaryKey("durable")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []byte("payload"), document.Payload)
+	_, found, err = recovered.DocumentByPrimaryKey("rejected")
+	require.NoError(t, err)
+	require.False(t, found)
+}
+
+func TestWriteEnginePoisonsWhenDeleteApplyFailsAfterWALAppend(t *testing.T) {
+	ctx := context.Background()
+	engine, manager, wal := newTestWriteEngine(t, 0, 4)
+	defer wal.Close()
+	_, err := engine.Insert(ctx, []WriteInput{{PrimaryKey: "durable", Payload: []byte("payload")}})
+	require.NoError(t, err)
+	require.NoError(t, wal.Sync(ctx))
+
+	deletes := manager.Deletes()
+	originalSync := wal.syncFile
+	wal.options.SyncEvery = 1
+	wal.syncFile = func() error {
+		if err := originalSync(); err != nil {
+			return err
+		}
+		manager.deletes = nil
+		return nil
+	}
+	results, err := engine.Delete(ctx, []string{"durable"})
+	manager.deletes = deletes
+	wal.syncFile = originalSync
+	require.ErrorIs(t, err, ErrWriteEnginePoisoned)
+	require.ErrorIs(t, results[0].Err, ErrWriteEnginePoisoned)
+	require.Contains(t, results[0].Err.Error(), "nil delete store")
+	require.False(t, deletes.IsDeleted(0))
+	document, found, lookupErr := manager.DocumentByPrimaryKey("durable")
+	require.NoError(t, lookupErr)
+	require.True(t, found)
+	require.Equal(t, uint64(0), document.DocID)
+
+	_, err = engine.Insert(ctx, []WriteInput{{PrimaryKey: "rejected"}})
+	require.ErrorIs(t, err, ErrWriteEnginePoisoned)
+
+	recoveredWriting, err := NewWriteSegment(2, 0, 4)
+	require.NoError(t, err)
+	recovered := NewSegmentManager(nil, nil)
+	t.Cleanup(func() { require.NoError(t, recovered.PrimaryKeys().Close()) })
+	require.NoError(t, recovered.SetWriting(recoveredWriting))
+	require.NoError(t, replayWriteWAL(ctx, wal, recovered))
+	_, found, err = recovered.DocumentByPrimaryKey("durable")
+	require.NoError(t, err)
+	require.False(t, found)
+	require.True(t, recovered.Deletes().IsDeleted(0))
+}
+
+func TestWriteEngineReplacementApplyFailuresRecoverFromWAL(t *testing.T) {
+	for _, operation := range []string{"upsert", "update"} {
+		for _, failure := range []string{"segment", "delete", "IDMap"} {
+			t.Run(operation+"/"+failure, func(t *testing.T) {
+				ctx := context.Background()
+				engine, manager, wal := newTestWriteEngine(t, 0, 4)
+				defer wal.Close()
+				_, err := engine.Insert(ctx, []WriteInput{{PrimaryKey: "key", Payload: []byte("v1")}})
+				require.NoError(t, err)
+				require.NoError(t, wal.Sync(ctx))
+
+				deletes := manager.Deletes()
+				originalSync := wal.syncFile
+				injected := errors.New("injected IDMap replacement failure")
+				wal.options.SyncEvery = 1
+				wal.syncFile = func() error {
+					if err := originalSync(); err != nil {
+						return err
+					}
+					switch failure {
+					case "segment":
+						_, err := manager.Writing().Append(ctx, "interloper", nil)
+						return err
+					case "delete":
+						manager.deletes = nil
+					}
+					return nil
+				}
+				if failure == "IDMap" {
+					manager.PrimaryKeys().setPoint = func(_, _ []byte) error { return injected }
+				}
+
+				var results []WriteResult
+				switch operation {
+				case "upsert":
+					results, err = engine.Upsert(ctx, []WriteInput{{PrimaryKey: "key", Payload: []byte("v2")}})
+				case "update":
+					results, err = engine.Update(ctx, []WriteInput{{PrimaryKey: "key", Payload: []byte("v2")}})
+				}
+				manager.deletes = deletes
+				manager.PrimaryKeys().setPoint = nil
+				wal.syncFile = originalSync
+				require.ErrorIs(t, err, ErrWriteEnginePoisoned)
+				require.ErrorIs(t, results[0].Err, ErrWriteEnginePoisoned)
+				if failure == "IDMap" {
+					require.ErrorIs(t, err, injected)
+				}
+
+				recoveredWriting, err := NewWriteSegment(2, 0, 4)
+				require.NoError(t, err)
+				recovered := NewSegmentManager(nil, nil)
+				t.Cleanup(func() { require.NoError(t, recovered.PrimaryKeys().Close()) })
+				require.NoError(t, recovered.SetWriting(recoveredWriting))
+				require.NoError(t, replayWriteWAL(ctx, wal, recovered))
+				document, found, err := recovered.DocumentByPrimaryKey("key")
+				require.NoError(t, err)
+				require.True(t, found)
+				require.Equal(t, uint64(1), document.DocID)
+				require.Equal(t, []byte("v2"), document.Payload)
+				require.True(t, recovered.Deletes().IsDeleted(0))
+			})
+		}
+	}
+}
+
+func TestWriteEnginePropagatesIDMapReadErrorsBeforeWALAppend(t *testing.T) {
+	for _, operation := range []string{"insert", "upsert", "update", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			ctx := context.Background()
+			engine, manager, wal := newTestWriteEngine(t, 0, 4)
+			defer wal.Close()
+			require.NoError(t, manager.PrimaryKeys().db.Set([]byte("broken"), []byte{1}, pebble.NoSync))
+
+			var err error
+			switch operation {
+			case "insert":
+				_, err = engine.Insert(ctx, []WriteInput{{PrimaryKey: "broken"}})
+			case "upsert":
+				_, err = engine.Upsert(ctx, []WriteInput{{PrimaryKey: "broken"}})
+			case "update":
+				_, err = engine.Update(ctx, []WriteInput{{PrimaryKey: "broken"}})
+			case "delete":
+				_, err = engine.Delete(ctx, []string{"broken"})
+			}
+			require.ErrorIs(t, err, ErrIDMapCorrupt)
+			require.False(t, wal.HasRecords())
+			require.Empty(t, manager.Writing().Documents())
+			require.NoError(t, engine.Err())
+		})
+	}
+}
+
+func TestWriteEngineWALAppendFailureLeavesStateUnchanged(t *testing.T) {
+	for _, operation := range []string{"insert", "upsert", "update", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			ctx := context.Background()
+			engine, manager, wal := newTestWriteEngine(t, 0, 4)
+			if operation != "insert" {
+				_, err := engine.Insert(ctx, []WriteInput{{PrimaryKey: "key", Payload: []byte("v1")}})
+				require.NoError(t, err)
+				require.NoError(t, wal.Sync(ctx))
+			}
+			beforeDocuments := manager.Writing().Documents()
+			beforeCount := manager.PrimaryKeys().Count()
+			beforeDeletes := manager.Deletes().Count()
+			require.NoError(t, wal.Close())
+
+			var err error
+			switch operation {
+			case "insert":
+				_, err = engine.Insert(ctx, []WriteInput{{PrimaryKey: "key", Payload: []byte("v2")}})
+			case "upsert":
+				_, err = engine.Upsert(ctx, []WriteInput{{PrimaryKey: "key", Payload: []byte("v2")}})
+			case "update":
+				_, err = engine.Update(ctx, []WriteInput{{PrimaryKey: "key", Payload: []byte("v2")}})
+			case "delete":
+				_, err = engine.Delete(ctx, []string{"key"})
+			}
+			require.ErrorIs(t, err, ErrWALClosed)
+			require.NoError(t, engine.Err())
+			require.Equal(t, beforeDocuments, manager.Writing().Documents())
+			require.Equal(t, beforeCount, manager.PrimaryKeys().Count())
+			require.Equal(t, beforeDeletes, manager.Deletes().Count())
+		})
+	}
+}
+
+func TestWriteEngineAppliesReplacementAndDeleteWhenAutomaticSyncFails(t *testing.T) {
+	for _, operation := range []string{"upsert", "update", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			ctx := context.Background()
+			engine, manager, wal := newTestWriteEngine(t, 0, 4)
+			defer wal.Close()
+			_, err := engine.Insert(ctx, []WriteInput{{PrimaryKey: "key", Payload: []byte("v1")}})
+			require.NoError(t, err)
+			require.NoError(t, wal.Sync(ctx))
+
+			wal.options.SyncEvery = 1
+			syncErr := errors.New("injected replacement sync failure")
+			wal.syncFile = func() error { return syncErr }
+			switch operation {
+			case "upsert":
+				_, err = engine.Upsert(ctx, []WriteInput{{PrimaryKey: "key", Payload: []byte("v2")}})
+			case "update":
+				_, err = engine.Update(ctx, []WriteInput{{PrimaryKey: "key", Payload: []byte("v2")}})
+			case "delete":
+				_, err = engine.Delete(ctx, []string{"key"})
+			}
+			require.ErrorIs(t, err, syncErr)
+			require.ErrorIs(t, err, ErrWALPoisoned)
+			require.ErrorIs(t, engine.Err(), ErrWALPoisoned)
+			if operation == "delete" {
+				_, found, lookupErr := manager.DocumentByPrimaryKey("key")
+				require.NoError(t, lookupErr)
+				require.False(t, found)
+				return
+			}
+			document, found, lookupErr := manager.DocumentByPrimaryKey("key")
+			require.NoError(t, lookupErr)
+			require.True(t, found)
+			require.Equal(t, uint64(1), document.DocID)
+			require.Equal(t, []byte("v2"), document.Payload)
+		})
+	}
 }
 
 func TestWriteEngineInsertReportsPerDocumentFailures(t *testing.T) {
@@ -132,7 +387,8 @@ func TestWriteEngineInsertReportsPerDocumentFailures(t *testing.T) {
 	require.NoError(t, results[2].Err)
 	require.True(t, results[2].DocID == 1)
 	{
-		_, found := manager.DocumentByPrimaryKey("new")
+		_, found, err := manager.DocumentByPrimaryKey("new")
+		require.NoError(t, err)
 		require.True(t, found,
 			"valid document after failures was not inserted")
 	}
@@ -165,6 +421,36 @@ func TestWriteEngineInsertFullAndCanceled(t *testing.T) {
 	}
 }
 
+func TestWriteEngineMutationBatchesStopCleanlyOnCancellation(t *testing.T) {
+	for _, operation := range []string{"upsert", "update", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			engine, manager, wal := newTestWriteEngine(t, 0, 4)
+			defer wal.Close()
+			canceled, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			var results []WriteResult
+			var err error
+			switch operation {
+			case "upsert":
+				results, err = engine.Upsert(canceled, []WriteInput{{PrimaryKey: "one"}, {PrimaryKey: "two"}})
+			case "update":
+				results, err = engine.Update(canceled, []WriteInput{{PrimaryKey: "one"}, {PrimaryKey: "two"}})
+			case "delete":
+				results, err = engine.Delete(canceled, []string{"one", "two"})
+			}
+			require.ErrorIs(t, err, context.Canceled)
+			require.Len(t, results, 2)
+			for _, result := range results {
+				require.ErrorIs(t, result.Err, context.Canceled)
+			}
+			require.False(t, wal.HasRecords())
+			require.Zero(t, manager.PrimaryKeys().Count())
+			require.Empty(t, manager.Writing().Documents())
+		})
+	}
+}
+
 func TestWriteEngineUpsertCreatesAndReplaces(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 50, 10)
 	defer wal.Close()
@@ -180,7 +466,8 @@ func TestWriteEngineUpsertCreatesAndReplaces(t *testing.T) {
 	require.False(t, manager.Deletes().IsDeleted(51),
 		"upsert deletion set is wrong")
 	{
-		doc, found := manager.DocumentByPrimaryKey("key")
+		doc, found, err := manager.DocumentByPrimaryKey("key")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.True(t, doc.DocID == 51)
 		require.True(t, string(doc.Payload) == "v2")
@@ -248,7 +535,8 @@ func TestWriteEngineConcurrentUpsertSameKey(t *testing.T) {
 	require.True(t, manager.PrimaryKeys().Count() == 1)
 	require.Equal(t, uint64(count-1), manager.Deletes().Count())
 	{
-		doc, found := manager.DocumentByPrimaryKey("shared")
+		doc, found, err := manager.DocumentByPrimaryKey("shared")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.False(t, manager.Deletes().IsDeleted(doc.DocID))
 	}
@@ -273,7 +561,8 @@ func TestWriteEngineUpdateReplacesExistingOnly(t *testing.T) {
 	require.True(t, manager.Deletes().IsDeleted(10),
 		"prior update version is not deleted")
 	{
-		doc, found := manager.DocumentByPrimaryKey("key")
+		doc, found, err := manager.DocumentByPrimaryKey("key")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.True(t, doc.DocID == 11)
 		require.True(t, string(doc.Payload) == "v2")
@@ -334,7 +623,8 @@ func TestWriteEngineDeleteExistingAndMissing(t *testing.T) {
 	require.True(t, manager.Deletes().IsDeleted(20),
 		"deleted document ID is not marked")
 	{
-		_, found := manager.PrimaryKeys().Get("one")
+		_, found, err := manager.PrimaryKeys().Get("one")
+		require.NoError(t, err)
 		require.False(t, found,
 			"deleted primary key remains mapped")
 	}
@@ -344,7 +634,8 @@ func TestWriteEngineDeleteExistingAndMissing(t *testing.T) {
 			"deleted document remains visible")
 	}
 	{
-		doc, found := manager.DocumentByPrimaryKey("two")
+		doc, found, err := manager.DocumentByPrimaryKey("two")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.True(t, doc.DocID == 21)
 	}
@@ -365,7 +656,6 @@ func TestWriteEngineDeleteExistingAndMissing(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.Equal(t, writeOperationDelete, final.Type)
-	require.True(t, final.SegmentID == 1)
 	require.True(t, final.DocID == 20)
 	require.True(t, final.PrimaryKey == "one")
 	require.Len(t, final.Payload, 0)
@@ -456,7 +746,7 @@ func TestWriteEngineConcurrentInsert(t *testing.T) {
 
 func TestWriteOperationCodec(t *testing.T) {
 	original := writeOperation{
-		Type: writeOperationInsert, SegmentID: 9, DocID: 42,
+		Type: writeOperationInsert, DocID: 42,
 		PrimaryKey: "文档", Payload: []byte{0, 1, 2, 3},
 	}
 	encoded, err := encodeWriteOperation(original)
@@ -465,6 +755,10 @@ func TestWriteOperationCodec(t *testing.T) {
 	decoded, err := decodeWriteOperation(encoded)
 	require.NoError(t, err)
 	require.Equal(t, original, decoded)
+	versionTwo := append([]byte(nil), encoded...)
+	binary.LittleEndian.PutUint16(versionTwo[4:6], 2)
+	_, err = decodeWriteOperation(versionTwo)
+	require.ErrorIs(t, err, ErrUnsupportedFormatVersion)
 
 	for cut := 0; cut < len(encoded); cut++ {
 		{
@@ -483,7 +777,7 @@ func TestWriteOperationCodec(t *testing.T) {
 }
 
 func FuzzDecodeWriteOperation(f *testing.F) {
-	encoded, err := encodeWriteOperation(writeOperation{Type: writeOperationInsert, SegmentID: 1, DocID: 2, PrimaryKey: "key", Payload: []byte("value")})
+	encoded, err := encodeWriteOperation(writeOperation{Type: writeOperationInsert, DocID: 2, PrimaryKey: "key", Payload: []byte("value")})
 	require.NoError(f, err)
 
 	f.Add(encoded)
@@ -521,6 +815,7 @@ func newTestWriteEngine(t *testing.T, minDocID, maxDocs uint64) (*WriteEngine, *
 	require.NoError(t, err)
 
 	manager := NewSegmentManager(nil, nil)
+	t.Cleanup(func() { require.NoError(t, manager.PrimaryKeys().Close()) })
 	{
 		err := manager.SetWriting(segment)
 		require.NoError(t, err)
@@ -528,6 +823,7 @@ func newTestWriteEngine(t *testing.T, minDocID, maxDocs uint64) (*WriteEngine, *
 
 	wal, err := CreateWAL(context.Background(), filepath.Join(t.TempDir(), "data.wal"), WALOptions{})
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, wal.Close()) })
 
 	engine, err := NewWriteEngine(manager, wal)
 	if err != nil {
