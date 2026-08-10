@@ -3,8 +3,8 @@
 `Collection.Optimize(ctx, options)` atomically compacts the current live
 snapshot. It removes logically deleted documents and superseded versions,
 groups each contiguous document-ID run into immutable segments no larger than
-the schema's `MaxDocsPerSegment`, writes fresh primary-key and empty deletion
-snapshots, and rotates to a new empty WAL.
+the schema's `MaxDocsPerSegment`, writes a fresh immutable IDMap checkpoint and
+empty deletion snapshot, and rotates to a new empty WAL.
 
 ```go
 if err := collection.Optimize(ctx, zvec.OptimizeOptions{Concurrency: 4}); err != nil {

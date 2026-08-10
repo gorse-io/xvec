@@ -16,6 +16,7 @@ package db
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -43,7 +44,8 @@ func TestWriteEngineInsert(t *testing.T) {
 
 	payload[0] = '['
 	{
-		doc, found := manager.DocumentByPrimaryKey("one")
+		doc, found, err := manager.DocumentByPrimaryKey("one")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.True(t, string(doc.Payload) == `{"title":"one"}`)
 	}
@@ -62,7 +64,6 @@ func TestWriteEngineInsert(t *testing.T) {
 	}
 	require.Len(t, operations, 2)
 	require.Equal(t, writeOperationInsert, operations[0].Type)
-	require.True(t, operations[0].SegmentID == 1)
 	require.True(t, operations[0].DocID == 10)
 	require.True(t, operations[0].PrimaryKey == "one")
 }
@@ -101,7 +102,8 @@ func TestWriteEngineAppliesRecordWhenAutomaticSyncFails(t *testing.T) {
 	require.ErrorIs(t, err, ErrWALPoisoned)
 	require.Len(t, results, 1)
 	require.ErrorIs(t, results[0].Err, syncError)
-	document, found := manager.DocumentByPrimaryKey("key")
+	document, found, lookupErr := manager.DocumentByPrimaryKey("key")
+	require.NoError(t, lookupErr)
 	require.True(t, found)
 	require.Equal(t, uint64(0), document.DocID)
 
@@ -132,7 +134,8 @@ func TestWriteEngineInsertReportsPerDocumentFailures(t *testing.T) {
 	require.NoError(t, results[2].Err)
 	require.True(t, results[2].DocID == 1)
 	{
-		_, found := manager.DocumentByPrimaryKey("new")
+		_, found, err := manager.DocumentByPrimaryKey("new")
+		require.NoError(t, err)
 		require.True(t, found,
 			"valid document after failures was not inserted")
 	}
@@ -180,7 +183,8 @@ func TestWriteEngineUpsertCreatesAndReplaces(t *testing.T) {
 	require.False(t, manager.Deletes().IsDeleted(51),
 		"upsert deletion set is wrong")
 	{
-		doc, found := manager.DocumentByPrimaryKey("key")
+		doc, found, err := manager.DocumentByPrimaryKey("key")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.True(t, doc.DocID == 51)
 		require.True(t, string(doc.Payload) == "v2")
@@ -248,7 +252,8 @@ func TestWriteEngineConcurrentUpsertSameKey(t *testing.T) {
 	require.True(t, manager.PrimaryKeys().Count() == 1)
 	require.Equal(t, uint64(count-1), manager.Deletes().Count())
 	{
-		doc, found := manager.DocumentByPrimaryKey("shared")
+		doc, found, err := manager.DocumentByPrimaryKey("shared")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.False(t, manager.Deletes().IsDeleted(doc.DocID))
 	}
@@ -273,7 +278,8 @@ func TestWriteEngineUpdateReplacesExistingOnly(t *testing.T) {
 	require.True(t, manager.Deletes().IsDeleted(10),
 		"prior update version is not deleted")
 	{
-		doc, found := manager.DocumentByPrimaryKey("key")
+		doc, found, err := manager.DocumentByPrimaryKey("key")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.True(t, doc.DocID == 11)
 		require.True(t, string(doc.Payload) == "v2")
@@ -334,7 +340,8 @@ func TestWriteEngineDeleteExistingAndMissing(t *testing.T) {
 	require.True(t, manager.Deletes().IsDeleted(20),
 		"deleted document ID is not marked")
 	{
-		_, found := manager.PrimaryKeys().Get("one")
+		_, found, err := manager.PrimaryKeys().Get("one")
+		require.NoError(t, err)
 		require.False(t, found,
 			"deleted primary key remains mapped")
 	}
@@ -344,7 +351,8 @@ func TestWriteEngineDeleteExistingAndMissing(t *testing.T) {
 			"deleted document remains visible")
 	}
 	{
-		doc, found := manager.DocumentByPrimaryKey("two")
+		doc, found, err := manager.DocumentByPrimaryKey("two")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.True(t, doc.DocID == 21)
 	}
@@ -365,7 +373,6 @@ func TestWriteEngineDeleteExistingAndMissing(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.Equal(t, writeOperationDelete, final.Type)
-	require.True(t, final.SegmentID == 1)
 	require.True(t, final.DocID == 20)
 	require.True(t, final.PrimaryKey == "one")
 	require.Len(t, final.Payload, 0)
@@ -456,7 +463,7 @@ func TestWriteEngineConcurrentInsert(t *testing.T) {
 
 func TestWriteOperationCodec(t *testing.T) {
 	original := writeOperation{
-		Type: writeOperationInsert, SegmentID: 9, DocID: 42,
+		Type: writeOperationInsert, DocID: 42,
 		PrimaryKey: "文档", Payload: []byte{0, 1, 2, 3},
 	}
 	encoded, err := encodeWriteOperation(original)
@@ -465,6 +472,10 @@ func TestWriteOperationCodec(t *testing.T) {
 	decoded, err := decodeWriteOperation(encoded)
 	require.NoError(t, err)
 	require.Equal(t, original, decoded)
+	versionTwo := append([]byte(nil), encoded...)
+	binary.LittleEndian.PutUint16(versionTwo[4:6], 2)
+	_, err = decodeWriteOperation(versionTwo)
+	require.ErrorIs(t, err, ErrUnsupportedFormatVersion)
 
 	for cut := 0; cut < len(encoded); cut++ {
 		{
@@ -483,7 +494,7 @@ func TestWriteOperationCodec(t *testing.T) {
 }
 
 func FuzzDecodeWriteOperation(f *testing.F) {
-	encoded, err := encodeWriteOperation(writeOperation{Type: writeOperationInsert, SegmentID: 1, DocID: 2, PrimaryKey: "key", Payload: []byte("value")})
+	encoded, err := encodeWriteOperation(writeOperation{Type: writeOperationInsert, DocID: 2, PrimaryKey: "key", Payload: []byte("value")})
 	require.NoError(f, err)
 
 	f.Add(encoded)

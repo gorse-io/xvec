@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"sync"
 )
 
@@ -45,6 +46,7 @@ type StorageStats struct {
 type SegmentManager struct {
 	mu         sync.RWMutex
 	immutable  map[uint64]*ImmutableSegment
+	ordered    []*ImmutableSegment
 	writing    *WriteSegment
 	primaryKey *PrimaryKeyMap
 	deletes    *DeleteStore
@@ -71,6 +73,22 @@ func (m *SegmentManager) PrimaryKeys() *PrimaryKeyMap {
 		return nil
 	}
 	return m.primaryKey
+}
+
+// ReplacePrimaryKeys swaps the logical IDMap while the collection-level lock
+// excludes readers and writers. It is used only after CURRENT commits a new
+// immutable checkpoint.
+func (m *SegmentManager) ReplacePrimaryKeys(primaryKey *PrimaryKeyMap) error {
+	if m == nil {
+		return errors.New("db: nil segment manager")
+	}
+	if primaryKey == nil {
+		return errors.New("db: nil replacement IDMap")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.primaryKey = primaryKey
+	return nil
 }
 
 // Deletes returns the manager's shared logical deletion set.
@@ -159,6 +177,9 @@ func (m *SegmentManager) RotateWriting(currentID uint64, immutable *ImmutableSeg
 		return fmt.Errorf("db: next segment ID %d already exists", next.ID())
 	}
 	metadata := immutable.Metadata()
+	if metadata.DocCount == 0 {
+		return errors.New("db: cannot rotate an empty immutable segment")
+	}
 	if err := m.checkRangeAgainstImmutableLocked(metadata, currentID); err != nil {
 		return err
 	}
@@ -173,6 +194,7 @@ func (m *SegmentManager) RotateWriting(currentID uint64, immutable *ImmutableSeg
 		}
 	}
 	m.immutable[currentID] = immutable
+	m.insertOrderedLocked(immutable)
 	m.writing = next
 	return nil
 }
@@ -185,6 +207,9 @@ func (m *SegmentManager) AddImmutable(segment *ImmutableSegment) error {
 	if segment == nil {
 		return errors.New("db: nil immutable segment")
 	}
+	if segment.Metadata().DocCount == 0 {
+		return errors.New("db: empty immutable segment")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, exists := m.immutable[segment.ID()]; exists || m.writing != nil && m.writing.ID() == segment.ID() {
@@ -194,6 +219,7 @@ func (m *SegmentManager) AddImmutable(segment *ImmutableSegment) error {
 		return err
 	}
 	m.immutable[segment.ID()] = segment
+	m.insertOrderedLocked(segment)
 	return nil
 }
 
@@ -209,6 +235,12 @@ func (m *SegmentManager) RemoveImmutable(segmentID uint64) (*ImmutableSegment, e
 		return nil, ErrSegmentNotFound
 	}
 	delete(m.immutable, segmentID)
+	for index, candidate := range m.ordered {
+		if candidate.ID() == segmentID {
+			m.ordered = append(m.ordered[:index], m.ordered[index+1:]...)
+			break
+		}
+	}
 	return segment, nil
 }
 
@@ -219,21 +251,7 @@ func (m *SegmentManager) ImmutableSegments() []*ImmutableSegment {
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	segments := make([]*ImmutableSegment, 0, len(m.immutable))
-	for _, segment := range m.immutable {
-		segments = append(segments, segment)
-	}
-	slices.SortFunc(segments, func(left, right *ImmutableSegment) int {
-		leftMeta, rightMeta := left.Metadata(), right.Metadata()
-		if leftMeta.MinDocID < rightMeta.MinDocID {
-			return -1
-		}
-		if leftMeta.MinDocID > rightMeta.MinDocID {
-			return 1
-		}
-		return cmpUint64(leftMeta.ID, rightMeta.ID)
-	})
-	return segments
+	return slices.Clone(m.ordered)
 }
 
 // ImmutableMetadata returns independent metadata sorted like segments.
@@ -252,48 +270,35 @@ func (m *SegmentManager) Document(docID uint64) (StoredDocument, bool) {
 		return StoredDocument{}, false
 	}
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	writing := m.writing
-	segments := make([]*ImmutableSegment, 0, len(m.immutable))
-	for _, segment := range m.immutable {
-		segments = append(segments, segment)
-	}
-	m.mu.RUnlock()
 	if writing != nil {
 		if doc, found := writing.Document(docID); found {
 			return doc, true
 		}
 	}
-	for _, segment := range segments {
-		metadata := segment.Metadata()
-		if docID >= metadata.MinDocID && docID <= metadata.MaxDocID {
-			return segment.Document(docID)
-		}
+	index, found := locateImmutableSegment(m.ordered, docID)
+	if found {
+		return m.ordered[index].Document(docID)
 	}
 	return StoredDocument{}, false
 }
 
-// DocumentByPrimaryKey resolves the key map and verifies its segment location.
-func (m *SegmentManager) DocumentByPrimaryKey(key string) (StoredDocument, bool) {
+// DocumentByPrimaryKey resolves the IDMap and verifies the target document's
+// primary key so a corrupt mapping cannot return another document.
+func (m *SegmentManager) DocumentByPrimaryKey(key string) (StoredDocument, bool, error) {
 	if m == nil {
-		return StoredDocument{}, false
+		return StoredDocument{}, false, errors.New("db: nil segment manager")
 	}
-	location, found := m.primaryKey.Get(key)
-	if !found || m.deletes.IsDeleted(location.DocID) {
-		return StoredDocument{}, false
+	docID, found, err := m.primaryKey.Get(key)
+	if err != nil {
+		return StoredDocument{}, false, err
 	}
-	m.mu.RLock()
-	writing := m.writing
-	segment := m.immutable[location.SegmentID]
-	m.mu.RUnlock()
-	var document StoredDocument
-	if writing != nil && writing.ID() == location.SegmentID {
-		document, found = writing.Document(location.DocID)
-	} else if segment != nil {
-		document, found = segment.Document(location.DocID)
-	} else {
-		return StoredDocument{}, false
+	if !found || m.deletes.IsDeleted(docID) {
+		return StoredDocument{}, false, nil
 	}
-	return document, found && document.PrimaryKey == key
+	document, found := m.Document(docID)
+	return document, found && document.PrimaryKey == key, nil
 }
 
 // Fetch resolves primary keys in input order. Missing keys are successful nil
@@ -316,7 +321,15 @@ func (m *SegmentManager) Fetch(ctx context.Context, primaryKeys []string) ([]Fet
 			}
 			return results, err
 		}
-		if document, found := m.DocumentByPrimaryKey(key); found {
+		document, found, err := m.DocumentByPrimaryKey(key)
+		if err != nil {
+			results[index].Err = err
+			for remaining := index + 1; remaining < len(primaryKeys); remaining++ {
+				results[remaining] = FetchResult{PrimaryKey: primaryKeys[remaining], Err: err}
+			}
+			return results, err
+		}
+		if found {
 			copy := document.Clone()
 			results[index].Document = &copy
 		}
@@ -352,8 +365,11 @@ func (m *SegmentManager) LiveDocuments(ctx context.Context) ([]StoredDocument, e
 			if m.deletes.IsDeleted(document.DocID) {
 				continue
 			}
-			location, found := m.primaryKey.Get(document.PrimaryKey)
-			if !found || location.DocID != document.DocID {
+			docID, found, err := m.primaryKey.Get(document.PrimaryKey)
+			if err != nil {
+				return err
+			}
+			if !found || docID != document.DocID {
 				continue
 			}
 			result = append(result, document.Clone())
@@ -455,6 +471,29 @@ func rangesOverlap(left, right SegmentMetadata) bool {
 		return false
 	}
 	return left.MinDocID <= right.MaxDocID && right.MinDocID <= left.MaxDocID
+}
+
+func (m *SegmentManager) insertOrderedLocked(segment *ImmutableSegment) {
+	metadata := segment.Metadata()
+	index, _ := slices.BinarySearchFunc(m.ordered, metadata.MinDocID, func(candidate *ImmutableSegment, docID uint64) int {
+		return cmpUint64(candidate.Metadata().MinDocID, docID)
+	})
+	m.ordered = append(m.ordered, nil)
+	copy(m.ordered[index+1:], m.ordered[index:])
+	m.ordered[index] = segment
+}
+
+// locateImmutableSegment uses binary search over non-overlapping document-ID
+// ranges maintained in ascending order.
+func locateImmutableSegment(segments []*ImmutableSegment, docID uint64) (int, bool) {
+	index := sort.Search(len(segments), func(index int) bool {
+		return segments[index].Metadata().MaxDocID >= docID
+	})
+	if index == len(segments) {
+		return 0, false
+	}
+	metadata := segments[index].Metadata()
+	return index, metadata.DocCount > 0 && metadata.MinDocID <= docID
 }
 
 func cmpUint64(left, right uint64) int {

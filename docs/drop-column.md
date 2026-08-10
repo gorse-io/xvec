@@ -16,7 +16,7 @@ if err := collection.DropColumn(ctx, "legacy_score"); err != nil {
 
 DropColumn holds the collection write lock and removes the key from every live
 document payload; result projection does not merely hide it. It then writes new
-immutable segments, primary-key and empty delete snapshots, and a new WAL before
+immutable segments, an IDMap checkpoint, an empty delete snapshot, and a new WAL before
 publishing the reduced schema through `CURRENT`. Live document IDs and the next
 writable ID remain unchanged, while superseded versions and deletion records
 are reclaimed. A failure before the manifest commit leaves the old schema and

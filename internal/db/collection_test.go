@@ -17,6 +17,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,7 +129,7 @@ func TestCollectionCreateRecoverFlushAndContinue(t *testing.T) {
 	require.True(t, manifest.PersistedSegments[0].DocCount == 4)
 	require.True(t, manifest.WritingSegment.ID == 1)
 	require.True(t, manifest.NextSegmentID == 2)
-	require.True(t, manifest.IDMapGeneration == 2)
+	require.Equal(t, idMapCheckpointName(2), manifest.IDMap)
 	require.True(t, manifest.DeleteSnapshotGeneration == 2)
 	{
 		err := store.Flush(context.Background())
@@ -216,6 +217,117 @@ func TestCollectionAllowsManyReadersAndOneWriter(t *testing.T) {
 		err := writer.Close()
 		require.NoError(t, err)
 	}
+}
+
+func TestCollectionReadOnlyOpenDoesNotMutateDirectory(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
+	require.NoError(t, err)
+	_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "dirty", Payload: []byte("wal")}})
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+
+	before := snapshotFileTree(t, dir)
+	readOnly, err := OpenCollection(ctx, dir, CollectionOptions{ReadOnly: true})
+	require.NoError(t, err)
+	results, err := readOnly.Fetch(ctx, []string{"dirty"})
+	require.NoError(t, err)
+	require.NotNil(t, results[0].Document)
+	require.NoError(t, readOnly.Close())
+	require.Equal(t, before, snapshotFileTree(t, dir))
+}
+
+func TestCollectionIDMapApplyFailurePoisonsUntilReopen(t *testing.T) {
+	t.Run("put", func(t *testing.T) {
+		ctx := context.Background()
+		dir := t.TempDir()
+		store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
+		require.NoError(t, err)
+		injected := errors.New("injected IDMap put failure")
+		store.manager.PrimaryKeys().setPoint = func(_, _ []byte) error { return injected }
+
+		_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "recover", Payload: []byte("from-wal")}})
+		require.ErrorIs(t, err, injected)
+		require.ErrorIs(t, err, ErrWriteEnginePoisoned)
+		_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "rejected"}})
+		require.ErrorIs(t, err, ErrWriteEnginePoisoned)
+		require.ErrorIs(t, store.Flush(ctx), ErrWriteEnginePoisoned)
+		require.NoError(t, store.Close())
+
+		reopened, err := OpenCollection(ctx, dir, CollectionOptions{})
+		require.NoError(t, err)
+		defer reopened.Close()
+		results, err := reopened.Fetch(ctx, []string{"recover", "rejected"})
+		require.NoError(t, err)
+		require.NotNil(t, results[0].Document)
+		require.Equal(t, "from-wal", string(results[0].Document.Payload))
+		require.Nil(t, results[1].Document)
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		ctx := context.Background()
+		dir := t.TempDir()
+		store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
+		require.NoError(t, err)
+		_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "deleted"}})
+		require.NoError(t, err)
+		injected := errors.New("injected IDMap delete failure")
+		store.manager.PrimaryKeys().deletePoint = func(_ []byte) error { return injected }
+
+		_, err = store.Delete(ctx, []string{"deleted"})
+		require.ErrorIs(t, err, injected)
+		require.ErrorIs(t, err, ErrWriteEnginePoisoned)
+		require.NoError(t, store.Close())
+
+		reopened, err := OpenCollection(ctx, dir, CollectionOptions{})
+		require.NoError(t, err)
+		defer reopened.Close()
+		results, err := reopened.Fetch(ctx, []string{"deleted"})
+		require.NoError(t, err)
+		require.Nil(t, results[0].Document)
+	})
+}
+
+func TestCollectionPruneIDMapDirectoriesSafely(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
+	require.NoError(t, err)
+	activeWorking := store.idMapWorking
+	staleWorking := filepath.Join(dir, "idmap", ".working-999-999.pebble")
+	require.NoError(t, os.Mkdir(staleWorking, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(staleWorking, "stale"), []byte("stale"), 0o600))
+	require.NoError(t, store.PruneObsoleteArtifacts(ctx))
+	_, err = os.Stat(activeWorking)
+	require.NoError(t, err)
+	_, err = os.Stat(staleWorking)
+	require.ErrorIs(t, err, os.ErrNotExist)
+
+	target := filepath.Join(t.TempDir(), "outside")
+	require.NoError(t, os.Mkdir(target, 0o700))
+	symlink := filepath.Join(dir, "idmap", ".working-998-998.pebble")
+	if err := os.Symlink(target, symlink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	require.Error(t, store.PruneObsoleteArtifacts(ctx))
+	_, err = os.Stat(target)
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(symlink))
+	require.NoError(t, store.Close())
+}
+
+func TestCollectionOpenRejectsSymlinkedIDMapRoot(t *testing.T) {
+	ctx := context.Background()
+	dir, _ := createClosedCollection(t, false)
+	idMapRoot := filepath.Join(dir, "idmap")
+	relocated := filepath.Join(t.TempDir(), "relocated-idmap")
+	require.NoError(t, os.Rename(idMapRoot, relocated))
+	if err := os.Symlink(relocated, idMapRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	_, err := OpenCollection(ctx, dir, CollectionOptions{})
+	require.ErrorIs(t, err, ErrCollectionCorrupt)
 }
 
 func TestCollectionFailedFlushLeavesPublishedStateAndWriterUsable(t *testing.T) {
@@ -318,7 +430,7 @@ func TestCollectionRewriteDocumentsIsAtomicAndRecoverable(t *testing.T) {
 
 	for pattern, want := range map[string]int{
 		filepath.Join(dir, "segments", "*", "*.seg"): 0,
-		filepath.Join(dir, "snapshots", "*.snap"):    2,
+		filepath.Join(dir, "snapshots", "*.snap"):    1,
 		filepath.Join(dir, "wal", "*.wal"):           1,
 	} {
 		files, globErr := filepath.Glob(pattern)
@@ -476,10 +588,10 @@ func TestCollectionReadOnlyRecoveryDoesNotRepairWAL(t *testing.T) {
 }
 
 func TestCollectionRecoveryRejectsDamagedReferencedFiles(t *testing.T) {
-	t.Run("missing primary snapshot", func(t *testing.T) {
+	t.Run("missing IDMap checkpoint", func(t *testing.T) {
 		dir, manifest := createClosedCollection(t, false)
 		{
-			err := os.Remove(collectionPath(dir, primarySnapshotName(manifest.IDMapGeneration)))
+			err := os.RemoveAll(collectionPath(dir, manifest.IDMap))
 			require.NoError(t, err)
 		}
 		{
@@ -644,6 +756,8 @@ func TestCollectionPublishSchemaIsAtomicAndDurable(t *testing.T) {
 	require.NoError(t, err)
 
 	initial := store.Manifest()
+	_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "dirty-schema", Payload: []byte("wal")}})
+	require.NoError(t, err)
 	{
 		committed, err := store.PublishSchema(ctx, json.RawMessage(`[`))
 		require.Error(t, err)
@@ -671,6 +785,10 @@ func TestCollectionPublishSchemaIsAtomicAndDurable(t *testing.T) {
 	updated := store.Manifest()
 	require.True(t, updated.Generation > initial.Generation)
 	require.Equal(t, string(updatedSchema), string(updated.Schema))
+	require.Equal(t, initial.IDMap, updated.IDMap)
+	require.NoError(t, store.PruneObsoleteArtifacts(ctx))
+	_, err = os.Stat(collectionPath(dir, updated.IDMap))
+	require.NoError(t, err)
 	{
 		committed, err := store.PublishSchema(ctx, updatedSchema)
 		require.NoError(t, err)
@@ -696,6 +814,9 @@ func TestCollectionPublishSchemaIsAtomicAndDurable(t *testing.T) {
 		got := readOnly.Manifest()
 		require.Equal(t, string(updatedSchema), string(got.Schema))
 	}
+	results, err := readOnly.Fetch(ctx, []string{"dirty-schema"})
+	require.NoError(t, err)
+	require.NotNil(t, results[0].Document)
 	{
 		committed, err := readOnly.PublishSchema(ctx, testCollectionSchema)
 		require.ErrorIs(t, err, ErrReadOnly)
@@ -733,4 +854,37 @@ func createClosedCollection(t *testing.T, flush bool) (string, Manifest) {
 	}
 
 	return dir, manifest
+}
+
+func snapshotFileTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	result := make(map[string]string)
+	require.NoError(t, filepath.WalkDir(root, func(name string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, name)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			result[relative] = "directory"
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(name)
+			if err != nil {
+				return err
+			}
+			result[relative] = "symlink:" + target
+			return nil
+		}
+		contents, err := os.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		result[relative] = string(contents)
+		return nil
+	}))
+	return result
 }

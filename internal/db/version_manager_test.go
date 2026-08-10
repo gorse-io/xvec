@@ -48,13 +48,13 @@ func TestVersionManagerCreatePublishAndOpen(t *testing.T) {
 
 	published, err := manager.Update(context.Background(), func(next *Manifest) error {
 		next.EnableMmap = false
-		next.IDMapGeneration++
+		next.IDMap = idMapCheckpointName(6)
 		return nil
 	})
 	require.NoError(t, err)
 	require.True(t, published.Generation == 2)
 	require.False(t, published.EnableMmap)
-	require.True(t, published.IDMapGeneration == 6)
+	require.Equal(t, idMapCheckpointName(6), published.IDMap)
 
 	published.Schema[0] = '['
 	{
@@ -112,7 +112,7 @@ func TestVersionManagerRejectsConcurrentUpdateFromSameSnapshot(t *testing.T) {
 	for range 2 {
 		go func() {
 			_, err := manager.Update(context.Background(), func(next *Manifest) error {
-				next.IDMapGeneration++
+				next.IDMap = idMapCheckpointName(6)
 				ready.Done()
 				<-release
 				return nil
@@ -140,7 +140,7 @@ func TestVersionManagerRejectsConcurrentUpdateFromSameSnapshot(t *testing.T) {
 	{
 		current := manager.Current()
 		require.True(t, current.Generation == 2)
-		require.True(t, current.IDMapGeneration == 6)
+		require.Equal(t, idMapCheckpointName(6), current.IDMap)
 	}
 }
 
@@ -363,7 +363,7 @@ func TestVersionManagerAtomicCurrentForConcurrentReaders(t *testing.T) {
 	}()
 	for range 25 {
 		if _, err := manager.Update(context.Background(), func(next *Manifest) error {
-			next.IDMapGeneration++
+			next.DeleteSnapshotGeneration++
 			return nil
 		}); err != nil {
 			close(done)

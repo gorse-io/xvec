@@ -75,15 +75,17 @@ func TestSegmentManagerLifecycleAndLookup(t *testing.T) {
 			"reserved write range overlap succeeded")
 	}
 
-	_, _, _ = primary.Put(context.Background(), "zero", DocumentLocation{SegmentID: 1, DocID: 0})
-	_, _, _ = primary.Put(context.Background(), "twenty", DocumentLocation{SegmentID: 3, DocID: written.DocID})
+	_, _, _ = primary.Put(context.Background(), "zero", 0)
+	_, _, _ = primary.Put(context.Background(), "twenty", written.DocID)
 	{
-		doc, found := manager.DocumentByPrimaryKey("zero")
+		doc, found, err := manager.DocumentByPrimaryKey("zero")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.True(t, doc.DocID == 0)
 	}
 	{
-		doc, found := manager.DocumentByPrimaryKey("twenty")
+		doc, found, err := manager.DocumentByPrimaryKey("twenty")
+		require.NoError(t, err)
 		require.True(t, found)
 		require.True(t, string(doc.Payload) == "live")
 	}
@@ -95,7 +97,8 @@ func TestSegmentManagerLifecycleAndLookup(t *testing.T) {
 			"deleted document is visible by ID")
 	}
 	{
-		_, found := manager.DocumentByPrimaryKey("zero")
+		_, found, err := manager.DocumentByPrimaryKey("zero")
+		require.NoError(t, err)
 		require.False(t, found,
 			"deleted document is visible by key")
 	}
@@ -135,6 +138,11 @@ func TestSegmentManagerRejectsWritingReservedOverlap(t *testing.T) {
 	}
 }
 
+func TestSegmentManagerRejectsEmptyImmutableSegment(t *testing.T) {
+	manager := NewSegmentManager(nil, nil)
+	require.Error(t, manager.AddImmutable(testImmutableSegment(1, 0)))
+}
+
 func TestSegmentManagerValidatesStalePrimaryLocation(t *testing.T) {
 	manager := NewSegmentManager(nil, nil)
 	segment := testImmutableSegment(1, 0, "zero")
@@ -143,16 +151,18 @@ func TestSegmentManagerValidatesStalePrimaryLocation(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "wrong", DocumentLocation{SegmentID: 1, DocID: 0})
+	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "wrong", 0)
 	{
-		_, found := manager.DocumentByPrimaryKey("wrong")
+		_, found, err := manager.DocumentByPrimaryKey("wrong")
+		require.NoError(t, err)
 		require.False(t, found,
 			"stale primary-key location returned another document")
 	}
 
-	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "zero", DocumentLocation{SegmentID: 99, DocID: 0})
+	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "zero", 99)
 	{
-		_, found := manager.DocumentByPrimaryKey("zero")
+		_, found, err := manager.DocumentByPrimaryKey("zero")
+		require.NoError(t, err)
 		require.False(t, found,
 			"missing segment location returned a document")
 	}
@@ -166,8 +176,8 @@ func TestSegmentManagerFetch(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "five", DocumentLocation{SegmentID: 1, DocID: 5})
-	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "six", DocumentLocation{SegmentID: 1, DocID: 6})
+	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "five", 5)
+	_, _, _ = manager.PrimaryKeys().Put(context.Background(), "six", 6)
 	_, _ = manager.Deletes().MarkDeleted(context.Background(), 6)
 	results, err := manager.Fetch(context.Background(), []string{"missing", "five", "six", "five"})
 	require.NoError(t, err)

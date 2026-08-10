@@ -6,8 +6,8 @@ there is no partially visible schema or compaction state.
 
 Schema-only index changes validate their complete live snapshot before writing
 a new manifest. Column changes with live documents and Optimize first write all
-replacement immutable segments, a primary-key snapshot, an empty deletion
-snapshot, and a fresh WAL. They then publish one manifest that references the
+replacement immutable segments, an immutable IDMap checkpoint, an empty
+deletion snapshot, and a fresh WAL. They then publish one manifest that references the
 complete replacement. Empty column changes use the schema-only path.
 
 Recovery follows one rule:

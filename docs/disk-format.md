@@ -1,10 +1,10 @@
 # Native Go disk format
 
 The Go implementation uses its own disk format and does not open collection
-files created by the C++ implementation. Format version 2 uses the manifest
-protocol below and Pebble-backed FTS and INVERT persistence. Version 1 is
-rejected outright: there is no compatibility reader, fallback, migration, or
-dual-write path.
+files created by the C++ implementation. Format version 3 uses the manifest
+protocol below, a Pebble-backed IDMap, and Pebble-backed FTS and INVERT
+persistence. Versions 1 and 2 are rejected outright: there is no compatibility
+reader, fallback, migration, or dual-write path.
 
 ## Manifest publication
 
@@ -12,8 +12,9 @@ Each metadata snapshot is stored in an immutable file named
 `MANIFEST-<20-digit generation>`. A binary header records the `ZVECMAN` magic,
 disk-format version, header size, generation, JSON payload length, and CRC32C of
 the payload. The JSON contains schema bytes, persisted segment capacity,
-segment metadata, snapshot generations, the next segment ID, and the first
-document ID reserved by the current writing segment. Readers require that
+segment metadata, an explicit portable path to an immutable IDMap checkpoint,
+the delete-snapshot generation, the next segment ID, and the first document ID
+reserved by the current writing segment. Readers require that
 reserved document ID explicitly and reject manifests that omit it, preventing
 ID reuse when a rewrite reclaims the highest deleted or superseded versions.
 
@@ -70,30 +71,37 @@ dense-vector, sparse-vector, and NULL encodings therefore round-trip without
 JSON number coercion or ambiguous Go slices. Sparse coordinates are canonical
 and corruption that changes their ordering is rejected.
 
-Primary-key snapshots (`ZVECPK`) sort keys bytewise and map each key to a
-segment/document location. Delete snapshots (`ZVECDEL`) store strictly sorted
-global document IDs. Both use a common versioned header with item count,
-payload length, payload CRC32C, and header CRC32C. Snapshots and segments are
-written as immutable files and atomically installed without replacing an
-existing generation.
+The IDMap is a Pebble point map from each primary key directly to its global
+`uint64` document ID. `CURRENT` names its immutable checkpoint explicitly; a
+manifest generation does not imply an IDMap name. Delete snapshots (`ZVECDEL`)
+store strictly sorted global document IDs in a versioned frame with item count,
+payload length, payload CRC32C, and header CRC32C. Checkpoints, snapshots, and
+segments are installed immutably without replacing an existing artifact.
 
 ## Collection recovery and flush
 
 Every manifest names one empty writing segment and its WAL. Opening a
-collection loads only the immutable segments and primary-key/delete snapshots
-named by `CURRENT`, creates the writing segment at the next global document ID,
-and replays the WAL's verified prefix in LSN order. Replayed operations must
-match the writing segment, contiguous document IDs, and the recovered
-primary-key state. A structurally valid but impossible operation is corruption,
-not a request to repair metadata heuristically.
+collection loads only the immutable segments, IDMap checkpoint, and delete
+snapshot named by `CURRENT`, creates the writing segment at the next global
+document ID, and replays the WAL's verified prefix in LSN order. A writable
+open clones the checkpoint into a fresh disposable Pebble working directory;
+a read-only open uses a private in-memory copy plus replay overlay and does not
+modify the collection directory. Replayed operations must have contiguous
+document IDs and agree with recovered IDMap state. A structurally valid but
+impossible operation is corruption, not a request to repair metadata
+heuristically.
 
 Flush first synchronizes the current WAL. For a non-empty writing segment it
-then writes a new immutable segment, complete primary-key and deletion
-snapshots, and the next empty WAL. Only after all those files are durable does
-it publish a manifest that references them. `CURRENT` remains the sole commit
-point: a crash before replacement recovers the old WAL, while a crash after
-replacement has every file needed by the new version. An empty flush only
-synchronizes the WAL and does not create a new manifest generation.
+then writes a new immutable segment, a complete immutable IDMap checkpoint, a
+deletion snapshot, and the next empty WAL. The working IDMap disables Pebble's
+internal WAL and uses unsynchronized point writes; it is flushed before the
+checkpoint, because the authoritative outer WAL is the only incremental
+recovery log. Only after all candidate artifacts are durable does publication
+replace `CURRENT`. A crash before replacement recovers the old checkpoint plus
+old WAL, while a crash after replacement has every file needed by the new
+version. After commit, the handle swaps to a fresh working copy and closes the
+old WAL and Pebble resources. An empty flush only synchronizes the WAL and does
+not create a new manifest generation.
 
 Artifact names are unique and immutable. ANN artifacts remain regular `.zvi`
 files. FTS and INVERT artifacts are independent `.pebble` directories. After
@@ -105,8 +113,8 @@ overwrites an immutable file. Unreferenced artifacts and higher-numbered orphan
 manifests are ignored during recovery.
 
 Schema-changing data rewrites use the same commit protocol. The writer builds
-new immutable segments from the complete live snapshot, writes fresh
-primary-key and empty deletion snapshots, creates a fresh WAL, and publishes a
+new immutable segments from the complete live snapshot, writes a fresh IDMap
+checkpoint and empty deletion snapshot, creates a fresh WAL, and publishes a
 manifest that names all of them together with the new schema. Live document IDs
 are preserved, including gaps, while the next writable ID remains monotonic.
 Contiguous ID runs become independent segments. Before `CURRENT` changes, a
@@ -116,13 +124,13 @@ version. Superseded and deleted record versions are no longer referenced.
 
 Optimize uses that rewrite protocol without changing the schema. Live
 documents are split at document-ID gaps and at `MaxDocsPerSegment`; the new
-primary-key snapshot maps the preserved IDs to their new segment IDs, the
-delete snapshot is empty, and the writing segment starts at the same monotonic
-next ID. After `CURRENT` commits, obsolete files matching the native segment,
-WAL, WAL-lock, and snapshot naming schemes are removed and their directories
-are synchronized. Unknown files and manifest generations are never selected
-for pruning. A crash during pruning leaves only harmless unreferenced files;
-even a no-op Optimize retries the cleanup.
+IDMap maps each key to its preserved global ID, the delete snapshot is empty,
+and the writing segment starts at the same monotonic next ID. After `CURRENT`
+commits, obsolete files and IDMap checkpoint/working directories matching the
+strict package-owned naming schemes are removed and their parent directories
+are synchronized. Active working state, unknown names, symlinks, and manifest
+generations are not removed. A crash during pruning leaves only harmless
+unreferenced files; even a no-op Optimize retries the cleanup.
 
 HNSW, HNSW-RaBitQ, IVF, Vamana, DiskANN, and sparse HNSW retain their native
 `.zvi` formats. FTS and INVERT use Pebble byte-ordered keys: document/row
@@ -146,7 +154,7 @@ Pebble directory as one package-owned artifact.
 CreateIndex and DropIndex publish schema-only manifest generations after their
 full live-snapshot validation completes. AddColumn, AlterColumn, DropColumn,
 and Optimize publish a manifest only after every replacement segment,
-primary-key/delete snapshot, and WAL has been installed and synchronized. All
+IDMap checkpoint, delete snapshot, and WAL has been installed and synchronized. All
 six operations therefore share the same binary recovery rule: the old CURRENT
 means the old schema and files remain authoritative; the new CURRENT means the
 entire new version is authoritative. Recovery never combines a schema from one
@@ -172,9 +180,11 @@ synchronization.
 ## WAL operations
 
 Collection mutations inside WAL records use a separate `ZOP1` frame. It stores
-the operation kind, target segment ID, assigned global document ID, primary-key
-and document-payload lengths, and a CRC32C covering the header, key, and
+the operation kind, assigned global document ID, primary-key and
+document-payload lengths, and a CRC32C covering the header, key, and
 payload. Insert reserves the next contiguous document ID, appends this WAL
 operation, and only then applies the document to the write segment and
-primary-key map. WAL synchronization happens when `WALSyncEvery` records have
+IDMap. If applying a fully appended outer-WAL record to a segment, deletion
+set, or IDMap fails, the handle becomes fail-stop and must be reopened for
+replay. WAL synchronization happens when `WALSyncEvery` records have
 accumulated, or when Flush or Close explicitly synchronizes pending records.
