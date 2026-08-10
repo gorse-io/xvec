@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/pebble/v2"
 	"github.com/gofrs/flock"
 	"github.com/stretchr/testify/require"
 )
@@ -368,6 +369,48 @@ func TestCollectionFailedFlushLeavesPublishedStateAndWriterUsable(t *testing.T) 
 	}
 }
 
+func TestCollectionFlushIDMapFailureIsAtomicAndRetryable(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
+	require.NoError(t, err)
+	_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "one", Payload: []byte("payload")}})
+	require.NoError(t, err)
+	before := store.Manifest()
+
+	idMapRoot := filepath.Join(dir, "idmap")
+	relocated := filepath.Join(dir, "idmap-relocated")
+	if err := os.Rename(idMapRoot, relocated); err != nil {
+		require.NoError(t, store.Close())
+		t.Skipf("cannot relocate an open IDMap directory: %v", err)
+	}
+	disrupted := true
+	t.Cleanup(func() {
+		if disrupted {
+			_ = os.Remove(idMapRoot)
+			_ = os.Rename(relocated, idMapRoot)
+		}
+	})
+	require.NoError(t, os.WriteFile(idMapRoot, []byte("not a directory"), 0o600))
+
+	err = store.Flush(ctx)
+	require.Error(t, err)
+	require.Equal(t, before, store.Manifest())
+	results, fetchErr := store.Fetch(ctx, []string{"one"})
+	require.NoError(t, fetchErr)
+	require.Equal(t, []byte("payload"), results[0].Document.Payload)
+	segmentFiles, globErr := filepath.Glob(filepath.Join(dir, "segments", "*", "*.seg"))
+	require.NoError(t, globErr)
+	require.Empty(t, segmentFiles)
+
+	require.NoError(t, os.Remove(idMapRoot))
+	require.NoError(t, os.Rename(relocated, idMapRoot))
+	disrupted = false
+	require.NoError(t, store.Flush(ctx))
+	require.Greater(t, store.Manifest().Generation, before.Generation)
+	require.NoError(t, store.Close())
+}
+
 func TestCollectionRewriteDocumentsIsAtomicAndRecoverable(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -510,6 +553,84 @@ func TestCollectionRewriteRejectsStaleSnapshot(t *testing.T) {
 		got := store.Manifest().Generation
 		require.True(t, got == 1)
 	}
+}
+
+func TestCollectionPropagatesIDMapReadErrorsWithoutPublishing(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
+	require.NoError(t, err)
+	_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "one", Payload: []byte("payload")}})
+	require.NoError(t, err)
+	documents, err := store.LiveDocuments(ctx)
+	require.NoError(t, err)
+	before := store.Manifest()
+
+	require.NoError(t, store.manager.PrimaryKeys().db.Set([]byte("one"), []byte{1}, pebble.NoSync))
+	results, err := store.Fetch(ctx, []string{"one", "later"})
+	require.ErrorIs(t, err, ErrIDMapCorrupt)
+	require.Len(t, results, 2)
+	require.ErrorIs(t, results[0].Err, ErrIDMapCorrupt)
+	require.ErrorIs(t, results[1].Err, ErrIDMapCorrupt)
+
+	_, err = store.LiveDocuments(ctx)
+	require.ErrorIs(t, err, ErrIDMapCorrupt)
+	committed, err := store.RewriteDocuments(ctx, json.RawMessage(`{"name":"replacement","fields":[]}`), documents)
+	require.False(t, committed)
+	require.ErrorIs(t, err, ErrIDMapCorrupt)
+	require.Equal(t, before, store.Manifest())
+	require.NoError(t, store.Close())
+}
+
+func TestCollectionRewriteFullWritingSegmentKeepsDocumentIDsMonotonic(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{SegmentMaxDocuments: 2})
+	require.NoError(t, err)
+	inserted, err := store.Insert(ctx, []WriteInput{
+		{PrimaryKey: "one", Payload: []byte("one")},
+		{PrimaryKey: "two", Payload: []byte("two")},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []uint64{0, 1}, []uint64{inserted[0].DocID, inserted[1].DocID})
+	_, err = store.Delete(ctx, []string{"two"})
+	require.NoError(t, err)
+	live, err := store.LiveDocuments(ctx)
+	require.NoError(t, err)
+	require.Len(t, live, 1)
+	live[0].Payload = []byte("rewritten")
+
+	committed, err := store.RewriteDocuments(ctx, testCollectionSchema, live)
+	require.NoError(t, err)
+	require.True(t, committed)
+	continued, err := store.Insert(ctx, []WriteInput{{PrimaryKey: "three", Payload: []byte("three")}})
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), continued[0].DocID)
+	results, err := store.Fetch(ctx, []string{"one", "two", "three"})
+	require.NoError(t, err)
+	require.Equal(t, []byte("rewritten"), results[0].Document.Payload)
+	require.Nil(t, results[1].Document)
+	require.Equal(t, uint64(2), results[2].Document.DocID)
+	require.NoError(t, store.Close())
+}
+
+func TestCollectionCanceledPruneRetainsArtifactsUntilRetry(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
+	require.NoError(t, err)
+	obsolete := collectionPath(dir, deleteSnapshotName(99))
+	require.NoError(t, os.WriteFile(obsolete, []byte("obsolete"), 0o600))
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	require.ErrorIs(t, store.PruneObsoleteArtifacts(canceled), context.Canceled)
+	require.FileExists(t, obsolete)
+	require.NoError(t, store.PruneObsoleteArtifacts(ctx))
+	_, err = os.Stat(obsolete)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	require.NoError(t, store.Close())
+	require.ErrorIs(t, store.PruneObsoleteArtifacts(ctx), ErrCollectionClosed)
 }
 
 func TestRewriteDocumentRunsHonorsGapsAndCapacity(t *testing.T) {
