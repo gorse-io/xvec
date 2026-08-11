@@ -123,7 +123,7 @@ func localFileMatchesRemote(ctx context.Context, client *http.Client, localPath,
 	if err != nil {
 		return false, fmt.Errorf("check remote dataset file %s: %w", remoteURL, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("check remote dataset file %s: %s", remoteURL, response.Status)
 	}
@@ -139,7 +139,7 @@ func downloadDatasetFile(ctx context.Context, client *http.Client, remoteURL, lo
 	if err != nil {
 		return fmt.Errorf("download dataset file %s: %w", remoteURL, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("download dataset file %s: %s", remoteURL, response.Status)
 	}
@@ -148,7 +148,7 @@ func downloadDatasetFile(ctx context.Context, client *http.Client, remoteURL, lo
 	if err != nil {
 		return fmt.Errorf("create partial dataset file %s: %w", temporaryPath, err)
 	}
-	fmt.Fprintf(log, "downloading %s -> %s\n", remoteURL, localPath)
+	_, _ = fmt.Fprintf(log, "downloading %s -> %s\n", remoteURL, localPath)
 	started := time.Now()
 	written, copyErr := io.Copy(file, response.Body)
 	closeErr := file.Close()
@@ -164,7 +164,7 @@ func downloadDatasetFile(ctx context.Context, client *http.Client, remoteURL, lo
 		_ = os.Remove(temporaryPath)
 		return fmt.Errorf("publish dataset file %s: %w", localPath, err)
 	}
-	fmt.Fprintf(log, "downloaded %s (%d bytes in %s)\n", localPath, written, time.Since(started).Round(time.Millisecond))
+	_, _ = fmt.Fprintf(log, "downloaded %s (%d bytes in %s)\n", localPath, written, time.Since(started).Round(time.Millisecond))
 	return nil
 }
 

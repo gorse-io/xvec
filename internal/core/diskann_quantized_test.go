@@ -52,7 +52,7 @@ func TestScalarQuantizedDiskANNMatchesScalarTruthAndRefinesOriginals(t *testing.
 				)
 				require.NoError(t, err)
 
-				defer index.Close()
+				defer func() { require.NoError(t, index.Close()) }()
 				truth, err := NewScalarQuantizedFlatIndex(
 					context.Background(), dimension, metric, kind, reformer, candidates,
 				)

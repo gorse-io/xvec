@@ -369,7 +369,7 @@ func (m *PrimaryKeyMap) Checkpoint(ctx context.Context, target string) error {
 	if err := os.Remove(temp); err != nil {
 		return fmt.Errorf("db: prepare IDMap checkpoint path: %w", err)
 	}
-	defer os.RemoveAll(temp)
+	defer func() { _ = os.RemoveAll(temp) }()
 
 	m.mu.Lock()
 	if m.db == nil {
@@ -417,13 +417,12 @@ func (m *PrimaryKeyMap) Close() error {
 	return err
 }
 
-func (m *PrimaryKeyMap) scanCount(ctx context.Context) (int, error) {
+func (m *PrimaryKeyMap) scanCount(ctx context.Context) (count int, err error) {
 	iterator, err := m.db.NewIter(nil)
 	if err != nil {
 		return 0, fmt.Errorf("db: scan IDMap: %w", err)
 	}
-	defer iterator.Close()
-	count := 0
+	defer func() { err = errors.Join(err, iterator.Close()) }()
 	for valid := iterator.First(); valid; valid = iterator.Next() {
 		if err := ctx.Err(); err != nil {
 			return 0, err
@@ -442,7 +441,7 @@ func (m *PrimaryKeyMap) scanCount(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-func (m *PrimaryKeyMap) forEach(ctx context.Context, visit func(string, uint64) error) error {
+func (m *PrimaryKeyMap) forEach(ctx context.Context, visit func(string, uint64) error) (err error) {
 	if m == nil {
 		return errors.New("db: nil IDMap")
 	}
@@ -461,7 +460,7 @@ func (m *PrimaryKeyMap) forEach(ctx context.Context, visit func(string, uint64) 
 	if err != nil {
 		return fmt.Errorf("db: iterate IDMap: %w", err)
 	}
-	defer iterator.Close()
+	defer func() { err = errors.Join(err, iterator.Close()) }()
 	seenOverlay := make(map[string]struct{}, len(m.overlay))
 	for valid := iterator.First(); valid; valid = iterator.Next() {
 		if err := ctx.Err(); err != nil {
@@ -501,7 +500,7 @@ func (m *PrimaryKeyMap) forEach(ctx context.Context, visit func(string, uint64) 
 	return nil
 }
 
-func getPrimaryDocID(database *pebble.DB, key string) (uint64, bool, error) {
+func getPrimaryDocID(database *pebble.DB, key string) (docID uint64, found bool, err error) {
 	value, closer, err := database.Get([]byte(key))
 	if errors.Is(err, pebble.ErrNotFound) {
 		return 0, false, nil
@@ -509,7 +508,7 @@ func getPrimaryDocID(database *pebble.DB, key string) (uint64, bool, error) {
 	if err != nil {
 		return 0, false, fmt.Errorf("db: read IDMap point: %w", err)
 	}
-	defer closer.Close()
+	defer func() { err = errors.Join(err, closer.Close()) }()
 	if len(value) != 8 {
 		return 0, false, fmt.Errorf("%w: document ID value has %d bytes", ErrIDMapCorrupt, len(value))
 	}

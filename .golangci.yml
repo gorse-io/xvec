@@ -1,0 +1,15 @@
+version: "2"
+
+linters:
+  exclusions:
+    rules:
+      # Snowball stemmers are generated from upstream language definitions.
+      - path: internal/core/snowball/
+        linters:
+          - staticcheck
+        text: SA4004
+      # Nil-context tests intentionally verify public API validation.
+      - path: _test\.go
+        linters:
+          - staticcheck
+        text: SA1012

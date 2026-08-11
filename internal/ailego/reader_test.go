@@ -91,6 +91,6 @@ func TestOpenReaderAtEmptyFile(t *testing.T) {
 	reader, err := OpenReaderAt(path, true)
 	require.NoError(t, err)
 
-	defer reader.Close()
+	defer func() { require.NoError(t, reader.Close()) }()
 	require.True(t, reader.Size() == 0)
 }

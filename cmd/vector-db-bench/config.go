@@ -227,7 +227,7 @@ func resolveBenchmarkCase(config benchConfig) (benchmarkCase, error) {
 	case strings.ToLower(caseCustom):
 		files := splitNonEmpty(config.TrainFiles)
 		if config.Dimension <= 0 || len(files) == 0 || strings.TrimSpace(config.DatasetDir) == "" {
-			return benchmarkCase{}, errors.New("Custom case requires dataset-dir, positive dimension, and train-files")
+			return benchmarkCase{}, errors.New("custom case requires dataset-dir, positive dimension, and train-files")
 		}
 		metric := strings.ToLower(config.Metric)
 		if metric != "cosine" && metric != "l2" && metric != "ip" {

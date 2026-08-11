@@ -101,7 +101,7 @@ func writeImmutableSnapshot(ctx context.Context, name string, encoded []byte) er
 	if err != nil {
 		return err
 	}
-	defer os.Remove(temp)
+	defer func() { _ = os.Remove(temp) }()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -160,7 +160,7 @@ func readSnapshotFile(ctx context.Context, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return nil, err

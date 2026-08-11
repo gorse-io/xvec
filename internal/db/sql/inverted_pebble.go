@@ -149,7 +149,7 @@ func OpenInvertedIndex(ctx context.Context, path string) (*InvertedIndex, error)
 	if err != nil {
 		return nil, invertedCorruption("open Pebble store", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	format, err := store.Get(invertedFormatKey)
 	if err != nil || string(format) != invertedPebbleFormat {
 		return nil, invertedCorruption("invalid format marker", err)
@@ -541,7 +541,7 @@ func inspectInvertedStoreKeys(path string) ([][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	iterator, err := store.NewRangeIterator(nil, nil)
 	if err != nil {
 		return nil, err

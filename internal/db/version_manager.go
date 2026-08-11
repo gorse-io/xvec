@@ -54,7 +54,7 @@ type VersionManager struct {
 
 // CreateVersionManager creates and atomically publishes an initial manifest.
 // Existing unreferenced manifests from a failed create are skipped safely.
-func CreateVersionManager(ctx context.Context, dir string, initial Manifest) (*VersionManager, error) {
+func CreateVersionManager(ctx context.Context, dir string, initial Manifest) (manager *VersionManager, err error) {
 	if ctx == nil {
 		return nil, errors.New("db: nil create version manager context")
 	}
@@ -76,7 +76,7 @@ func CreateVersionManager(ctx context.Context, dir string, initial Manifest) (*V
 	if !locked {
 		return nil, errors.New("db: manifest creation lock unavailable")
 	}
-	defer lock.Close()
+	defer func() { err = errors.Join(err, lock.Close()) }()
 
 	if _, err := readCurrent(dir); err == nil {
 		return nil, ErrManifestExists
@@ -160,7 +160,7 @@ func (m *VersionManager) Publish(ctx context.Context, next Manifest) (Manifest, 
 	return m.publishManagerLocked(ctx, next)
 }
 
-func (m *VersionManager) publishManagerLocked(ctx context.Context, next Manifest) (Manifest, error) {
+func (m *VersionManager) publishManagerLocked(ctx context.Context, next Manifest) (manifest Manifest, err error) {
 	lock := flock.New(filepath.Join(m.dir, versionLockName))
 	locked, err := lock.TryLockContext(ctx, fileLockRetryDelay)
 	if err != nil {
@@ -169,7 +169,7 @@ func (m *VersionManager) publishManagerLocked(ctx context.Context, next Manifest
 	if !locked {
 		return Manifest{}, errors.New("db: manifest publication lock unavailable")
 	}
-	defer lock.Close()
+	defer func() { err = errors.Join(err, lock.Close()) }()
 
 	currentName, err := readCurrent(m.dir)
 	if err != nil {
@@ -275,7 +275,7 @@ func publishLocked(ctx context.Context, dir, expectedCurrent string, manifest Ma
 	if err != nil {
 		return "", false, err
 	}
-	defer os.Remove(temp)
+	defer func() { _ = os.Remove(temp) }()
 	if expectedCurrent == "" {
 		err = installFileNoReplace(temp, filepath.Join(dir, currentFileName))
 		if errors.Is(err, os.ErrExist) {
@@ -302,7 +302,7 @@ func readManifestFile(name string) (Manifest, error) {
 		}
 		return Manifest{}, fmt.Errorf("db: open manifest: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return Manifest{}, fmt.Errorf("db: stat manifest: %w", err)
@@ -370,7 +370,7 @@ func readCurrent(dir string) (string, error) {
 		}
 		return "", fmt.Errorf("db: open CURRENT: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return "", fmt.Errorf("db: stat CURRENT: %w", err)

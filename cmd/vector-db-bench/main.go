@@ -59,7 +59,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	}
 	printSummary(report, stderr)
 	if config.Output != "" && config.Output != "-" {
-		fmt.Fprintf(stderr, "result=%s\n", config.Output)
+		_, _ = fmt.Fprintf(stderr, "result=%s\n", config.Output)
 	}
 	return nil
 }

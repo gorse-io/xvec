@@ -156,7 +156,7 @@ func TestCollectionCreateRecoverFlushAndContinue(t *testing.T) {
 	readOnly, err := OpenCollection(context.Background(), dir, CollectionOptions{ReadOnly: true})
 	require.NoError(t, err)
 
-	defer readOnly.Close()
+	defer func() { require.NoError(t, readOnly.Close()) }()
 	require.True(t, readOnly.ReadOnly())
 	require.Len(t, readOnly.Manifest().PersistedSegments, 2)
 
@@ -258,7 +258,7 @@ func TestCollectionIDMapApplyFailurePoisonsUntilReopen(t *testing.T) {
 
 		reopened, err := OpenCollection(ctx, dir, CollectionOptions{})
 		require.NoError(t, err)
-		defer reopened.Close()
+		defer func() { require.NoError(t, reopened.Close()) }()
 		results, err := reopened.Fetch(ctx, []string{"recover", "rejected"})
 		require.NoError(t, err)
 		require.NotNil(t, results[0].Document)
@@ -283,7 +283,7 @@ func TestCollectionIDMapApplyFailurePoisonsUntilReopen(t *testing.T) {
 
 		reopened, err := OpenCollection(ctx, dir, CollectionOptions{})
 		require.NoError(t, err)
-		defer reopened.Close()
+		defer func() { require.NoError(t, reopened.Close()) }()
 		results, err := reopened.Fetch(ctx, []string{"deleted"})
 		require.NoError(t, err)
 		require.Nil(t, results[0].Document)
@@ -336,7 +336,7 @@ func TestCollectionFailedFlushLeavesPublishedStateAndWriterUsable(t *testing.T) 
 	store, err := CreateCollection(context.Background(), dir, testCollectionSchema, CollectionOptions{})
 	require.NoError(t, err)
 
-	defer store.Close()
+	defer func() { require.NoError(t, store.Close()) }()
 	{
 		_, err := store.Insert(context.Background(), []WriteInput{{PrimaryKey: "one"}})
 		require.NoError(t, err)
@@ -516,7 +516,7 @@ func TestCollectionRewriteDocumentsIsAtomicAndRecoverable(t *testing.T) {
 	store, err = OpenCollection(ctx, dir, CollectionOptions{})
 	require.NoError(t, err)
 
-	defer store.Close()
+	defer func() { require.NoError(t, store.Close()) }()
 	require.Equal(t, string(nextSchema), string(store.Manifest().Schema))
 
 	results, err = store.Fetch(ctx, []string{"a", "b", "c", "d"})
@@ -534,7 +534,7 @@ func TestCollectionRewriteRejectsStaleSnapshot(t *testing.T) {
 	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
 	require.NoError(t, err)
 
-	defer store.Close()
+	defer func() { require.NoError(t, store.Close()) }()
 	{
 		_, err := store.Insert(ctx, []WriteInput{{PrimaryKey: "a", Payload: []byte("a1")}})
 		require.NoError(t, err)
@@ -769,7 +769,7 @@ func TestCollectionIgnoresUnpublishedArtifacts(t *testing.T) {
 	opened, err := OpenCollection(context.Background(), dir, CollectionOptions{ReadOnly: true})
 	require.NoError(t, err)
 
-	defer opened.Close()
+	defer func() { require.NoError(t, opened.Close()) }()
 	{
 		got := opened.Manifest()
 		require.Equal(t, current.Generation, got.Generation)
@@ -799,7 +799,7 @@ func TestCollectionRecoversAfterProcessExit(t *testing.T) {
 	opened, err := OpenCollection(context.Background(), dir, CollectionOptions{})
 	require.NoError(t, err)
 
-	defer opened.Close()
+	defer func() { require.NoError(t, opened.Close()) }()
 	results, err := opened.Fetch(context.Background(), []string{"survivor"})
 	require.NoError(t, err)
 	require.NotNil(t, results[0].Document)
@@ -930,7 +930,7 @@ func TestCollectionPublishSchemaIsAtomicAndDurable(t *testing.T) {
 	readOnly, err := OpenCollection(ctx, dir, CollectionOptions{ReadOnly: true})
 	require.NoError(t, err)
 
-	defer readOnly.Close()
+	defer func() { require.NoError(t, readOnly.Close()) }()
 	{
 		got := readOnly.Manifest()
 		require.Equal(t, string(updatedSchema), string(got.Schema))

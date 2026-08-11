@@ -31,9 +31,9 @@ import (
 )
 
 const (
-	walFormatVersion    uint16 = 1
-	walFileHeaderSize          = 32
-	walRecordHeaderSize        = 32
+	walFormatVersion    = 1
+	walFileHeaderSize   = 32
+	walRecordHeaderSize = 32
 
 	// MaxWALRecordSize matches the pinned baseline's per-record safety limit.
 	MaxWALRecordSize = 4 << 20
@@ -361,7 +361,7 @@ func (w *WAL) NewReader() (*WALReader, error) {
 }
 
 // Replay invokes apply in LSN order over a stable WAL snapshot.
-func (w *WAL) Replay(ctx context.Context, apply func(WALRecord) error) error {
+func (w *WAL) Replay(ctx context.Context, apply func(WALRecord) error) (err error) {
 	if ctx == nil {
 		return errors.New("db: nil WAL replay context")
 	}
@@ -372,7 +372,7 @@ func (w *WAL) Replay(ctx context.Context, apply func(WALRecord) error) error {
 	if err != nil {
 		return err
 	}
-	defer reader.Close()
+	defer func() { err = errors.Join(err, reader.Close()) }()
 	for {
 		record, err := reader.Next(ctx)
 		if errors.Is(err, io.EOF) {

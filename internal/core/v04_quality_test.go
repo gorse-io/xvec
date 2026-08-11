@@ -47,7 +47,7 @@ func TestV04DiskANNRecallAndReopenMatrix(t *testing.T) {
 			reopened, err := OpenDiskANNIndex(context.Background(), path, 96, 4)
 			require.NoError(t, err)
 
-			defer reopened.Close()
+			defer func() { require.NoError(t, reopened.Close()) }()
 
 			matched := 0
 			for queryIndex := range queryCount {
@@ -126,7 +126,7 @@ func TestV04DiskANNReadResourceBounds(t *testing.T) {
 			opened, err := openDiskANNIndexReader(context.Background(), reader, int64(len(encoded)), 0, workers, nil)
 			require.NoError(t, err)
 
-			defer opened.Close()
+			defer func() { require.NoError(t, opened.Close()) }()
 			reader.enabled.Store(true)
 			results, err := opened.SearchDiskANN(context.Background(), candidates[57].Vector, DiskANNSearchOptions{
 				SearchOptions: SearchOptions{TopK: 10}, ListSize: len(candidates),
@@ -223,7 +223,7 @@ func BenchmarkV04DenseSearchQuality(b *testing.B) {
 	diskOptions.MaxDegree, diskOptions.ListSize, diskOptions.PQChunks = 12, 96, 32
 	diskOptions.CacheCapacity = 512
 	disk := buildDiskANNIndex(b, candidates, diskOptions)
-	defer disk.Close()
+	defer func() { require.NoError(b, disk.Close()) }()
 	path := filepath.Join(b.TempDir(), "quality.diskann")
 	{
 		err := disk.Save(context.Background(), path)

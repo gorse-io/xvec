@@ -476,7 +476,7 @@ func assignKMeans(
 }
 
 func nearestCentroid(metric Metric, centroids [][]float32, vector []float32) (int, float32, error) {
-	return nearestCentroidContext(nil, metric, centroids, vector)
+	return nearestCentroidContext(context.Background(), metric, centroids, vector)
 }
 
 func nearestCentroidContext(ctx context.Context, metric Metric, centroids [][]float32, vector []float32) (int, float32, error) {

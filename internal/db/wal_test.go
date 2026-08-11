@@ -101,7 +101,7 @@ func TestWALCreateAppendReplayAndReopen(t *testing.T) {
 	reopened, err := OpenWAL(context.Background(), name, WALOptions{})
 	require.NoError(t, err)
 
-	defer reopened.Close()
+	defer func() { require.NoError(t, reopened.Close()) }()
 	recovery := reopened.Recovery()
 	require.True(t, recovery.Records == 3)
 	require.True(t, recovery.LastLSN == 3)
@@ -118,7 +118,7 @@ func TestWALReplayUsesStableSnapshot(t *testing.T) {
 	wal, err := CreateWAL(context.Background(), name, WALOptions{})
 	require.NoError(t, err)
 
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	{
 		_, err := wal.Append(context.Background(), []byte("one"))
 		require.NoError(t, err)
@@ -278,7 +278,7 @@ func TestWALConcurrentAppend(t *testing.T) {
 	wal, err := CreateWAL(context.Background(), name, WALOptions{})
 	require.NoError(t, err)
 
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 
 	const goroutines = 8
 	const recordsPerGoroutine = 40
@@ -336,7 +336,7 @@ func TestWALWriterLockHonorsContext(t *testing.T) {
 	first, err := CreateWAL(context.Background(), name, WALOptions{})
 	require.NoError(t, err)
 
-	defer first.Close()
+	defer func() { require.NoError(t, first.Close()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
@@ -482,7 +482,7 @@ func TestWALArgumentAndClosedValidation(t *testing.T) {
 func TestWALSyncFailurePoisonsHandle(t *testing.T) {
 	wal, err := CreateWAL(context.Background(), filepath.Join(t.TempDir(), "data.wal"), WALOptions{})
 	require.NoError(t, err)
-	defer wal.Close()
+	defer func() { _ = wal.Close() }()
 	_, err = wal.Append(context.Background(), []byte("record"))
 	require.NoError(t, err)
 	syncError := errors.New("injected sync failure")
@@ -500,7 +500,7 @@ func TestWALReaderDetectsPostOpenCorruption(t *testing.T) {
 	wal, err := CreateWAL(context.Background(), name, WALOptions{})
 	require.NoError(t, err)
 
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	{
 		_, err := wal.Append(context.Background(), []byte("one"))
 		require.NoError(t, err)
@@ -509,7 +509,7 @@ func TestWALReaderDetectsPostOpenCorruption(t *testing.T) {
 	reader, err := wal.NewReader()
 	require.NoError(t, err)
 
-	defer reader.Close()
+	defer func() { require.NoError(t, reader.Close()) }()
 	file, err := os.OpenFile(name, os.O_RDWR, 0)
 	require.NoError(t, err)
 

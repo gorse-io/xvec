@@ -155,7 +155,7 @@ func TestCollectionMultiQueryWeightedReranker(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "weighted"), testMultiQuerySchema(), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, err := collection.Insert(ctx, testMultiQueryDocuments())
 		require.NoError(t, err)

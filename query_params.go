@@ -53,7 +53,7 @@ func NewFlatQueryParams() FlatQueryParams {
 
 func (FlatQueryParams) IndexType() IndexType { return IndexTypeFlat }
 func (p FlatQueryParams) Validate() error {
-	if err := p.QueryOptions.validate("validate Flat query params"); err != nil {
+	if err := p.validate("validate Flat query params"); err != nil {
 		return err
 	}
 	return validateScaleFactor("validate Flat query params", p.ScaleFactor)
@@ -78,7 +78,7 @@ func NewHNSWQueryParams() HNSWQueryParams {
 
 func (HNSWQueryParams) IndexType() IndexType { return IndexTypeHNSW }
 func (p HNSWQueryParams) Validate() error {
-	if err := p.QueryOptions.validate("validate HNSW query params"); err != nil {
+	if err := p.validate("validate HNSW query params"); err != nil {
 		return err
 	}
 	if p.EF <= 0 || p.EF > MaxGraphEFSearch {
@@ -100,7 +100,7 @@ func NewHNSWRaBitQQueryParams() HNSWRaBitQQueryParams {
 
 func (HNSWRaBitQQueryParams) IndexType() IndexType { return IndexTypeHNSWRaBitQ }
 func (p HNSWRaBitQQueryParams) Validate() error {
-	if err := p.QueryOptions.validate("validate HNSW RaBitQ query params"); err != nil {
+	if err := p.validate("validate HNSW RaBitQ query params"); err != nil {
 		return err
 	}
 	if p.EF <= 0 || p.EF > MaxGraphEFSearch {
@@ -123,7 +123,7 @@ func NewIVFQueryParams() IVFQueryParams {
 
 func (IVFQueryParams) IndexType() IndexType { return IndexTypeIVF }
 func (p IVFQueryParams) Validate() error {
-	if err := p.QueryOptions.validate("validate IVF query params"); err != nil {
+	if err := p.validate("validate IVF query params"); err != nil {
 		return err
 	}
 	if p.NProbe <= 0 {
@@ -145,7 +145,7 @@ func NewDiskANNQueryParams() DiskANNQueryParams {
 
 func (DiskANNQueryParams) IndexType() IndexType { return IndexTypeDiskANN }
 func (p DiskANNQueryParams) Validate() error {
-	if err := p.QueryOptions.validate("validate DiskANN query params"); err != nil {
+	if err := p.validate("validate DiskANN query params"); err != nil {
 		return err
 	}
 	if p.ListSize <= 0 || uint64(p.ListSize) > math.MaxUint32 {
@@ -173,7 +173,7 @@ func NewVamanaQueryParams() VamanaQueryParams {
 
 func (VamanaQueryParams) IndexType() IndexType { return IndexTypeVamana }
 func (p VamanaQueryParams) Validate() error {
-	if err := p.QueryOptions.validate("validate Vamana query params"); err != nil {
+	if err := p.validate("validate Vamana query params"); err != nil {
 		return err
 	}
 	if p.EFSearch <= 0 || p.EFSearch > MaxGraphEFSearch {

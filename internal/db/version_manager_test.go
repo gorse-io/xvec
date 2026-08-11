@@ -260,7 +260,7 @@ func TestVersionManagerContextCancellation(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, locked)
 
-	defer lock.Close()
+	defer func() { require.NoError(t, lock.Close()) }()
 	deadline, cancelDeadline := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancelDeadline()
 	{

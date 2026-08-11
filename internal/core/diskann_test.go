@@ -385,7 +385,7 @@ func TestDiskANNPersistenceRoundTripSearchCacheAndReplace(t *testing.T) {
 	opened, err := OpenDiskANNIndex(context.Background(), path, 24, 4)
 	require.NoError(t, err)
 
-	defer opened.Close()
+	defer func() { require.NoError(t, opened.Close()) }()
 	require.Equal(t, index.Dimension(), opened.Dimension())
 	require.Equal(t, index.Metric(), opened.Metric())
 	require.Equal(t, index.Len(), opened.Len())
@@ -453,7 +453,7 @@ func TestDiskANNPersistenceRoundTripSearchCacheAndReplace(t *testing.T) {
 	reopened, err := OpenDiskANNIndex(context.Background(), copyPath, 0, 2)
 	require.NoError(t, err)
 
-	defer reopened.Close()
+	defer func() { require.NoError(t, reopened.Close()) }()
 	require.Equal(t, MetricIP, reopened.Metric())
 	require.True(t, reopened.Dimension() == 6)
 	require.True(t, reopened.Len() == 40)
@@ -473,7 +473,7 @@ func TestDiskANNPersistenceMIPSL2TraversalState(t *testing.T) {
 	opened, err := OpenDiskANNIndex(context.Background(), path, 8, 2)
 	require.NoError(t, err)
 
-	defer opened.Close()
+	defer func() { require.NoError(t, opened.Close()) }()
 	require.Len(t, opened.codeNorms, len(candidates))
 	require.Equal(t, MetricL2, opened.traversalMetric)
 
@@ -744,8 +744,7 @@ func TestV04DiskANNAtomicSaveProcessKill(t *testing.T) {
 	go func() { done <- command.Wait() }()
 
 	deadline := time.Now().Add(30 * time.Second)
-	killed := false
-	for !killed {
+	for {
 		select {
 		case err := <-done:
 			require.FailNowf(t, "DiskANN crash helper exited before kill boundary", "%v", err)
@@ -761,7 +760,6 @@ func TestV04DiskANNAtomicSaveProcessKill(t *testing.T) {
 			}
 
 			<-done
-			killed = true
 			break
 		}
 		if time.Now().After(deadline) {
@@ -775,7 +773,7 @@ func TestV04DiskANNAtomicSaveProcessKill(t *testing.T) {
 	opened, err := OpenDiskANNIndex(context.Background(), target, 0, 1)
 	require.NoError(t, err)
 
-	defer opened.Close()
+	defer func() { require.NoError(t, opened.Close()) }()
 	require.False(t, opened.Len() != 8 && opened.Len() != 192)
 }
 

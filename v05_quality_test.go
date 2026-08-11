@@ -104,7 +104,7 @@ func TestV05HybridReleaseReopenMatrix(t *testing.T) {
 	reopened, err := Open(ctx, path, options)
 	require.NoError(t, err)
 
-	defer reopened.Close()
+	defer func() { require.NoError(t, reopened.Close()) }()
 	{
 		reopenedResults := run(reopened)
 		require.Equal(t, writableResults, reopenedResults)

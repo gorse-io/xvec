@@ -104,7 +104,7 @@ func TestASCIIFoldingTablesIdentity(t *testing.T) {
 		require.False(t, index > 0 && asciiNFKDCodepoints[index-1] >= codepoint)
 		require.False(t, asciiNFKDReplacements[index] == 0)
 
-		fmt.Fprintf(nfkdHash, "%X %X\n", codepoint, asciiNFKDReplacements[index])
+		_, _ = fmt.Fprintf(nfkdHash, "%X %X\n", codepoint, asciiNFKDReplacements[index])
 	}
 	{
 		got := fmt.Sprintf("%x", nfkdHash.Sum(nil))
@@ -116,7 +116,7 @@ func TestASCIIFoldingTablesIdentity(t *testing.T) {
 		require.False(t, index > 0 && asciiExtraFolds[index-1].codepoint >= fold.codepoint)
 		require.False(t, fold.replacement == "")
 
-		fmt.Fprintf(extraHash, "\t{0x%04X, %q},\n", fold.codepoint, fold.replacement)
+		_, _ = fmt.Fprintf(extraHash, "	{0x%04X, %q},\n", fold.codepoint, fold.replacement)
 	}
 	{
 		got := fmt.Sprintf("%x", extraHash.Sum(nil))
@@ -127,10 +127,10 @@ func TestASCIIFoldingTablesIdentity(t *testing.T) {
 	count := 0
 	for value := rune(0x80); value <= 0x10ffff; value++ {
 		if replacement, found := lookupASCIIExtraFold(value); found {
-			fmt.Fprintf(effectiveHash, "%X %X\n", value, []byte(replacement))
+			_, _ = fmt.Fprintf(effectiveHash, "%X %X\n", value, []byte(replacement))
 			count++
 		} else if replacement, found := lookupASCIINFKDFold(value); found {
-			fmt.Fprintf(effectiveHash, "%X %X\n", value, replacement)
+			_, _ = fmt.Fprintf(effectiveHash, "%X %X\n", value, replacement)
 			count++
 		}
 	}

@@ -30,7 +30,7 @@ import (
 
 func TestWriteEngineInsert(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 10, 10)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	payload := []byte(`{"title":"one"}`)
 	results, err := engine.Insert(context.Background(), []WriteInput{
 		{PrimaryKey: "one", Payload: payload},
@@ -71,7 +71,7 @@ func TestWriteEngineInsert(t *testing.T) {
 
 func TestWriteEngineBatchesWALSync(t *testing.T) {
 	engine, _, wal := newTestWriteEngine(t, 0, 10)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	wal.options.SyncEvery = 4
 
 	_, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "key"}})
@@ -93,7 +93,7 @@ func TestWriteEngineBatchesWALSync(t *testing.T) {
 
 func TestWriteEngineAppliesRecordWhenAutomaticSyncFails(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 0, 10)
-	defer wal.Close()
+	defer func() { _ = wal.Close() }()
 	wal.options.SyncEvery = 1
 	syncError := errors.New("injected WAL sync failure")
 	wal.syncFile = func() error { return syncError }
@@ -115,7 +115,7 @@ func TestWriteEngineAppliesRecordWhenAutomaticSyncFails(t *testing.T) {
 func TestWriteEnginePoisonsWhenSegmentApplyFailsAfterWALAppend(t *testing.T) {
 	ctx := context.Background()
 	engine, manager, wal := newTestWriteEngine(t, 0, 4)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 
 	originalSync := wal.syncFile
 	wal.options.SyncEvery = 1
@@ -156,7 +156,7 @@ func TestWriteEnginePoisonsWhenSegmentApplyFailsAfterWALAppend(t *testing.T) {
 func TestWriteEnginePoisonsWhenDeleteApplyFailsAfterWALAppend(t *testing.T) {
 	ctx := context.Background()
 	engine, manager, wal := newTestWriteEngine(t, 0, 4)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	_, err := engine.Insert(ctx, []WriteInput{{PrimaryKey: "durable", Payload: []byte("payload")}})
 	require.NoError(t, err)
 	require.NoError(t, wal.Sync(ctx))
@@ -204,7 +204,7 @@ func TestWriteEngineReplacementApplyFailuresRecoverFromWAL(t *testing.T) {
 			t.Run(operation+"/"+failure, func(t *testing.T) {
 				ctx := context.Background()
 				engine, manager, wal := newTestWriteEngine(t, 0, 4)
-				defer wal.Close()
+				defer func() { require.NoError(t, wal.Close()) }()
 				_, err := engine.Insert(ctx, []WriteInput{{PrimaryKey: "key", Payload: []byte("v1")}})
 				require.NoError(t, err)
 				require.NoError(t, wal.Sync(ctx))
@@ -268,7 +268,7 @@ func TestWriteEnginePropagatesIDMapReadErrorsBeforeWALAppend(t *testing.T) {
 		t.Run(operation, func(t *testing.T) {
 			ctx := context.Background()
 			engine, manager, wal := newTestWriteEngine(t, 0, 4)
-			defer wal.Close()
+			defer func() { require.NoError(t, wal.Close()) }()
 			require.NoError(t, manager.PrimaryKeys().db.Set([]byte("broken"), []byte{1}, pebble.NoSync))
 
 			var err error
@@ -330,7 +330,7 @@ func TestWriteEngineAppliesReplacementAndDeleteWhenAutomaticSyncFails(t *testing
 		t.Run(operation, func(t *testing.T) {
 			ctx := context.Background()
 			engine, manager, wal := newTestWriteEngine(t, 0, 4)
-			defer wal.Close()
+			defer func() { _ = wal.Close() }()
 			_, err := engine.Insert(ctx, []WriteInput{{PrimaryKey: "key", Payload: []byte("v1")}})
 			require.NoError(t, err)
 			require.NoError(t, wal.Sync(ctx))
@@ -366,7 +366,7 @@ func TestWriteEngineAppliesReplacementAndDeleteWhenAutomaticSyncFails(t *testing
 
 func TestWriteEngineInsertReportsPerDocumentFailures(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 0, 10)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	{
 		_, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "exists"}})
 		require.NoError(t, err)
@@ -396,7 +396,7 @@ func TestWriteEngineInsertReportsPerDocumentFailures(t *testing.T) {
 
 func TestWriteEngineInsertFullAndCanceled(t *testing.T) {
 	engine, _, wal := newTestWriteEngine(t, 0, 1)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	results, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "one"}, {PrimaryKey: "two"}})
 	require.ErrorIs(t, err, ErrSegmentFull)
 	require.NoError(t, results[0].Err)
@@ -425,7 +425,7 @@ func TestWriteEngineMutationBatchesStopCleanlyOnCancellation(t *testing.T) {
 	for _, operation := range []string{"upsert", "update", "delete"} {
 		t.Run(operation, func(t *testing.T) {
 			engine, manager, wal := newTestWriteEngine(t, 0, 4)
-			defer wal.Close()
+			defer func() { require.NoError(t, wal.Close()) }()
 			canceled, cancel := context.WithCancel(context.Background())
 			cancel()
 
@@ -453,7 +453,7 @@ func TestWriteEngineMutationBatchesStopCleanlyOnCancellation(t *testing.T) {
 
 func TestWriteEngineUpsertCreatesAndReplaces(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 50, 10)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	results, err := engine.Upsert(context.Background(), []WriteInput{{PrimaryKey: "key", Payload: []byte("v1")}})
 	require.NoError(t, err)
 	require.True(t, results[0].DocID == 50)
@@ -494,7 +494,7 @@ func TestWriteEngineUpsertCreatesAndReplaces(t *testing.T) {
 
 func TestWriteEngineUpsertPerDocumentErrors(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 0, 2)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	results, err := engine.Upsert(context.Background(), []WriteInput{
 		{PrimaryKey: ""}, {PrimaryKey: "one", Payload: []byte("1")}, {PrimaryKey: "two", Payload: []byte("2")}, {PrimaryKey: "three"},
 	})
@@ -515,7 +515,7 @@ func TestWriteEngineUpsertPerDocumentErrors(t *testing.T) {
 
 func TestWriteEngineConcurrentUpsertSameKey(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 0, 64)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	const count = 32
 	var wait sync.WaitGroup
 	errs := make(chan error, count)
@@ -544,7 +544,7 @@ func TestWriteEngineConcurrentUpsertSameKey(t *testing.T) {
 
 func TestWriteEngineUpdateReplacesExistingOnly(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 10, 10)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	{
 		_, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "key", Payload: []byte("v1")}})
 		require.NoError(t, err)
@@ -584,7 +584,7 @@ func TestWriteEngineUpdateReplacesExistingOnly(t *testing.T) {
 
 func TestWriteEngineUpdateValidationAndCapacity(t *testing.T) {
 	engine, _, wal := newTestWriteEngine(t, 0, 2)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	{
 		_, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "key"}})
 		require.NoError(t, err)
@@ -609,7 +609,7 @@ func TestWriteEngineUpdateValidationAndCapacity(t *testing.T) {
 
 func TestWriteEngineDeleteExistingAndMissing(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 20, 10)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	{
 		_, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "one"}, {PrimaryKey: "two"}})
 		require.NoError(t, err)
@@ -663,7 +663,7 @@ func TestWriteEngineDeleteExistingAndMissing(t *testing.T) {
 
 func TestWriteEngineDeleteValidationAndConcurrency(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 0, 10)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	{
 		_, err := engine.Insert(context.Background(), []WriteInput{{PrimaryKey: "shared"}})
 		require.NoError(t, err)
@@ -710,7 +710,7 @@ func TestWriteEngineDeleteValidationAndConcurrency(t *testing.T) {
 
 func TestWriteEngineConcurrentInsert(t *testing.T) {
 	engine, manager, wal := newTestWriteEngine(t, 100, 200)
-	defer wal.Close()
+	defer func() { require.NoError(t, wal.Close()) }()
 	const count = 100
 	ids := make(chan uint64, count)
 	errs := make(chan error, count)
@@ -827,7 +827,7 @@ func newTestWriteEngine(t *testing.T, minDocID, maxDocs uint64) (*WriteEngine, *
 
 	engine, err := NewWriteEngine(manager, wal)
 	if err != nil {
-		wal.Close()
+		require.NoError(t, wal.Close())
 	}
 	require.NoError(t, err)
 	return engine, manager, wal

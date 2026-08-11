@@ -475,7 +475,7 @@ func writeIndexstoreMarker(path string) (err error) {
 		return fmt.Errorf("indexstore: create marker temporary file: %w", err)
 	}
 	temporary := file.Name()
-	defer os.Remove(temporary)
+	defer func() { _ = os.Remove(temporary) }()
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("indexstore: chmod marker temporary file: %w", err)

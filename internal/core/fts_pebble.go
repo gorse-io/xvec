@@ -122,7 +122,7 @@ func OpenFTSTermDictionary(ctx context.Context, path string) (*FTSTermDictionary
 	if err != nil {
 		return nil, ftsDictionaryCorruption("open Pebble store", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	format, err := store.Get(ftsFormatKey)
 	if err != nil || string(format) != ftsPebbleFormat {
 		return nil, ftsDictionaryCorruption("invalid format marker", err)
@@ -479,7 +479,7 @@ func inspectFTSStoreKeys(path string) ([][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	iterator, err := store.NewRangeIterator(nil, nil)
 	if err != nil {
 		return nil, err

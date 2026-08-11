@@ -196,7 +196,7 @@ func TestStandardTokenizerEmojiSequences(t *testing.T) {
 		{"👩🏽‍💻", []string{"👩🏽‍💻"}},
 		{"🇺🇸🇨🇦🇯", []string{"🇺🇸", "🇨🇦", "🇯"}},
 		{"🇦\u0308🇧 🇦‍🇧🇨", []string{"🇦\u0308🇧", "🇦‍🇧", "🇨"}},
-		{"‍🛑 a‍🛑 ‍Ⓜ", []string{"‍🛑", "a‍🛑", "‍Ⓜ"}},
+		{"\u200d🛑 a\u200d🛑 \u200dⓂ", []string{"\u200d🛑", "a\u200d🛑", "\u200dⓂ"}},
 	}
 	for _, test := range tests {
 		got, err := tokenizer.Tokenize(context.Background(), test.input)

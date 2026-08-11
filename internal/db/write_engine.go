@@ -27,8 +27,8 @@ import (
 )
 
 const (
-	writeOperationVersion    uint16 = 3
-	writeOperationHeaderSize        = 24
+	writeOperationVersion    = 3
+	writeOperationHeaderSize = 24
 )
 
 var (
