@@ -194,19 +194,19 @@ func writeReport(report benchmarkReport, output string, stdout io.Writer) error 
 }
 
 func printSummary(report benchmarkReport, writer io.Writer) {
-	fmt.Fprintf(writer, "case=%s dataset=%s\n", report.Case.Name, report.DatasetDir)
+	_, _ = fmt.Fprintf(writer, "case=%s dataset=%s\n", report.Case.Name, report.DatasetDir)
 	if report.Load != nil {
-		fmt.Fprintf(writer, "load rows=%d duration=%.3fs insert=%.3fs optimize=%.3fs rows/s=%.1f\n",
+		_, _ = fmt.Fprintf(writer, "load rows=%d duration=%.3fs insert=%.3fs optimize=%.3fs rows/s=%.1f\n",
 			report.Load.Rows, report.Load.LoadDurationSec, report.Load.InsertDurationSec,
 			report.Load.OptimizeDurationSec, report.Load.RowsPerSecond)
 	}
 	if report.Serial != nil {
-		fmt.Fprintf(writer, "serial queries=%d qps=%.2f recall=%.4f avg=%.3fms p95=%.3fms p99=%.3fms\n",
+		_, _ = fmt.Fprintf(writer, "serial queries=%d qps=%.2f recall=%.4f avg=%.3fms p95=%.3fms p99=%.3fms\n",
 			report.Serial.Queries, report.Serial.QPS, report.Serial.Recall,
 			report.Serial.LatencyAvgMS, report.Serial.LatencyP95MS, report.Serial.LatencyP99MS)
 	}
 	for _, result := range report.Concurrent {
-		fmt.Fprintf(writer, "concurrent workers=%d queries=%d qps=%.2f avg=%.3fms p95=%.3fms p99=%.3fms\n",
+		_, _ = fmt.Fprintf(writer, "concurrent workers=%d queries=%d qps=%.2f avg=%.3fms p95=%.3fms p99=%.3fms\n",
 			result.Concurrency, result.Queries, result.QPS,
 			result.LatencyAvgMS, result.LatencyP95MS, result.LatencyP99MS)
 	}

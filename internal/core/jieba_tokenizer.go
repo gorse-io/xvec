@@ -227,7 +227,7 @@ func loadJiebaDictionary(ctx context.Context, path string) (*jiebaDictionary, er
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	type sourceEntry struct {
 		key       string
@@ -333,7 +333,7 @@ func (d *jiebaDictionary) loadUserDictionary(ctx context.Context, path string) e
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64<<10), 2<<20)
 	lineNumber := 0
@@ -422,7 +422,7 @@ func loadJiebaHMMModel(ctx context.Context, path string) (*jiebaHMMModel, error)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64<<10), 2<<20)
 	nextDataLine := func() (string, error) {

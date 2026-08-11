@@ -141,7 +141,7 @@ func TestCollectionCRUDFlushReopenAndReadOnly(t *testing.T) {
 	readOnly, err := Open(ctx, path, readOnlyOptions)
 	require.NoError(t, err)
 
-	defer readOnly.Close()
+	defer func() { require.NoError(t, readOnly.Close()) }()
 	{
 		got := readOnly.Stats().DocumentCount
 		require.True(t, got == 2)
@@ -165,7 +165,7 @@ func TestCollectionDenseSparseRadiusProjectionAndGroupBy(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "query"), testPublicCollectionSchema(), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	documents := []Document{
 		testPublicDocument("a", "alpha", "low", 1, 1, []float32{1, 0}),
 		testPublicDocument("b", "bravo", "high", 2, 5, []float32{5, 0}),
@@ -241,7 +241,7 @@ func TestCollectionUnifiedQueryTargets(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "unified"), testMultiQuerySchema(), NewCollectionOptions())
 	require.NoError(t, err)
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	_, err = collection.Insert(ctx, testMultiQueryDocuments())
 	require.NoError(t, err)
 
@@ -299,7 +299,7 @@ func TestCollectionMultiQueryPrimaryKeyTarget(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "multi-id"), testMultiQuerySchema(), NewCollectionOptions())
 	require.NoError(t, err)
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	_, err = collection.Insert(ctx, testMultiQueryDocuments())
 	require.NoError(t, err)
 
@@ -331,7 +331,7 @@ func TestCollectionRuntimeIndexesAreReusedUntilSnapshotChanges(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "runtime-cache"), testPublicCollectionSchema(), NewCollectionOptions())
 	require.NoError(t, err)
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	_, err = collection.Insert(ctx, []Document{
 		testPublicDocument("a", "alpha", "low", 1, 1, []float32{1, 0}),
 		testPublicDocument("b", "bravo", "high", 2, 2, []float32{2, 0}),
@@ -433,7 +433,7 @@ func TestCollectionPersistsAndReopensSnapshotIndexes(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(invertPath, "ZVEC-INDEX"), []byte("corrupt"), 0o600))
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	_, err = collection.Query(ctx, VectorQuery{Filter: "rating >= 2", TopK: 10})
 	require.ErrorIs(t, err, dbsql.ErrCorruptInvertedIndex)
 }
@@ -473,7 +473,7 @@ func TestCollectionRebuildsMissingOptionalSegmentIndexSnapshots(t *testing.T) {
 
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	vectorResults, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2})
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "b"}, documentKeys(vectorResults))
@@ -525,7 +525,7 @@ func TestCollectionSegmentNativeIndexesAreIncremental(t *testing.T) {
 
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	results, err := collection.Query(ctx, VectorQuery{Field: "text", FTS: &FTSClause{Match: "apple"}, TopK: 10})
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "b"}, documentKeys(results))
@@ -571,7 +571,7 @@ func TestCollectionScalarQuantizedDiskANNDirectSchema(t *testing.T) {
 			collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "later"), schema, NewCollectionOptions())
 			require.NoError(t, err)
 
-			defer collection.Close()
+			defer func() { require.NoError(t, collection.Close()) }()
 			{
 				_, err := collection.Insert(ctx, []Document{
 					{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{0, 0, 0, 0}}},
@@ -611,7 +611,7 @@ func TestCollectionReplaysPublicDocumentPayloadWithoutFlush(t *testing.T) {
 	reopened, err := Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer reopened.Close()
+	defer func() { require.NoError(t, reopened.Close()) }()
 	results, err := reopened.Query(ctx, VectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 1,
 		Projection: Projection{IncludeVectors: true},
@@ -771,7 +771,7 @@ func TestAddColumnBackfillsAtomicallyAndSurvivesReopen(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	fetched, err = collection.Fetch(ctx, []string{"a", "b", "c"}, Projection{})
 	require.NoError(t, err)
 
@@ -811,7 +811,7 @@ func TestAddColumnValidationAndFailureRollback(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, path, addColumnSchema(), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		err := collection.AddColumn(nil, FieldSchema{Name: "nil_ctx", DataType: DataTypeInt32}, "1", AddColumnOptions{})
 		require.ErrorIs(t, err, ErrInvalidArgument)
@@ -883,7 +883,7 @@ func TestAddColumnEmptyCollectionMatchesDeferredExpressionBehavior(t *testing.T)
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	document := addColumnDocument("one", 1, []float32{1, 0})
 	document.Fields["deferred"] = int32(7)
 	{
@@ -907,7 +907,7 @@ func TestAddColumnRejectsReadOnlyHandle(t *testing.T) {
 	collection, err = Open(ctx, path, options)
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	err = collection.AddColumn(ctx, FieldSchema{Name: "new", DataType: DataTypeInt32}, "1", AddColumnOptions{})
 	require.ErrorIs(t, err, ErrPermissionDenied)
 }
@@ -1024,7 +1024,7 @@ func TestAlterColumnMigratesNamesTypesIndexesAndReopens(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	fetched, err = collection.Fetch(ctx, []string{"a", "b", "c"}, Projection{})
 	require.NoError(t, err)
 	require.Equal(t, int64(1), fetched[0].Fields["total"])
@@ -1052,7 +1052,7 @@ func TestAlterColumnValidationAndPublicationRollback(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, path, alterColumnSchema(), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, err := collection.Insert(ctx, []Document{alterColumnDocument("one", 2, nil, true, 3, []float32{1, 0})})
 		require.NoError(t, err)
@@ -1155,7 +1155,7 @@ func TestAlterColumnRejectsReadOnlyHandle(t *testing.T) {
 	collection, err = Open(ctx, path, options)
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	err = collection.AlterColumn(ctx, "count", "renamed", nil, AlterColumnOptions{})
 	require.ErrorIs(t, err, ErrPermissionDenied)
 }
@@ -1182,7 +1182,7 @@ func TestAlterColumnEmptyCollectionPublishesSchemaOnly(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, found := collection.Schema().Field("amount")
 		require.True(t, found,
@@ -1224,7 +1224,7 @@ func TestCollectionDenseHNSWQueryControlsAndRecall(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "hnsw"), schema, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	documents := annDenseDocuments(core.DefaultHNSWBruteForceThreshold + 200)
 	{
 		_, err := collection.Insert(ctx, documents)
@@ -1346,7 +1346,7 @@ func TestCollectionHNSWRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	reopened, err := collection.Query(ctx, query)
 	require.NoError(t, err)
 	require.Equal(t, filtered, reopened,
@@ -1454,7 +1454,7 @@ func TestCollectionVamanaQueryCreateIndexQuantizeOptimizeAndReopen(t *testing.T)
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	reopened, err := collection.Query(ctx, query)
 	require.NoError(t, err)
 	require.Equal(t, linear, reopened,
@@ -1561,7 +1561,7 @@ func TestCollectionDiskANNQueryCreateIndexRefineOptimizeAndReopen(t *testing.T) 
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	reopened, err := collection.Query(ctx, query)
 	require.NoError(t, err)
 	require.Equal(t, linear, reopened,
@@ -1582,7 +1582,7 @@ func TestCollectionDiskANNDirectFP16SchemaDefaults(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "direct"), schema, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, err := collection.Insert(ctx, []Document{
 			{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(0), Float16FromFloat32(0)}}},
@@ -1717,7 +1717,7 @@ func TestCollectionScalarQuantizedDiskANNBackfillRefineOptimizeAndReopen(t *test
 			collection, err = Open(ctx, path, NewCollectionOptions())
 			require.NoError(t, err)
 
-			defer collection.Close()
+			defer func() { require.NoError(t, collection.Close()) }()
 			reopened, err := collection.Query(ctx, query)
 			require.NoError(t, err)
 			require.Equal(t, beforeReopen, reopened)
@@ -1810,7 +1810,7 @@ func TestCollectionQuantizedIVFSOARRefinementCreateIndexAndReopen(t *testing.T) 
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	reopened, err := collection.Query(ctx, query)
 	require.NoError(t, err)
 	require.Equal(t, refined, reopened,
@@ -1835,7 +1835,7 @@ func TestCollectionQuantizedFlatRotationAndRefiner(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "flat"), schema, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	documents := annDenseDocuments(80)
 	{
 		_, err := collection.Insert(ctx, documents)
@@ -1872,7 +1872,7 @@ func TestCollectionSparseHNSWFP16Controls(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "sparse"), schema, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	documents := make([]Document, 240)
 	for position := range documents {
 		documents[position] = Document{PrimaryKey: fmt.Sprintf("s%03d", position), Fields: map[string]any{
@@ -2020,7 +2020,7 @@ func TestCollectionSparseFlatFP16RefinementMultiQueryAndReopen(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	reopened, err := collection.Query(ctx, query)
 	require.NoError(t, err)
 	require.Equal(t, refined, reopened)
@@ -2039,7 +2039,7 @@ func TestCollectionANNValidationAndBackfillRollback(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "validation"), schema, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, err := collection.Insert(ctx, []Document{{PrimaryKey: "huge", Fields: map[string]any{
 			"embedding": VectorFP32{70000, 1, 2, 3}, "group": "g",
@@ -2193,7 +2193,7 @@ func TestCollectionGroupByPreservesUnsupportedANNBoundary(t *testing.T) {
 			collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "collection"), schema, NewCollectionOptions())
 			require.NoError(t, err)
 
-			defer collection.Close()
+			defer func() { require.NoError(t, collection.Close()) }()
 			{
 				_, err := collection.Insert(ctx, []Document{
 					{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{0, 0, 0, 0}, "group": "a"}},
@@ -2230,7 +2230,7 @@ func TestCollectionQuantizedWriteRejectsUnrepresentableVector(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "write"), schema, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	results, err := collection.Insert(ctx, []Document{{
 		PrimaryKey: "overflow", Fields: map[string]any{"embedding": VectorFP32{70000, 1}},
 	}})
@@ -2412,7 +2412,7 @@ func TestAtomicDDLAndOptimizeCrashRecovery(t *testing.T) {
 				collection, err := Open(context.Background(), path, NewCollectionOptions())
 				require.NoError(t, err)
 
-				defer collection.Close()
+				defer func() { require.NoError(t, collection.Close()) }()
 				{
 					got := collection.store.Manifest().Generation
 					require.Equal(t, generation, got)
@@ -2442,7 +2442,7 @@ func TestAtomicDDLAndOptimizeCrashRecovery(t *testing.T) {
 				collection, err := Open(context.Background(), path, NewCollectionOptions())
 				require.NoError(t, err)
 
-				defer collection.Close()
+				defer func() { require.NoError(t, collection.Close()) }()
 				{
 					got := collection.store.Manifest().Generation
 					require.True(t, got > generation)
@@ -2874,7 +2874,7 @@ func TestCollectionBinaryInvertedDDLQueryOptimizeAndReopen(t *testing.T) {
 	reopened, err := Open(ctx, path, options)
 	require.NoError(t, err)
 
-	defer reopened.Close()
+	defer func() { require.NoError(t, reopened.Close()) }()
 	assertQuery(reopened, "payload IN ('x', 'z') AND blobs CONTAIN_ALL ('x', 'y')", []string{"a"})
 }
 
@@ -2930,7 +2930,7 @@ func TestCreateFTSIndexBackfillQueryAndReopen(t *testing.T) {
 	reopened, err := Open(ctx, path, options)
 	require.NoError(t, err)
 
-	defer reopened.Close()
+	defer func() { require.NoError(t, reopened.Close()) }()
 	got, err := reopened.MultiQuery(ctx, query)
 	require.NoError(t, err)
 	require.Equal(t, want, got)
@@ -2943,7 +2943,7 @@ func TestCreateFTSIndexBackfillFailureRollsBack(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, err := collection.Insert(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{"title": "中文"}}})
 		require.NoError(t, err)
@@ -3042,7 +3042,7 @@ func TestCreateScalarIndexPublishesSchemaAndSurvivesReopen(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	rating, _ = collection.Schema().Field("rating")
 	title, _ := collection.Schema().Field("title")
 	require.NotNil(t, rating.Index)
@@ -3089,7 +3089,7 @@ func TestCreateFlatIndexChangesMetricAtomically(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	after, err = collection.Query(ctx, query)
 	require.NoError(t, err)
 	require.Equal(t, []string{"near", "far"}, documentKeys(after))
@@ -3169,7 +3169,7 @@ func TestCreateIndexValidationAndRollback(t *testing.T) {
 	readOnly, err := Open(ctx, path, readOnlyOptions)
 	require.NoError(t, err)
 
-	defer readOnly.Close()
+	defer func() { require.NoError(t, readOnly.Close()) }()
 	{
 		err := readOnly.CreateIndex(ctx, "text", NewInvertIndexParams(), CreateIndexOptions{})
 		require.ErrorIs(t, err, ErrPermissionDenied)
@@ -3181,7 +3181,7 @@ func TestCreateIndexBackfillFailureLeavesSchemaUnchanged(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "create-index-rollback"), createIndexSchema(), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, err := collection.store.Insert(ctx, []db.WriteInput{{PrimaryKey: "corrupt", Payload: []byte("not-a-document")}})
 		require.NoError(t, err)
@@ -3308,7 +3308,7 @@ func TestDeleteByFilterAcrossSegmentsAndWALRecovery(t *testing.T) {
 	collection, err = Open(ctx, path, readOnlyOptions)
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		got := collection.Stats().DocumentCount
 		require.True(t, got == 0)
@@ -3320,7 +3320,7 @@ func TestDeleteByFilterUsesOnlyCurrentDocumentVersions(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "delete-current"), deleteFilterSchema(), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, err := collection.Insert(ctx, []Document{deleteFilterDocument("versioned", "before", int32(1), StringArray{"old"}, 1)})
 		require.NoError(t, err)
@@ -3403,7 +3403,7 @@ func TestDeleteByFilterValidationCancellationAndLifecycle(t *testing.T) {
 	readOnly, err := Open(ctx, path, readOnlyOptions)
 	require.NoError(t, err)
 
-	defer readOnly.Close()
+	defer func() { require.NoError(t, readOnly.Close()) }()
 	{
 		err := readOnly.DeleteByFilter(ctx, "rating=1")
 		require.ErrorIs(t, err, ErrPermissionDenied)
@@ -3509,7 +3509,7 @@ func TestDropColumnRemovesPayloadsAndSurvivesReopen(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	assertStoredFieldAbsent(t, ctx, collection, "rating", wantIDs)
 	assertStoredFieldAbsent(t, ctx, collection, "optional", wantIDs)
 	withDropped := dropColumnDocument("bad", 2, nil, false, []float32{1, 0})
@@ -3540,7 +3540,7 @@ func TestDropColumnValidationAndPublicationRollback(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, path, dropColumnSchema(), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, err := collection.Insert(ctx, []Document{dropColumnDocument("one", 2, nil, false, []float32{1, 0})})
 		require.NoError(t, err)
@@ -3604,7 +3604,7 @@ func TestDropColumnRejectsLastFieldAndReadOnlyHandle(t *testing.T) {
 		collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
 		require.NoError(t, err)
 
-		defer collection.Close()
+		defer func() { require.NoError(t, collection.Close()) }()
 		{
 			err := collection.DropColumn(ctx, "only")
 			require.ErrorIs(t, err, ErrInvalidArgument)
@@ -3624,7 +3624,7 @@ func TestDropColumnRejectsLastFieldAndReadOnlyHandle(t *testing.T) {
 		collection, err = Open(ctx, path, options)
 		require.NoError(t, err)
 
-		defer collection.Close()
+		defer func() { require.NoError(t, collection.Close()) }()
 		{
 			err := collection.DropColumn(ctx, "rating")
 			require.ErrorIs(t, err, ErrPermissionDenied)
@@ -3653,7 +3653,7 @@ func TestDropColumnEmptyCollectionPublishesSchemaOnly(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, found := collection.Schema().Field("rating")
 		require.False(t, found,
@@ -3759,7 +3759,7 @@ func TestDropScalarIndexPublishesAndPreservesForwardResults(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	rating, _ = collection.Schema().Field("rating")
 	require.Nil(t, rating.Index)
 	require.True(t, collection.Stats().DocumentCount == 3)
@@ -3816,7 +3816,7 @@ func TestDropVectorIndexRestoresDefaultFlatIP(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	field, _ = collection.Schema().Field("embedding")
 	{
 		flat, ok = field.Index.(FlatIndexParams)
@@ -3867,7 +3867,7 @@ func TestDropUnsupportedOrFTSIndexRemovesMetadata(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	text, _ = collection.Schema().Field("text")
 	embedding, _ = collection.Schema().Field("embedding")
 	require.Nil(t, text.Index)
@@ -3939,7 +3939,7 @@ func TestDropIndexValidationLifecycleAndRollback(t *testing.T) {
 	readOnly, err := Open(ctx, path, readOnlyOptions)
 	require.NoError(t, err)
 
-	defer readOnly.Close()
+	defer func() { require.NoError(t, readOnly.Close()) }()
 	{
 		err := readOnly.DropIndex(ctx, "embedding")
 		require.ErrorIs(t, err, ErrPermissionDenied)
@@ -3950,7 +3950,7 @@ func TestDropIndexValidationLifecycleAndRollback(t *testing.T) {
 	), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer corrupt.Close()
+	defer func() { require.NoError(t, corrupt.Close()) }()
 	{
 		_, err := corrupt.store.Insert(ctx, []db.WriteInput{{PrimaryKey: "corrupt", Payload: []byte("bad")}})
 		require.NoError(t, err)
@@ -4059,7 +4059,7 @@ func TestCollectionSQLFilterQueryGroupByAndReopen(t *testing.T) {
 	collection, err = Open(ctx, path, readOnly)
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	results, err := collection.Query(ctx, VectorQuery{
 		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 10, Filter: "rating >= 2",
 	})
@@ -4072,7 +4072,7 @@ func TestCollectionSQLFilterValidationAndCancellation(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "filter-errors"), testPublicCollectionSchema(), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, err := collection.Insert(ctx, []Document{testPublicDocument("a", "alpha", "low", 1, 1, []float32{1, 0})})
 		require.NoError(t, err)
@@ -4169,7 +4169,7 @@ func TestCollectionScalarInvertedCandidatesMatchForwardSemantics(t *testing.T) {
 	collection, err = Open(ctx, path, readOnly)
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	assertQuery("rating>=2 AND tags NOT CONTAIN_ANY ('blue')", []string{"d"})
 }
 
@@ -4367,7 +4367,7 @@ func TestCollectionDenseQuantizedLinearGroupByAndRefinement(t *testing.T) {
 			collection, err = Open(ctx, path, NewCollectionOptions())
 			require.NoError(t, err)
 
-			defer collection.Close()
+			defer func() { require.NoError(t, collection.Close()) }()
 			reopened, err := collection.GroupByQuery(ctx, groupQuery)
 			require.NoError(t, err)
 			require.Equal(t, refinedGroups, reopened)
@@ -4455,7 +4455,7 @@ func TestCollectionSparseFP16LinearGroupByAndRefinement(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	reopened, err := collection.GroupByQuery(ctx, groupQuery)
 	require.NoError(t, err)
 	require.Equal(t, refinedGroups, reopened)
@@ -4516,9 +4516,10 @@ func TestCollectionNativeDenseHNSWGroupBy(t *testing.T) {
 			documents := make([]Document, 8)
 			for position := range documents {
 				value, group := float32(position)/10, "near"
-				if position == 6 {
+				switch position {
+				case 6:
 					value, group = 10, "middle"
-				} else if position == 7 {
+				case 7:
 					value, group = 20, "far"
 				}
 				vector := make(VectorFP32, 64)
@@ -4554,7 +4555,7 @@ func TestCollectionNativeDenseHNSWGroupBy(t *testing.T) {
 			collection, err = Open(ctx, path, NewCollectionOptions())
 			require.NoError(t, err)
 
-			defer collection.Close()
+			defer func() { require.NoError(t, collection.Close()) }()
 			query.Params = testCase.params(false)
 			reopened, err := collection.GroupByQuery(ctx, query)
 			require.NoError(t, err)
@@ -4578,9 +4579,10 @@ func TestCollectionNativeSparseHNSWGroupBy(t *testing.T) {
 	documents := make([]Document, 8)
 	for position := range documents {
 		value, group := float32(10-position)+.1234, "hot"
-		if position == 6 {
+		switch position {
+		case 6:
 			value, group = 2.1234, "warm"
-		} else if position == 7 {
+		case 7:
 			value, group = 1.1234, "cold"
 		}
 		documents[position] = Document{PrimaryKey: fmt.Sprintf("s%d", position), Fields: map[string]any{
@@ -4616,7 +4618,7 @@ func TestCollectionNativeSparseHNSWGroupBy(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	params.Linear = false
 	query.Params = params
 	reopened, err := collection.GroupByQuery(ctx, query)
@@ -4762,7 +4764,7 @@ func TestCollectionMultiQueryDenseSparseFTSFilterProjectionAndReopen(t *testing.
 	reopened, err := Open(ctx, path, reopenOptions)
 	require.NoError(t, err)
 
-	defer reopened.Close()
+	defer func() { require.NoError(t, reopened.Close()) }()
 	results, err = reopened.MultiQuery(ctx, query)
 	require.NoError(t, err)
 
@@ -4774,7 +4776,7 @@ func TestCollectionMultiQueryFTSExpressionDefaultOperatorAndFilteredBM25(t *test
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "fts"), testMultiQuerySchema(), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, err := collection.Insert(ctx, testMultiQueryDocuments())
 		require.NoError(t, err)
@@ -4840,7 +4842,7 @@ func TestCollectionMultiQueryVectorParamsAndEmptySnapshot(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "params"), testMultiQuerySchema(), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, err := collection.Insert(ctx, testMultiQueryDocuments())
 		require.NoError(t, err)
@@ -4879,7 +4881,7 @@ func TestCollectionMultiQueryVectorParamsAndEmptySnapshot(t *testing.T) {
 	empty, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "empty"), testMultiQuerySchema(), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer empty.Close()
+	defer func() { require.NoError(t, empty.Close()) }()
 	emptyQuery := query
 	emptyQuery.Filter = ""
 	emptyQuery.Queries[0].Params = nil
@@ -5165,7 +5167,7 @@ func TestCollectionMultiQueryConcurrentSnapshotSearch(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "concurrent"), testMultiQuerySchema(), NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	{
 		_, err := collection.Insert(ctx, testMultiQueryDocuments())
 		require.NoError(t, err)
@@ -5270,7 +5272,7 @@ func BenchmarkV05HybridMultiQuery(b *testing.B) {
 		require.NoError(b, err)
 	}
 
-	defer collection.Close()
+	defer func() { require.NoError(b, collection.Close()) }()
 	documents := make([]Document, 256)
 	for index := range documents {
 		documents[index] = Document{PrimaryKey: "doc-" + benchmarkNumber(index), Fields: map[string]any{
@@ -5454,7 +5456,7 @@ func TestOptimizeFTSCompactsDeletesAndReopens(t *testing.T) {
 	reopened, err := Open(ctx, path, options)
 	require.NoError(t, err)
 
-	defer reopened.Close()
+	defer func() { require.NoError(t, reopened.Close()) }()
 	got, err = reopened.MultiQuery(ctx, query)
 	require.NoError(t, err)
 	require.Equal(t, want, got)
@@ -5610,7 +5612,7 @@ func TestOptimizeCompactsLiveDocumentsAndPrunesArtifacts(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	assertOptimizeDocumentIDs(t, ctx, collection, wantIDs)
 	require.Equal(t, uint64(len(wantIDs)), collection.Stats().DocumentCount)
 }
@@ -5656,7 +5658,7 @@ func TestOptimizeFullyDeletedCollectionKeepsDocumentIDsMonotonic(t *testing.T) {
 	collection, err = Open(ctx, path, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	inserted, err := collection.Insert(ctx, []Document{testPublicDocument("c", "c", "low", 3, 3, []float32{3, 0})})
 	require.NoError(t, err)
 	require.True(t, inserted[0].DocID == 2)
@@ -5976,7 +5978,7 @@ func TestRuntimeResourcesLoggingAdmissionAndCollectionStats(t *testing.T) {
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "runtime"), schema, NewCollectionOptions())
 	require.NoError(t, err)
 
-	defer collection.Close()
+	defer func() { require.NoError(t, collection.Close()) }()
 	collection.runtime = resources
 	{
 		_, err := collection.Insert(ctx, []Document{

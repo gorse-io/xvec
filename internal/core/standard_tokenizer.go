@@ -107,12 +107,12 @@ func (t *StandardTokenizer) Tokenize(ctx context.Context, text string) ([]Token,
 		}
 		class := codepoints[index].class
 		var end int
-		switch {
-		case class == wordBreakIdeographic || class == wordBreakHiragana:
+		switch class {
+		case wordBreakIdeographic, wordBreakHiragana:
 			end = scanStandardSingleToken(codepoints, index)
-		case class == wordBreakHangul || class == wordBreakSoutheastAsian:
+		case wordBreakHangul, wordBreakSoutheastAsian:
 			end = scanStandardWordToken(codepoints, index)
-		case class == wordBreakRegionalIndicator:
+		case wordBreakRegionalIndicator:
 			end = scanStandardRegionalIndicatorToken(codepoints, index)
 		default:
 			end = scanStandardKeycapToken(codepoints, index)

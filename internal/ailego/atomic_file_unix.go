@@ -16,7 +16,10 @@
 
 package ailego
 
-import "os"
+import (
+	"errors"
+	"os"
+)
 
 func atomicReplaceFile(source, destination string) error {
 	return os.Rename(source, destination)
@@ -27,6 +30,5 @@ func syncDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
-	return directory.Sync()
+	return errors.Join(directory.Sync(), directory.Close())
 }

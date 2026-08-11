@@ -90,7 +90,7 @@ func TestLowercaseUnicode17TableIdentity(t *testing.T) {
 	for value := rune(0); value <= 0x10ffff; value++ {
 		lower := lowercaseUnicode17(value)
 		if lower != value {
-			fmt.Fprintf(hash, "%X %X\n", value, lower)
+			_, _ = fmt.Fprintf(hash, "%X %X\n", value, lower)
 			count++
 		}
 	}

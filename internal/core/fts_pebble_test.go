@@ -61,7 +61,7 @@ func TestValidateFTSPostingKeysHonorsCancellation(t *testing.T) {
 	require.NoError(t, dictionary.Save(context.Background(), path))
 	store, err := indexstore.Open(path, indexstore.Options{ReadOnly: true})
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { require.NoError(t, store.Close()) }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

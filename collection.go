@@ -3867,34 +3867,6 @@ func resolveSnapshotQueryVector(
 	return nil, nil, &Error{Code: ErrorCodeNotFound, Op: op, Message: fmt.Sprintf("document %q does not exist", primaryKey)}
 }
 
-// searchVectorSnapshot executes one vector target against documents while the
-// caller holds the collection read lock. MultiQuery reuses it so every branch
-// observes the same live document and scalar-filter snapshot as Query.
-func (c *Collection) searchVectorSnapshot(
-	ctx context.Context,
-	op string,
-	field FieldSchema,
-	dense DenseVector,
-	sparse SparseVector,
-	topK int,
-	queryParams QueryParams,
-	documents []Document,
-	candidateFilter evaluatedFilter,
-	indexes *collectionRuntimeIndexes,
-) ([]core.Result, error) {
-	vectorIndex, err := resolveCollectionVectorIndex(field, op, c.path)
-	if err != nil {
-		return nil, err
-	}
-	params, err := collectionQueryParams(queryParams, vectorIndex)
-	if err != nil {
-		return nil, err
-	}
-	return c.searchVectorSnapshotResolved(
-		ctx, op, field, dense, sparse, topK, documents, candidateFilter, vectorIndex, params, indexes,
-	)
-}
-
 func (c *Collection) searchVectorSegments(
 	ctx context.Context,
 	op string,
@@ -4292,9 +4264,11 @@ func (c *Collection) searchGroupSegment(
 		}
 		var searcher core.DenseGroupSearcher
 		if params.options.UseRefiner {
-			searcher = indexes.denseExact[field.Name]
-			if searcher == nil {
+			index := indexes.denseExact[field.Name]
+			if index == nil {
 				err = fmt.Errorf("dense runtime refiner index is incompatible")
+			} else {
+				searcher = index
 			}
 		} else if vectorIndex.indexType == IndexTypeHNSWRaBitQ {
 			index, compatible := indexes.denseNative[field.Name].(*core.HNSWRaBitQIndex)
@@ -4344,9 +4318,11 @@ func (c *Collection) searchGroupSegment(
 	}
 	var searcher core.SparseGroupSearcher
 	if params.options.UseRefiner {
-		searcher = indexes.sparseExact[field.Name]
-		if searcher == nil {
+		index := indexes.sparseExact[field.Name]
+		if index == nil {
 			err = fmt.Errorf("sparse runtime refiner index is incompatible")
+		} else {
+			searcher = index
 		}
 	} else {
 		if vectorIndex.quantize == QuantizeTypeFP16 {

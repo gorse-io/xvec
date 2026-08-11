@@ -59,7 +59,7 @@ func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (bench
 	if err != nil {
 		return report, fmt.Errorf("open benchmark collection for search: %w", err)
 	}
-	defer collection.Close()
+	defer func() { _ = collection.Close() }()
 	engine := newQueryEngine(collection, config)
 	if err := warmupSearch(ctx, engine, data, config.WarmupQueries); err != nil {
 		return report, err
@@ -75,7 +75,7 @@ func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (bench
 	}
 	if !config.SkipSerialSearch {
 		if !config.SkipConcurrentSearch && config.SerialCooldown > 0 {
-			fmt.Fprintf(log, "cooling down for %s before serial search\n", config.SerialCooldown)
+			_, _ = fmt.Fprintf(log, "cooling down for %s before serial search\n", config.SerialCooldown)
 			timer := time.NewTimer(config.SerialCooldown)
 			select {
 			case <-ctx.Done():
@@ -136,7 +136,7 @@ func loadDataset(ctx context.Context, config benchConfig, log io.Writer) (loadMe
 			}
 			inserted += int64(len(documents))
 			if inserted >= nextProgress {
-				fmt.Fprintf(log, "inserted %d vectors (%.1f rows/s)\n", inserted, float64(inserted)/time.Since(insertStarted).Seconds())
+				_, _ = fmt.Fprintf(log, "inserted %d vectors (%.1f rows/s)\n", inserted, float64(inserted)/time.Since(insertStarted).Seconds())
 				nextProgress = (inserted/100_000 + 1) * 100_000
 			}
 			return nil
