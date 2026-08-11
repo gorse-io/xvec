@@ -1,4 +1,4 @@
-// Copyright 2026-present the zvec-go project
+// Copyright 2026-present the xvec project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 package sql
