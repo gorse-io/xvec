@@ -17,6 +17,8 @@ package ailego
 import (
 	"errors"
 	"math"
+
+	"github.com/gorse-io/xvec/internal/floats"
 )
 
 var (
@@ -26,22 +28,15 @@ var (
 	ErrInvalidSparseOrder = errors.New("ailego: sparse indices must be strictly increasing")
 )
 
-// L2Squared computes squared Euclidean distance using float64 accumulation and
-// returns the float32 score used by indexes.
+// L2Squared computes squared Euclidean distance using float32 accumulation.
 func L2Squared(left, right []float32) (float32, error) {
 	if err := validateDensePair(left, right); err != nil {
 		return 0, err
 	}
-	var sum float64
-	for index, leftValue := range left {
-		rightValue := right[index]
-		if !finite32(leftValue) || !finite32(rightValue) {
-			return 0, ErrNonFiniteVector
-		}
-		difference := float64(leftValue) - float64(rightValue)
-		sum += difference * difference
+	if err := validateDenseFinite(left, right); err != nil {
+		return 0, err
 	}
-	return finiteScore(sum)
+	return finiteScore(float64(floats.L2Squared(left, right)))
 }
 
 // InnerProduct computes the dot-product similarity. Higher scores are better.
@@ -49,15 +44,10 @@ func InnerProduct(left, right []float32) (float32, error) {
 	if err := validateDensePair(left, right); err != nil {
 		return 0, err
 	}
-	var sum float64
-	for index, leftValue := range left {
-		rightValue := right[index]
-		if !finite32(leftValue) || !finite32(rightValue) {
-			return 0, ErrNonFiniteVector
-		}
-		sum += float64(leftValue) * float64(rightValue)
+	if err := validateDenseFinite(left, right); err != nil {
+		return 0, err
 	}
-	return finiteScore(sum)
+	return finiteScore(float64(floats.InnerProduct(left, right)))
 }
 
 // CosineDistance computes 1-cos(left,right). Lower scores are better. Two zero
@@ -66,19 +56,25 @@ func CosineDistance(left, right []float32) (float32, error) {
 	if err := validateDensePair(left, right); err != nil {
 		return 0, err
 	}
-	inner, leftNorm, rightNorm, err := denseProducts(left, right)
-	if err != nil {
+	if err := validateDenseFinite(left, right); err != nil {
 		return 0, err
 	}
+	return finiteScore(float64(cosineDistance(left, right)))
+}
+
+func cosineDistance(left, right []float32) float32 {
+	inner, leftNorm, rightNorm := floats.DotNorms(left, right)
 	if leftNorm == 0 && rightNorm == 0 {
-		return 0, nil
+		return 0
 	}
 	if leftNorm == 0 || rightNorm == 0 {
-		return 1, nil
+		return 1
 	}
-	cosine := inner / math.Sqrt(leftNorm*rightNorm)
+	leftMagnitude := float32(math.Sqrt(float64(leftNorm)))
+	rightMagnitude := float32(math.Sqrt(float64(rightNorm)))
+	cosine := inner / (leftMagnitude * rightMagnitude)
 	cosine = min(1, max(-1, cosine))
-	return finiteScore(1 - cosine)
+	return 1 - cosine
 }
 
 // MIPSL2Squared computes the baseline localized-spherical MIPS-to-L2
@@ -88,15 +84,19 @@ func MIPSL2Squared(left, right []float32) (float32, error) {
 	if err := validateDensePair(left, right); err != nil {
 		return 0, err
 	}
-	inner, leftNorm, rightNorm, err := denseProducts(left, right)
-	if err != nil {
+	if err := validateDenseFinite(left, right); err != nil {
 		return 0, err
 	}
+	return finiteScore(float64(mipsL2Squared(left, right)))
+}
+
+func mipsL2Squared(left, right []float32) float32 {
+	inner, leftNorm, rightNorm := floats.DotNorms(left, right)
 	denominator := max(leftNorm, rightNorm)
 	if denominator == 0 {
-		return 0, nil
+		return 0
 	}
-	return finiteScore(2 - 2*inner/denominator)
+	return 2 - 2*inner/denominator
 }
 
 // SparseInnerProduct computes the dot product of canonical sparse vectors.
@@ -139,19 +139,14 @@ func validateDensePair(left, right []float32) error {
 	return nil
 }
 
-func denseProducts(left, right []float32) (inner, leftNorm, rightNorm float64, err error) {
+func validateDenseFinite(left, right []float32) error {
 	for index, leftValue := range left {
 		rightValue := right[index]
 		if !finite32(leftValue) || !finite32(rightValue) {
-			return 0, 0, 0, ErrNonFiniteVector
+			return ErrNonFiniteVector
 		}
-		leftFloat := float64(leftValue)
-		rightFloat := float64(rightValue)
-		inner += leftFloat * rightFloat
-		leftNorm += leftFloat * leftFloat
-		rightNorm += rightFloat * rightFloat
 	}
-	return inner, leftNorm, rightNorm, nil
+	return nil
 }
 
 func validateSparse(indices []uint32, values []float32) error {

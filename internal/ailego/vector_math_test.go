@@ -117,6 +117,53 @@ func TestDenseMetricValidation(t *testing.T) {
 	}
 }
 
+func TestCosineDistanceAvoidsNormProductOverflowAndUnderflow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		left     []float32
+		right    []float32
+		expected float32
+	}{
+		{
+			name:     "large identical vectors",
+			left:     []float32{1e10, 1e10},
+			right:    []float32{1e10, 1e10},
+			expected: 0,
+		},
+		{
+			name:     "tiny orthogonal vectors",
+			left:     []float32{1e-20, 0},
+			right:    []float32{0, 1e-20},
+			expected: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			checked, err := CosineDistance(test.left, test.right)
+			require.NoError(t, err)
+			require.InDelta(t, test.expected, checked, 1e-6)
+			prevalidated, err := CosineDistancePrevalidated(test.left, test.right)
+			require.NoError(t, err)
+			require.InDelta(t, test.expected, prevalidated, 1e-6)
+		})
+	}
+}
+
+func TestDenseMetricsUseFloat32Accumulation(t *testing.T) {
+	t.Parallel()
+
+	left := []float32{1e8, 1, -1e8}
+	right := []float32{1, 1, 1}
+	checked, err := InnerProduct(left, right)
+	require.NoError(t, err)
+	require.Zero(t, checked)
+	prevalidated, err := InnerProductPrevalidated(left, right)
+	require.NoError(t, err)
+	require.Zero(t, prevalidated)
+}
+
 func TestPrevalidatedDenseDistanceKernelsMatchCheckedMetrics(t *testing.T) {
 	left := []float32{0.2, 0.9, -0.4, 0.7}
 	right := []float32{0.3, 0.5, 0.8, -0.1}
