@@ -128,6 +128,56 @@ func TestSparseHNSWBuildDeterministicAndOwned(t *testing.T) {
 	}
 }
 
+func TestSparseHNSWBuildWithWorkers(t *testing.T) {
+	t.Parallel()
+	inputs := sparseHNSWBuildInputs(1200)
+	options := DefaultSparseHNSWBuildOptions()
+	options.M = 8
+	options.EFConstruction = 40
+	options.Seed = 42
+	build := func(workers int) *SparseHNSWIndex {
+		builder, err := NewSparseHNSWBuilder(options)
+		require.NoError(t, err)
+		for _, input := range inputs {
+			require.NoError(t, builder.AddSparse(context.Background(), input.key, input.vector))
+		}
+		index, err := builder.BuildWithWorkers(context.Background(), workers)
+		require.NoError(t, err)
+		return index
+	}
+
+	serial := build(1)
+	parallel := build(4)
+	require.Equal(t, serial.levels, parallel.levels)
+	require.Equal(t, serial.levelRNGState, parallel.levelRNGState)
+	assertSparseHNSWGraphInvariants(t, parallel)
+	results, err := parallel.SearchSparseHNSW(context.Background(), inputs[711].vector, HNSWSearchOptions{
+		SearchOptions: SearchOptions{TopK: 10}, EF: 80,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+}
+
+func TestSparseHNSWBuildWithWorkersValidationAndRetry(t *testing.T) {
+	t.Parallel()
+	options := DefaultSparseHNSWBuildOptions()
+	options.M = 2
+	options.EFConstruction = 8
+	builder, err := NewSparseHNSWBuilder(options)
+	require.NoError(t, err)
+	require.NoError(t, builder.AddSparse(context.Background(), 1, SparseVector{Indices: []uint32{1}, Values: []float32{2}}))
+
+	_, err = builder.BuildWithWorkers(context.Background(), 0)
+	require.ErrorIs(t, err, ErrInvalidHNSWWorkers)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = builder.BuildWithWorkers(canceled, 2)
+	require.ErrorIs(t, err, context.Canceled)
+	index, err := builder.BuildWithWorkers(context.Background(), 2)
+	require.NoError(t, err)
+	require.Equal(t, 1, index.Len())
+}
+
 func TestSparseHNSWBuildEmptySingleAndLevels(t *testing.T) {
 	t.Parallel()
 	options := DefaultSparseHNSWBuildOptions()
@@ -445,6 +495,32 @@ func TestSparseHNSWSearchLargeGraphRecall(t *testing.T) {
 	require.True(t, recall >= 0.80)
 }
 
+func TestSparseHNSWSearchParallelBuildRecall(t *testing.T) {
+	inputs := sparseHNSWBuildInputs(DefaultHNSWBruteForceThreshold + 300)
+	index := buildSearchSparseHNSWWithWorkers(t, inputs, 16, 120, 4)
+	var matched, total int
+	for queryIndex := 0; queryIndex < 30; queryIndex++ {
+		query := inputs[(queryIndex*41+17)%len(inputs)].vector
+		got, err := index.SearchSparseHNSW(context.Background(), query, HNSWSearchOptions{
+			SearchOptions: SearchOptions{TopK: 10}, EF: 120,
+		})
+		require.NoError(t, err)
+		want, err := exactSparseResults(context.Background(), query, inputs, 10)
+		require.NoError(t, err)
+		truth := make(map[uint64]struct{}, len(want))
+		for _, result := range want {
+			truth[result.Key] = struct{}{}
+		}
+		for _, result := range got {
+			if _, found := truth[result.Key]; found {
+				matched++
+			}
+		}
+		total += len(want)
+	}
+	require.GreaterOrEqual(t, float64(matched)/float64(total), 0.80)
+}
+
 func TestSparseHNSWSearchLargeGraphFilterRadiusAndEF(t *testing.T) {
 	inputs := sparseHNSWBuildInputs(DefaultHNSWBruteForceThreshold + 100)
 	index := buildSearchSparseHNSW(t, inputs, 16, 100)
@@ -602,12 +678,23 @@ func BenchmarkSparseHNSWSearch(b *testing.B) {
 }
 
 func buildSearchSparseHNSW(t testing.TB, inputs []sparseHNSWInput, m, efConstruction int) *SparseHNSWIndex {
+	return buildSearchSparseHNSWWithWorkers(t, inputs, m, efConstruction, 1)
+}
+
+func buildSearchSparseHNSWWithWorkers(t testing.TB, inputs []sparseHNSWInput, m, efConstruction, workers int) *SparseHNSWIndex {
 	t.Helper()
 	options := DefaultSparseHNSWBuildOptions()
 	options.M = m
 	options.EFConstruction = efConstruction
 	options.Seed = 0x123456789abcdef
-	return buildSparseHNSW(t, options, inputs)
+	builder, err := NewSparseHNSWBuilder(options)
+	require.NoError(t, err)
+	for _, input := range inputs {
+		require.NoError(t, builder.AddSparse(context.Background(), input.key, input.vector))
+	}
+	index, err := builder.BuildWithWorkers(context.Background(), workers)
+	require.NoError(t, err)
+	return index
 }
 
 func exactSparseResults(ctx context.Context, query SparseVector, inputs []sparseHNSWInput, k int) ([]Result, error) {

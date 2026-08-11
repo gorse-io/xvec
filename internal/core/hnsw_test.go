@@ -162,6 +162,97 @@ func TestHNSWBuildDeterministicAndOwned(t *testing.T) {
 	}
 }
 
+func TestHNSWBuildWithWorkers(t *testing.T) {
+	t.Parallel()
+	inputs := hnswBuildInputs(1200)
+	options := DefaultHNSWBuildOptions(MetricL2)
+	options.M = 8
+	options.EFConstruction = 40
+	options.Seed = 42
+	build := func(workers int) *HNSWIndex {
+		builder, err := NewHNSWBuilder(3, options)
+		require.NoError(t, err)
+		for _, input := range inputs {
+			require.NoError(t, builder.Add(context.Background(), input.Key, input.Vector))
+		}
+		index, err := builder.BuildWithWorkers(context.Background(), workers)
+		require.NoError(t, err)
+		return index
+	}
+
+	serial := build(1)
+	parallel := build(4)
+	require.Equal(t, serial.levels, parallel.levels)
+	require.Equal(t, serial.levelRNGState, parallel.levelRNGState)
+	assertHNSWGraphInvariants(t, parallel)
+	results, err := parallel.SearchHNSW(context.Background(), inputs[711].Vector, HNSWSearchOptions{
+		SearchOptions: SearchOptions{TopK: 10}, EF: 80,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+	require.Equal(t, inputs[711].Key, results[0].Key)
+}
+
+func TestHNSWBuildWithWorkersValidationAndRetry(t *testing.T) {
+	t.Parallel()
+	options := DefaultHNSWBuildOptions(MetricL2)
+	options.M = 2
+	options.EFConstruction = 8
+	builder, err := NewHNSWBuilder(2, options)
+	require.NoError(t, err)
+	require.NoError(t, builder.Add(context.Background(), 1, []float32{1, 2}))
+
+	_, err = builder.BuildWithWorkers(context.Background(), 0)
+	require.ErrorIs(t, err, ErrInvalidHNSWWorkers)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = builder.BuildWithWorkers(canceled, 2)
+	require.ErrorIs(t, err, context.Canceled)
+	index, err := builder.BuildWithWorkers(context.Background(), 2)
+	require.NoError(t, err)
+	require.Equal(t, 1, index.Len())
+}
+
+func TestParallelHNSWBuildExecutesConcurrentInsertions(t *testing.T) {
+	t.Parallel()
+	levels := make([]int, 8)
+	neighbors := make([][][]int, len(levels))
+	for position := range neighbors {
+		neighbors[position] = make([][]int, 1)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var active, peak atomic.Int32
+	var releaseOnce sync.Once
+	release := make(chan struct{})
+	score := func(left, right int) (float32, error) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			observed := peak.Load()
+			if current <= observed || peak.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		if current >= 2 {
+			releaseOnce.Do(func() { close(release) })
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+		delta := left - right
+		return float32(delta * delta), nil
+	}
+	options := DefaultHNSWBuildOptions(MetricL2)
+	options.M = 2
+	options.EFConstruction = 8
+	_, _, err := buildParallelHNSW(ctx, 4, options, levels, neighbors, score)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, peak.Load(), int32(2))
+}
+
 func TestHNSWBuildEmptySingleAndLevels(t *testing.T) {
 	t.Parallel()
 	options := DefaultHNSWBuildOptions(MetricL2)
@@ -300,26 +391,24 @@ func BenchmarkHNSWBuild(b *testing.B) {
 	options := DefaultHNSWBuildOptions(MetricL2)
 	options.M = 16
 	options.EFConstruction = 100
-	for b.Loop() {
-		builder, err := NewHNSWBuilder(3, options)
-		if err != nil {
-			require.NoError(b, err)
-		}
-
-		for _, input := range inputs {
-			{
-				err := builder.Add(context.Background(), input.Key, input.Vector)
+	for _, workers := range []int{1, 2, 4, 8} {
+		b.Run(fmt.Sprintf("workers=%d", workers), func(b *testing.B) {
+			for b.Loop() {
+				builder, err := NewHNSWBuilder(3, options)
 				if err != nil {
 					require.NoError(b, err)
 				}
+
+				for _, input := range inputs {
+					if err := builder.Add(context.Background(), input.Key, input.Vector); err != nil {
+						require.NoError(b, err)
+					}
+				}
+				if _, err := builder.BuildWithWorkers(context.Background(), workers); err != nil {
+					require.NoError(b, err)
+				}
 			}
-		}
-		{
-			_, err := builder.Build(context.Background())
-			if err != nil {
-				require.NoError(b, err)
-			}
-		}
+		})
 	}
 }
 
@@ -444,6 +533,32 @@ func TestHNSWSearchLargeGraphRecall(t *testing.T) {
 		recall := float64(matched) / float64(total)
 		require.True(t, recall >= 0.80)
 	}
+}
+
+func TestHNSWSearchParallelBuildRecall(t *testing.T) {
+	inputs := hnswBuildInputs(DefaultHNSWBruteForceThreshold + 250)
+	index := buildSearchHNSWWithWorkers(t, MetricL2, inputs, 16, 120, 4)
+	var matched, total int
+	for queryIndex := 0; queryIndex < 20; queryIndex++ {
+		query := inputs[(queryIndex*53+11)%len(inputs)].Vector
+		got, err := index.SearchHNSW(context.Background(), query, HNSWSearchOptions{
+			SearchOptions: SearchOptions{TopK: 10}, EF: 120,
+		})
+		require.NoError(t, err)
+		want, err := TopK(context.Background(), MetricL2, query, inputs, 10)
+		require.NoError(t, err)
+		truth := make(map[uint64]struct{}, len(want))
+		for _, result := range want {
+			truth[result.Key] = struct{}{}
+		}
+		for _, result := range got {
+			if _, found := truth[result.Key]; found {
+				matched++
+			}
+		}
+		total += len(want)
+	}
+	require.GreaterOrEqual(t, float64(matched)/float64(total), 0.80)
 }
 
 func TestHNSWSearchLargeGraphFilterRadiusAndEF(t *testing.T) {
@@ -634,6 +749,10 @@ func BenchmarkHNSWSearch(b *testing.B) {
 }
 
 func buildSearchHNSW(t testing.TB, metric Metric, inputs []Candidate, m, efConstruction int) *HNSWIndex {
+	return buildSearchHNSWWithWorkers(t, metric, inputs, m, efConstruction, 1)
+}
+
+func buildSearchHNSWWithWorkers(t testing.TB, metric Metric, inputs []Candidate, m, efConstruction, workers int) *HNSWIndex {
 	t.Helper()
 	options := DefaultHNSWBuildOptions(metric)
 	options.M = m
@@ -643,12 +762,10 @@ func buildSearchHNSW(t testing.TB, metric Metric, inputs []Candidate, m, efConst
 	require.NoError(t, err)
 
 	for _, input := range inputs {
-		{
-			err := builder.Add(context.Background(), input.Key, input.Vector)
-			require.NoError(t, err)
-		}
+		err := builder.Add(context.Background(), input.Key, input.Vector)
+		require.NoError(t, err)
 	}
-	index, err := builder.Build(context.Background())
+	index, err := builder.BuildWithWorkers(context.Background(), workers)
 	require.NoError(t, err)
 
 	return index

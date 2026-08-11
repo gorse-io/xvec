@@ -38,13 +38,14 @@ const (
 
 var (
 	ErrInvalidHNSWOptions = errors.New("core: invalid HNSW build options")
+	ErrInvalidHNSWWorkers = errors.New("core: HNSW workers must be positive")
 	ErrInvalidHNSWLevel   = errors.New("core: invalid HNSW level")
 	ErrHNSWKeyNotFound    = errors.New("core: HNSW key not found")
 	ErrHNSWCapacity       = errors.New("core: HNSW index capacity exceeded")
 )
 
-// HNSWBuildOptions configures deterministic dense graph construction. Level
-// sampling is reproducible for a fixed Seed and insertion order.
+// HNSWBuildOptions configures dense graph construction. Level sampling is
+// reproducible for a fixed Seed; Build uses deterministic input-order insertion.
 type HNSWBuildOptions struct {
 	Metric         Metric
 	M              int
@@ -135,9 +136,20 @@ func (b *HNSWBuilder) Add(ctx context.Context, key uint64, vector []float32) err
 	return nil
 }
 
-// Build assigns deterministic levels, inserts nodes in input order, and
-// transfers builder-owned original storage to the resulting graph.
+// Build assigns deterministic levels, inserts nodes in input order on one
+// worker, and transfers builder-owned original storage to the resulting graph.
 func (b *HNSWBuilder) Build(ctx context.Context) (*HNSWIndex, error) {
+	return b.build(ctx, 1)
+}
+
+// BuildWithWorkers constructs the graph with up to workers concurrent node
+// insertions. A single worker is bit-for-bit deterministic; multiple workers
+// preserve graph invariants but topology may vary with goroutine scheduling.
+func (b *HNSWBuilder) BuildWithWorkers(ctx context.Context, workers int) (*HNSWIndex, error) {
+	return b.build(ctx, workers)
+}
+
+func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error) {
 	if b == nil {
 		return nil, errors.New("core: nil HNSW builder")
 	}
@@ -146,6 +158,9 @@ func (b *HNSWBuilder) Build(ctx context.Context) (*HNSWIndex, error) {
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if workers <= 0 {
+		return nil, ErrInvalidHNSWWorkers
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -179,13 +194,25 @@ func (b *HNSWBuilder) Build(ctx context.Context) (*HNSWIndex, error) {
 		index.neighbors[position] = make([][]int, level+1)
 	}
 	index.levelRNGState = random.state
-	for position := range index.keys {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	if workers == 1 {
+		for position := range index.keys {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if err := index.insertBuiltNode(ctx, position); err != nil {
+				return nil, fmt.Errorf("core: construct HNSW node %d: %w", position, err)
+			}
 		}
-		if err := index.insertBuiltNode(ctx, position); err != nil {
-			return nil, fmt.Errorf("core: construct HNSW node %d: %w", position, err)
+	} else {
+		entryPoint, maxLevel, err := buildParallelHNSW(ctx, workers, index.options, index.levels, index.neighbors,
+			func(left, right int) (float32, error) {
+				return index.options.Metric.Compute(index.vectorAt(left), index.vectorAt(right))
+			})
+		if err != nil {
+			return nil, fmt.Errorf("core: construct HNSW: %w", err)
 		}
+		index.entryPoint = entryPoint
+		index.maxLevel = maxLevel
 	}
 
 	b.built = true
