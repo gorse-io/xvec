@@ -341,7 +341,7 @@ func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSe
 	return segments, nil
 }
 
-func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context) error {
+func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context, workers int) error {
 	segments, err := c.segmentDocumentsLocked(ctx)
 	if err != nil {
 		return err
@@ -380,7 +380,7 @@ func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context) err
 			indexes = cached.indexes
 		} else {
 			var buildErr error
-			indexes, buildErr = buildCollectionRuntimeIndexes(ctx, c.schema, segment.documents, c.queryWorkers(), c.options.MaxBufferSize, c.options.EnableMmap, nil)
+			indexes, buildErr = buildCollectionRuntimeIndexes(ctx, c.schema, segment.documents, workers, c.options.MaxBufferSize, c.options.EnableMmap, nil)
 			if buildErr != nil {
 				cleanup()
 				return fmt.Errorf("build indexes for segment %d: %w", segment.metadata.ID, buildErr)
@@ -610,7 +610,7 @@ func buildCollectionRuntimeIndexes(
 				}
 				switch spec.indexType {
 				case IndexTypeHNSW:
-					native, err = buildCollectionDenseHNSW(ctx, schema.Name, field, documents, spec)
+					native, err = buildCollectionDenseHNSW(ctx, schema.Name, field, documents, spec, workers)
 				case IndexTypeHNSWRaBitQ:
 					native, err = buildCollectionDenseHNSWRaBitQ(ctx, field, documents, spec, workers)
 				case IndexTypeIVF:
@@ -633,7 +633,7 @@ func buildCollectionRuntimeIndexes(
 				return fail(err)
 			}
 			indexes.sparseExact[field.Name] = exact
-			flat, err := buildCollectionSparseIndex(ctx, field, documents, spec, true)
+			flat, err := buildCollectionSparseIndex(ctx, field, documents, spec, true, workers)
 			if err != nil {
 				return fail(err)
 			}
@@ -647,7 +647,7 @@ func buildCollectionRuntimeIndexes(
 			if artifact != "" {
 				native, err = core.OpenSparseHNSWIndex(ctx, artifact)
 			} else {
-				native, err = buildCollectionSparseIndex(ctx, field, documents, spec, false)
+				native, err = buildCollectionSparseIndex(ctx, field, documents, spec, false, workers)
 			}
 			if err != nil {
 				return fail(err)
@@ -899,7 +899,7 @@ func (c *Collection) Flush(ctx context.Context) error {
 	if err := c.store.Flush(ctx); err != nil {
 		return wrapCollectionError("flush collection", c.path, err)
 	}
-	return wrapCollectionError("flush collection", c.path, c.refreshSegmentIndexArtifactsLocked(ctx))
+	return wrapCollectionError("flush collection", c.path, c.refreshSegmentIndexArtifactsLocked(ctx, c.queryWorkers()))
 }
 
 // Close releases files and the cross-process collection lock. It is
@@ -1569,6 +1569,7 @@ func buildCollectionDenseHNSW(
 	field FieldSchema,
 	documents []Document,
 	spec collectionVectorIndex,
+	workers int,
 ) (collectionHNSWIndex, error) {
 	candidates, err := collectionDenseCandidates(ctx, field, documents)
 	if err != nil {
@@ -1586,7 +1587,7 @@ func buildCollectionDenseHNSW(
 			return nil, err
 		}
 	}
-	base, err := builder.Build(ctx)
+	base, err := builder.BuildWithWorkers(ctx, workers)
 	if err != nil {
 		return nil, err
 	}
@@ -1780,6 +1781,7 @@ func buildCollectionSparseIndex(
 	documents []Document,
 	spec collectionVectorIndex,
 	linear bool,
+	workers int,
 ) (core.SparseQuerySearcher, error) {
 	if linear || spec.indexType == IndexTypeFlat {
 		index, err := core.NewSparseFlatIndex(spec.metric)
@@ -1804,7 +1806,7 @@ func buildCollectionSparseIndex(
 	if err := addCollectionSparseDocuments(ctx, builder, field, documents, spec.quantize); err != nil {
 		return nil, err
 	}
-	return builder.Build(ctx)
+	return builder.BuildWithWorkers(ctx, workers)
 }
 
 type sparseCollectionBuilder interface {
@@ -2260,7 +2262,7 @@ func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field Fiel
 			case IndexTypeFlat:
 				_, err = buildCollectionDenseFlat(ctx, c.schema.Name, field, documents, spec)
 			case IndexTypeHNSW:
-				_, err = buildCollectionDenseHNSW(ctx, c.schema.Name, field, documents, spec)
+				_, err = buildCollectionDenseHNSW(ctx, c.schema.Name, field, documents, spec, workers)
 			case IndexTypeHNSWRaBitQ:
 				_, err = buildCollectionDenseHNSWRaBitQ(ctx, field, documents, spec, workers)
 			case IndexTypeIVF:
@@ -2272,7 +2274,7 @@ func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field Fiel
 			}
 			return err
 		}
-		_, err = buildCollectionSparseIndex(ctx, field, documents, spec, false)
+		_, err = buildCollectionSparseIndex(ctx, field, documents, spec, false, workers)
 		return err
 	default:
 		return fmt.Errorf("unsupported index type %s", field.Index.IndexType())
@@ -3584,6 +3586,7 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 	if options.Concurrency < 0 {
 		return invalidArgument(op, "Concurrency cannot be negative")
 	}
+	workers := c.optimizeWorkers(options.Concurrency)
 	needed, err := c.store.OptimizationNeeded(ctx)
 	if err != nil {
 		return wrapCollectionError(op, c.path, err)
@@ -3592,7 +3595,7 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 		// Publication is the durability boundary. A process can stop after the
 		// new manifest becomes current but before obsolete files are removed;
 		// a later no-op optimization must finish that safe cleanup.
-		if err := c.refreshSegmentIndexArtifactsLocked(ctx); err != nil {
+		if err := c.refreshSegmentIndexArtifactsLocked(ctx, workers); err != nil {
 			return wrapCollectionError(op, c.path, err)
 		}
 		return wrapCollectionError(op, c.path, c.store.PruneObsoleteArtifacts(ctx))
@@ -3606,12 +3609,12 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 	if err != nil {
 		return wrapCollectionError(op, c.path, err)
 	}
-	if err := c.rewriteCollectionDocumentsLocked(ctx, op, c.schema.Clone(), documents, options.Concurrency, func(*Document) error {
+	if err := c.rewriteCollectionDocumentsLocked(ctx, op, c.schema.Clone(), documents, workers, func(*Document) error {
 		return nil
 	}); err != nil {
 		return err
 	}
-	if err := c.refreshSegmentIndexArtifactsLocked(ctx); err != nil {
+	if err := c.refreshSegmentIndexArtifactsLocked(ctx, workers); err != nil {
 		return wrapCollectionError(op, c.path, err)
 	}
 	return wrapCollectionError(op, c.path, c.store.PruneObsoleteArtifacts(ctx))

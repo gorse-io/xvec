@@ -43,6 +43,20 @@ is full, its old neighbors plus the new candidate are rescored from that node
 and diversity-pruned back to the degree limit. The newest node becomes the
 entry point only when it introduces a strictly higher level.
 
+## Parallel construction
+
+`BuildWithWorkers(ctx, workers)` builds the same bounded graph with concurrent
+node insertions. It requires a positive worker count; cancellation or another
+failure leaves the one-shot builder retryable. Per-node adjacency locks and a
+separate entry-point lock allow searches and reverse-edge pruning to overlap
+without exposing partially written slices. `Build` is equivalent to one worker
+and retains the original bit-for-bit deterministic topology. With more than one
+worker, levels remain seed-deterministic, while adjacency topology may vary with
+goroutine scheduling, as in other concurrent HNSW builders.
+
+Collection index creation, optimization validation, and snapshot-local runtime
+rebuilds pass their normalized concurrency setting to dense HNSW construction.
+
 ## Inspection boundary
 
 `HNSWIndex` retains originals contiguously and currently implements
@@ -53,5 +67,6 @@ storage. The separately documented search unit traverses this topology.
 Tests cover all dense metrics, defaults and invalid parameters, empty and
 single-node graphs, entry/level/degree/reference invariants, duplicate and
 non-finite input rejection, cancellation retry, builder lifecycle, cloned
-ownership, deterministic topology, bounded level sampling, and a construction
+ownership, deterministic single-worker topology, parallel graph invariants and
+execution, cancellation retry, bounded level sampling, and a construction
 benchmark.

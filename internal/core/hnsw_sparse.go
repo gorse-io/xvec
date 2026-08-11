@@ -105,9 +105,20 @@ func (b *SparseHNSWBuilder) AddSparse(ctx context.Context, key uint64, vector Sp
 	return nil
 }
 
-// Build assigns deterministic levels, inserts nodes in input order, and
-// transfers the builder-owned CSR vectors to the resulting graph.
+// Build assigns deterministic levels, inserts nodes in input order on one
+// worker, and transfers the builder-owned CSR vectors to the resulting graph.
 func (b *SparseHNSWBuilder) Build(ctx context.Context) (*SparseHNSWIndex, error) {
+	return b.build(ctx, 1)
+}
+
+// BuildWithWorkers constructs the graph with up to workers concurrent node
+// insertions. A single worker is bit-for-bit deterministic; multiple workers
+// preserve graph invariants but topology may vary with goroutine scheduling.
+func (b *SparseHNSWBuilder) BuildWithWorkers(ctx context.Context, workers int) (*SparseHNSWIndex, error) {
+	return b.build(ctx, workers)
+}
+
+func (b *SparseHNSWBuilder) build(ctx context.Context, workers int) (*SparseHNSWIndex, error) {
 	if b == nil {
 		return nil, errors.New("core: nil sparse HNSW builder")
 	}
@@ -116,6 +127,9 @@ func (b *SparseHNSWBuilder) Build(ctx context.Context) (*SparseHNSWIndex, error)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if workers <= 0 {
+		return nil, ErrInvalidHNSWWorkers
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -150,13 +164,25 @@ func (b *SparseHNSWBuilder) Build(ctx context.Context) (*SparseHNSWIndex, error)
 		index.neighbors[position] = make([][]int, level+1)
 	}
 	index.levelRNGState = random.state
-	for position := range index.keys {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	if workers == 1 {
+		for position := range index.keys {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if err := index.insertBuiltNode(ctx, position); err != nil {
+				return nil, fmt.Errorf("core: construct sparse HNSW node %d: %w", position, err)
+			}
 		}
-		if err := index.insertBuiltNode(ctx, position); err != nil {
-			return nil, fmt.Errorf("core: construct sparse HNSW node %d: %w", position, err)
+	} else {
+		entryPoint, maxLevel, err := buildParallelHNSW(ctx, workers, index.options, index.levels, index.neighbors,
+			func(left, right int) (float32, error) {
+				return sparseHNSWScore(index.sparseVectorAt(left), index.sparseVectorAt(right))
+			})
+		if err != nil {
+			return nil, fmt.Errorf("core: construct sparse HNSW: %w", err)
 		}
+		index.entryPoint = entryPoint
+		index.maxLevel = maxLevel
 	}
 
 	b.built = true
