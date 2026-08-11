@@ -170,10 +170,15 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	distance, err := b.options.Metric.prevalidatedDistance()
+	if err != nil {
+		return nil, err
+	}
 
 	index := &HNSWIndex{
 		dimension:  b.dimension,
 		options:    b.options,
+		distance:   distance,
 		keys:       b.keys,
 		vectors:    b.vectors,
 		positions:  b.positions,
@@ -206,7 +211,7 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 	} else {
 		entryPoint, maxLevel, err := buildParallelHNSW(ctx, workers, index.options, index.levels, index.neighbors,
 			func(left, right int) (float32, error) {
-				return index.options.Metric.Compute(index.vectorAt(left), index.vectorAt(right))
+				return index.computeDistance(index.vectorAt(left), index.vectorAt(right))
 			})
 		if err != nil {
 			return nil, fmt.Errorf("core: construct HNSW: %w", err)
@@ -230,6 +235,7 @@ type HNSWIndex struct {
 	mu            sync.RWMutex
 	dimension     int
 	options       HNSWBuildOptions
+	distance      ailego.DenseDistance
 	keys          []uint64
 	vectors       []float32
 	positions     map[uint64]int
@@ -411,7 +417,7 @@ func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, entrie
 		if entry < 0 || entry >= len(i.keys) || i.levels[entry] < level || visited[entry] {
 			continue
 		}
-		score, err := i.options.Metric.Compute(query, i.vectorAt(entry))
+		score, err := i.computeDistance(query, i.vectorAt(entry))
 		if err != nil {
 			return nil, err
 		}
@@ -434,7 +440,7 @@ func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, entrie
 				continue
 			}
 			visited[neighbor] = true
-			score, err := i.options.Metric.Compute(query, i.vectorAt(neighbor))
+			score, err := i.computeDistance(query, i.vectorAt(neighbor))
 			if err != nil {
 				return nil, err
 			}
@@ -475,7 +481,7 @@ func (i *HNSWIndex) selectHNSWNeighbors(ctx context.Context, owner int, candidat
 		}
 		good := true
 		for _, accepted := range selected {
-			between, err := i.options.Metric.Compute(i.vectorAt(candidate.position), i.vectorAt(accepted))
+			between, err := i.computeDistance(i.vectorAt(candidate.position), i.vectorAt(accepted))
 			if err != nil {
 				return nil, err
 			}
@@ -507,7 +513,7 @@ func (i *HNSWIndex) addHNSWReverseEdge(ctx context.Context, owner, neighbor, lev
 	}
 	candidates := make([]hnswScoredNode, 0, len(current)+1)
 	for _, position := range append(slices.Clone(current), neighbor) {
-		score, err := i.options.Metric.Compute(i.vectorAt(owner), i.vectorAt(position))
+		score, err := i.computeDistance(i.vectorAt(owner), i.vectorAt(position))
 		if err != nil {
 			return err
 		}
@@ -540,6 +546,20 @@ func (i *HNSWIndex) maxDegree(level int) int {
 func (i *HNSWIndex) vectorAt(position int) []float32 {
 	start := position * i.dimension
 	return i.vectors[start : start+i.dimension]
+}
+
+func (i *HNSWIndex) computeDistance(left, right []float32) (float32, error) {
+	distance := i.distance
+	if distance == nil {
+		// Keep package-local literal fixtures usable while production indexes
+		// always install the scorer at build or open time.
+		var err error
+		distance, err = i.options.Metric.prevalidatedDistance()
+		if err != nil {
+			return 0, err
+		}
+	}
+	return distance(left, right)
 }
 
 func hnswNodeBetter(metric Metric, left, right hnswScoredNode) bool {
@@ -677,7 +697,7 @@ func (i *HNSWIndex) SearchHNSWGroups(
 		initial = initial[:candidateCount]
 	}
 	scoreAt := func(position int) (float32, error) {
-		return i.options.Metric.Compute(query, i.vectorAt(position))
+		return i.computeDistance(query, i.vectorAt(position))
 	}
 	prefetch := func(neighbors []int) {
 		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
@@ -725,9 +745,9 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 		return []Result{}, nil
 	}
 	if len(i.keys) <= DefaultHNSWBruteForceThreshold {
-		return topKCandidatesWithOptions(ctx, i.options.Metric, query, options.SearchOptions, len(i.keys), func(position int) Candidate {
+		return topKPrevalidatedCandidatesWithOptions(ctx, i.options.Metric, i.computeDistance, query, options.SearchOptions, len(i.keys), func(position int) Candidate {
 			return Candidate{Key: i.keys[position], Vector: i.vectorAt(position)}
-		}, requirePositiveTopK)
+		})
 	}
 
 	entry := i.entryPoint
@@ -762,7 +782,7 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, entry, 
 	accepted := ailego.NewHeap(worse)
 	visited := make([]bool, len(i.keys))
 
-	score, err := i.options.Metric.Compute(query, i.vectorAt(entry))
+	score, err := i.computeDistance(query, i.vectorAt(entry))
 	if err != nil {
 		return nil, fmt.Errorf("core: score HNSW entry point: %w", err)
 	}
@@ -789,7 +809,7 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, entry, 
 				continue
 			}
 			visited[neighbor] = true
-			score, err := i.options.Metric.Compute(query, i.vectorAt(neighbor))
+			score, err := i.computeDistance(query, i.vectorAt(neighbor))
 			if err != nil {
 				return nil, fmt.Errorf("core: score HNSW node %d: %w", neighbor, err)
 			}
@@ -922,6 +942,7 @@ func cloneHNSWIndex(ctx context.Context, source *HNSWIndex) (*HNSWIndex, error) 
 	clone := &HNSWIndex{
 		dimension:     source.dimension,
 		options:       source.options,
+		distance:      source.distance,
 		keys:          slices.Clone(source.keys),
 		vectors:       slices.Clone(source.vectors),
 		positions:     make(map[uint64]int, len(source.positions)),
@@ -1173,10 +1194,15 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 	if count > maxPlatformInt()/dimension {
 		return nil, fmt.Errorf("%w: vector storage exceeds platform capacity", ErrInvalidHNSWFile)
 	}
+	distance, err := options.Metric.prevalidatedDistance()
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid metric", ErrInvalidHNSWFile)
+	}
 
 	index := &HNSWIndex{
 		dimension:     dimension,
 		options:       options,
+		distance:      distance,
 		keys:          make([]uint64, count),
 		vectors:       make([]float32, count*dimension),
 		positions:     make(map[uint64]int, count),

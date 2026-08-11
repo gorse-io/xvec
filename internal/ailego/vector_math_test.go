@@ -117,6 +117,39 @@ func TestDenseMetricValidation(t *testing.T) {
 	}
 }
 
+func TestPrevalidatedDenseDistanceKernelsMatchCheckedMetrics(t *testing.T) {
+	left := []float32{0.2, 0.9, -0.4, 0.7}
+	right := []float32{0.3, 0.5, 0.8, -0.1}
+	tests := []struct {
+		name       string
+		checked    func([]float32, []float32) (float32, error)
+		prechecked DenseDistance
+	}{
+		{name: "l2", checked: L2Squared, prechecked: L2SquaredPrevalidated},
+		{name: "inner product", checked: InnerProduct, prechecked: InnerProductPrevalidated},
+		{name: "cosine", checked: CosineDistance, prechecked: CosineDistancePrevalidated},
+		{name: "mips-l2", checked: MIPSL2Squared, prechecked: MIPSL2SquaredPrevalidated},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			expected, err := test.checked(left, right)
+			require.NoError(t, err)
+			actual, err := test.prechecked(left, right)
+			require.NoError(t, err)
+			require.Equal(t, expected, actual)
+			require.Zero(t, testing.AllocsPerRun(100, func() {
+				benchmarkDenseScore, benchmarkDenseErr = test.prechecked(left, right)
+			}))
+		})
+	}
+	large := []float32{math.MaxFloat32, math.MaxFloat32}
+	_, err := InnerProductPrevalidated(large, large)
+	require.ErrorIs(t, err, ErrNonFiniteVector)
+}
+
+var benchmarkDenseScore float32
+var benchmarkDenseErr error
+
 func TestSparseInnerProduct(t *testing.T) {
 	t.Parallel()
 

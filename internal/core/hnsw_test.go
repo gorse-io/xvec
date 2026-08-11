@@ -363,6 +363,39 @@ func TestHNSWBuilderLifecycleAndErrors(t *testing.T) {
 	}
 }
 
+func TestHNSWSmallIndexUsesPrevalidatedDistance(t *testing.T) {
+	options := DefaultHNSWBuildOptions(MetricL2)
+	builder, err := NewHNSWBuilder(2, options)
+	require.NoError(t, err)
+	require.NoError(t, builder.Add(context.Background(), 1, []float32{0, 0}))
+	require.NoError(t, builder.Add(context.Background(), 2, []float32{1, 1}))
+	index, err := builder.Build(context.Background())
+	require.NoError(t, err)
+
+	calls := 0
+	index.distance = func(left, right []float32) (float32, error) {
+		calls++
+		return ailego.L2SquaredPrevalidated(left, right)
+	}
+	results, err := index.SearchHNSW(context.Background(), []float32{0, 0}, HNSWSearchOptions{
+		SearchOptions: SearchOptions{TopK: 1},
+		EF:            8,
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, index.Len(), calls)
+}
+
+func TestHNSWBuildPropagatesPrevalidatedDistanceOverflow(t *testing.T) {
+	builder, err := NewHNSWBuilder(2, DefaultHNSWBuildOptions(MetricIP))
+	require.NoError(t, err)
+	large := []float32{math.MaxFloat32, math.MaxFloat32}
+	require.NoError(t, builder.Add(context.Background(), 1, large))
+	require.NoError(t, builder.Add(context.Background(), 2, large))
+	_, err = builder.Build(context.Background())
+	require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+}
+
 func TestHNSWLevelSamplingDeterministicAndBounded(t *testing.T) {
 	t.Parallel()
 	first := splitMix64{state: 123}

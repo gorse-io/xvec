@@ -62,6 +62,23 @@ func (m Metric) Compute(left, right []float32) (float32, error) {
 	}
 }
 
+// prevalidatedDistance selects the allocation-free kernel used by index hot
+// paths after vectors have passed their storage or query boundary validation.
+func (m Metric) prevalidatedDistance() (ailego.DenseDistance, error) {
+	switch m {
+	case MetricL2:
+		return ailego.L2SquaredPrevalidated, nil
+	case MetricIP:
+		return ailego.InnerProductPrevalidated, nil
+	case MetricCosine:
+		return ailego.CosineDistancePrevalidated, nil
+	case MetricMIPSL2:
+		return ailego.MIPSL2SquaredPrevalidated, nil
+	default:
+		return nil, errors.New("core: invalid metric")
+	}
+}
+
 // Better reports whether left should rank before right.
 func (m Metric) Better(left, right float32) bool {
 	if m == MetricIP {
@@ -120,6 +137,18 @@ func topKCandidatesWithOptions(
 	} else if options.TopK < 0 {
 		return nil, errors.New("core: negative top-k")
 	}
+	return topKPrevalidatedCandidatesWithOptions(ctx, metric, metric.Compute, query, options, count, candidateAt)
+}
+
+func topKPrevalidatedCandidatesWithOptions(
+	ctx context.Context,
+	metric Metric,
+	distance ailego.DenseDistance,
+	query []float32,
+	options SearchOptions,
+	count int,
+	candidateAt func(int) Candidate,
+) ([]Result, error) {
 	if options.TopK == 0 || count == 0 {
 		return []Result{}, nil
 	}
@@ -143,7 +172,7 @@ func topKCandidatesWithOptions(
 		if options.Filter != nil && !options.Filter(candidate.Key) {
 			continue
 		}
-		score, err := metric.Compute(candidate.Vector, query)
+		score, err := distance(candidate.Vector, query)
 		if err != nil {
 			return nil, fmt.Errorf("core: score candidate %d (key %d): %w", index, candidate.Key, err)
 		}
