@@ -11,12 +11,12 @@ one existing basic numeric column. It has two mutually exclusive forms:
   nullable, and add, remove, or reconfigure an implemented INVERT index.
 
 ```go
-replacement := zvec.FieldSchema{
-    Name: "adjusted", DataType: zvec.DataTypeInt64,
-    Index: zvec.NewInvertIndexParams(),
+replacement := xvec.FieldSchema{
+    Name: "adjusted", DataType: xvec.DataTypeInt64,
+    Index: xvec.NewInvertIndexParams(),
 }
 err := collection.AlterColumn(ctx, "rating", "", &replacement,
-    zvec.AlterColumnOptions{Concurrency: 4},
+    xvec.AlterColumnOptions{Concurrency: 4},
 )
 ```
 

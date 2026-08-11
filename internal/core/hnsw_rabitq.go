@@ -24,7 +24,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 var ErrInvalidHNSWRaBitQOptions = errors.New("core: invalid HNSW-RaBitQ build options")

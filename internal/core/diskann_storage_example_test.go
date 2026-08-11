@@ -17,7 +17,7 @@ package core_test
 import (
 	"fmt"
 
-	"github.com/gorse-io/zvec/internal/core"
+	"github.com/gorse-io/xvec/internal/core"
 )
 
 func ExampleNewDiskANNLayout() {

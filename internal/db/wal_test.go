@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 	"github.com/stretchr/testify/require"
 )
 

@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package zvec
+package xvec
 
 import (
 	"slices"
 	"sort"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 // Binary is an arbitrary byte string. It is distinct from a UTF-8 String

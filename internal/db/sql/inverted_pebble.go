@@ -27,8 +27,8 @@ import (
 	"os"
 	"unicode/utf8"
 
-	"github.com/gorse-io/zvec/internal/ailego"
-	"github.com/gorse-io/zvec/internal/indexstore"
+	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/indexstore"
 )
 
 const (

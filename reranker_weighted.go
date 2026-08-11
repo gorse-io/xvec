@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package zvec
+package xvec
 
 import (
 	"context"
 	"math"
 
-	"github.com/gorse-io/zvec/internal/core"
+	"github.com/gorse-io/xvec/internal/core"
 )
 
 // WeightedReranker normalizes each branch score according to its field metric,

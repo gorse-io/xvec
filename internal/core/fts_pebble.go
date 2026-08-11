@@ -23,7 +23,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/gorse-io/zvec/internal/indexstore"
+	"github.com/gorse-io/xvec/internal/indexstore"
 )
 
 const (

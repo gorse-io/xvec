@@ -85,7 +85,7 @@ type benchmarkReport struct {
 }
 
 // vectorDBBenchMetric mirrors the names used by VectorDBBench's Metric model
-// so result consumers can ingest the core zvec performance fields directly.
+// so result consumers can ingest the core xvec performance fields directly.
 type vectorDBBenchMetric struct {
 	InsertedCount         int64     `json:"inserted_count"`
 	InsertDuration        float64   `json:"insert_duration"`
@@ -117,7 +117,7 @@ func newBenchmarkReport(config benchConfig) benchmarkReport {
 	}
 	return benchmarkReport{
 		SchemaVersion: reportSchemaVersion,
-		Tool:          "zvec-go/cmd/vector-db-bench",
+		Tool:          "xvec-go/cmd/vector-db-bench",
 		Timestamp:     time.Now().UTC(),
 		Case:          config.caseSpec,
 		DatasetDir:    config.DatasetDir,

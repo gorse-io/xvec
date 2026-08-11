@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"strings"
 
-	snowball "github.com/gorse-io/zvec/internal/core/snowball"
-	"github.com/gorse-io/zvec/internal/core/snowball/stemmers"
+	snowball "github.com/gorse-io/xvec/internal/core/snowball"
+	"github.com/gorse-io/xvec/internal/core/snowball/stemmers"
 )
 
 // ErrInvalidStemmerOptions identifies an unknown Snowball language or alias.

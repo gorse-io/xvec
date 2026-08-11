@@ -1,4 +1,4 @@
-module github.com/gorse-io/zvec
+module github.com/gorse-io/xvec
 
 go 1.26
 

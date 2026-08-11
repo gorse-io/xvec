@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gorse-io/zvec/internal/indexstore"
+	"github.com/gorse-io/xvec/internal/indexstore"
 	"github.com/stretchr/testify/require"
 )
 

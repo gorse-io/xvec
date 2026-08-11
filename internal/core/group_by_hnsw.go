@@ -18,7 +18,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 // HNSWGroupSearchOptions combines group retention with the level-zero graph

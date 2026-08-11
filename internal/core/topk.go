@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 // Metric selects score computation and ordering for exact search.

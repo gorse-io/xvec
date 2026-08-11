@@ -21,7 +21,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 // ErrInvalidFTSStats identifies an invalid segment view or overflow while

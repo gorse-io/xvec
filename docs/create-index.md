@@ -44,10 +44,10 @@ case. Supplying different parameters of the same implemented type rebuilds
 and atomically replaces the definition.
 
 ```go
-params := zvec.NewInvertIndexParams()
+params := xvec.NewInvertIndexParams()
 params.EnableExtendedWildcard = true
 err := collection.CreateIndex(ctx, "title", params,
-    zvec.CreateIndexOptions{Concurrency: 4},
+    xvec.CreateIndexOptions{Concurrency: 4},
 )
 ```
 

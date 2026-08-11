@@ -17,7 +17,7 @@ package sql
 import (
 	"fmt"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 // Resolver returns one typed field value. Missing nullable fields should be

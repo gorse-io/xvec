@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gorse-io/zvec"
+	"github.com/gorse-io/xvec"
 )
 
 func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (benchmarkReport, error) {
@@ -53,7 +53,7 @@ func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (bench
 	if err != nil {
 		return report, err
 	}
-	collection, err := zvec.Open(ctx, config.Path, zvec.CollectionOptions{
+	collection, err := xvec.Open(ctx, config.Path, xvec.CollectionOptions{
 		ReadOnly: true, EnableMmap: config.EnableMmap, MaxBufferSize: uint32(config.MaxBufferSize),
 	})
 	if err != nil {
@@ -113,15 +113,15 @@ func loadDataset(ctx context.Context, config benchConfig, log io.Writer) (loadMe
 	rows, err := forEachTrainingBatch(
 		ctx, config.DatasetDir, config.caseSpec.TrainFiles, config.BatchSize, config.LoadLimit,
 		func(rows []vectorParquetRow) error {
-			documents := make([]zvec.Document, len(rows))
+			documents := make([]xvec.Document, len(rows))
 			for index, row := range rows {
 				if len(row.Embedding) != config.caseSpec.Dimension {
 					return fmt.Errorf("training vector %d has dimension %d, want %d", row.ID, len(row.Embedding), config.caseSpec.Dimension)
 				}
-				documents[index] = zvec.Document{
+				documents[index] = xvec.Document{
 					PrimaryKey: strconv.FormatInt(row.ID, 10),
 					Fields: map[string]any{
-						"id": row.ID, "dense": zvec.VectorFP32(row.Embedding),
+						"id": row.ID, "dense": xvec.VectorFP32(row.Embedding),
 					},
 				}
 			}
@@ -147,7 +147,7 @@ func loadDataset(ctx context.Context, config benchConfig, log io.Writer) (loadMe
 	}
 	insertDuration := time.Since(insertStarted)
 	optimizeStarted := time.Now()
-	if err := collection.Optimize(ctx, zvec.OptimizeOptions{Concurrency: config.OptimizeConcurrency}); err != nil {
+	if err := collection.Optimize(ctx, xvec.OptimizeOptions{Concurrency: config.OptimizeConcurrency}); err != nil {
 		return loadMetrics{}, fmt.Errorf("optimize benchmark collection: %w", err)
 	}
 	optimizeDuration := time.Since(optimizeStarted)
@@ -167,19 +167,19 @@ func loadDataset(ctx context.Context, config benchConfig, log io.Writer) (loadMe
 	return metrics, nil
 }
 
-func writableBenchmarkCollection(ctx context.Context, config benchConfig) (*zvec.Collection, error) {
-	options := zvec.CollectionOptions{
+func writableBenchmarkCollection(ctx context.Context, config benchConfig) (*xvec.Collection, error) {
+	options := xvec.CollectionOptions{
 		EnableMmap: config.EnableMmap, MaxBufferSize: uint32(config.MaxBufferSize),
 	}
 	if config.SkipDropOld {
-		collection, err := zvec.Open(ctx, config.Path, options)
+		collection, err := xvec.Open(ctx, config.Path, options)
 		if err != nil {
 			return nil, fmt.Errorf("open existing benchmark collection: %w", err)
 		}
 		return collection, nil
 	}
 	if _, err := os.Stat(config.Path); err == nil {
-		old, err := zvec.Open(ctx, config.Path, options)
+		old, err := xvec.Open(ctx, config.Path, options)
 		if err != nil {
 			return nil, fmt.Errorf("open old benchmark collection before destroy: %w", err)
 		}
@@ -193,73 +193,73 @@ func writableBenchmarkCollection(ctx context.Context, config benchConfig) (*zvec
 	if err != nil {
 		return nil, err
 	}
-	index := zvec.NewHNSWIndexParams(metric)
+	index := xvec.NewHNSWIndexParams(metric)
 	index.M = config.M
 	index.EFConstruction = config.EFConstruction
 	index.Quantize, err = parseQuantization(config.Quantize)
 	if err != nil {
 		return nil, err
 	}
-	index.Quantizer.EnableRotate = index.Quantize == zvec.QuantizeTypeInt8 || index.Quantize == zvec.QuantizeTypeInt4
-	schema := zvec.NewCollectionSchema("vector_bench_test",
-		zvec.FieldSchema{Name: "id", DataType: zvec.DataTypeInt64, Index: zvec.NewInvertIndexParams()},
-		zvec.FieldSchema{
-			Name: "dense", DataType: zvec.DataTypeVectorFP32, Dimension: uint32(config.caseSpec.Dimension), Index: index,
+	index.Quantizer.EnableRotate = index.Quantize == xvec.QuantizeTypeInt8 || index.Quantize == xvec.QuantizeTypeInt4
+	schema := xvec.NewCollectionSchema("vector_bench_test",
+		xvec.FieldSchema{Name: "id", DataType: xvec.DataTypeInt64, Index: xvec.NewInvertIndexParams()},
+		xvec.FieldSchema{
+			Name: "dense", DataType: xvec.DataTypeVectorFP32, Dimension: uint32(config.caseSpec.Dimension), Index: index,
 		},
 	)
 	schema.MaxDocsPerSegment = config.MaxDocsPerSegment
-	collection, err := zvec.CreateAndOpen(ctx, config.Path, schema, options)
+	collection, err := xvec.CreateAndOpen(ctx, config.Path, schema, options)
 	if err != nil {
 		return nil, fmt.Errorf("create benchmark collection: %w", err)
 	}
 	return collection, nil
 }
 
-func parseMetric(value string) (zvec.MetricType, error) {
+func parseMetric(value string) (xvec.MetricType, error) {
 	switch strings.ToLower(value) {
 	case "cosine":
-		return zvec.MetricTypeCosine, nil
+		return xvec.MetricTypeCosine, nil
 	case "l2":
-		return zvec.MetricTypeL2, nil
+		return xvec.MetricTypeL2, nil
 	case "ip":
-		return zvec.MetricTypeIP, nil
+		return xvec.MetricTypeIP, nil
 	default:
 		return 0, fmt.Errorf("unsupported metric %q", value)
 	}
 }
 
-func parseQuantization(value string) (zvec.QuantizeType, error) {
+func parseQuantization(value string) (xvec.QuantizeType, error) {
 	switch strings.ToLower(value) {
 	case "", "none":
-		return zvec.QuantizeTypeUndefined, nil
+		return xvec.QuantizeTypeUndefined, nil
 	case "fp16":
-		return zvec.QuantizeTypeFP16, nil
+		return xvec.QuantizeTypeFP16, nil
 	case "int8":
-		return zvec.QuantizeTypeInt8, nil
+		return xvec.QuantizeTypeInt8, nil
 	case "int4":
-		return zvec.QuantizeTypeInt4, nil
+		return xvec.QuantizeTypeInt4, nil
 	default:
 		return 0, fmt.Errorf("unsupported quantization %q", value)
 	}
 }
 
 type queryEngine struct {
-	collection *zvec.Collection
-	params     zvec.HNSWQueryParams
+	collection *xvec.Collection
+	params     xvec.HNSWQueryParams
 	k          int
 }
 
-func newQueryEngine(collection *zvec.Collection, config benchConfig) queryEngine {
-	params := zvec.NewHNSWQueryParams()
+func newQueryEngine(collection *xvec.Collection, config benchConfig) queryEngine {
+	params := xvec.NewHNSWQueryParams()
 	params.EF = config.EFSearch
 	params.UseRefiner = config.UseRefiner
 	return queryEngine{collection: collection, params: params, k: config.K}
 }
 
 func (e queryEngine) search(ctx context.Context, vector []float32) ([]int64, error) {
-	results, err := e.collection.Query(ctx, zvec.VectorQuery{
-		Field: "dense", DenseVector: zvec.VectorFP32(vector), TopK: e.k, Params: e.params,
-		Projection: zvec.Projection{OutputFields: []string{}},
+	results, err := e.collection.Query(ctx, xvec.VectorQuery{
+		Field: "dense", DenseVector: xvec.VectorFP32(vector), TopK: e.k, Params: e.params,
+		Projection: xvec.Projection{OutputFields: []string{}},
 	})
 	if err != nil {
 		return nil, err

@@ -13,7 +13,7 @@ handle returns `ErrPermissionDenied`.
 
 ```go
 if err := collection.DropIndex(ctx, "rating"); err != nil {
-    // Handle the structured zvec error.
+    // Handle the structured xvec error.
 }
 ```
 

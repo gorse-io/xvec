@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package zvec
+package xvec
 
 import (
 	"bytes"
@@ -406,14 +406,14 @@ func marshalCollectionSchema(schema CollectionSchema) ([]byte, error) {
 			diskField.IndexType = code
 			diskField.Index, err = json.Marshal(field.Index)
 			if err != nil {
-				return nil, fmt.Errorf("zvec: encode schema index for field %q: %w", field.Name, err)
+				return nil, fmt.Errorf("xvec: encode schema index for field %q: %w", field.Name, err)
 			}
 		}
 		disk.Fields[index] = diskField
 	}
 	encoded, err := json.Marshal(disk)
 	if err != nil {
-		return nil, fmt.Errorf("zvec: encode collection schema: %w", err)
+		return nil, fmt.Errorf("xvec: encode collection schema: %w", err)
 	}
 	return encoded, nil
 }

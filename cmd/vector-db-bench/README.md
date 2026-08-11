@@ -1,7 +1,8 @@
 # vector-db-bench
 
-`vector-db-bench` is a native Go benchmark driver for zvec. It follows the
-VectorDBBench Cohere performance workload used by the zvec benchmark guide:
+`vector-db-bench` is a native Go benchmark driver for xvec. It follows the
+VectorDBBench Cohere performance workload used by the Alibaba zvec benchmark
+guide:
 
 - Cohere 1M and 10M Parquet datasets;
 - HNSW loading and optimization;
@@ -22,7 +23,7 @@ go build -o vector-db-bench ./cmd/vector-db-bench
 
 ## Cohere 1M
 
-The following configuration mirrors the published 1M zvec benchmark. The
+The following configuration mirrors the published 1M Alibaba zvec benchmark. The
 first invocation downloads the data, recreates the collection, loads it, and
 runs both search phases.
 

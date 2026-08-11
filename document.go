@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package zvec
+package xvec
 
 import (
 	"bytes"
@@ -24,7 +24,7 @@ import (
 	"sort"
 	"unicode/utf8"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 // MaxPrimaryKeyBytes is the maximum UTF-8 primary-key size accepted by the
@@ -383,7 +383,7 @@ const (
 
 var (
 	documentMagic             = [8]byte{'Z', 'V', 'E', 'C', 'D', 'O', 'C', 0}
-	errDocumentPayloadCorrupt = errors.New("zvec: corrupt document payload")
+	errDocumentPayloadCorrupt = errors.New("xvec: corrupt document payload")
 )
 
 func marshalDocumentPayload(fields map[string]any) ([]byte, error) {

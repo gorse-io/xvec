@@ -5,19 +5,19 @@ MultiQuery fusion. The callback receives the request context, candidate
 batches in sub-query order, and the final `topK` limit.
 
 ```go
-reranker := zvec.NewCallbackReranker(func(
+reranker := xvec.NewCallbackReranker(func(
     ctx context.Context,
-    batches []zvec.RerankBatch,
+    batches []xvec.RerankBatch,
     topK int,
-) ([]zvec.Document, error) {
+) ([]xvec.Document, error) {
     // Apply a domain-specific model or merge policy.
     return rerankCandidates(ctx, batches, topK)
 })
 
-results, err := collection.MultiQuery(ctx, zvec.MultiQuery{
-    Queries: []zvec.SubQuery{
+results, err := collection.MultiQuery(ctx, xvec.MultiQuery{
+    Queries: []xvec.SubQuery{
         {Field: "embedding", DenseVector: queryVector, NumCandidates: 50},
-        {Field: "body", FTS: &zvec.FTSClause{Match: "vector database"}, NumCandidates: 50},
+        {Field: "body", FTS: &xvec.FTSClause{Match: "vector database"}, NumCandidates: 50},
     },
     TopK:     10,
     Reranker: reranker,

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package sql parses and evaluates the SQL-style scalar filter language used
-// by zvec.
+// by xvec.
 package sql
 
 import (

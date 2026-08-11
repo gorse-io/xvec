@@ -6,12 +6,12 @@ useful when the relative importance of branches is known and their score
 domains need to be made comparable.
 
 ```go
-reranker := zvec.NewWeightedReranker(0.35, 0.65)
+reranker := xvec.NewWeightedReranker(0.35, 0.65)
 
-results, err := collection.MultiQuery(ctx, zvec.MultiQuery{
-    Queries: []zvec.SubQuery{
+results, err := collection.MultiQuery(ctx, xvec.MultiQuery{
+    Queries: []xvec.SubQuery{
         {Field: "embedding", DenseVector: queryVector, NumCandidates: 50},
-        {Field: "body", FTS: &zvec.FTSClause{Match: "vector database"}, NumCandidates: 50},
+        {Field: "body", FTS: &xvec.FTSClause{Match: "vector database"}, NumCandidates: 50},
     },
     TopK:     10,
     Reranker: reranker,

@@ -22,7 +22,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package zvec
+package xvec
 
 import (
 	"context"
@@ -34,10 +34,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gorse-io/zvec/internal/ailego"
-	"github.com/gorse-io/zvec/internal/core"
-	"github.com/gorse-io/zvec/internal/db"
-	dbsql "github.com/gorse-io/zvec/internal/db/sql"
+	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/core"
+	"github.com/gorse-io/xvec/internal/db"
+	dbsql "github.com/gorse-io/xvec/internal/db/sql"
 )
 
 // DefaultMaxBufferSize is the baseline-compatible DiskANN cache budget.
@@ -2354,9 +2354,9 @@ type BatchWriteError struct {
 
 func (e *BatchWriteError) Error() string {
 	if e == nil {
-		return "zvec: batch write failed"
+		return "xvec: batch write failed"
 	}
-	return "zvec: batch write: " + strconv.Itoa(e.Failed) + " document operations failed"
+	return "xvec: batch write: " + strconv.Itoa(e.Failed) + " document operations failed"
 }
 
 // Unwrap exposes every per-document cause to errors.Is and errors.As.
@@ -4806,7 +4806,7 @@ func (c *Collection) callStoreWriteLocked(ctx context.Context, operator Operator
 	case OperatorUpdate:
 		return c.store.Update(ctx, []db.WriteInput{input})
 	default:
-		return nil, errors.New("zvec: unsupported write operator")
+		return nil, errors.New("xvec: unsupported write operator")
 	}
 }
 
@@ -5324,7 +5324,7 @@ func (l *taskLimiter) stats() (active, peak, queued, completed uint64) {
 	return l.active.Load(), l.peak.Load(), l.queued.Load(), l.completed.Load()
 }
 
-var errRuntimeMemoryLimit = errors.New("zvec: runtime memory limit")
+var errRuntimeMemoryLimit = errors.New("xvec: runtime memory limit")
 
 type memoryBudget struct {
 	mu      sync.Mutex

@@ -18,7 +18,7 @@ import "hash/crc32"
 
 var castagnoliTable = crc32.MakeTable(crc32.Castagnoli)
 
-// CRC32C computes the Castagnoli CRC-32 checksum used by zvec disk records.
+// CRC32C computes the Castagnoli CRC-32 checksum used by xvec disk records.
 func CRC32C(data []byte) uint32 { return crc32.Checksum(data, castagnoliTable) }
 
 // UpdateCRC32C adds data to a previously computed CRC32C value.

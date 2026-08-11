@@ -23,12 +23,12 @@ backfill behavior. The expression is not a default for later writes: subsequent
 Insert and Upsert calls must still satisfy the published schema themselves.
 
 ```go
-field := zvec.FieldSchema{
-    Name: "adjusted", DataType: zvec.DataTypeInt64,
-    Index: zvec.NewInvertIndexParams(),
+field := xvec.FieldSchema{
+    Name: "adjusted", DataType: xvec.DataTypeInt64,
+    Index: xvec.NewInvertIndexParams(),
 }
 err := collection.AddColumn(ctx, field, "(rating * 2) + 1",
-    zvec.AddColumnOptions{Concurrency: 4},
+    xvec.AddColumnOptions{Concurrency: 4},
 )
 ```
 

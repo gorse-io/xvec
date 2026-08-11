@@ -3,7 +3,7 @@
 package indonesian
 
 import (
-	snowballRuntime "github.com/gorse-io/zvec/internal/core/snowball"
+	snowballRuntime "github.com/gorse-io/xvec/internal/core/snowball"
 )
 
 var A_0 = []*snowballRuntime.Among{

@@ -26,7 +26,7 @@ import (
 	"sync"
 
 	"github.com/cockroachdb/pebble/v2"
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 const (

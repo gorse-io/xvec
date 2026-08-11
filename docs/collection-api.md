@@ -1,19 +1,19 @@
 # Collection API
 
-The root `zvec` package exposes the v0.5 native collection API. It is a
+The root `xvec` package exposes the v0.5 native collection API. It is a
 pure-Go embedded database: every I/O, write, and query method accepts a
 `context.Context`; schema, options, path, and in-memory statistics getters do
 not.
 
 ```go
-schema := zvec.NewCollectionSchema("books",
-    zvec.FieldSchema{Name: "title", DataType: zvec.DataTypeString},
-    zvec.FieldSchema{
-        Name: "embedding", DataType: zvec.DataTypeVectorFP32, Dimension: 768,
-        Index: zvec.NewFlatIndexParams(zvec.MetricTypeCosine),
+schema := xvec.NewCollectionSchema("books",
+    xvec.FieldSchema{Name: "title", DataType: xvec.DataTypeString},
+    xvec.FieldSchema{
+        Name: "embedding", DataType: xvec.DataTypeVectorFP32, Dimension: 768,
+        Index: xvec.NewFlatIndexParams(xvec.MetricTypeCosine),
     },
 )
-collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+collection, err := xvec.CreateAndOpen(ctx, path, schema, xvec.NewCollectionOptions())
 ```
 
 `Insert`, `Upsert`, `Update`, and `Delete` return one `WriteResult` per input.

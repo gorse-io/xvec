@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package zvec_test
+package xvec_test
 
 import (
 	"context"
@@ -20,12 +20,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/gorse-io/zvec"
+	"github.com/gorse-io/xvec"
 )
 
 func ExampleRuntimeConfig_Validate() {
-	config := zvec.NewRuntimeConfig()
-	config.MemoryLimitBytes = zvec.MinRuntimeMemoryLimit
+	config := xvec.NewRuntimeConfig()
+	config.MemoryLimitBytes = xvec.MinRuntimeMemoryLimit
 	config.QueryConcurrency = 4
 	config.OptimizeConcurrency = 2
 
@@ -43,27 +43,27 @@ func ExampleCollection_Query() {
 	}
 	path := filepath.Join(directory, "books")
 
-	schema := zvec.NewCollectionSchema("books",
-		zvec.FieldSchema{Name: "title", DataType: zvec.DataTypeString},
-		zvec.FieldSchema{
-			Name: "embedding", DataType: zvec.DataTypeVectorFP32, Dimension: 2,
-			Index: zvec.NewFlatIndexParams(zvec.MetricTypeIP),
+	schema := xvec.NewCollectionSchema("books",
+		xvec.FieldSchema{Name: "title", DataType: xvec.DataTypeString},
+		xvec.FieldSchema{
+			Name: "embedding", DataType: xvec.DataTypeVectorFP32, Dimension: 2,
+			Index: xvec.NewFlatIndexParams(xvec.MetricTypeIP),
 		},
 	)
-	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	collection, err := xvec.CreateAndOpen(ctx, path, schema, xvec.NewCollectionOptions())
 	if err != nil {
 		panic(err)
 	}
-	_, err = collection.Insert(ctx, []zvec.Document{
-		{PrimaryKey: "go", Fields: map[string]any{"title": "The Go Programming Language", "embedding": zvec.VectorFP32{1, 0}}},
-		{PrimaryKey: "db", Fields: map[string]any{"title": "Database Internals", "embedding": zvec.VectorFP32{0.5, 0}}},
+	_, err = collection.Insert(ctx, []xvec.Document{
+		{PrimaryKey: "go", Fields: map[string]any{"title": "The Go Programming Language", "embedding": xvec.VectorFP32{1, 0}}},
+		{PrimaryKey: "db", Fields: map[string]any{"title": "Database Internals", "embedding": xvec.VectorFP32{0.5, 0}}},
 	})
 	if err != nil {
 		panic(err)
 	}
-	results, err := collection.Query(ctx, zvec.VectorQuery{
-		Field: "embedding", DenseVector: zvec.VectorFP32{1, 0}, TopK: 1,
-		Projection: zvec.Projection{OutputFields: []string{"title"}},
+	results, err := collection.Query(ctx, xvec.VectorQuery{
+		Field: "embedding", DenseVector: xvec.VectorFP32{1, 0}, TopK: 1,
+		Projection: xvec.Projection{OutputFields: []string{"title"}},
 	})
 	if err != nil {
 		panic(err)
@@ -85,30 +85,30 @@ func ExampleCollection_Query_ann() {
 		panic(err)
 	}
 	path := filepath.Join(directory, "items")
-	index := zvec.NewHNSWIndexParams(zvec.MetricTypeL2)
+	index := xvec.NewHNSWIndexParams(xvec.MetricTypeL2)
 	index.M = 8
 	index.EFConstruction = 32
-	index.Quantize = zvec.QuantizeTypeInt8
+	index.Quantize = xvec.QuantizeTypeInt8
 	index.Quantizer.EnableRotate = true
-	schema := zvec.NewCollectionSchema("items", zvec.FieldSchema{
-		Name: "embedding", DataType: zvec.DataTypeVectorFP32, Dimension: 4, Index: index,
+	schema := xvec.NewCollectionSchema("items", xvec.FieldSchema{
+		Name: "embedding", DataType: xvec.DataTypeVectorFP32, Dimension: 4, Index: index,
 	})
-	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	collection, err := xvec.CreateAndOpen(ctx, path, schema, xvec.NewCollectionOptions())
 	if err != nil {
 		panic(err)
 	}
-	_, err = collection.Insert(ctx, []zvec.Document{
-		{PrimaryKey: "nearest", Fields: map[string]any{"embedding": zvec.VectorFP32{1, 2, 3, 4}}},
-		{PrimaryKey: "farther", Fields: map[string]any{"embedding": zvec.VectorFP32{4, 3, 2, 1}}},
+	_, err = collection.Insert(ctx, []xvec.Document{
+		{PrimaryKey: "nearest", Fields: map[string]any{"embedding": xvec.VectorFP32{1, 2, 3, 4}}},
+		{PrimaryKey: "farther", Fields: map[string]any{"embedding": xvec.VectorFP32{4, 3, 2, 1}}},
 	})
 	if err != nil {
 		panic(err)
 	}
-	params := zvec.NewHNSWQueryParams()
+	params := xvec.NewHNSWQueryParams()
 	params.EF = 32
 	params.UseRefiner = true
-	results, err := collection.Query(ctx, zvec.VectorQuery{
-		Field: "embedding", DenseVector: zvec.VectorFP32{1, 2, 3, 4}, TopK: 1, Params: params,
+	results, err := collection.Query(ctx, xvec.VectorQuery{
+		Field: "embedding", DenseVector: xvec.VectorFP32{1, 2, 3, 4}, TopK: 1, Params: params,
 	})
 	if err != nil {
 		panic(err)
@@ -130,30 +130,30 @@ func ExampleCollection_MultiQuery() {
 		panic(err)
 	}
 	path := filepath.Join(directory, "books")
-	schema := zvec.NewCollectionSchema("books",
-		zvec.FieldSchema{Name: "title", DataType: zvec.DataTypeString, Index: zvec.NewFTSIndexParams()},
-		zvec.FieldSchema{
-			Name: "embedding", DataType: zvec.DataTypeVectorFP32, Dimension: 2,
-			Index: zvec.NewFlatIndexParams(zvec.MetricTypeIP),
+	schema := xvec.NewCollectionSchema("books",
+		xvec.FieldSchema{Name: "title", DataType: xvec.DataTypeString, Index: xvec.NewFTSIndexParams()},
+		xvec.FieldSchema{
+			Name: "embedding", DataType: xvec.DataTypeVectorFP32, Dimension: 2,
+			Index: xvec.NewFlatIndexParams(xvec.MetricTypeIP),
 		},
 	)
-	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	collection, err := xvec.CreateAndOpen(ctx, path, schema, xvec.NewCollectionOptions())
 	if err != nil {
 		panic(err)
 	}
-	_, err = collection.Insert(ctx, []zvec.Document{
-		{PrimaryKey: "go", Fields: map[string]any{"title": "Go vector search", "embedding": zvec.VectorFP32{0.8, 0}}},
-		{PrimaryKey: "ann", Fields: map[string]any{"title": "Approximate neighbors", "embedding": zvec.VectorFP32{1, 0}}},
+	_, err = collection.Insert(ctx, []xvec.Document{
+		{PrimaryKey: "go", Fields: map[string]any{"title": "Go vector search", "embedding": xvec.VectorFP32{0.8, 0}}},
+		{PrimaryKey: "ann", Fields: map[string]any{"title": "Approximate neighbors", "embedding": xvec.VectorFP32{1, 0}}},
 	})
 	if err != nil {
 		panic(err)
 	}
-	results, err := collection.MultiQuery(ctx, zvec.MultiQuery{
-		Queries: []zvec.SubQuery{
-			{Field: "embedding", DenseVector: zvec.VectorFP32{1, 0}, NumCandidates: 2},
-			{Field: "title", FTS: &zvec.FTSClause{Match: "go search"}, NumCandidates: 2},
+	results, err := collection.MultiQuery(ctx, xvec.MultiQuery{
+		Queries: []xvec.SubQuery{
+			{Field: "embedding", DenseVector: xvec.VectorFP32{1, 0}, NumCandidates: 2},
+			{Field: "title", FTS: &xvec.FTSClause{Match: "go search"}, NumCandidates: 2},
 		},
-		TopK: 1, Projection: zvec.Projection{OutputFields: []string{"title"}},
+		TopK: 1, Projection: xvec.Projection{OutputFields: []string{"title"}},
 	})
 	if err != nil {
 		panic(err)
@@ -169,21 +169,21 @@ func ExampleCollection_MultiQuery() {
 }
 
 func ExampleWeightedReranker_Rerank() {
-	reranker := zvec.NewWeightedReranker(0.5, 0.5)
-	results, err := reranker.Rerank(context.Background(), []zvec.RerankBatch{
+	reranker := xvec.NewWeightedReranker(0.5, 0.5)
+	results, err := reranker.Rerank(context.Background(), []xvec.RerankBatch{
 		{
-			Field: zvec.FieldSchema{
-				Name: "embedding", DataType: zvec.DataTypeVectorFP32, Dimension: 2,
-				Index: zvec.NewFlatIndexParams(zvec.MetricTypeL2),
+			Field: xvec.FieldSchema{
+				Name: "embedding", DataType: xvec.DataTypeVectorFP32, Dimension: 2,
+				Index: xvec.NewFlatIndexParams(xvec.MetricTypeL2),
 			},
-			Documents: []zvec.Document{
+			Documents: []xvec.Document{
 				{PrimaryKey: "a", DocID: 1, Score: 0},
 				{PrimaryKey: "b", DocID: 2, Score: 1},
 			},
 		},
 		{
-			Field: zvec.FieldSchema{Name: "body", DataType: zvec.DataTypeString, Index: zvec.NewFTSIndexParams()},
-			Documents: []zvec.Document{
+			Field: xvec.FieldSchema{Name: "body", DataType: xvec.DataTypeString, Index: xvec.NewFTSIndexParams()},
+			Documents: []xvec.Document{
 				{PrimaryKey: "a", DocID: 1, Score: 1},
 			},
 		},
@@ -198,16 +198,16 @@ func ExampleWeightedReranker_Rerank() {
 }
 
 func ExampleCallbackReranker_Rerank() {
-	reranker := zvec.NewCallbackReranker(func(_ context.Context, batches []zvec.RerankBatch, topK int) ([]zvec.Document, error) {
-		result := []zvec.Document{batches[1].Documents[0], batches[0].Documents[0]}
+	reranker := xvec.NewCallbackReranker(func(_ context.Context, batches []xvec.RerankBatch, topK int) ([]xvec.Document, error) {
+		result := []xvec.Document{batches[1].Documents[0], batches[0].Documents[0]}
 		if len(result) > topK {
 			result = result[:topK]
 		}
 		return result, nil
 	})
-	results, err := reranker.Rerank(context.Background(), []zvec.RerankBatch{
-		{Documents: []zvec.Document{{PrimaryKey: "vector", Score: 0.8}}},
-		{Documents: []zvec.Document{{PrimaryKey: "keyword", Score: 2.1}}},
+	results, err := reranker.Rerank(context.Background(), []xvec.RerankBatch{
+		{Documents: []xvec.Document{{PrimaryKey: "vector", Score: 0.8}}},
+		{Documents: []xvec.Document{{PrimaryKey: "keyword", Score: 2.1}}},
 	}, 1)
 	if err != nil {
 		panic(err)
@@ -225,20 +225,20 @@ func ExampleCollection_DeleteByFilter() {
 		panic(err)
 	}
 	path := filepath.Join(directory, "books")
-	schema := zvec.NewCollectionSchema("books",
-		zvec.FieldSchema{Name: "rating", DataType: zvec.DataTypeInt32, Index: zvec.NewInvertIndexParams()},
-		zvec.FieldSchema{
-			Name: "embedding", DataType: zvec.DataTypeVectorFP32, Dimension: 2,
-			Index: zvec.NewFlatIndexParams(zvec.MetricTypeIP),
+	schema := xvec.NewCollectionSchema("books",
+		xvec.FieldSchema{Name: "rating", DataType: xvec.DataTypeInt32, Index: xvec.NewInvertIndexParams()},
+		xvec.FieldSchema{
+			Name: "embedding", DataType: xvec.DataTypeVectorFP32, Dimension: 2,
+			Index: xvec.NewFlatIndexParams(xvec.MetricTypeIP),
 		},
 	)
-	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	collection, err := xvec.CreateAndOpen(ctx, path, schema, xvec.NewCollectionOptions())
 	if err != nil {
 		panic(err)
 	}
-	_, err = collection.Insert(ctx, []zvec.Document{
-		{PrimaryKey: "keep", Fields: map[string]any{"rating": int32(3), "embedding": zvec.VectorFP32{1, 0}}},
-		{PrimaryKey: "remove", Fields: map[string]any{"rating": int32(5), "embedding": zvec.VectorFP32{0.5, 0}}},
+	_, err = collection.Insert(ctx, []xvec.Document{
+		{PrimaryKey: "keep", Fields: map[string]any{"rating": int32(3), "embedding": xvec.VectorFP32{1, 0}}},
+		{PrimaryKey: "remove", Fields: map[string]any{"rating": int32(5), "embedding": xvec.VectorFP32{0.5, 0}}},
 	})
 	if err != nil {
 		panic(err)
@@ -263,26 +263,26 @@ func ExampleCollection_CreateIndex() {
 		panic(err)
 	}
 	path := filepath.Join(directory, "books")
-	schema := zvec.NewCollectionSchema("books",
-		zvec.FieldSchema{Name: "rating", DataType: zvec.DataTypeInt32},
-		zvec.FieldSchema{
-			Name: "embedding", DataType: zvec.DataTypeVectorFP32, Dimension: 2,
-			Index: zvec.NewFlatIndexParams(zvec.MetricTypeIP),
+	schema := xvec.NewCollectionSchema("books",
+		xvec.FieldSchema{Name: "rating", DataType: xvec.DataTypeInt32},
+		xvec.FieldSchema{
+			Name: "embedding", DataType: xvec.DataTypeVectorFP32, Dimension: 2,
+			Index: xvec.NewFlatIndexParams(xvec.MetricTypeIP),
 		},
 	)
-	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	collection, err := xvec.CreateAndOpen(ctx, path, schema, xvec.NewCollectionOptions())
 	if err != nil {
 		panic(err)
 	}
-	_, err = collection.Insert(ctx, []zvec.Document{{
+	_, err = collection.Insert(ctx, []xvec.Document{{
 		PrimaryKey: "book", Fields: map[string]any{
-			"rating": int32(5), "embedding": zvec.VectorFP32{1, 0},
+			"rating": int32(5), "embedding": xvec.VectorFP32{1, 0},
 		},
 	}})
 	if err != nil {
 		panic(err)
 	}
-	if err := collection.CreateIndex(ctx, "rating", zvec.NewInvertIndexParams(), zvec.CreateIndexOptions{Concurrency: 2}); err != nil {
+	if err := collection.CreateIndex(ctx, "rating", xvec.NewInvertIndexParams(), xvec.CreateIndexOptions{Concurrency: 2}); err != nil {
 		panic(err)
 	}
 	field, _ := collection.Schema().Field("rating")
@@ -303,10 +303,10 @@ func ExampleCollection_DropIndex() {
 		panic(err)
 	}
 	path := filepath.Join(directory, "books")
-	schema := zvec.NewCollectionSchema("books",
-		zvec.FieldSchema{Name: "rating", DataType: zvec.DataTypeInt32, Index: zvec.NewInvertIndexParams()},
+	schema := xvec.NewCollectionSchema("books",
+		xvec.FieldSchema{Name: "rating", DataType: xvec.DataTypeInt32, Index: xvec.NewInvertIndexParams()},
 	)
-	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	collection, err := xvec.CreateAndOpen(ctx, path, schema, xvec.NewCollectionOptions())
 	if err != nil {
 		panic(err)
 	}
@@ -331,24 +331,24 @@ func ExampleCollection_AddColumn() {
 		panic(err)
 	}
 	path := filepath.Join(directory, "books")
-	schema := zvec.NewCollectionSchema("books",
-		zvec.FieldSchema{Name: "rating", DataType: zvec.DataTypeInt32},
+	schema := xvec.NewCollectionSchema("books",
+		xvec.FieldSchema{Name: "rating", DataType: xvec.DataTypeInt32},
 	)
-	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	collection, err := xvec.CreateAndOpen(ctx, path, schema, xvec.NewCollectionOptions())
 	if err != nil {
 		panic(err)
 	}
-	_, err = collection.Insert(ctx, []zvec.Document{{
+	_, err = collection.Insert(ctx, []xvec.Document{{
 		PrimaryKey: "book", Fields: map[string]any{"rating": int32(4)},
 	}})
 	if err != nil {
 		panic(err)
 	}
-	field := zvec.FieldSchema{Name: "adjusted", DataType: zvec.DataTypeInt64}
-	if err := collection.AddColumn(ctx, field, "rating * 2 + 1", zvec.AddColumnOptions{Concurrency: 2}); err != nil {
+	field := xvec.FieldSchema{Name: "adjusted", DataType: xvec.DataTypeInt64}
+	if err := collection.AddColumn(ctx, field, "rating * 2 + 1", xvec.AddColumnOptions{Concurrency: 2}); err != nil {
 		panic(err)
 	}
-	documents, err := collection.Fetch(ctx, []string{"book"}, zvec.Projection{})
+	documents, err := collection.Fetch(ctx, []string{"book"}, xvec.Projection{})
 	if err != nil {
 		panic(err)
 	}
@@ -369,24 +369,24 @@ func ExampleCollection_AlterColumn() {
 		panic(err)
 	}
 	path := filepath.Join(directory, "books")
-	schema := zvec.NewCollectionSchema("books",
-		zvec.FieldSchema{Name: "rating", DataType: zvec.DataTypeInt32},
+	schema := xvec.NewCollectionSchema("books",
+		xvec.FieldSchema{Name: "rating", DataType: xvec.DataTypeInt32},
 	)
-	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	collection, err := xvec.CreateAndOpen(ctx, path, schema, xvec.NewCollectionOptions())
 	if err != nil {
 		panic(err)
 	}
-	_, err = collection.Insert(ctx, []zvec.Document{{
+	_, err = collection.Insert(ctx, []xvec.Document{{
 		PrimaryKey: "book", Fields: map[string]any{"rating": int32(4)},
 	}})
 	if err != nil {
 		panic(err)
 	}
-	replacement := zvec.FieldSchema{Name: "adjusted", DataType: zvec.DataTypeInt64}
-	if err := collection.AlterColumn(ctx, "rating", "", &replacement, zvec.AlterColumnOptions{Concurrency: 2}); err != nil {
+	replacement := xvec.FieldSchema{Name: "adjusted", DataType: xvec.DataTypeInt64}
+	if err := collection.AlterColumn(ctx, "rating", "", &replacement, xvec.AlterColumnOptions{Concurrency: 2}); err != nil {
 		panic(err)
 	}
-	documents, err := collection.Fetch(ctx, []string{"book"}, zvec.Projection{})
+	documents, err := collection.Fetch(ctx, []string{"book"}, xvec.Projection{})
 	if err != nil {
 		panic(err)
 	}
@@ -407,15 +407,15 @@ func ExampleCollection_DropColumn() {
 		panic(err)
 	}
 	path := filepath.Join(directory, "books")
-	schema := zvec.NewCollectionSchema("books",
-		zvec.FieldSchema{Name: "title", DataType: zvec.DataTypeString},
-		zvec.FieldSchema{Name: "legacy_score", DataType: zvec.DataTypeInt32},
+	schema := xvec.NewCollectionSchema("books",
+		xvec.FieldSchema{Name: "title", DataType: xvec.DataTypeString},
+		xvec.FieldSchema{Name: "legacy_score", DataType: xvec.DataTypeInt32},
 	)
-	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	collection, err := xvec.CreateAndOpen(ctx, path, schema, xvec.NewCollectionOptions())
 	if err != nil {
 		panic(err)
 	}
-	_, err = collection.Insert(ctx, []zvec.Document{{
+	_, err = collection.Insert(ctx, []xvec.Document{{
 		PrimaryKey: "book", Fields: map[string]any{"title": "Go", "legacy_score": int32(4)},
 	}})
 	if err != nil {
@@ -424,7 +424,7 @@ func ExampleCollection_DropColumn() {
 	if err := collection.DropColumn(ctx, "legacy_score"); err != nil {
 		panic(err)
 	}
-	documents, err := collection.Fetch(ctx, []string{"book"}, zvec.Projection{})
+	documents, err := collection.Fetch(ctx, []string{"book"}, xvec.Projection{})
 	if err != nil {
 		panic(err)
 	}
@@ -446,14 +446,14 @@ func ExampleCollection_Optimize() {
 		panic(err)
 	}
 	path := filepath.Join(directory, "books")
-	schema := zvec.NewCollectionSchema("books",
-		zvec.FieldSchema{Name: "rating", DataType: zvec.DataTypeInt32, Index: zvec.NewInvertIndexParams()},
+	schema := xvec.NewCollectionSchema("books",
+		xvec.FieldSchema{Name: "rating", DataType: xvec.DataTypeInt32, Index: xvec.NewInvertIndexParams()},
 	)
-	collection, err := zvec.CreateAndOpen(ctx, path, schema, zvec.NewCollectionOptions())
+	collection, err := xvec.CreateAndOpen(ctx, path, schema, xvec.NewCollectionOptions())
 	if err != nil {
 		panic(err)
 	}
-	_, err = collection.Insert(ctx, []zvec.Document{
+	_, err = collection.Insert(ctx, []xvec.Document{
 		{PrimaryKey: "keep", Fields: map[string]any{"rating": int32(5)}},
 		{PrimaryKey: "remove", Fields: map[string]any{"rating": int32(1)}},
 	})
@@ -466,10 +466,10 @@ func ExampleCollection_Optimize() {
 	if _, err := collection.Delete(ctx, []string{"remove"}); err != nil {
 		panic(err)
 	}
-	if err := collection.Optimize(ctx, zvec.OptimizeOptions{Concurrency: 2}); err != nil {
+	if err := collection.Optimize(ctx, xvec.OptimizeOptions{Concurrency: 2}); err != nil {
 		panic(err)
 	}
-	documents, err := collection.Fetch(ctx, []string{"keep", "remove"}, zvec.Projection{})
+	documents, err := collection.Fetch(ctx, []string{"keep", "remove"}, xvec.Projection{})
 	if err != nil {
 		panic(err)
 	}

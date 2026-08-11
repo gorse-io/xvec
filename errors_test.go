@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package zvec
+package xvec
 
 import (
 	"fmt"
@@ -44,7 +44,7 @@ func TestErrorSupportsIsAsAndUnwrap(t *testing.T) {
 	require.Same(t, err, got,
 		"errors.As did not recover the structured error")
 	{
-		want := "zvec: fetch: /collections/books: primary key 42: EOF"
+		want := "xvec: fetch: /collections/books: primary key 42: EOF"
 		require.Equal(t, want, err.Error())
 	}
 }
@@ -52,7 +52,7 @@ func TestErrorSupportsIsAsAndUnwrap(t *testing.T) {
 func TestErrorDefaults(t *testing.T) {
 	err := &Error{Code: ErrorCodeNotSupported}
 	{
-		got, want := err.Error(), "zvec: Not supported"
+		got, want := err.Error(), "xvec: Not supported"
 		require.Equal(t, want, got)
 	}
 	{

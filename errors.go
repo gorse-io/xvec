@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package zvec
+package xvec
 
 import "strings"
 
-// ErrorCode classifies errors returned by zvec operations. The values and
+// ErrorCode classifies errors returned by xvec operations. The values and
 // default messages match StatusCode in the C++ public API at commit 58375ff.
 type ErrorCode uint32
 
@@ -75,7 +75,7 @@ func (c ErrorCode) DefaultMessage() string {
 	return errorCodeMessages[ErrorCodeUnknown]
 }
 
-// Error is the structured error returned by zvec operations.
+// Error is the structured error returned by xvec operations.
 //
 // Code is suitable for programmatic decisions. Op and Path identify the
 // failed operation and collection path when available. Err retains the
@@ -94,7 +94,7 @@ func (e *Error) Error() string {
 		return "<nil>"
 	}
 
-	parts := []string{"zvec"}
+	parts := []string{"xvec"}
 	if e.Op != "" {
 		parts = append(parts, e.Op)
 	}
@@ -121,7 +121,7 @@ func (e *Error) Unwrap() error {
 	return e.Err
 }
 
-// Is makes errors.Is compare zvec errors by ErrorCode. An underlying cause is
+// Is makes errors.Is compare xvec errors by ErrorCode. An underlying cause is
 // still considered by the standard library through Unwrap.
 func (e *Error) Is(target error) bool {
 	if e == nil || target == nil {
@@ -141,7 +141,7 @@ type codeSentinel struct {
 	code ErrorCode
 }
 
-func (e codeSentinel) Error() string { return "zvec: " + e.code.DefaultMessage() }
+func (e codeSentinel) Error() string { return "xvec: " + e.code.DefaultMessage() }
 
 // Stable errors.Is targets for each non-success ErrorCode.
 var (

@@ -18,7 +18,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gorse-io/zvec/internal/core"
+	"github.com/gorse-io/xvec/internal/core"
 )
 
 func ExampleTrainRaBitQ() {

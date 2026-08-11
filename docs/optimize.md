@@ -7,7 +7,7 @@ the schema's `MaxDocsPerSegment`, writes a fresh immutable IDMap checkpoint and
 empty deletion snapshot, and rotates to a new empty WAL.
 
 ```go
-if err := collection.Optimize(ctx, zvec.OptimizeOptions{Concurrency: 4}); err != nil {
+if err := collection.Optimize(ctx, xvec.OptimizeOptions{Concurrency: 4}); err != nil {
     return err
 }
 ```
@@ -37,7 +37,7 @@ different IVF builder or search layout.
 `CURRENT` is the commit point. Failure before publication leaves the old
 manifest, schema, segments, snapshots, and WAL authoritative. Once publication
 succeeds, recovery sees the complete compacted version. Optimize then removes
-only unreferenced files matching zvec's native segment, WAL, WAL-lock, and
+only unreferenced files matching xvec's native segment, WAL, WAL-lock, and
 snapshot naming schemes; it preserves unknown files and manifest generations.
 A crash during this cleanup can leave harmless garbage, and a later Optimize
 retries pruning even when no new compaction is needed.

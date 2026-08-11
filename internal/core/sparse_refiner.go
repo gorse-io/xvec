@@ -19,7 +19,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 // SparseRefiner re-scores approximate sparse candidates in an exact

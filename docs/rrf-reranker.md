@@ -12,12 +12,12 @@ makes RRF useful when branches have incomparable score domains, such as inner
 product, sparse similarity, and BM25.
 
 ```go
-reranker := zvec.NewRRFReranker() // RankConstant: 60
+reranker := xvec.NewRRFReranker() // RankConstant: 60
 
-results, err := collection.MultiQuery(ctx, zvec.MultiQuery{
-    Queries: []zvec.SubQuery{
+results, err := collection.MultiQuery(ctx, xvec.MultiQuery{
+    Queries: []xvec.SubQuery{
         {Field: "embedding", DenseVector: queryVector, NumCandidates: 50},
-        {Field: "body", FTS: &zvec.FTSClause{Match: "vector database"}, NumCandidates: 50},
+        {Field: "body", FTS: &xvec.FTSClause{Match: "vector database"}, NumCandidates: 50},
     },
     TopK:     10,
     Reranker: reranker,
@@ -29,7 +29,7 @@ so `Reranker: reranker` may be omitted. Use an explicit value to change the
 constant:
 
 ```go
-reranker := zvec.RRFReranker{RankConstant: 20}
+reranker := xvec.RRFReranker{RankConstant: 20}
 ```
 
 `RankConstant` must be non-negative. Zero is a valid explicit value and is not

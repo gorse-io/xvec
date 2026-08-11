@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 // ScalarQuantizedHNSWIndex owns a stable HNSW topology, original vectors for

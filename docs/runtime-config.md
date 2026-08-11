@@ -4,14 +4,14 @@
 it before the first `CreateAndOpen`, `Open`, or `CurrentRuntimeStats` call:
 
 ```go
-config := zvec.NewRuntimeConfig()
+config := xvec.NewRuntimeConfig()
 config.MemoryLimitBytes = 512 << 20
 config.QueryConcurrency = 8
 config.OptimizeConcurrency = 2
-config.LogLevel = zvec.LogLevelInfo
+config.LogLevel = xvec.LogLevelInfo
 config.Logger = slog.Default()
 
-if err := zvec.ConfigureRuntime(config); err != nil {
+if err := xvec.ConfigureRuntime(config); err != nil {
     return err
 }
 ```
@@ -88,8 +88,8 @@ one sector disables node caching.
 
 Set `Logger` to any `*slog.Logger`. Query lifecycle records use debug severity,
 maintenance lifecycle records use info, and memory-budget rejections use warn.
-`LogLevel` filters zvec records before they reach the handler. A nil logger
-disables zvec logging. Zvec neither owns nor closes the logger or its handler,
+`LogLevel` filters xvec records before they reach the handler. A nil logger
+disables xvec logging. xvec neither owns nor closes the logger or its handler,
 so file output and rotation remain application policy. `LogLevelFatal` maps to
 the `slog` error level and never terminates the process.
 

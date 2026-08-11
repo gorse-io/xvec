@@ -1,6 +1,6 @@
 # Documents and projection
 
-`zvec.Document` contains a primary key, named fields, a query score, and the
+`xvec.Document` contains a primary key, named fields, a query score, and the
 internal global document ID. Field values use explicit Go types: primitive
 scalar types, named array types, `Binary`, the dense vector types, or one of the
 two sparse vector structs. Plain `int`, `[]byte`, and `[]float32` are rejected

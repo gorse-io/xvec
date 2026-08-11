@@ -1,18 +1,18 @@
-# zvec
+# xvec
 
-[![CI](https://github.com/gorse-io/zvec/actions/workflows/ci.yml/badge.svg)](https://github.com/gorse-io/zvec/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/gorse-io/zvec/graph/badge.svg)](https://codecov.io/gh/gorse-io/zvec)
-[![Go Reference](https://pkg.go.dev/badge/github.com/gorse-io/zvec.svg)](https://pkg.go.dev/github.com/gorse-io/zvec)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/gorse-io/zvec)](go.mod)
-[![License](https://img.shields.io/github/license/gorse-io/zvec)](LICENSE)
+[![CI](https://github.com/gorse-io/xvec/actions/workflows/ci.yml/badge.svg)](https://github.com/gorse-io/xvec/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/gorse-io/xvec/graph/badge.svg)](https://codecov.io/gh/gorse-io/xvec)
+[![Go Reference](https://pkg.go.dev/badge/github.com/gorse-io/xvec.svg)](https://pkg.go.dev/github.com/gorse-io/xvec)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/gorse-io/xvec)](go.mod)
+[![License](https://img.shields.io/github/license/gorse-io/xvec)](LICENSE)
 
-zvec is a pure-Go reimplementation of [Alibaba zvec](https://github.com/alibaba/zvec),
+xvec is a pure-Go reimplementation of [Alibaba zvec](https://github.com/alibaba/zvec),
 providing an embedded vector database with durable local storage. It runs inside
 your application without CGO, a separate database server, or prebuilt native
 libraries.
 
 > [!WARNING]
-> zvec is under active development and is not ready for production use. Public
+> xvec is under active development and is not ready for production use. Public
 > APIs and on-disk formats may change before v1.0.
 
 ## Features
@@ -26,16 +26,16 @@ libraries.
 
 ## Install
 
-zvec requires Go 1.26 or later.
+xvec requires Go 1.26 or later.
 
 ```bash
-go get github.com/gorse-io/zvec
+go get github.com/gorse-io/xvec
 ```
 
 Then import it in your application:
 
 ```go
-import "github.com/gorse-io/zvec"
+import "github.com/gorse-io/xvec"
 ```
 
 ## Vector storage tutorial
@@ -51,41 +51,41 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/gorse-io/zvec"
+	"github.com/gorse-io/xvec"
 )
 
 func main() {
 	ctx := context.Background()
 
-	schema := zvec.NewCollectionSchema("articles",
-		zvec.NewField("title", zvec.DataTypeString),
-		zvec.NewField("category", zvec.DataTypeString),
-		zvec.FieldSchema{
+	schema := xvec.NewCollectionSchema("articles",
+		xvec.NewField("title", xvec.DataTypeString),
+		xvec.NewField("category", xvec.DataTypeString),
+		xvec.FieldSchema{
 			Name:      "embedding",
-			DataType:  zvec.DataTypeVectorFP32,
+			DataType:  xvec.DataTypeVectorFP32,
 			Dimension: 3,
-			Index:     zvec.NewFlatIndexParams(zvec.MetricTypeCosine),
+			Index:     xvec.NewFlatIndexParams(xvec.MetricTypeCosine),
 		},
 	)
 
-	collection, err := zvec.CreateAndOpen(
+	collection, err := xvec.CreateAndOpen(
 		ctx,
 		"./data/articles",
 		schema,
-		zvec.NewCollectionOptions(),
+		xvec.NewCollectionOptions(),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer collection.Close()
 
-	_, err = collection.Insert(ctx, []zvec.Document{
+	_, err = collection.Insert(ctx, []xvec.Document{
 		{
 			PrimaryKey: "go",
 			Fields: map[string]any{
 				"title":     "The Go Programming Language",
 				"category":  "programming",
-				"embedding": zvec.VectorFP32{1.0, 0.1, 0.0},
+				"embedding": xvec.VectorFP32{1.0, 0.1, 0.0},
 			},
 		},
 		{
@@ -93,7 +93,7 @@ func main() {
 			Fields: map[string]any{
 				"title":     "Vector Search Fundamentals",
 				"category":  "search",
-				"embedding": zvec.VectorFP32{0.9, 0.2, 0.1},
+				"embedding": xvec.VectorFP32{0.9, 0.2, 0.1},
 			},
 		},
 		{
@@ -101,7 +101,7 @@ func main() {
 			Fields: map[string]any{
 				"title":     "Database Internals",
 				"category":  "database",
-				"embedding": zvec.VectorFP32{0.0, 0.2, 1.0},
+				"embedding": xvec.VectorFP32{0.0, 0.2, 1.0},
 			},
 		},
 	})
@@ -109,11 +109,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	results, err := collection.Query(ctx, zvec.VectorQuery{
+	results, err := collection.Query(ctx, xvec.VectorQuery{
 		Field:       "embedding",
-		DenseVector: zvec.VectorFP32{1.0, 0.0, 0.0},
+		DenseVector: xvec.VectorFP32{1.0, 0.0, 0.0},
 		TopK:        2,
-		Projection: zvec.Projection{
+		Projection: xvec.Projection{
 			OutputFields: []string{"title", "category"},
 		},
 	})
@@ -135,10 +135,10 @@ The collection is persisted under `./data/articles`. Reopen it after restarting
 your application with:
 
 ```go
-collection, err := zvec.Open(
+collection, err := xvec.Open(
     context.Background(),
     "./data/articles",
-    zvec.NewCollectionOptions(),
+    xvec.NewCollectionOptions(),
 )
 ```
 
@@ -180,7 +180,7 @@ projections, ANN parameters, grouping, and refinement.
 
 ## Compatibility
 
-The root `zvec` package is the public API. zvec uses native Go disk format v2
+The root `xvec` package is the public API. xvec uses native Go disk format v2
 and does not read C++ zvec collection files. Version 1 collections are rejected;
 there is no compatibility, migration, fallback, or dual-write path.
 

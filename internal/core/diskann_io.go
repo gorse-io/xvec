@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 var ErrDiskANNShortRead = errors.New("core: short DiskANN ReaderAt read")

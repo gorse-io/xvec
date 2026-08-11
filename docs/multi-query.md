@@ -6,16 +6,16 @@ the same SQL scalar filter and produces its own bounded candidate list. An
 explicit `Reranker` then combines those lists into at most `TopK` documents.
 
 ```go
-results, err := collection.MultiQuery(ctx, zvec.MultiQuery{
-    Queries: []zvec.SubQuery{
+results, err := collection.MultiQuery(ctx, xvec.MultiQuery{
+    Queries: []xvec.SubQuery{
         {
             Field: "embedding",
-            DenseVector: zvec.VectorFP32{0.1, 0.2, 0.3},
+            DenseVector: xvec.VectorFP32{0.1, 0.2, 0.3},
             NumCandidates: 50,
         },
         {
             Field: "keywords",
-            SparseVector: zvec.SparseVectorFP32{
+            SparseVector: xvec.SparseVectorFP32{
                 Indices: []uint32{3, 17},
                 Values:  []float32{0.8, 0.5},
             },
@@ -23,14 +23,14 @@ results, err := collection.MultiQuery(ctx, zvec.MultiQuery{
         },
         {
             Field: "body",
-            FTS: &zvec.FTSClause{Match: "portable vector search"},
-            Params: zvec.FTSQueryParams{DefaultOperator: "AND"},
+            FTS: &xvec.FTSClause{Match: "portable vector search"},
+            Params: xvec.FTSQueryParams{DefaultOperator: "AND"},
             NumCandidates: 50,
         },
     },
     TopK: 10,
     Filter: "published = true",
-    Projection: zvec.Projection{OutputFields: []string{"title"}},
+    Projection: xvec.Projection{OutputFields: []string{"title"}},
     Reranker: myReranker, // omit to use default RRF
 })
 ```
@@ -78,7 +78,7 @@ The collection validates this boundary and rematerializes the selected
 documents from the immutable snapshot, so changes to candidate field maps do
 not alter stored or returned data. Caller code runs after the collection read
 lock is released and may safely call other collection methods. Context and
-reranker errors are propagated through the structured zvec error model.
+reranker errors are propagated through the structured xvec error model.
 
 The generic `Reranker` abstraction and baseline-compatible
 [`RRFReranker`](rrf-reranker.md) are executable now. A nil reranker selects RRF

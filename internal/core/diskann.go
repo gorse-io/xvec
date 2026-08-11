@@ -25,7 +25,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 const (

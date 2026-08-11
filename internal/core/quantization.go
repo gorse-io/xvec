@@ -22,7 +22,7 @@ import (
 	"math"
 	"slices"
 
-	"github.com/gorse-io/zvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego"
 )
 
 // Quantization identifies one scalar vector encoding. The values are internal

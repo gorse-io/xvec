@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package zvec
+package xvec
 
 import (
 	"bytes"
@@ -31,10 +31,10 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	"github.com/gorse-io/zvec/internal/ailego"
-	"github.com/gorse-io/zvec/internal/core"
-	"github.com/gorse-io/zvec/internal/db"
-	dbsql "github.com/gorse-io/zvec/internal/db/sql"
+	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/core"
+	"github.com/gorse-io/xvec/internal/db"
+	dbsql "github.com/gorse-io/xvec/internal/db/sql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
