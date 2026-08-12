@@ -2686,6 +2686,38 @@ func evaluateSegmentFilters(
 	runtimes []*collectionSegmentRuntime,
 	invertToForwardRatio float32,
 ) (evaluatedSegmentFilters, error) {
+	if plan == nil {
+		allLive := true
+		liveIndex := 0
+		for _, segment := range segments {
+			if err := ctx.Err(); err != nil {
+				return evaluatedSegmentFilters{}, err
+			}
+			for _, document := range segment.documents {
+				if liveIndex >= len(liveDocuments) || liveDocuments[liveIndex].DocID != document.DocID {
+					allLive = false
+					break
+				}
+				liveIndex++
+			}
+			if !allLive {
+				break
+			}
+		}
+		if allLive && liveIndex == len(liveDocuments) {
+			result := evaluatedSegmentFilters{local: make(map[uint64]evaluatedFilter, len(segments))}
+			for _, segment := range segments {
+				if len(segment.documents) == 0 {
+					continue
+				}
+				count := uint64(len(segment.documents))
+				result.local[segment.metadata.ID] = evaluatedFilter{matched: count, total: count}
+			}
+			count := uint64(len(liveDocuments))
+			result.global = evaluatedFilter{matched: count, total: count}
+			return result, nil
+		}
+	}
 	live := make(map[uint64]struct{}, len(liveDocuments))
 	for _, document := range liveDocuments {
 		live[document.DocID] = struct{}{}

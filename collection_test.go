@@ -5162,6 +5162,41 @@ func TestCollectionMultiQueryValidationAndRerankerBoundaries(t *testing.T) {
 	}
 }
 
+func TestEvaluateSegmentFiltersSkipsPredicatesWhenEveryDocumentIsLive(t *testing.T) {
+	segments := []collectionSegmentDocuments{
+		{metadata: db.SegmentMetadata{ID: 1}, documents: []Document{{DocID: 1}, {DocID: 2}}},
+		{metadata: db.SegmentMetadata{ID: 2}, documents: []Document{{DocID: 3}}},
+	}
+	live := []Document{{DocID: 1}, {DocID: 2}, {DocID: 3}}
+
+	filters, err := evaluateSegmentFilters(context.Background(), nil, live, segments, nil, 0.9)
+	require.NoError(t, err)
+	require.Nil(t, filters.global.predicate)
+	require.Equal(t, uint64(3), filters.global.matched)
+	require.Equal(t, uint64(3), filters.global.total)
+	for _, segment := range segments {
+		filter, found := filters.local[segment.metadata.ID]
+		require.True(t, found)
+		require.Nil(t, filter.predicate)
+		require.Nil(t, filter.ordinals)
+		require.Equal(t, uint64(len(segment.documents)), filter.matched)
+		require.Equal(t, uint64(len(segment.documents)), filter.total)
+	}
+}
+
+func TestEvaluateSegmentFiltersKeepsPredicateForStaleDocument(t *testing.T) {
+	segments := []collectionSegmentDocuments{
+		{metadata: db.SegmentMetadata{ID: 1}, documents: []Document{{DocID: 1}, {DocID: 2}}},
+	}
+	live := []Document{{DocID: 1}, {DocID: 3}}
+
+	filters, err := evaluateSegmentFilters(context.Background(), nil, live, segments, nil, 0.9)
+	require.NoError(t, err)
+	require.NotNil(t, filters.global.predicate)
+	require.True(t, filters.global.predicate(1))
+	require.False(t, filters.global.predicate(2))
+}
+
 func TestCollectionQuerySharesCachedSegmentRuntimes(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "concurrent-query"), testMultiQuerySchema(), NewCollectionOptions())
