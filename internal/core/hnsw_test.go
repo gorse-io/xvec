@@ -770,6 +770,7 @@ func BenchmarkHNSWSearch(b *testing.B) {
 	index := buildSearchHNSW(b, MetricL2, inputs, 16, 120)
 	query := inputs[4321].Vector
 	options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 10}, EF: 100}
+	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
 		{
