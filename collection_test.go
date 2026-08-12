@@ -5162,6 +5162,38 @@ func TestCollectionMultiQueryValidationAndRerankerBoundaries(t *testing.T) {
 	}
 }
 
+func TestCollectionQuerySharesCachedSegmentRuntimes(t *testing.T) {
+	ctx := context.Background()
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "concurrent-query"), testMultiQuerySchema(), NewCollectionOptions())
+	require.NoError(t, err)
+
+	defer func() { require.NoError(t, collection.Close()) }()
+	{
+		_, err := collection.Insert(ctx, testMultiQueryDocuments())
+		require.NoError(t, err)
+	}
+	query := VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 3}
+	{
+		_, err := collection.Query(ctx, query)
+		require.NoError(t, err)
+	}
+
+	collection.indexMu.RLock()
+	completed := make(chan error, 1)
+	go func() {
+		_, queryErr := collection.Query(ctx, query)
+		completed <- queryErr
+	}()
+	select {
+	case err := <-completed:
+		collection.indexMu.RUnlock()
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		collection.indexMu.RUnlock()
+		require.Fail(t, "query waited for another cached-runtime reader")
+	}
+}
+
 func TestCollectionMultiQueryConcurrentSnapshotSearch(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "concurrent"), testMultiQuerySchema(), NewCollectionOptions())

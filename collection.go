@@ -96,7 +96,7 @@ type Collection struct {
 	runtime *runtimeResources
 	closed  bool
 
-	indexMu         sync.Mutex
+	indexMu         sync.RWMutex
 	segmentIndexes  map[uint64]*collectionSegmentRuntime
 	indexBuildCount uint64
 }
@@ -155,6 +155,47 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 	ctx context.Context,
 	segments []collectionSegmentDocuments,
 ) ([]*collectionSegmentRuntime, error) {
+	type requestedRuntime struct {
+		segmentID uint64
+		key       collectionRuntimeKey
+	}
+	requested := make([]requestedRuntime, 0, len(segments))
+	for _, segment := range segments {
+		if len(segment.documents) == 0 {
+			continue
+		}
+		key, err := collectionRuntimeKeyFor(c.schema, segment.documents)
+		if err != nil {
+			return nil, err
+		}
+		requested = append(requested, requestedRuntime{segmentID: segment.metadata.ID, key: key})
+	}
+
+	// Match Alibaba zvec's query path: collect an owned list of shared segment
+	// handles under a read lock, then search them without taking an exclusive
+	// collection-index lock. Segment runtimes are immutable after publication;
+	// c.mu keeps writers and Close out for the lifetime of this query.
+	c.indexMu.RLock()
+	if len(c.segmentIndexes) == len(requested) {
+		ordered := make([]*collectionSegmentRuntime, len(requested))
+		cached := true
+		for index, item := range requested {
+			runtime := c.segmentIndexes[item.segmentID]
+			if runtime == nil || runtime.key != item.key {
+				cached = false
+				break
+			}
+			ordered[index] = runtime
+		}
+		if cached {
+			c.indexMu.RUnlock()
+			return ordered, nil
+		}
+	}
+	c.indexMu.RUnlock()
+
+	// A missing or stale generation is built once under the write lock. Other
+	// cold queries wait for that publication and then reuse the same runtimes.
 	c.indexMu.Lock()
 	defer c.indexMu.Unlock()
 	previous := c.segmentIndexes
