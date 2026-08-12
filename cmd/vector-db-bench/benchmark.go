@@ -31,6 +31,11 @@ import (
 
 func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (benchmarkReport, error) {
 	report := newBenchmarkReport(config)
+	shutdown, err := initializeBenchmarkBackend(config.Backend)
+	if err != nil {
+		return report, err
+	}
+	defer shutdown()
 	needsSearch := !config.SkipSerialSearch || !config.SkipConcurrentSearch
 	if !config.SkipLoad || needsSearch {
 		if err := prepareDataset(ctx, config, !config.SkipLoad, log); err != nil {
@@ -38,7 +43,7 @@ func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (bench
 		}
 	}
 	if !config.SkipLoad {
-		metrics, err := loadDataset(ctx, config, log)
+		metrics, err := loadBenchmarkDataset(ctx, config, log)
 		if err != nil {
 			return report, err
 		}
@@ -53,14 +58,11 @@ func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (bench
 	if err != nil {
 		return report, err
 	}
-	collection, err := xvec.Open(ctx, config.Path, xvec.CollectionOptions{
-		ReadOnly: true, EnableMmap: config.EnableMmap, MaxBufferSize: uint32(config.MaxBufferSize),
-	})
+	engine, closer, err := openBenchmarkQueryEngine(ctx, config)
 	if err != nil {
-		return report, fmt.Errorf("open benchmark collection for search: %w", err)
+		return report, err
 	}
-	defer func() { _ = collection.Close() }()
-	engine := newQueryEngine(collection, config)
+	defer func() { _ = closer.Close() }()
 	if err := warmupSearch(ctx, engine, data, config.WarmupQueries); err != nil {
 		return report, err
 	}
@@ -94,7 +96,7 @@ func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (bench
 	return report, nil
 }
 
-func loadDataset(ctx context.Context, config benchConfig, log io.Writer) (loadMetrics, error) {
+func loadXvecDataset(ctx context.Context, config benchConfig, log io.Writer) (loadMetrics, error) {
 	collection, err := writableBenchmarkCollection(ctx, config)
 	if err != nil {
 		return loadMetrics{}, err
@@ -243,20 +245,24 @@ func parseQuantization(value string) (xvec.QuantizeType, error) {
 	}
 }
 
-type queryEngine struct {
+type benchmarkQueryEngine interface {
+	search(context.Context, []float32) ([]int64, error)
+}
+
+type xvecQueryEngine struct {
 	collection *xvec.Collection
 	params     xvec.HNSWQueryParams
 	k          int
 }
 
-func newQueryEngine(collection *xvec.Collection, config benchConfig) queryEngine {
+func newXvecQueryEngine(collection *xvec.Collection, config benchConfig) xvecQueryEngine {
 	params := xvec.NewHNSWQueryParams()
 	params.EF = config.EFSearch
 	params.UseRefiner = config.UseRefiner
-	return queryEngine{collection: collection, params: params, k: config.K}
+	return xvecQueryEngine{collection: collection, params: params, k: config.K}
 }
 
-func (e queryEngine) search(ctx context.Context, vector []float32) ([]int64, error) {
+func (e xvecQueryEngine) search(ctx context.Context, vector []float32) ([]int64, error) {
 	results, err := e.collection.Query(ctx, xvec.VectorQuery{
 		Field: "dense", DenseVector: xvec.VectorFP32(vector), TopK: e.k, Params: e.params,
 		Projection: xvec.Projection{OutputFields: []string{}},
@@ -274,7 +280,7 @@ func (e queryEngine) search(ctx context.Context, vector []float32) ([]int64, err
 	return ids, nil
 }
 
-func warmupSearch(ctx context.Context, engine queryEngine, data queryData, count int) error {
+func warmupSearch(ctx context.Context, engine benchmarkQueryEngine, data queryData, count int) error {
 	if count > len(data.Vectors) {
 		count = len(data.Vectors)
 	}
@@ -286,7 +292,7 @@ func warmupSearch(ctx context.Context, engine queryEngine, data queryData, count
 	return nil
 }
 
-func runSerialSearch(ctx context.Context, engine queryEngine, data queryData, k int) (searchMetrics, error) {
+func runSerialSearch(ctx context.Context, engine benchmarkQueryEngine, data queryData, k int) (searchMetrics, error) {
 	latencies := make([]float64, len(data.Vectors))
 	var recall float64
 	started := time.Now()
@@ -312,7 +318,7 @@ type concurrentWorkerResult struct {
 
 func runConcurrentSearch(
 	ctx context.Context,
-	engine queryEngine,
+	engine benchmarkQueryEngine,
 	data queryData,
 	concurrency int,
 	duration time.Duration,

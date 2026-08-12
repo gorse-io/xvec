@@ -24,6 +24,7 @@ import (
 
 func TestParseConfigVectorDBBenchCases(t *testing.T) {
 	config, err := parseConfig([]string{
+		backendXvec,
 		"--path", t.TempDir(),
 		"--case-type", casePerformance768D10M,
 		"--num-concurrency", "12,14,16",
@@ -33,6 +34,7 @@ func TestParseConfigVectorDBBenchCases(t *testing.T) {
 		"--is-using-refiner",
 	}, &bytes.Buffer{})
 	require.NoError(t, err)
+	require.Equal(t, backendXvec, config.Backend)
 	require.Equal(t, casePerformance768D10M, config.caseSpec.Name)
 	require.Equal(t, 768, config.caseSpec.Dimension)
 	require.Equal(t, int64(10_000_000), config.caseSpec.Size)
@@ -46,20 +48,26 @@ func TestParseConfigVectorDBBenchCases(t *testing.T) {
 func TestParseConfigCustomAndValidation(t *testing.T) {
 	datasetDir := t.TempDir()
 	config, err := parseConfig([]string{
+		backendZvec,
 		"--path", t.TempDir(), "--case-type", caseCustom,
 		"--dataset-dir", datasetDir, "--dimension", "3", "--metric", "l2",
 		"--train-files", "part-0.parquet,part-1.parquet",
 	}, &bytes.Buffer{})
 	require.NoError(t, err)
+	require.Equal(t, backendZvec, config.Backend)
 	require.Equal(t, []string{"part-0.parquet", "part-1.parquet"}, config.caseSpec.TrainFiles)
 	require.Equal(t, "l2", config.caseSpec.Metric)
 
-	_, err = parseConfig([]string{"--path", t.TempDir(), "--skip-load"}, &bytes.Buffer{})
+	_, err = parseConfig([]string{backendXvec, "--path", t.TempDir(), "--skip-load"}, &bytes.Buffer{})
 	require.ErrorContains(t, err, "skip-load requires skip-drop-old")
-	_, err = parseConfig([]string{"--path", t.TempDir(), "--num-concurrency", "1,1"}, &bytes.Buffer{})
+	_, err = parseConfig([]string{backendXvec, "--path", t.TempDir(), "--num-concurrency", "1,1"}, &bytes.Buffer{})
 	require.ErrorContains(t, err, "duplicate concurrency")
-	_, err = parseConfig([]string{"--path", t.TempDir(), "--serial-cooldown", "-1"}, &bytes.Buffer{})
+	_, err = parseConfig([]string{backendXvec, "--path", t.TempDir(), "--serial-cooldown", "-1"}, &bytes.Buffer{})
 	require.ErrorContains(t, err, "serial-cooldown cannot be negative")
+	_, err = parseConfig([]string{"--path", t.TempDir()}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "backend is required")
+	_, err = parseConfig([]string{"unknown", "--path", t.TempDir()}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "unsupported backend")
 }
 
 func TestParseFlexibleDuration(t *testing.T) {

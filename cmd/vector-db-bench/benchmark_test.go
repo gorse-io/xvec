@@ -39,6 +39,11 @@ func TestRecallPercentileAndSearchSummary(t *testing.T) {
 }
 
 func TestVectorDBBenchEndToEndCustomDataset(t *testing.T) {
+	testVectorDBBenchEndToEndCustomDataset(t, backendXvec)
+}
+
+func testVectorDBBenchEndToEndCustomDataset(t *testing.T, backend string) {
+	t.Helper()
 	directory := t.TempDir()
 	datasetDir := filepath.Join(directory, "dataset")
 	require.NoError(t, mkdir(datasetDir))
@@ -62,6 +67,7 @@ func TestVectorDBBenchEndToEndCustomDataset(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runCLI(context.Background(), []string{
+		backend,
 		"--path", filepath.Join(directory, "collection"),
 		"--case-type", caseCustom,
 		"--dataset-dir", datasetDir,
@@ -82,6 +88,7 @@ func TestVectorDBBenchEndToEndCustomDataset(t *testing.T) {
 	require.NoError(t, err, stderr.String())
 	var report benchmarkReport
 	require.NoError(t, json.Unmarshal(stdout.Bytes(), &report), fmt.Sprintf("stdout: %s", stdout.String()))
+	require.Equal(t, backend, report.Config.Backend)
 	require.NotNil(t, report.Load)
 	require.Equal(t, int64(32), report.Load.Rows)
 	require.NotNil(t, report.Serial)
