@@ -1,8 +1,9 @@
 # vector-db-bench
 
-`vector-db-bench` is a native Go benchmark driver for xvec. It follows the
-VectorDBBench Cohere performance workload used by the Alibaba zvec benchmark
-guide:
+`vector-db-bench` is a native Go benchmark driver for comparing
+[xvec](https://github.com/gorse-io/xvec) and
+[zvec-go](https://github.com/zvec-ai/zvec-go). It follows the VectorDBBench
+Cohere performance workload used by the Alibaba zvec benchmark guide:
 
 - Cohere 1M and 10M Parquet datasets;
 - HNSW loading and optimization;
@@ -18,7 +19,20 @@ substantially more.
 ## Build
 
 ```bash
-go build -o vector-db-bench ./cmd/vector-db-bench
+CGO_ENABLED=0 go build -o vector-db-bench ./cmd/vector-db-bench
+```
+
+The pure-Go build keeps xvec and zvec-go in one binary without linking zvec at
+build time. Running the `zvec` backend requires the zvec C API shared library.
+Download the archive for your platform from the
+[zvec-go v0.6.0 release](https://github.com/zvec-ai/zvec-go/releases/tag/v0.6.0),
+extract it, and point `ZVEC_LIBRARY_PATH` to the extracted library or its
+directory. The xvec backend does not require this library.
+
+For example, on Linux x86-64:
+
+```bash
+export ZVEC_LIBRARY_PATH=/path/to/linux_amd64/libzvec_c_api.so
 ```
 
 ## Cohere 1M
@@ -28,7 +42,7 @@ first invocation downloads the data, recreates the collection, loads it, and
 runs both search phases.
 
 ```bash
-./vector-db-bench \
+./vector-db-bench xvec \
   --path ./Performance768D1M \
   --case-type Performance768D1M \
   --num-concurrency 12,14,16,18,20 \
@@ -37,10 +51,23 @@ runs both search phases.
   --output result-cohere-1m.json
 ```
 
+Run the same workload against zvec-go by changing only the backend and output
+path:
+
+```bash
+./vector-db-bench zvec \
+  --path ./Performance768D1M-zvec \
+  --case-type Performance768D1M \
+  --num-concurrency 12,14,16,18,20 \
+  --m 15 \
+  --ef-search 180 \
+  --output result-zvec-cohere-1m.json
+```
+
 To rerun only the search phases against that collection:
 
 ```bash
-./vector-db-bench \
+./vector-db-bench xvec \
   --path ./Performance768D1M \
   --case-type Performance768D1M \
   --num-concurrency 12,14,16,18,20 \
@@ -56,7 +83,7 @@ To rerun only the search phases against that collection:
 This mirrors the published INT8/refiner configuration:
 
 ```bash
-./vector-db-bench \
+./vector-db-bench xvec \
   --path ./Performance768D10M \
   --case-type Performance768D10M \
   --num-concurrency 12,14,16,18,20 \
@@ -88,7 +115,7 @@ The built-in cases use the VectorDBBench schema:
 A local custom dataset can be exercised without downloads:
 
 ```bash
-./vector-db-bench \
+./vector-db-bench xvec \
   --path ./custom-collection \
   --case-type Custom \
   --dataset-dir ./dataset \

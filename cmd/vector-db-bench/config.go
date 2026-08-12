@@ -27,6 +27,9 @@ import (
 )
 
 const (
+	backendXvec = "xvec"
+	backendZvec = "zvec"
+
 	casePerformance768D1M  = "Performance768D1M"
 	casePerformance768D10M = "Performance768D10M"
 	caseCustom             = "Custom"
@@ -43,6 +46,7 @@ type benchmarkCase struct {
 }
 
 type benchConfig struct {
+	Backend              string
 	Path                 string
 	CaseType             string
 	DatasetDir           string
@@ -84,9 +88,16 @@ type benchConfig struct {
 
 func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	var config benchConfig
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return benchConfig{}, errors.New("backend is required: xvec or zvec")
+	}
+	config.Backend = strings.ToLower(args[0])
+	if config.Backend != backendXvec && config.Backend != backendZvec {
+		return benchConfig{}, fmt.Errorf("unsupported backend %q: use xvec or zvec", args[0])
+	}
 	flags := flag.NewFlagSet("vector-db-bench", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	flags.StringVar(&config.Path, "path", "", "xvec collection path (required)")
+	flags.StringVar(&config.Path, "path", "", "collection path (required)")
 	flags.StringVar(&config.CaseType, "case-type", casePerformance768D1M, "benchmark case: Performance768D1M, Performance768D10M, or Custom")
 	flags.StringVar(&config.DatasetDir, "dataset-dir", "", "local VectorDBBench dataset directory")
 	flags.StringVar(&config.DatasetBaseURL, "dataset-base-url", "https://assets.zilliz.com/benchmark", "VectorDBBench dataset base URL")
@@ -117,11 +128,11 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	flags.BoolVar(&config.SkipConcurrentSearch, "skip-search-concurrent", false, "skip sustained concurrent search")
 	flags.BoolVar(&config.DryRun, "dry-run", false, "validate and print configuration without downloading or running")
 	flags.StringVar(&config.Output, "output", "", "write result JSON to this file; empty writes JSON to stdout")
-	flags.StringVar(&config.DBLabel, "db-label", "xvec-go", "label stored in the result")
+	flags.StringVar(&config.DBLabel, "db-label", config.Backend+"-go", "label stored in the result")
 	flags.StringVar(&config.Note, "note", "", "non-sensitive run context stored in the result")
 	operationTimeout := flags.String("operation-timeout", "0", "whole-run timeout; zero disables it")
 	flags.Int64Var(&config.Seed, "seed", 0, "deterministic concurrent-query seed")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(args[1:]); err != nil {
 		return benchConfig{}, err
 	}
 	if flags.NArg() != 0 {

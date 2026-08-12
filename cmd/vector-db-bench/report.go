@@ -27,6 +27,7 @@ import (
 const reportSchemaVersion = "vector-db-bench/v1"
 
 type reportConfig struct {
+	Backend             string `json:"backend"`
 	Path                string `json:"path"`
 	DBLabel             string `json:"db_label"`
 	M                   int    `json:"m"`
@@ -85,7 +86,7 @@ type benchmarkReport struct {
 }
 
 // vectorDBBenchMetric mirrors the names used by VectorDBBench's Metric model
-// so result consumers can ingest the core xvec performance fields directly.
+// so result consumers can ingest the core performance fields directly.
 type vectorDBBenchMetric struct {
 	InsertedCount         int64     `json:"inserted_count"`
 	InsertDuration        float64   `json:"insert_duration"`
@@ -117,13 +118,13 @@ func newBenchmarkReport(config benchConfig) benchmarkReport {
 	}
 	return benchmarkReport{
 		SchemaVersion: reportSchemaVersion,
-		Tool:          "xvec-go/cmd/vector-db-bench",
+		Tool:          "xvec/cmd/vector-db-bench",
 		Timestamp:     time.Now().UTC(),
 		Case:          config.caseSpec,
 		DatasetDir:    config.DatasetDir,
 		Note:          config.Note,
 		Config: reportConfig{
-			Path: config.Path, DBLabel: config.DBLabel,
+			Backend: config.Backend, Path: config.Path, DBLabel: config.DBLabel,
 			M: config.M, EFConstruction: config.EFConstruction, EFSearch: config.EFSearch,
 			QuantizeType: quantize, UseRefiner: config.UseRefiner, K: config.K,
 			BatchSize: config.BatchSize, LoadLimit: config.LoadLimit, QueryLimit: config.QueryLimit,
