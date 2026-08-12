@@ -440,6 +440,8 @@ func (i *HNSWRaBitQIndex) SearchHNSWRaBitQGroups(
 	if err != nil {
 		return nil, err
 	}
+	visited := acquireHNSWVisited(len(i.codes))
+	defer releaseHNSWVisited(visited)
 	entry := i.base.entryPoint
 	for level := i.base.maxLevel; level > 0; level-- {
 		entry, err = i.searchRaBitQLayer(ctx, query, entry, level)
@@ -450,7 +452,7 @@ func (i *HNSWRaBitQIndex) SearchHNSWRaBitQGroups(
 	searchOptions := SearchOptions{
 		TopK: candidateCount, Radius: options.Radius, Filter: options.Filter,
 	}
-	initial, err := i.searchRaBitQBase(ctx, query, entry, max(options.EF, candidateCount), searchOptions)
+	initial, err := i.searchRaBitQBase(ctx, query, entry, max(options.EF, candidateCount), searchOptions, visited)
 	if err != nil {
 		return nil, err
 	}
@@ -472,7 +474,7 @@ func (i *HNSWRaBitQIndex) SearchHNSWRaBitQGroups(
 	}
 	return expandHNSWGroups(
 		ctx, i.options.Metric, i.base.keys, i.base.neighbors, initial, options.GroupByOptions,
-		scoreAt, i.publicRaBitQScore, better, nil,
+		scoreAt, i.publicRaBitQScore, better, nil, visited,
 	)
 }
 
@@ -588,6 +590,8 @@ func (i *HNSWRaBitQIndex) searchPrepared(ctx context.Context, query *RaBitQQuery
 	if linear || len(i.codes) <= DefaultHNSWBruteForceThreshold {
 		return i.scanRaBitQCodes(ctx, query, options)
 	}
+	visited := acquireHNSWVisited(len(i.codes))
+	defer releaseHNSWVisited(visited)
 	entry := i.base.entryPoint
 	for level := i.base.maxLevel; level > 0; level-- {
 		nearest, err := i.searchRaBitQLayer(ctx, query, entry, level)
@@ -596,7 +600,7 @@ func (i *HNSWRaBitQIndex) searchPrepared(ctx context.Context, query *RaBitQQuery
 		}
 		entry = nearest
 	}
-	nodes, err := i.searchRaBitQBase(ctx, query, entry, max(ef, options.TopK), options)
+	nodes, err := i.searchRaBitQBase(ctx, query, entry, max(ef, options.TopK), options, visited)
 	if err != nil {
 		return nil, err
 	}
@@ -662,18 +666,18 @@ func (i *HNSWRaBitQIndex) searchRaBitQLayer(ctx context.Context, query *RaBitQQu
 	}
 }
 
-func (i *HNSWRaBitQIndex) searchRaBitQBase(ctx context.Context, query *RaBitQQuery, entry, capacity int, options SearchOptions) ([]hnswScoredNode, error) {
+func (i *HNSWRaBitQIndex) searchRaBitQBase(ctx context.Context, query *RaBitQQuery, entry, capacity int, options SearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
 	better := func(left, right hnswScoredNode) bool { return i.raBitQNodeBetter(left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.raBitQNodeBetter(right, left) }
 	frontier := ailego.NewHeap(better)
 	accepted := ailego.NewHeap(worse)
-	visited := make([]bool, len(i.codes))
+	visited.reset(len(i.codes))
 	estimate, err := query.Estimate(i.codes[entry])
 	if err != nil {
 		return nil, err
 	}
 	start := hnswScoredNode{position: entry, score: estimate.Distance}
-	visited[entry] = true
+	visited.mark(entry)
 	frontier.Push(start)
 	if i.acceptRaBitQNode(start, options) {
 		accepted.Push(start)
@@ -688,10 +692,10 @@ func (i *HNSWRaBitQIndex) searchRaBitQBase(ctx context.Context, query *RaBitQQue
 			break
 		}
 		for _, neighbor := range i.base.neighbors[current.position][0] {
-			if visited[neighbor] {
+			if visited.seen(neighbor) {
 				continue
 			}
-			visited[neighbor] = true
+			visited.mark(neighbor)
 			coarse, err := query.EstimateCoarse(i.codes[neighbor])
 			if err != nil {
 				return nil, err

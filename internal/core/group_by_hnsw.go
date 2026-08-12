@@ -66,6 +66,7 @@ func expandHNSWGroups(
 	publicScore func(score float32) float32,
 	nodeBetter func(left, right hnswScoredNode) bool,
 	prefetch func(neighbors []int),
+	visited *hnswVisited,
 ) ([]GroupResult, error) {
 	accumulator := newGroupAccumulator(metric, options.TopKPerGroup)
 	groups := make(map[string]struct{}, min(options.GroupCount, len(initial)))
@@ -93,12 +94,12 @@ func expandHNSWGroups(
 	}
 
 	frontier := ailego.NewHeap(nodeBetter)
-	visited := make([]bool, len(keys))
+	visited.reset(len(keys))
 	for _, node := range initial {
-		if node.position < 0 || node.position >= len(keys) || visited[node.position] {
+		if node.position < 0 || node.position >= len(keys) || visited.seen(node.position) {
 			continue
 		}
-		visited[node.position] = true
+		visited.mark(node.position)
 		frontier.Push(node)
 	}
 	for frontier.Len() != 0 && len(groups) < options.GroupCount {
@@ -111,10 +112,10 @@ func expandHNSWGroups(
 			prefetch(adjacent)
 		}
 		for _, neighbor := range adjacent {
-			if visited[neighbor] {
+			if visited.seen(neighbor) {
 				continue
 			}
-			visited[neighbor] = true
+			visited.mark(neighbor)
 			score, err := scoreAt(neighbor)
 			if err != nil {
 				return nil, fmt.Errorf("core: score HNSW group expansion node %d: %w", neighbor, err)

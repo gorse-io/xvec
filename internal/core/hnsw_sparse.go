@@ -313,6 +313,8 @@ func (i *SparseHNSWIndex) Neighbors(key uint64, level int) ([]uint64, error) {
 }
 
 func (i *SparseHNSWIndex) insertBuiltNode(ctx context.Context, position int) error {
+	visited := acquireHNSWVisited(len(i.keys))
+	defer releaseHNSWVisited(visited)
 	level := i.levels[position]
 	if i.entryPoint < 0 {
 		i.entryPoint = position
@@ -322,7 +324,7 @@ func (i *SparseHNSWIndex) insertBuiltNode(ctx context.Context, position int) err
 	entry := i.entryPoint
 	query := i.sparseVectorAt(position)
 	for currentLevel := i.maxLevel; currentLevel > level; currentLevel-- {
-		nearest, err := i.searchLayer(ctx, query, []int{entry}, 1, currentLevel)
+		nearest, err := i.searchLayer(ctx, query, []int{entry}, 1, currentLevel, visited)
 		if err != nil {
 			return err
 		}
@@ -331,7 +333,7 @@ func (i *SparseHNSWIndex) insertBuiltNode(ctx context.Context, position int) err
 		}
 	}
 	for currentLevel := min(level, i.maxLevel); currentLevel >= 0; currentLevel-- {
-		candidates, err := i.searchLayer(ctx, query, []int{entry}, i.options.EFConstruction, currentLevel)
+		candidates, err := i.searchLayer(ctx, query, []int{entry}, i.options.EFConstruction, currentLevel, visited)
 		if err != nil {
 			return err
 		}
@@ -356,7 +358,7 @@ func (i *SparseHNSWIndex) insertBuiltNode(ctx context.Context, position int) err
 	return nil
 }
 
-func (i *SparseHNSWIndex) searchLayer(ctx context.Context, query SparseVector, entries []int, ef, level int) ([]hnswScoredNode, error) {
+func (i *SparseHNSWIndex) searchLayer(ctx context.Context, query SparseVector, entries []int, ef, level int, visited *hnswVisited) ([]hnswScoredNode, error) {
 	limit := min(ef, len(i.keys))
 	if limit <= 0 {
 		return []hnswScoredNode{}, nil
@@ -365,9 +367,9 @@ func (i *SparseHNSWIndex) searchLayer(ctx context.Context, query SparseVector, e
 	worse := func(left, right hnswScoredNode) bool { return hnswNodeBetter(MetricIP, right, left) }
 	candidates := ailego.NewHeap(better)
 	results := ailego.NewHeap(worse)
-	visited := make([]bool, len(i.keys))
+	visited.reset(len(i.keys))
 	for _, entry := range entries {
-		if entry < 0 || entry >= len(i.keys) || i.levels[entry] < level || visited[entry] {
+		if entry < 0 || entry >= len(i.keys) || i.levels[entry] < level || visited.seen(entry) {
 			continue
 		}
 		score, err := sparseHNSWScore(query, i.sparseVectorAt(entry))
@@ -375,7 +377,7 @@ func (i *SparseHNSWIndex) searchLayer(ctx context.Context, query SparseVector, e
 			return nil, err
 		}
 		node := hnswScoredNode{position: entry, score: score}
-		visited[entry] = true
+		visited.mark(entry)
 		candidates.Push(node)
 		results.Push(node)
 	}
@@ -389,10 +391,10 @@ func (i *SparseHNSWIndex) searchLayer(ctx context.Context, query SparseVector, e
 			break
 		}
 		for _, neighbor := range i.neighbors[current.position][level] {
-			if visited[neighbor] {
+			if visited.seen(neighbor) {
 				continue
 			}
-			visited[neighbor] = true
+			visited.mark(neighbor)
 			score, err := sparseHNSWScore(query, i.sparseVectorAt(neighbor))
 			if err != nil {
 				return nil, err
@@ -570,8 +572,10 @@ func (i *SparseHNSWIndex) SearchSparseHNSWGroups(
 		return nil, err
 	}
 	entry := i.entryPoint
+	visited := acquireHNSWVisited(len(i.keys))
+	defer releaseHNSWVisited(visited)
 	for level := i.maxLevel; level > 0; level-- {
-		nearest, err := i.searchLayer(ctx, query, []int{entry}, 1, level)
+		nearest, err := i.searchLayer(ctx, query, []int{entry}, 1, level, visited)
 		if err != nil {
 			return nil, fmt.Errorf("core: descend sparse HNSW group-by level %d: %w", level, err)
 		}
@@ -585,7 +589,7 @@ func (i *SparseHNSWIndex) SearchSparseHNSWGroups(
 		},
 		EF: options.EF, PrefetchOffset: options.PrefetchOffset, PrefetchLines: options.PrefetchLines,
 	}
-	initial, err := i.searchBase(ctx, query, entry, max(options.EF, candidateCount), searchOptions)
+	initial, err := i.searchBase(ctx, query, entry, max(options.EF, candidateCount), searchOptions, visited)
 	if err != nil {
 		return nil, err
 	}
@@ -600,7 +604,7 @@ func (i *SparseHNSWIndex) SearchSparseHNSWGroups(
 	}
 	return expandHNSWGroups(
 		ctx, MetricIP, i.keys, i.neighbors, initial, options.GroupByOptions,
-		scoreAt, func(score float32) float32 { return score }, groupNodeBetter(MetricIP, i.keys), prefetch,
+		scoreAt, func(score float32) float32 { return score }, groupNodeBetter(MetricIP, i.keys), prefetch, visited,
 	)
 }
 
@@ -642,8 +646,10 @@ func (i *SparseHNSWIndex) searchSparseHNSW(ctx context.Context, query SparseVect
 	}
 
 	entry := i.entryPoint
+	visited := acquireHNSWVisited(len(i.keys))
+	defer releaseHNSWVisited(visited)
 	for level := i.maxLevel; level > 0; level-- {
-		nearest, err := i.searchLayer(ctx, query, []int{entry}, 1, level)
+		nearest, err := i.searchLayer(ctx, query, []int{entry}, 1, level, visited)
 		if err != nil {
 			return nil, fmt.Errorf("core: descend sparse HNSW level %d: %w", level, err)
 		}
@@ -652,7 +658,7 @@ func (i *SparseHNSWIndex) searchSparseHNSW(ctx context.Context, query SparseVect
 		}
 	}
 	capacity := max(options.EF, options.TopK)
-	candidates, err := i.searchBase(ctx, query, entry, capacity, options)
+	candidates, err := i.searchBase(ctx, query, entry, capacity, options, visited)
 	if err != nil {
 		return nil, err
 	}
@@ -666,19 +672,19 @@ func (i *SparseHNSWIndex) searchSparseHNSW(ctx context.Context, query SparseVect
 	return results, nil
 }
 
-func (i *SparseHNSWIndex) searchBase(ctx context.Context, query SparseVector, entry, capacity int, options HNSWSearchOptions) ([]hnswScoredNode, error) {
+func (i *SparseHNSWIndex) searchBase(ctx context.Context, query SparseVector, entry, capacity int, options HNSWSearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(MetricIP, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.resultNodeBetter(right, left) }
 	frontier := ailego.NewHeap(better)
 	accepted := ailego.NewHeap(worse)
-	visited := make([]bool, len(i.keys))
+	visited.reset(len(i.keys))
 
 	score, err := sparseHNSWScore(query, i.sparseVectorAt(entry))
 	if err != nil {
 		return nil, fmt.Errorf("core: score sparse HNSW entry point: %w", err)
 	}
 	start := hnswScoredNode{position: entry, score: score}
-	visited[entry] = true
+	visited.mark(entry)
 	frontier.Push(start)
 	if i.acceptResult(start, options.SearchOptions) {
 		accepted.Push(start)
@@ -696,10 +702,10 @@ func (i *SparseHNSWIndex) searchBase(ctx context.Context, query SparseVector, en
 		neighbors := i.neighbors[current.position][0]
 		prefetchSparseHNSWNeighbors(i.offsets, i.indices, i.values, neighbors, options.PrefetchOffset, options.PrefetchLines)
 		for _, neighbor := range neighbors {
-			if visited[neighbor] {
+			if visited.seen(neighbor) {
 				continue
 			}
-			visited[neighbor] = true
+			visited.mark(neighbor)
 			score, err := sparseHNSWScore(query, i.sparseVectorAt(neighbor))
 			if err != nil {
 				return nil, fmt.Errorf("core: score sparse HNSW node %d: %w", neighbor, err)

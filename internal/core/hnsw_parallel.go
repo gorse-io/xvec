@@ -66,10 +66,12 @@ func buildParallelHNSW(
 }
 
 func (g *parallelHNSWGraph) insert(ctx context.Context, position int) error {
+	visited := acquireHNSWVisited(len(g.levels))
+	defer releaseHNSWVisited(visited)
 	level := g.levels[position]
 	entry, maxLevel := g.entrySnapshot()
 	for currentLevel := maxLevel; currentLevel > level; currentLevel-- {
-		nearest, err := g.searchLayer(ctx, position, []int{entry}, 1, currentLevel)
+		nearest, err := g.searchLayer(ctx, position, []int{entry}, 1, currentLevel, visited)
 		if err != nil {
 			return err
 		}
@@ -78,7 +80,7 @@ func (g *parallelHNSWGraph) insert(ctx context.Context, position int) error {
 		}
 	}
 	for currentLevel := min(level, maxLevel); currentLevel >= 0; currentLevel-- {
-		candidates, err := g.searchLayer(ctx, position, []int{entry}, g.options.EFConstruction, currentLevel)
+		candidates, err := g.searchLayer(ctx, position, []int{entry}, g.options.EFConstruction, currentLevel, visited)
 		if err != nil {
 			return err
 		}
@@ -119,6 +121,7 @@ func (g *parallelHNSWGraph) searchLayer(
 	entries []int,
 	ef int,
 	level int,
+	visited *hnswVisited,
 ) ([]hnswScoredNode, error) {
 	limit := min(ef, len(g.levels))
 	if limit <= 0 {
@@ -128,9 +131,9 @@ func (g *parallelHNSWGraph) searchLayer(
 	worse := func(left, right hnswScoredNode) bool { return hnswNodeBetter(g.options.Metric, right, left) }
 	candidates := ailego.NewHeap(better)
 	results := ailego.NewHeap(worse)
-	visited := make([]bool, len(g.levels))
+	visited.reset(len(g.levels))
 	for _, entry := range entries {
-		if entry < 0 || entry >= len(g.levels) || g.levels[entry] < level || visited[entry] {
+		if entry < 0 || entry >= len(g.levels) || g.levels[entry] < level || visited.seen(entry) {
 			continue
 		}
 		score, err := g.score(query, entry)
@@ -138,7 +141,7 @@ func (g *parallelHNSWGraph) searchLayer(
 			return nil, err
 		}
 		node := hnswScoredNode{position: entry, score: score}
-		visited[entry] = true
+		visited.mark(entry)
 		candidates.Push(node)
 		results.Push(node)
 	}
@@ -153,10 +156,10 @@ func (g *parallelHNSWGraph) searchLayer(
 		}
 		g.nodeLocks[current.position].RLock()
 		for _, neighbor := range g.neighbors[current.position][level] {
-			if visited[neighbor] {
+			if visited.seen(neighbor) {
 				continue
 			}
-			visited[neighbor] = true
+			visited.mark(neighbor)
 			score, err := g.score(query, neighbor)
 			if err != nil {
 				g.nodeLocks[current.position].RUnlock()

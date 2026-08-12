@@ -171,9 +171,11 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
 	scoreAt := func(position int) (float32, error) {
 		return QuantizedDistance(i.vectors.metric, i.vectors.codes[position], queryCode)
 	}
+	visited := acquireHNSWVisited(len(i.vectors.keys))
+	defer releaseHNSWVisited(visited)
 	entry := i.base.entryPoint
 	for level := i.base.maxLevel; level > 0; level-- {
-		nearest, err := i.searchLayer(ctx, []int{entry}, 1, level, scoreAt)
+		nearest, err := i.searchLayer(ctx, []int{entry}, 1, level, scoreAt, visited)
 		if err != nil {
 			return nil, fmt.Errorf("core: descend scalar-quantized HNSW group-by level %d: %w", level, err)
 		}
@@ -187,7 +189,7 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
 		},
 		EF: options.EF, PrefetchOffset: options.PrefetchOffset, PrefetchLines: options.PrefetchLines,
 	}
-	initial, err := i.searchBase(ctx, entry, max(options.EF, candidateCount), searchOptions, scoreAt)
+	initial, err := i.searchBase(ctx, entry, max(options.EF, candidateCount), searchOptions, scoreAt, visited)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +201,7 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
 	}
 	return expandHNSWGroups(
 		ctx, i.vectors.metric, i.vectors.keys, i.base.neighbors, initial, options.GroupByOptions,
-		scoreAt, func(score float32) float32 { return score }, groupNodeBetter(i.vectors.metric, i.vectors.keys), prefetch,
+		scoreAt, func(score float32) float32 { return score }, groupNodeBetter(i.vectors.metric, i.vectors.keys), prefetch, visited,
 	)
 }
 
@@ -251,9 +253,11 @@ func (i *ScalarQuantizedHNSWIndex) search(
 	scoreAt := func(position int) (float32, error) {
 		return QuantizedDistance(i.vectors.metric, i.vectors.codes[position], queryCode)
 	}
+	visited := acquireHNSWVisited(len(i.vectors.keys))
+	defer releaseHNSWVisited(visited)
 	entry := i.base.entryPoint
 	for level := i.base.maxLevel; level > 0; level-- {
-		nearest, err := i.searchLayer(ctx, []int{entry}, 1, level, scoreAt)
+		nearest, err := i.searchLayer(ctx, []int{entry}, 1, level, scoreAt, visited)
 		if err != nil {
 			return nil, fmt.Errorf("core: descend scalar-quantized HNSW level %d: %w", level, err)
 		}
@@ -262,7 +266,7 @@ func (i *ScalarQuantizedHNSWIndex) search(
 		}
 	}
 	capacity := max(options.EF, options.TopK)
-	candidates, err := i.searchBase(ctx, entry, capacity, options, scoreAt)
+	candidates, err := i.searchBase(ctx, entry, capacity, options, scoreAt, visited)
 	if err != nil {
 		return nil, err
 	}
@@ -281,6 +285,7 @@ func (i *ScalarQuantizedHNSWIndex) searchLayer(
 	entries []int,
 	ef, level int,
 	scoreAt func(int) (float32, error),
+	visited *hnswVisited,
 ) ([]hnswScoredNode, error) {
 	limit := min(ef, len(i.vectors.keys))
 	if limit <= 0 {
@@ -291,9 +296,9 @@ func (i *ScalarQuantizedHNSWIndex) searchLayer(
 	worse := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, right, left) }
 	candidates := ailego.NewHeap(better)
 	results := ailego.NewHeap(worse)
-	visited := make([]bool, len(i.vectors.keys))
+	visited.reset(len(i.vectors.keys))
 	for _, entry := range entries {
-		if entry < 0 || entry >= len(i.vectors.keys) || i.base.levels[entry] < level || visited[entry] {
+		if entry < 0 || entry >= len(i.vectors.keys) || i.base.levels[entry] < level || visited.seen(entry) {
 			continue
 		}
 		score, err := scoreAt(entry)
@@ -301,7 +306,7 @@ func (i *ScalarQuantizedHNSWIndex) searchLayer(
 			return nil, err
 		}
 		node := hnswScoredNode{position: entry, score: score}
-		visited[entry] = true
+		visited.mark(entry)
 		candidates.Push(node)
 		results.Push(node)
 	}
@@ -315,10 +320,10 @@ func (i *ScalarQuantizedHNSWIndex) searchLayer(
 			break
 		}
 		for _, neighbor := range i.base.neighbors[current.position][level] {
-			if visited[neighbor] {
+			if visited.seen(neighbor) {
 				continue
 			}
-			visited[neighbor] = true
+			visited.mark(neighbor)
 			score, err := scoreAt(neighbor)
 			if err != nil {
 				return nil, err
@@ -352,20 +357,21 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 	entry, capacity int,
 	options HNSWSearchOptions,
 	scoreAt func(int) (float32, error),
+	visited *hnswVisited,
 ) ([]hnswScoredNode, error) {
 	metric := i.vectors.metric
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.resultNodeBetter(right, left) }
 	frontier := ailego.NewHeap(better)
 	accepted := ailego.NewHeap(worse)
-	visited := make([]bool, len(i.vectors.keys))
+	visited.reset(len(i.vectors.keys))
 
 	score, err := scoreAt(entry)
 	if err != nil {
 		return nil, fmt.Errorf("core: score scalar-quantized HNSW entry point: %w", err)
 	}
 	start := hnswScoredNode{position: entry, score: score}
-	visited[entry] = true
+	visited.mark(entry)
 	frontier.Push(start)
 	if i.acceptResult(start, options.SearchOptions) {
 		accepted.Push(start)
@@ -382,10 +388,10 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 		neighbors := i.base.neighbors[current.position][0]
 		prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
 		for _, neighbor := range neighbors {
-			if visited[neighbor] {
+			if visited.seen(neighbor) {
 				continue
 			}
-			visited[neighbor] = true
+			visited.mark(neighbor)
 			score, err := scoreAt(neighbor)
 			if err != nil {
 				return nil, fmt.Errorf("core: score scalar-quantized HNSW node %d: %w", neighbor, err)
