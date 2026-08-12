@@ -99,6 +99,10 @@ type Collection struct {
 	indexMu         sync.RWMutex
 	segmentIndexes  map[uint64]*collectionSegmentRuntime
 	indexBuildCount uint64
+
+	querySnapshotMu         sync.Mutex
+	querySnapshot           atomic.Pointer[collectionQuerySnapshot]
+	querySnapshotBuildCount atomic.Uint64
 }
 
 type collectionRuntimeKey struct {
@@ -129,6 +133,43 @@ type collectionSegmentRuntime struct {
 	segmentID uint64
 	key       collectionRuntimeKey
 	indexes   *collectionRuntimeIndexes
+}
+
+type collectionQuerySnapshot struct {
+	documents []Document
+	segments  []collectionSegmentDocuments
+	runtimes  []*collectionSegmentRuntime
+}
+
+func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQuerySnapshot, error) {
+	if snapshot := c.querySnapshot.Load(); snapshot != nil {
+		return snapshot, nil
+	}
+	c.querySnapshotMu.Lock()
+	defer c.querySnapshotMu.Unlock()
+	if snapshot := c.querySnapshot.Load(); snapshot != nil {
+		return snapshot, nil
+	}
+	documents, err := c.liveDocumentsLocked(ctx)
+	if err != nil {
+		return nil, err
+	}
+	segments, err := c.segmentDocumentsLocked(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtimes, err := c.segmentRuntimeIndexesLocked(ctx, segments)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &collectionQuerySnapshot{documents: documents, segments: segments, runtimes: runtimes}
+	c.querySnapshot.Store(snapshot)
+	c.querySnapshotBuildCount.Add(1)
+	return snapshot, nil
+}
+
+func (c *Collection) invalidateQuerySnapshotLocked() {
+	c.querySnapshot.Store(nil)
 }
 
 func collectionRuntimeKeyFor(schema CollectionSchema, documents []Document) (collectionRuntimeKey, error) {

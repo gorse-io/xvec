@@ -5197,6 +5197,83 @@ func TestEvaluateSegmentFiltersKeepsPredicateForStaleDocument(t *testing.T) {
 	require.False(t, filters.global.predicate(2))
 }
 
+func TestCollectionQuerySnapshotPublishesOnceUntilInvalidated(t *testing.T) {
+	ctx := context.Background()
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "query-snapshot"), testMultiQuerySchema(), NewCollectionOptions())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, collection.Close()) }()
+	_, err = collection.Insert(ctx, testMultiQueryDocuments())
+	require.NoError(t, err)
+
+	collection.mu.RLock()
+	first, err := collection.querySnapshotLocked(ctx)
+	require.NoError(t, err)
+	second, err := collection.querySnapshotLocked(ctx)
+	collection.mu.RUnlock()
+	require.NoError(t, err)
+	require.Same(t, first, second)
+	require.Equal(t, uint64(1), collection.querySnapshotBuildCount.Load())
+	require.Len(t, first.documents, len(testMultiQueryDocuments()))
+	require.NotEmpty(t, first.segments)
+	require.NotEmpty(t, first.runtimes)
+
+	collection.mu.Lock()
+	collection.invalidateQuerySnapshotLocked()
+	collection.mu.Unlock()
+	collection.mu.RLock()
+	third, err := collection.querySnapshotLocked(ctx)
+	collection.mu.RUnlock()
+	require.NoError(t, err)
+	require.NotSame(t, first, third)
+	require.Equal(t, uint64(2), collection.querySnapshotBuildCount.Load())
+}
+
+func TestCollectionQuerySnapshotConcurrentColdBuildPublishesOnce(t *testing.T) {
+	ctx := context.Background()
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "concurrent-query-snapshot"), testMultiQuerySchema(), NewCollectionOptions())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, collection.Close()) }()
+	_, err = collection.Insert(ctx, testMultiQueryDocuments())
+	require.NoError(t, err)
+
+	const workers = 8
+	start := make(chan struct{})
+	snapshots := make(chan *collectionQuerySnapshot, workers)
+	errorsFound := make(chan error, workers)
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			collection.mu.RLock()
+			snapshot, snapshotErr := collection.querySnapshotLocked(ctx)
+			collection.mu.RUnlock()
+			if snapshotErr != nil {
+				errorsFound <- snapshotErr
+				return
+			}
+			snapshots <- snapshot
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(snapshots)
+	close(errorsFound)
+	for snapshotErr := range errorsFound {
+		require.NoError(t, snapshotErr)
+	}
+	var published *collectionQuerySnapshot
+	for snapshot := range snapshots {
+		if published == nil {
+			published = snapshot
+		}
+		require.Same(t, published, snapshot)
+	}
+	require.NotNil(t, published)
+	require.Equal(t, uint64(1), collection.querySnapshotBuildCount.Load())
+}
+
 func TestCollectionQuerySharesCachedSegmentRuntimes(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "concurrent-query"), testMultiQuerySchema(), NewCollectionOptions())
