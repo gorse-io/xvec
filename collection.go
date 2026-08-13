@@ -424,6 +424,7 @@ func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSe
 }
 
 func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context, workers int) error {
+	c.invalidateQuerySnapshotLocked()
 	segments, err := c.segmentDocumentsLocked(ctx)
 	if err != nil {
 		return err
@@ -978,6 +979,7 @@ func (c *Collection) Flush(ctx context.Context) error {
 	if err := c.requireOpenLocked("flush collection"); err != nil {
 		return err
 	}
+	c.invalidateQuerySnapshotLocked()
 	if err := c.store.Flush(ctx); err != nil {
 		return wrapCollectionError("flush collection", c.path, err)
 	}
@@ -2201,6 +2203,7 @@ func (c *Collection) publishSchemaLocked(ctx context.Context, op string, nextSch
 	committed, publishErr := c.store.PublishSchema(ctx, encoded)
 	if committed {
 		c.schema = nextSchema
+		c.invalidateQuerySnapshotLocked()
 	}
 	if publishErr != nil {
 		return wrapCollectionError(op, c.path, publishErr)
@@ -2253,6 +2256,7 @@ func (c *Collection) rewriteCollectionDocumentsLocked(
 	committed, rewriteErr := c.store.RewriteDocuments(ctx, encodedSchema, rewritten)
 	if committed {
 		c.schema = nextSchema
+		c.invalidateQuerySnapshotLocked()
 	}
 	if rewriteErr != nil {
 		return wrapCollectionError(op, c.path, rewriteErr)
@@ -3834,18 +3838,11 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err != nil {
 		return nil, invalidArgument(op, "invalid filter: %v", err)
 	}
-	documents, err := c.liveDocumentsLocked(ctx)
+	snapshot, err := c.querySnapshotLocked(ctx)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	segments, err := c.segmentDocumentsLocked(ctx)
-	if err != nil {
-		return nil, wrapCollectionError(op, c.path, err)
-	}
-	runtimes, err := c.segmentRuntimeIndexesLocked(ctx, segments)
-	if err != nil {
-		return nil, wrapCollectionError(op, c.path, err)
-	}
+	documents, segments, runtimes := snapshot.documents, snapshot.segments, snapshot.runtimes
 	runtimeConfig := c.runtimeConfig()
 	filters, err := evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
 	if err != nil {
@@ -4813,6 +4810,7 @@ func (c *Collection) writeDocuments(ctx context.Context, operator Operator, docu
 			batchError.add(wrapped)
 			continue
 		}
+		c.invalidateQuerySnapshotLocked()
 		dbResults, batchErr := c.callStoreWriteLocked(ctx, operator, db.WriteInput{
 			PrimaryKey: prepared.PrimaryKey, Payload: payload,
 		})
@@ -4936,6 +4934,7 @@ func (c *Collection) Delete(ctx context.Context, primaryKeys []string) ([]WriteR
 			batchError.add(wrapped)
 			continue
 		}
+		c.invalidateQuerySnapshotLocked()
 		dbResults, batchErr := c.store.Delete(ctx, []string{primaryKey})
 		var itemErr error
 		if len(dbResults) == 1 {
@@ -5007,6 +5006,7 @@ func (c *Collection) DeleteByFilter(ctx context.Context, filter string) error {
 	if len(primaryKeys) == 0 {
 		return nil
 	}
+	c.invalidateQuerySnapshotLocked()
 	results, err := c.store.Delete(ctx, primaryKeys)
 	if err != nil {
 		return wrapCollectionError(op, c.path, err)
@@ -5019,6 +5019,7 @@ func (c *Collection) DeleteByFilter(ctx context.Context, filter string) error {
 			return wrapCollectionError(op, c.path, result.Err)
 		}
 	}
+	c.invalidateQuerySnapshotLocked()
 	return nil
 }
 

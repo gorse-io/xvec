@@ -5197,6 +5197,52 @@ func TestEvaluateSegmentFiltersKeepsPredicateForStaleDocument(t *testing.T) {
 	require.False(t, filters.global.predicate(2))
 }
 
+func TestCollectionQueryReusesSnapshotAndRebuildsAfterUpdate(t *testing.T) {
+	ctx := context.Background()
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "query-snapshot-update"), testMultiQuerySchema(), NewCollectionOptions())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, collection.Close()) }()
+	_, err = collection.Insert(ctx, testMultiQueryDocuments())
+	require.NoError(t, err)
+
+	query := VectorQuery{TopK: 10, Filter: "rating >= 3", Projection: Projection{OutputFields: []string{"rating"}}}
+	results, err := collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"c", "d"}, documentKeys(results))
+	require.Equal(t, uint64(1), collection.querySnapshotBuildCount.Load())
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"c", "d"}, documentKeys(results))
+	require.Equal(t, uint64(1), collection.querySnapshotBuildCount.Load())
+
+	_, err = collection.Insert(ctx, []Document{testMultiQueryDocuments()[0]})
+	require.Error(t, err)
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"c", "d"}, documentKeys(results))
+	require.Equal(t, uint64(2), collection.querySnapshotBuildCount.Load())
+
+	_, err = collection.Update(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{"rating": int32(4)}}})
+	require.NoError(t, err)
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"c", "d", "a"}, documentKeys(results))
+	require.Equal(t, uint64(3), collection.querySnapshotBuildCount.Load())
+
+	_, err = collection.Delete(ctx, []string{"c"})
+	require.NoError(t, err)
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"d", "a"}, documentKeys(results))
+	require.Equal(t, uint64(4), collection.querySnapshotBuildCount.Load())
+
+	require.NoError(t, collection.DeleteByFilter(ctx, "rating = 4"))
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Empty(t, results)
+	require.Equal(t, uint64(5), collection.querySnapshotBuildCount.Load())
+}
+
 func TestCollectionQuerySnapshotPublishesOnceUntilInvalidated(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "query-snapshot"), testMultiQuerySchema(), NewCollectionOptions())
