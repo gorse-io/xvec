@@ -28,7 +28,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gorse-io/xvec/internal/ailego/container"
-	"github.com/gorse-io/xvec/internal/indexstore"
+	"github.com/gorse-io/xvec/internal/db/common"
 )
 
 const (
@@ -71,7 +71,7 @@ func (i *InvertedIndex) Save(ctx context.Context, path string) error {
 	if err != nil {
 		return fmt.Errorf("sql: marshal inverted field: %w", err)
 	}
-	store, err := indexstore.Open(path, indexstore.Options{})
+	store, err := common.Open(path, common.Options{})
 	if err != nil {
 		return fmt.Errorf("sql: create inverted index store: %w", err)
 	}
@@ -145,7 +145,7 @@ func OpenInvertedIndex(ctx context.Context, path string) (*InvertedIndex, error)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	store, err := indexstore.Open(path, indexstore.Options{ReadOnly: true})
+	store, err := common.Open(path, common.Options{ReadOnly: true})
 	if err != nil {
 		return nil, invertedCorruption("open Pebble store", err)
 	}
@@ -290,12 +290,12 @@ func requireEmptyInvertedDirectory(path string) error {
 }
 
 type invertedStoreWriter struct {
-	store *indexstore.Store
-	batch *indexstore.Batch
+	store *common.Store
+	batch *common.Batch
 	size  int
 }
 
-func newInvertedStoreWriter(store *indexstore.Store) *invertedStoreWriter {
+func newInvertedStoreWriter(store *common.Store) *invertedStoreWriter {
 	return &invertedStoreWriter{store: store, batch: store.NewBatch()}
 }
 
@@ -356,7 +356,7 @@ func writeInvertedBitmap(ctx context.Context, writer *invertedStoreWriter, prefi
 	return nil
 }
 
-func readInvertedBitmap(ctx context.Context, store *indexstore.Store, prefix []byte) (*container.Bitmap, error) {
+func readInvertedBitmap(ctx context.Context, store *common.Store, prefix []byte) (*container.Bitmap, error) {
 	iterator, err := store.NewPrefixIterator(prefix)
 	if err != nil {
 		return nil, invertedCorruption("open bitmap iterator", err)
@@ -537,7 +537,7 @@ func ensureInvertedJSONEOF(decoder *json.Decoder) error {
 }
 
 func inspectInvertedStoreKeys(path string) ([][]byte, error) {
-	store, err := indexstore.Open(path, indexstore.Options{ReadOnly: true})
+	store, err := common.Open(path, common.Options{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}

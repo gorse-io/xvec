@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package indexstore provides the deliberately small Pebble surface used by
+// Package common provides the deliberately small Pebble surface used by
 // immutable collection index artifacts.
-package indexstore
+package common
 
 import (
 	"bytes"

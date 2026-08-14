@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/indexstore"
+	"github.com/gorse-io/xvec/internal/db/common"
 	"github.com/stretchr/testify/require"
 )
 
@@ -125,16 +125,16 @@ func TestInvertedIndexPebbleRejectsInvalidInputsAndCorruption(t *testing.T) {
 	require.NoError(t, err)
 	require.Error(t, unsealed.Save(context.Background(), filepath.Join(t.TempDir(), "unsealed.pebble")))
 
-	mutations := map[string]func(*indexstore.Store) error{
-		"missing format": func(store *indexstore.Store) error { return store.Delete(invertedFormatKey) },
-		"invalid field":  func(store *indexstore.Store) error { return store.Set(invertedFieldKey, []byte("{} {}")) },
-		"missing rows": func(store *indexstore.Store) error {
+	mutations := map[string]func(*common.Store) error{
+		"missing format": func(store *common.Store) error { return store.Delete(invertedFormatKey) },
+		"invalid field":  func(store *common.Store) error { return store.Set(invertedFieldKey, []byte("{} {}")) },
+		"missing rows": func(store *common.Store) error {
 			return store.Delete([]byte{'b', 0, 0, 0, 0, 0})
 		},
-		"invalid term": func(store *indexstore.Store) error {
+		"invalid term": func(store *common.Store) error {
 			return store.Set([]byte{'t', 0, 0, 0, 0}, []byte{byte(ValueInt64)})
 		},
-		"invalid length key": func(store *indexstore.Store) error {
+		"invalid length key": func(store *common.Store) error {
 			key := make([]byte, 9)
 			key[0] = 'l'
 			binary.BigEndian.PutUint32(key[1:5], 1)
@@ -145,7 +145,7 @@ func TestInvertedIndexPebbleRejectsInvalidInputsAndCorruption(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "corrupt.pebble")
 			require.NoError(t, index.Save(context.Background(), path))
-			store, err := indexstore.Open(path, indexstore.Options{})
+			store, err := common.Open(path, common.Options{})
 			require.NoError(t, err)
 			require.NoError(t, mutate(store))
 			require.NoError(t, store.Close())

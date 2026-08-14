@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/gorse-io/xvec/internal/db/common"
 	"github.com/gorse-io/xvec/internal/db/index/column/fts_column/tokenizer"
-	"github.com/gorse-io/xvec/internal/indexstore"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,7 +60,7 @@ func TestValidateFTSPostingKeysHonorsCancellation(t *testing.T) {
 	dictionary := buildFTSTestDictionary(t, [][]tokenizer.Token{{{Text: "alpha", Position: 0}}})
 	path := filepath.Join(t.TempDir(), "cancel.pebble")
 	require.NoError(t, dictionary.Save(context.Background(), path))
-	store, err := indexstore.Open(path, indexstore.Options{ReadOnly: true})
+	store, err := common.Open(path, common.Options{ReadOnly: true})
 	require.NoError(t, err)
 	defer func() { require.NoError(t, store.Close()) }()
 
@@ -95,21 +95,21 @@ func TestFTSTermDictionaryPebbleRejectsInvalidInputsAndCorruption(t *testing.T) 
 	badMaximumTF.maximumTF = []uint32{0}
 	require.ErrorIs(t, badMaximumTF.Save(context.Background(), filepath.Join(t.TempDir(), "tf.pebble")), ErrInvalidFTSDictionary)
 
-	mutations := map[string]func(*indexstore.Store) error{
-		"missing format": func(store *indexstore.Store) error { return store.Delete(ftsFormatKey) },
-		"short stats":    func(store *indexstore.Store) error { return store.Set(ftsStatsKey, []byte{1}) },
-		"too many documents": func(store *indexstore.Store) error {
+	mutations := map[string]func(*common.Store) error{
+		"missing format": func(store *common.Store) error { return store.Delete(ftsFormatKey) },
+		"short stats":    func(store *common.Store) error { return store.Set(ftsStatsKey, []byte{1}) },
+		"too many documents": func(store *common.Store) error {
 			stats := make([]byte, 16)
 			binary.LittleEndian.PutUint64(stats, uint64(math.MaxUint32)+1)
 			return store.Set(ftsStatsKey, stats)
 		},
-		"missing lengths": func(store *indexstore.Store) error {
+		"missing lengths": func(store *common.Store) error {
 			return store.Delete([]byte{'d', 0, 0, 0, 0})
 		},
-		"invalid term": func(store *indexstore.Store) error {
+		"invalid term": func(store *common.Store) error {
 			return store.Set([]byte{'t', 0, 0, 0, 0}, []byte{1})
 		},
-		"orphan posting": func(store *indexstore.Store) error {
+		"orphan posting": func(store *common.Store) error {
 			return store.Set([]byte{'p', 0, 0, 0, 1, 0, 0, 0, 0}, []byte{1})
 		},
 	}
@@ -117,7 +117,7 @@ func TestFTSTermDictionaryPebbleRejectsInvalidInputsAndCorruption(t *testing.T) 
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "corrupt.pebble")
 			require.NoError(t, dictionary.Save(context.Background(), path))
-			store, err := indexstore.Open(path, indexstore.Options{})
+			store, err := common.Open(path, common.Options{})
 			require.NoError(t, err)
 			require.NoError(t, mutate(store))
 			require.NoError(t, store.Close())
