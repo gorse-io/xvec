@@ -40,7 +40,10 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/utility"
 	"github.com/gorse-io/xvec/internal/core"
 	"github.com/gorse-io/xvec/internal/db"
-	dbsql "github.com/gorse-io/xvec/internal/db/sql"
+	"github.com/gorse-io/xvec/internal/db/index/common"
+	"github.com/gorse-io/xvec/internal/db/index/segment"
+	"github.com/gorse-io/xvec/internal/db/index/storage/wal"
+	"github.com/gorse-io/xvec/internal/db/sqlengine"
 )
 
 // DefaultMaxBufferSize is the baseline-compatible DiskANN cache budget.
@@ -123,11 +126,11 @@ type collectionRuntimeIndexes struct {
 	sparseNative map[string]core.SparseQuerySearcher
 	sparseExact  map[string]*core.SparseFlatIndex
 	fts          map[string]*collectionFTSRuntime
-	scalar       dbsql.IndexSet
+	scalar       sqlengine.IndexSet
 }
 
 type collectionSegmentDocuments struct {
-	metadata  db.SegmentMetadata
+	metadata  common.SegmentMetadata
 	documents []Document
 	mutable   bool
 }
@@ -291,7 +294,7 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 	return ordered, nil
 }
 
-func (c *Collection) segmentIndexArtifactPaths(metadata db.SegmentMetadata, key collectionRuntimeKey) map[string]string {
+func (c *Collection) segmentIndexArtifactPaths(metadata common.SegmentMetadata, key collectionRuntimeKey) map[string]string {
 	paths := make(map[string]string)
 	if c == nil || c.store == nil {
 		return paths
@@ -433,11 +436,11 @@ func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context, wor
 		return err
 	}
 	manifest := c.store.Manifest()
-	existing := make(map[uint64]db.SegmentIndexSnapshotMetadata, len(manifest.SegmentIndexSnapshots))
+	existing := make(map[uint64]common.SegmentIndexSnapshotMetadata, len(manifest.SegmentIndexSnapshots))
 	for _, snapshot := range manifest.SegmentIndexSnapshots {
 		existing[snapshot.SegmentID] = snapshot
 	}
-	next := make([]db.SegmentIndexSnapshotMetadata, 0, len(segments))
+	next := make([]common.SegmentIndexSnapshotMetadata, 0, len(segments))
 	created := make([]string, 0)
 	cleanup := func() {
 		for _, path := range created {
@@ -487,7 +490,7 @@ func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context, wor
 		if len(artifacts) == 0 {
 			continue
 		}
-		next = append(next, db.SegmentIndexSnapshotMetadata{
+		next = append(next, common.SegmentIndexSnapshotMetadata{
 			SegmentID: segment.metadata.ID, SchemaSHA256: hex.EncodeToString(key.schemaHash[:]),
 			DocumentCount: uint64(key.count), MinDocumentID: segment.metadata.MinDocID,
 			MaxDocumentID: segment.metadata.MaxDocID, Artifacts: artifacts,
@@ -509,7 +512,7 @@ func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context, wor
 	return c.store.PruneObsoleteArtifacts(ctx)
 }
 
-func (c *Collection) segmentIndexSnapshotFilesExist(metadata db.SegmentMetadata, key collectionRuntimeKey, snapshot db.SegmentIndexSnapshotMetadata) bool {
+func (c *Collection) segmentIndexSnapshotFilesExist(metadata common.SegmentMetadata, key collectionRuntimeKey, snapshot common.SegmentIndexSnapshotMetadata) bool {
 	if snapshot.SegmentID != metadata.ID || snapshot.SchemaSHA256 != hex.EncodeToString(key.schemaHash[:]) ||
 		snapshot.DocumentCount != uint64(key.count) || snapshot.MinDocumentID != metadata.MinDocID || snapshot.MaxDocumentID != metadata.MaxDocID {
 		return false
@@ -530,13 +533,13 @@ func (c *Collection) segmentIndexSnapshotFilesExist(metadata db.SegmentMetadata,
 	return true
 }
 
-func (c *Collection) writeSegmentRuntimeArtifacts(ctx context.Context, segmentID uint64, indexes *collectionRuntimeIndexes) ([]db.IndexArtifactMetadata, []string, error) {
+func (c *Collection) writeSegmentRuntimeArtifacts(ctx context.Context, segmentID uint64, indexes *collectionRuntimeIndexes) ([]common.IndexArtifactMetadata, []string, error) {
 	indexDirectory := filepath.Join(c.path, "indexes")
 	if err := os.MkdirAll(indexDirectory, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create index artifact directory: %w", err)
 	}
 	created := make([]string, 0)
-	artifacts := make([]db.IndexArtifactMetadata, 0)
+	artifacts := make([]common.IndexArtifactMetadata, 0)
 	writeArtifact := func(field, kind string, directory bool, write func(string) error) error {
 		var path string
 		if directory {
@@ -574,10 +577,10 @@ func (c *Collection) writeSegmentRuntimeArtifacts(ctx context.Context, segmentID
 		if err != nil {
 			return err
 		}
-		artifacts = append(artifacts, db.IndexArtifactMetadata{Field: field, Kind: kind, File: filepath.ToSlash(relative)})
+		artifacts = append(artifacts, common.IndexArtifactMetadata{Field: field, Kind: kind, File: filepath.ToSlash(relative)})
 		return nil
 	}
-	fail := func(err error) ([]db.IndexArtifactMetadata, []string, error) {
+	fail := func(err error) ([]common.IndexArtifactMetadata, []string, error) {
 		return nil, created, err
 	}
 	for _, field := range c.schema.Fields {
@@ -654,7 +657,7 @@ func buildCollectionRuntimeIndexes(
 		denseExact: make(map[string]*core.DenseFlatIndex),
 		sparseFlat: make(map[string]core.SparseQuerySearcher), sparseNative: make(map[string]core.SparseQuerySearcher),
 		sparseExact: make(map[string]*core.SparseFlatIndex),
-		fts:         make(map[string]*collectionFTSRuntime), scalar: make(dbsql.IndexSet),
+		fts:         make(map[string]*collectionFTSRuntime), scalar: make(sqlengine.IndexSet),
 	}
 	fail := func(err error) (*collectionRuntimeIndexes, error) {
 		_ = indexes.Close()
@@ -764,12 +767,12 @@ func buildCollectionRuntimeIndexes(
 		if !supported {
 			continue
 		}
-		definition := dbsql.Field{
+		definition := sqlengine.Field{
 			Name: field.Name, Kind: kind, Array: array, Nullable: field.Nullable, Filterable: true,
 			Indexed: true, RangeOptimized: rangeOptimized, ExtendedWildcard: extendedWildcard,
 		}
 		if artifact := artifacts[collectionIndexArtifactKey(field.Name, collectionInvertArtifactKind)]; artifact != "" {
-			index, err := dbsql.OpenInvertedIndex(ctx, artifact)
+			index, err := sqlengine.OpenInvertedIndex(ctx, artifact)
 			if err != nil {
 				return fail(fmt.Errorf("open INVERT artifact for field %q: %w", field.Name, err))
 			}
@@ -779,7 +782,7 @@ func buildCollectionRuntimeIndexes(
 			indexes.scalar[field.Name] = index
 			continue
 		}
-		index, err := dbsql.NewInvertedIndex(definition)
+		index, err := sqlengine.NewInvertedIndex(definition)
 		if err != nil {
 			return fail(err)
 		}
@@ -856,7 +859,7 @@ func CreateAndOpen(ctx context.Context, path string, schema CollectionSchema, op
 	store, err := db.CreateCollection(ctx, absolute, encodedSchema, db.CollectionOptions{
 		EnableMmap:          options.EnableMmap,
 		SegmentMaxDocuments: schema.MaxDocsPerSegment,
-		WAL:                 db.WALOptions{SyncEvery: options.WALSyncEvery},
+		WAL:                 wal.WALOptions{SyncEvery: options.WALSyncEvery},
 	})
 	if err != nil {
 		if store != nil {
@@ -886,7 +889,7 @@ func Open(ctx context.Context, path string, options CollectionOptions) (*Collect
 	options = options.normalized()
 	store, err := db.OpenCollection(ctx, absolute, db.CollectionOptions{
 		ReadOnly: options.ReadOnly,
-		WAL:      db.WALOptions{SyncEvery: options.WALSyncEvery},
+		WAL:      wal.WALOptions{SyncEvery: options.WALSyncEvery},
 	})
 	if err != nil {
 		return nil, wrapCollectionError("open collection", absolute, err)
@@ -2229,7 +2232,7 @@ func (c *Collection) rewriteCollectionDocumentsLocked(
 		return &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: "document rewrite transform is nil"}
 	}
 	workers = c.optimizeWorkers(workers)
-	rewritten := make([]db.StoredDocument, len(documents))
+	rewritten := make([]segment.StoredDocument, len(documents))
 	if err := parallel.ParallelFor(ctx, len(documents), workers, func(_ context.Context, index int) error {
 		document := documents[index]
 		if transformErr := transform(&document); transformErr != nil {
@@ -2242,7 +2245,7 @@ func (c *Collection) rewriteCollectionDocumentsLocked(
 		if encodeErr != nil {
 			return fmt.Errorf("document %d: %w", document.DocID, encodeErr)
 		}
-		rewritten[index] = db.StoredDocument{
+		rewritten[index] = segment.StoredDocument{
 			DocID: document.DocID, PrimaryKey: document.PrimaryKey, Payload: payload,
 		}
 		return nil
@@ -2318,7 +2321,7 @@ func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field Fiel
 			return fmt.Errorf("unsupported INVERT data type %s", field.DataType)
 		}
 		params := field.Index.cloneIndexParams().(InvertIndexParams)
-		index, err := dbsql.NewInvertedIndex(dbsql.Field{
+		index, err := sqlengine.NewInvertedIndex(sqlengine.Field{
 			Name: field.Name, Kind: kind, Array: array, Nullable: field.Nullable,
 			Filterable: true, Indexed: true,
 			RangeOptimized: params.EnableRangeOptimization, ExtendedWildcard: params.EnableExtendedWildcard,
@@ -2482,29 +2485,29 @@ func wrapCollectionError(op, path string, err error) error {
 	code := ErrorCodeUnknown
 	switch {
 	case errors.Is(err, db.ErrPrimaryKeyNotFound),
-		errors.Is(err, db.ErrDocumentNotFound),
-		errors.Is(err, db.ErrManifestNotFound),
+		errors.Is(err, segment.ErrDocumentNotFound),
+		errors.Is(err, common.ErrManifestNotFound),
 		errors.Is(err, os.ErrNotExist):
 		code = ErrorCodeNotFound
 	case errors.Is(err, db.ErrPrimaryKeyExists),
-		errors.Is(err, db.ErrManifestExists),
+		errors.Is(err, common.ErrManifestExists),
 		errors.Is(err, os.ErrExist):
 		code = ErrorCodeAlreadyExists
-	case errors.Is(err, db.ErrReadOnly), errors.Is(err, os.ErrPermission):
+	case errors.Is(err, db.ErrReadOnly), errors.Is(err, common.ErrReadOnly), errors.Is(err, os.ErrPermission):
 		code = ErrorCodePermissionDenied
 	case errors.Is(err, db.ErrCollectionClosed),
-		errors.Is(err, db.ErrWALClosed),
-		errors.Is(err, db.ErrWALReadOnly):
+		errors.Is(err, wal.ErrWALClosed),
+		errors.Is(err, wal.ErrWALReadOnly):
 		code = ErrorCodeFailedPrecondition
-	case errors.Is(err, db.ErrSegmentFull),
-		errors.Is(err, db.ErrWALRecordTooLarge):
+	case errors.Is(err, segment.ErrSegmentFull),
+		errors.Is(err, wal.ErrWALRecordTooLarge):
 		code = ErrorCodeResourceExhausted
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		code = ErrorCodeUnavailable
 	case errors.Is(err, db.ErrCollectionCorrupt),
-		errors.Is(err, db.ErrManifestCorrupt),
-		errors.Is(err, db.ErrSegmentCorrupt),
-		errors.Is(err, db.ErrWALCorrupt):
+		errors.Is(err, common.ErrManifestCorrupt),
+		errors.Is(err, segment.ErrSegmentCorrupt),
+		errors.Is(err, wal.ErrWALCorrupt):
 		code = ErrorCodeInternal
 	}
 	return &Error{Code: code, Op: op, Path: path, Err: err}
@@ -2514,25 +2517,25 @@ func notSupported(op, path, message string) error {
 	return &Error{Code: ErrorCodeNotSupported, Op: op, Path: path, Message: message}
 }
 
-func buildFilterPlan(filter string, schema CollectionSchema) (*dbsql.Plan, error) {
+func buildFilterPlan(filter string, schema CollectionSchema) (*sqlengine.Plan, error) {
 	if filter == "" {
 		return nil, nil
 	}
-	fields := make([]dbsql.Field, len(schema.Fields))
+	fields := make([]sqlengine.Field, len(schema.Fields))
 	for index, field := range schema.Fields {
 		kind, array, supported := filterValueKind(field.DataType)
 		filterable := supported && field.IndexType() != IndexTypeFTS
 		indexed, rangeOptimized, extendedWildcard := filterIndexOptions(field, filterable)
-		fields[index] = dbsql.Field{
+		fields[index] = sqlengine.Field{
 			Name: field.Name, Kind: kind, Array: array, Nullable: field.Nullable, Filterable: filterable,
 			Indexed: indexed, RangeOptimized: rangeOptimized, ExtendedWildcard: extendedWildcard,
 		}
 	}
-	filterSchema, err := dbsql.NewSchema(fields)
+	filterSchema, err := sqlengine.NewSchema(fields)
 	if err != nil {
 		return nil, fmt.Errorf("build filter schema: %w", err)
 	}
-	return dbsql.BuildPlan(filter, filterSchema)
+	return sqlengine.BuildPlan(filter, filterSchema)
 }
 
 func filterIndexOptions(field FieldSchema, filterable bool) (indexed, rangeOptimized, extendedWildcard bool) {
@@ -2554,44 +2557,44 @@ func filterIndexOptions(field FieldSchema, filterable bool) (indexed, rangeOptim
 	return true, params.EnableRangeOptimization, params.EnableExtendedWildcard
 }
 
-func filterValueKind(dataType DataType) (kind dbsql.ValueKind, array, supported bool) {
+func filterValueKind(dataType DataType) (kind sqlengine.ValueKind, array, supported bool) {
 	switch dataType {
 	case DataTypeBinary:
-		return dbsql.ValueBinary, false, true
+		return sqlengine.ValueBinary, false, true
 	case DataTypeString:
-		return dbsql.ValueString, false, true
+		return sqlengine.ValueString, false, true
 	case DataTypeBool:
-		return dbsql.ValueBool, false, true
+		return sqlengine.ValueBool, false, true
 	case DataTypeInt32:
-		return dbsql.ValueInt32, false, true
+		return sqlengine.ValueInt32, false, true
 	case DataTypeInt64:
-		return dbsql.ValueInt64, false, true
+		return sqlengine.ValueInt64, false, true
 	case DataTypeUint32:
-		return dbsql.ValueUint32, false, true
+		return sqlengine.ValueUint32, false, true
 	case DataTypeUint64:
-		return dbsql.ValueUint64, false, true
+		return sqlengine.ValueUint64, false, true
 	case DataTypeFloat:
-		return dbsql.ValueFloat32, false, true
+		return sqlengine.ValueFloat32, false, true
 	case DataTypeDouble:
-		return dbsql.ValueFloat64, false, true
+		return sqlengine.ValueFloat64, false, true
 	case DataTypeArrayBinary:
-		return dbsql.ValueBinary, true, true
+		return sqlengine.ValueBinary, true, true
 	case DataTypeArrayString:
-		return dbsql.ValueString, true, true
+		return sqlengine.ValueString, true, true
 	case DataTypeArrayBool:
-		return dbsql.ValueBool, true, true
+		return sqlengine.ValueBool, true, true
 	case DataTypeArrayInt32:
-		return dbsql.ValueInt32, true, true
+		return sqlengine.ValueInt32, true, true
 	case DataTypeArrayInt64:
-		return dbsql.ValueInt64, true, true
+		return sqlengine.ValueInt64, true, true
 	case DataTypeArrayUint32:
-		return dbsql.ValueUint32, true, true
+		return sqlengine.ValueUint32, true, true
 	case DataTypeArrayUint64:
-		return dbsql.ValueUint64, true, true
+		return sqlengine.ValueUint64, true, true
 	case DataTypeArrayFloat:
-		return dbsql.ValueFloat32, true, true
+		return sqlengine.ValueFloat32, true, true
 	case DataTypeArrayDouble:
-		return dbsql.ValueFloat64, true, true
+		return sqlengine.ValueFloat64, true, true
 	default:
 		return 0, false, false
 	}
@@ -2617,10 +2620,10 @@ func (f evaluatedFilter) useBruteForce(ratio float32) bool {
 
 func evaluateFilterDocuments(
 	ctx context.Context,
-	plan *dbsql.Plan,
+	plan *sqlengine.Plan,
 	documents []Document,
 	invertToForwardRatio float32,
-	cached ...dbsql.IndexSet,
+	cached ...sqlengine.IndexSet,
 ) (evaluatedFilter, error) {
 	if plan == nil {
 		return evaluatedFilter{total: uint64(len(documents))}, nil
@@ -2633,13 +2636,13 @@ func evaluateFilterDocuments(
 	}
 	fields := plan.Fields()
 	fieldCount := len(fields)
-	indexes := make(dbsql.IndexSet)
+	indexes := make(sqlengine.IndexSet)
 	if len(cached) != 0 && cached[0] != nil {
 		for name, index := range cached[0] {
 			indexes[name] = index
 		}
 	}
-	built := make(dbsql.IndexSet)
+	built := make(sqlengine.IndexSet)
 	for _, field := range fields {
 		if !field.Indexed {
 			continue
@@ -2647,7 +2650,7 @@ func evaluateFilterDocuments(
 		if _, exists := indexes[field.Name]; exists {
 			continue
 		}
-		index, err := dbsql.NewInvertedIndex(field)
+		index, err := sqlengine.NewInvertedIndex(field)
 		if err != nil {
 			return evaluatedFilter{}, err
 		}
@@ -2695,15 +2698,15 @@ func evaluateFilterDocuments(
 			continue
 		}
 		document := &documents[index]
-		cache := make(map[string]dbsql.Value, fieldCount)
-		match, err := plan.Match(func(field dbsql.Field) (dbsql.Value, error) {
+		cache := make(map[string]sqlengine.Value, fieldCount)
+		match, err := plan.Match(func(field sqlengine.Field) (sqlengine.Value, error) {
 			if value, found := cache[field.Name]; found {
 				return value, nil
 			}
 			raw, found := document.Fields[field.Name]
 			value, valueErr := toFilterValue(field, raw, found)
 			if valueErr != nil {
-				return dbsql.Value{}, fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, valueErr)
+				return sqlengine.Value{}, fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, valueErr)
 			}
 			cache[field.Name] = value
 			return value, nil
@@ -2728,7 +2731,7 @@ func evaluateFilterDocuments(
 
 func evaluateSegmentFilters(
 	ctx context.Context,
-	plan *dbsql.Plan,
+	plan *sqlengine.Plan,
 	liveDocuments []Document,
 	segments []collectionSegmentDocuments,
 	runtimes []*collectionSegmentRuntime,
@@ -2780,7 +2783,7 @@ func evaluateSegmentFilters(
 		if len(segment.documents) == 0 {
 			continue
 		}
-		var cached dbsql.IndexSet
+		var cached sqlengine.IndexSet
 		if runtime := runtimeByID[segment.metadata.ID]; runtime != nil {
 			cached = runtime.indexes.scalar
 		}
@@ -2838,156 +2841,156 @@ func wrapFilterEvaluationError(op, path string, err error) error {
 	return &Error{Code: ErrorCodeInternal, Op: op, Path: path, Message: "evaluate scalar filter", Err: err}
 }
 
-func toFilterValue(field dbsql.Field, raw any, found bool) (dbsql.Value, error) {
+func toFilterValue(field sqlengine.Field, raw any, found bool) (sqlengine.Value, error) {
 	if !found || raw == nil {
-		return dbsql.NullValue(field.Kind, field.Array)
+		return sqlengine.NullValue(field.Kind, field.Array)
 	}
 	if !field.Array {
 		switch field.Kind {
-		case dbsql.ValueBinary:
+		case sqlengine.ValueBinary:
 			value, ok := raw.(Binary)
 			if ok {
-				return dbsql.BinaryValue(value), nil
+				return sqlengine.BinaryValue(value), nil
 			}
-		case dbsql.ValueString:
+		case sqlengine.ValueString:
 			value, ok := raw.(string)
 			if ok {
-				return dbsql.StringValue(value), nil
+				return sqlengine.StringValue(value), nil
 			}
-		case dbsql.ValueBool:
+		case sqlengine.ValueBool:
 			value, ok := raw.(bool)
 			if ok {
-				return dbsql.BoolValue(value), nil
+				return sqlengine.BoolValue(value), nil
 			}
-		case dbsql.ValueInt32:
+		case sqlengine.ValueInt32:
 			value, ok := raw.(int32)
 			if ok {
-				return dbsql.Int32Value(value), nil
+				return sqlengine.Int32Value(value), nil
 			}
-		case dbsql.ValueInt64:
+		case sqlengine.ValueInt64:
 			value, ok := raw.(int64)
 			if ok {
-				return dbsql.Int64Value(value), nil
+				return sqlengine.Int64Value(value), nil
 			}
-		case dbsql.ValueUint32:
+		case sqlengine.ValueUint32:
 			value, ok := raw.(uint32)
 			if ok {
-				return dbsql.Uint32Value(value), nil
+				return sqlengine.Uint32Value(value), nil
 			}
-		case dbsql.ValueUint64:
+		case sqlengine.ValueUint64:
 			value, ok := raw.(uint64)
 			if ok {
-				return dbsql.Uint64Value(value), nil
+				return sqlengine.Uint64Value(value), nil
 			}
-		case dbsql.ValueFloat32:
+		case sqlengine.ValueFloat32:
 			value, ok := raw.(float32)
 			if ok {
-				return dbsql.Float32Value(value)
+				return sqlengine.Float32Value(value)
 			}
-		case dbsql.ValueFloat64:
+		case sqlengine.ValueFloat64:
 			value, ok := raw.(float64)
 			if ok {
-				return dbsql.Float64Value(value)
+				return sqlengine.Float64Value(value)
 			}
 		}
-		return dbsql.Value{}, fmt.Errorf("value %T does not match scalar %s", raw, field.Kind)
+		return sqlengine.Value{}, fmt.Errorf("value %T does not match scalar %s", raw, field.Kind)
 	}
 
-	var elements []dbsql.Value
+	var elements []sqlengine.Value
 	switch field.Kind {
-	case dbsql.ValueBinary:
+	case sqlengine.ValueBinary:
 		value, ok := raw.(BinaryArray)
 		if !ok {
-			return dbsql.Value{}, fmt.Errorf("value %T does not match ARRAY_BINARY", raw)
+			return sqlengine.Value{}, fmt.Errorf("value %T does not match ARRAY_BINARY", raw)
 		}
-		elements = make([]dbsql.Value, len(value))
+		elements = make([]sqlengine.Value, len(value))
 		for index := range value {
-			elements[index] = dbsql.BinaryValue(value[index])
+			elements[index] = sqlengine.BinaryValue(value[index])
 		}
-	case dbsql.ValueString:
+	case sqlengine.ValueString:
 		value, ok := raw.(StringArray)
 		if !ok {
-			return dbsql.Value{}, fmt.Errorf("value %T does not match ARRAY_STRING", raw)
+			return sqlengine.Value{}, fmt.Errorf("value %T does not match ARRAY_STRING", raw)
 		}
-		elements = make([]dbsql.Value, len(value))
+		elements = make([]sqlengine.Value, len(value))
 		for index := range value {
-			elements[index] = dbsql.StringValue(value[index])
+			elements[index] = sqlengine.StringValue(value[index])
 		}
-	case dbsql.ValueBool:
+	case sqlengine.ValueBool:
 		value, ok := raw.(BoolArray)
 		if !ok {
-			return dbsql.Value{}, fmt.Errorf("value %T does not match ARRAY_BOOL", raw)
+			return sqlengine.Value{}, fmt.Errorf("value %T does not match ARRAY_BOOL", raw)
 		}
-		elements = make([]dbsql.Value, len(value))
+		elements = make([]sqlengine.Value, len(value))
 		for index := range value {
-			elements[index] = dbsql.BoolValue(value[index])
+			elements[index] = sqlengine.BoolValue(value[index])
 		}
-	case dbsql.ValueInt32:
+	case sqlengine.ValueInt32:
 		value, ok := raw.(Int32Array)
 		if !ok {
-			return dbsql.Value{}, fmt.Errorf("value %T does not match ARRAY_INT32", raw)
+			return sqlengine.Value{}, fmt.Errorf("value %T does not match ARRAY_INT32", raw)
 		}
-		elements = make([]dbsql.Value, len(value))
+		elements = make([]sqlengine.Value, len(value))
 		for index := range value {
-			elements[index] = dbsql.Int32Value(value[index])
+			elements[index] = sqlengine.Int32Value(value[index])
 		}
-	case dbsql.ValueInt64:
+	case sqlengine.ValueInt64:
 		value, ok := raw.(Int64Array)
 		if !ok {
-			return dbsql.Value{}, fmt.Errorf("value %T does not match ARRAY_INT64", raw)
+			return sqlengine.Value{}, fmt.Errorf("value %T does not match ARRAY_INT64", raw)
 		}
-		elements = make([]dbsql.Value, len(value))
+		elements = make([]sqlengine.Value, len(value))
 		for index := range value {
-			elements[index] = dbsql.Int64Value(value[index])
+			elements[index] = sqlengine.Int64Value(value[index])
 		}
-	case dbsql.ValueUint32:
+	case sqlengine.ValueUint32:
 		value, ok := raw.(Uint32Array)
 		if !ok {
-			return dbsql.Value{}, fmt.Errorf("value %T does not match ARRAY_UINT32", raw)
+			return sqlengine.Value{}, fmt.Errorf("value %T does not match ARRAY_UINT32", raw)
 		}
-		elements = make([]dbsql.Value, len(value))
+		elements = make([]sqlengine.Value, len(value))
 		for index := range value {
-			elements[index] = dbsql.Uint32Value(value[index])
+			elements[index] = sqlengine.Uint32Value(value[index])
 		}
-	case dbsql.ValueUint64:
+	case sqlengine.ValueUint64:
 		value, ok := raw.(Uint64Array)
 		if !ok {
-			return dbsql.Value{}, fmt.Errorf("value %T does not match ARRAY_UINT64", raw)
+			return sqlengine.Value{}, fmt.Errorf("value %T does not match ARRAY_UINT64", raw)
 		}
-		elements = make([]dbsql.Value, len(value))
+		elements = make([]sqlengine.Value, len(value))
 		for index := range value {
-			elements[index] = dbsql.Uint64Value(value[index])
+			elements[index] = sqlengine.Uint64Value(value[index])
 		}
-	case dbsql.ValueFloat32:
+	case sqlengine.ValueFloat32:
 		value, ok := raw.(Float32Array)
 		if !ok {
-			return dbsql.Value{}, fmt.Errorf("value %T does not match ARRAY_FLOAT", raw)
+			return sqlengine.Value{}, fmt.Errorf("value %T does not match ARRAY_FLOAT", raw)
 		}
-		elements = make([]dbsql.Value, len(value))
+		elements = make([]sqlengine.Value, len(value))
 		for index := range value {
-			element, err := dbsql.Float32Value(value[index])
+			element, err := sqlengine.Float32Value(value[index])
 			if err != nil {
-				return dbsql.Value{}, err
+				return sqlengine.Value{}, err
 			}
 			elements[index] = element
 		}
-	case dbsql.ValueFloat64:
+	case sqlengine.ValueFloat64:
 		value, ok := raw.(Float64Array)
 		if !ok {
-			return dbsql.Value{}, fmt.Errorf("value %T does not match ARRAY_DOUBLE", raw)
+			return sqlengine.Value{}, fmt.Errorf("value %T does not match ARRAY_DOUBLE", raw)
 		}
-		elements = make([]dbsql.Value, len(value))
+		elements = make([]sqlengine.Value, len(value))
 		for index := range value {
-			element, err := dbsql.Float64Value(value[index])
+			element, err := sqlengine.Float64Value(value[index])
 			if err != nil {
-				return dbsql.Value{}, err
+				return sqlengine.Value{}, err
 			}
 			elements[index] = element
 		}
 	default:
-		return dbsql.Value{}, fmt.Errorf("unsupported array element kind %d", field.Kind)
+		return sqlengine.Value{}, fmt.Errorf("unsupported array element kind %d", field.Kind)
 	}
-	return dbsql.ArrayValue(field.Kind, elements...)
+	return sqlengine.ArrayValue(field.Kind, elements...)
 }
 
 // CreateIndexOptions controls index-build concurrency. Zero lets the library
@@ -4804,10 +4807,10 @@ func (c *Collection) writeDocuments(ctx context.Context, operator Operator, docu
 			batchError.add(wrapped)
 			continue
 		}
-		if len(payload) > db.MaxDocumentPayloadSize {
+		if len(payload) > segment.MaxDocumentPayloadSize {
 			wrapped := &Error{
 				Code: ErrorCodeResourceExhausted, Op: op, Path: c.path,
-				Message: fmt.Sprintf("document payload is %d bytes, maximum %d", len(payload), db.MaxDocumentPayloadSize),
+				Message: fmt.Sprintf("document payload is %d bytes, maximum %d", len(payload), segment.MaxDocumentPayloadSize),
 			}
 			results[index].Err = wrapped
 			batchError.add(wrapped)
@@ -5089,7 +5092,7 @@ func (c *Collection) fetchOneLocked(ctx context.Context, primaryKey string) (Doc
 	return document, err == nil, err
 }
 
-func decodeStoredDocument(stored db.StoredDocument) (Document, error) {
+func decodeStoredDocument(stored segment.StoredDocument) (Document, error) {
 	fields, err := unmarshalDocumentPayload(stored.Payload)
 	if err != nil {
 		return Document{}, fmt.Errorf("decode document %d: %w", stored.DocID, err)

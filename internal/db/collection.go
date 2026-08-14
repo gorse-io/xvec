@@ -25,18 +25,18 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/gorse-io/xvec/internal/db/index/common"
+	segmentstore "github.com/gorse-io/xvec/internal/db/index/segment"
+	walstore "github.com/gorse-io/xvec/internal/db/index/storage/wal"
 )
 
 const (
 	collectionLockName         = ".collection.lock"
 	DefaultSegmentMaxDocuments = uint64(65_536)
-	fileLockRetryDelay         = 10 * time.Millisecond
 )
 
 var (
@@ -52,7 +52,7 @@ type CollectionOptions struct {
 	ReadOnly            bool
 	EnableMmap          bool
 	SegmentMaxDocuments uint64
-	WAL                 WALOptions
+	WAL                 walstore.WALOptions
 }
 
 // CollectionStats describes current live keys and retained segment resources.
@@ -74,10 +74,10 @@ type CollectionStore struct {
 	closed       bool
 	poisoned     error
 	lock         *flock.Flock
-	versions     *VersionManager
-	manager      *SegmentManager
+	versions     *common.VersionManager
+	manager      *segmentstore.SegmentManager
 	engine       *WriteEngine
-	wal          *WAL
+	wal          *walstore.WAL
 	idMapWorking string
 }
 
@@ -85,8 +85,8 @@ type CollectionStore struct {
 // Immutable snapshots correspond to PersistedSegments; the final mutable
 // snapshot corresponds to the current WAL-backed writing segment.
 type SegmentSnapshot struct {
-	Metadata  SegmentMetadata
-	Documents []StoredDocument
+	Metadata  common.SegmentMetadata
+	Documents []segmentstore.StoredDocument
 	Mutable   bool
 }
 
@@ -115,16 +115,16 @@ func CreateCollection(ctx context.Context, dir string, schema json.RawMessage, o
 		return nil, fmt.Errorf("db: create collection directory: %w", err)
 	}
 	lock := flock.New(filepath.Join(dir, collectionLockName))
-	locked, err := lock.TryLockContext(ctx, fileLockRetryDelay)
+	locked, err := lock.TryLockContext(ctx, common.FileLockRetryDelay)
 	if err != nil {
 		return nil, fmt.Errorf("db: lock collection creation: %w", err)
 	}
 	if !locked {
 		return nil, errors.New("db: collection creation lock unavailable")
 	}
-	var primary *PrimaryKeyMap
+	var primary *common.PrimaryKeyMap
 	var idMapWorking string
-	fail := func(failure error, wal *WAL, created ...string) (*CollectionStore, error) {
+	fail := func(failure error, wal *walstore.WAL, created ...string) (*CollectionStore, error) {
 		var cleanupErrors []error
 		if wal != nil {
 			cleanupErrors = append(cleanupErrors, wal.Close())
@@ -142,21 +142,21 @@ func CreateCollection(ctx context.Context, dir string, schema json.RawMessage, o
 		cleanupErrors = append(cleanupErrors, lock.Close())
 		return nil, errors.Join(failure, errors.Join(cleanupErrors...))
 	}
-	if _, err := OpenVersionManager(ctx, dir); err == nil {
-		return fail(ErrManifestExists, nil)
-	} else if !errors.Is(err, ErrManifestNotFound) {
+	if _, err := common.OpenVersionManager(ctx, dir); err == nil {
+		return fail(common.ErrManifestExists, nil)
+	} else if !errors.Is(err, common.ErrManifestNotFound) {
 		return fail(err, nil)
 	}
 
 	idMapWorking = newIDMapWorkingPath(dir)
-	primary, err = CreatePrimaryKeyMap(ctx, idMapWorking)
+	primary, err = common.CreatePrimaryKeyMap(ctx, idMapWorking)
 	if err != nil {
 		return fail(err, nil)
 	}
-	idMapRelative := idMapCheckpointName(1)
+	idMapRelative := common.IDMapCheckpointName(1)
 	idMapPath := collectionPath(dir, idMapRelative)
-	deletesPath := collectionPath(dir, deleteSnapshotName(1))
-	deletes := NewDeleteStore()
+	deletesPath := collectionPath(dir, common.DeleteSnapshotName(1))
+	deletes := common.NewDeleteStore()
 	if err := primary.Checkpoint(ctx, idMapPath); err != nil {
 		return fail(err, nil)
 	}
@@ -165,28 +165,28 @@ func CreateCollection(ctx context.Context, dir string, schema json.RawMessage, o
 	}
 	walRelative := walFileName(0, 1)
 	walPath := collectionPath(dir, walRelative)
-	if err := ensureDirectorySynced(filepath.Dir(walPath)); err != nil {
+	if err := common.EnsureDirectorySynced(filepath.Dir(walPath)); err != nil {
 		return fail(fmt.Errorf("db: create WAL directory: %w", err), nil, idMapPath, deletesPath)
 	}
-	wal, err := CreateWAL(ctx, walPath, options.WAL)
+	wal, err := walstore.CreateWAL(ctx, walPath, options.WAL)
 	if err != nil {
 		return fail(err, nil, idMapPath, deletesPath)
 	}
-	writing, err := NewWriteSegment(0, 0, capacity)
+	writing, err := segmentstore.NewWriteSegment(0, 0, capacity)
 	if err != nil {
 		return fail(err, wal, walPath, idMapPath, deletesPath)
 	}
-	manager := NewSegmentManager(primary, deletes)
+	manager := segmentstore.NewSegmentManager(primary, deletes)
 	if err := manager.SetWriting(writing); err != nil {
 		return fail(err, wal, walPath, idMapPath, deletesPath)
 	}
-	manifest := Manifest{
-		FormatVersion: DiskFormatVersion, Schema: slices.Clone(schema),
+	manifest := common.Manifest{
+		FormatVersion: common.DiskFormatVersion, Schema: slices.Clone(schema),
 		EnableMmap: options.EnableMmap, SegmentMaxDocuments: capacity,
-		WritingSegment: &SegmentMetadata{ID: 0, Files: []string{walRelative}},
+		WritingSegment: &common.SegmentMetadata{ID: 0, Files: []string{walRelative}},
 		IDMap:          idMapRelative, DeleteSnapshotGeneration: 1, NextSegmentID: 1,
 	}
-	versions, err := CreateVersionManager(ctx, dir, manifest)
+	versions, err := common.CreateVersionManager(ctx, dir, manifest)
 	if err != nil {
 		if versions == nil {
 			return fail(err, wal, walPath, walPath+".lock", idMapPath, deletesPath)
@@ -220,7 +220,7 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 	info, err := os.Stat(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, ErrManifestNotFound
+			return nil, common.ErrManifestNotFound
 		}
 		return nil, fmt.Errorf("db: stat collection directory: %w", err)
 	}
@@ -230,9 +230,9 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 	lock := flock.New(filepath.Join(dir, collectionLockName))
 	var locked bool
 	if options.ReadOnly {
-		locked, err = lock.TryRLockContext(ctx, fileLockRetryDelay)
+		locked, err = lock.TryRLockContext(ctx, common.FileLockRetryDelay)
 	} else {
-		locked, err = lock.TryLockContext(ctx, fileLockRetryDelay)
+		locked, err = lock.TryLockContext(ctx, common.FileLockRetryDelay)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("db: lock collection open: %w", err)
@@ -240,8 +240,8 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 	if !locked {
 		return nil, errors.New("db: collection open lock unavailable")
 	}
-	var primary *PrimaryKeyMap
-	var wal *WAL
+	var primary *common.PrimaryKeyMap
+	var wal *walstore.WAL
 	var idMapWorking string
 	fail := func(failure error) (*CollectionStore, error) {
 		var cleanupErrors []error
@@ -257,7 +257,7 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 		cleanupErrors = append(cleanupErrors, lock.Close())
 		return nil, errors.Join(failure, errors.Join(cleanupErrors...))
 	}
-	versions, err := OpenVersionManager(ctx, dir)
+	versions, err := common.OpenVersionManager(ctx, dir)
 	if err != nil {
 		return fail(err)
 	}
@@ -267,21 +267,21 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 	}
 	idMapCheckpoint := collectionPath(dir, manifest.IDMap)
 	if options.ReadOnly {
-		primary, err = OpenPrimaryKeyMapReadOnly(ctx, idMapCheckpoint)
+		primary, err = common.OpenPrimaryKeyMapReadOnly(ctx, idMapCheckpoint)
 	} else {
 		idMapWorking = newIDMapWorkingPath(dir)
-		primary, err = OpenPrimaryKeyMap(ctx, idMapCheckpoint, idMapWorking)
+		primary, err = common.OpenPrimaryKeyMap(ctx, idMapCheckpoint, idMapWorking)
 	}
 	if err != nil {
 		return fail(fmt.Errorf("%w: open IDMap checkpoint: %v", ErrCollectionCorrupt, err))
 	}
-	deletes, err := LoadDeleteStore(ctx, collectionPath(dir, deleteSnapshotName(manifest.DeleteSnapshotGeneration)))
+	deletes, err := common.LoadDeleteStore(ctx, collectionPath(dir, common.DeleteSnapshotName(manifest.DeleteSnapshotGeneration)))
 	if err != nil {
 		return fail(fmt.Errorf("%w: load delete snapshot: %v", ErrCollectionCorrupt, err))
 	}
-	manager := NewSegmentManager(primary, deletes)
+	manager := segmentstore.NewSegmentManager(primary, deletes)
 	for _, metadata := range manifest.PersistedSegments {
-		segment, err := OpenImmutableSegment(ctx, dir, metadata)
+		segment, err := segmentstore.OpenImmutableSegment(ctx, dir, metadata)
 		if err != nil {
 			return fail(fmt.Errorf("%w: open segment %d: %v", ErrCollectionCorrupt, metadata.ID, err))
 		}
@@ -290,7 +290,7 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 		}
 	}
 	nextDocID := manifest.WritingSegmentStartDocID
-	writing, err := NewWriteSegment(manifest.WritingSegment.ID, nextDocID, manifest.SegmentMaxDocuments)
+	writing, err := segmentstore.NewWriteSegment(manifest.WritingSegment.ID, nextDocID, manifest.SegmentMaxDocuments)
 	if err != nil {
 		return fail(fmt.Errorf("%w: create writing segment: %v", ErrCollectionCorrupt, err))
 	}
@@ -299,9 +299,9 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 	}
 	walPath := collectionPath(dir, manifest.WritingSegment.Files[0])
 	if options.ReadOnly {
-		wal, err = OpenWALReadOnly(ctx, walPath)
+		wal, err = walstore.OpenWALReadOnly(ctx, walPath)
 	} else {
-		wal, err = OpenWAL(ctx, walPath, options.WAL)
+		wal, err = walstore.OpenWAL(ctx, walPath, options.WAL)
 	}
 	if err != nil {
 		return fail(fmt.Errorf("%w: open writing WAL: %v", ErrCollectionCorrupt, err))
@@ -378,7 +378,7 @@ func (c *CollectionStore) Delete(ctx context.Context, primaryKeys []string) ([]W
 }
 
 // Fetch resolves primary keys against the stable in-memory version.
-func (c *CollectionStore) Fetch(ctx context.Context, primaryKeys []string) ([]FetchResult, error) {
+func (c *CollectionStore) Fetch(ctx context.Context, primaryKeys []string) ([]segmentstore.FetchResult, error) {
 	if c == nil {
 		return nil, errors.New("db: nil collection")
 	}
@@ -393,7 +393,7 @@ func (c *CollectionStore) Fetch(ctx context.Context, primaryKeys []string) ([]Fe
 // LiveDocuments returns a stable collection-level view while excluding a
 // concurrent flush. Public query orchestration additionally serializes writes
 // so multi-step upserts cannot be observed halfway through application.
-func (c *CollectionStore) LiveDocuments(ctx context.Context) ([]StoredDocument, error) {
+func (c *CollectionStore) LiveDocuments(ctx context.Context) ([]segmentstore.StoredDocument, error) {
 	if c == nil {
 		return nil, errors.New("db: nil collection")
 	}
@@ -550,7 +550,7 @@ func (c *CollectionStore) PruneObsoleteArtifacts(ctx context.Context) error {
 		}
 	}
 	keepRelative(manifest.IDMap)
-	keepRelative(deleteSnapshotName(manifest.DeleteSnapshotGeneration))
+	keepRelative(common.DeleteSnapshotName(manifest.DeleteSnapshotGeneration))
 	if c.idMapWorking != "" {
 		keep[filepath.Clean(c.idMapWorking)] = struct{}{}
 	}
@@ -624,7 +624,7 @@ func (c *CollectionStore) PruneObsoleteArtifacts(ctx context.Context) error {
 	// Persist file removals before attempting the cosmetic removal of empty
 	// segment directories. Directory fsync is a no-op where unsupported.
 	for directory := range touchedDirectories {
-		if err := syncDirectory(directory); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := common.SyncDirectory(directory); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("db: sync pruned artifact directory %q: %w", directory, err)
 		}
 	}
@@ -652,7 +652,7 @@ func (c *CollectionStore) PruneObsoleteArtifacts(ctx context.Context) error {
 		}
 	}
 	if removedDirectory {
-		if err := syncDirectory(segmentRoot); err != nil {
+		if err := common.SyncDirectory(segmentRoot); err != nil {
 			return fmt.Errorf("db: sync segment directory: %w", err)
 		}
 	}
@@ -701,32 +701,11 @@ func ownedIDMapDirectories(directory string) ([]string, error) {
 	}
 	result := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if isOwnedIDMapName(entry.Name()) {
+		if common.IsOwnedIDMapName(entry.Name()) {
 			result = append(result, filepath.Join(directory, entry.Name()))
 		}
 	}
 	return result, nil
-}
-
-func isOwnedIDMapName(name string) bool {
-	if strings.HasPrefix(name, "idmap-") && strings.HasSuffix(name, ".pebble") {
-		digits := strings.TrimSuffix(strings.TrimPrefix(name, "idmap-"), ".pebble")
-		if len(digits) == 20 {
-			generation, err := strconv.ParseUint(digits, 10, 64)
-			return err == nil && generation > 0
-		}
-		return false
-	}
-	if !strings.HasPrefix(name, ".working-") || !strings.HasSuffix(name, ".pebble") {
-		return false
-	}
-	parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(name, ".working-"), ".pebble"), "-")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return false
-	}
-	_, firstErr := strconv.ParseUint(parts[0], 10, 64)
-	_, secondErr := strconv.ParseUint(parts[1], 10, 64)
-	return firstErr == nil && secondErr == nil
 }
 
 func ownedDirectoryEntries(directory string) ([]os.DirEntry, error) {
@@ -781,7 +760,7 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 	if lastDocID == math.MaxUint64 {
 		return errors.New("db: document ID space is exhausted")
 	}
-	nextWriting, err := NewWriteSegment(current.NextSegmentID, lastDocID+1, current.SegmentMaxDocuments)
+	nextWriting, err := segmentstore.NewWriteSegment(current.NextSegmentID, lastDocID+1, current.SegmentMaxDocuments)
 	if err != nil {
 		return err
 	}
@@ -801,7 +780,7 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 		return fmt.Errorf("db: snapshot writing segment: %w", err)
 	}
 	created := []string{collectionPath(c.dir, segmentRelative)}
-	var nextPrimary *PrimaryKeyMap
+	var nextPrimary *common.PrimaryKeyMap
 	var nextWorking string
 	cleanup := func() {
 		if nextPrimary != nil {
@@ -816,7 +795,7 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 		}
 	}
 
-	idMapRelative, err := c.availableArtifact(idMapCheckpointName, artifactGeneration)
+	idMapRelative, err := c.availableArtifact(common.IDMapCheckpointName, artifactGeneration)
 	if err != nil {
 		cleanup()
 		return err
@@ -828,7 +807,7 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 	}
 	created = append(created, idMapPath)
 	nextWorking = newIDMapWorkingPath(c.dir)
-	nextPrimary, err = OpenPrimaryKeyMap(ctx, idMapPath, nextWorking)
+	nextPrimary, err = common.OpenPrimaryKeyMap(ctx, idMapPath, nextWorking)
 	if err != nil {
 		cleanup()
 		return fmt.Errorf("db: open next IDMap working copy: %w", err)
@@ -839,7 +818,7 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 		cleanup()
 		return err
 	}
-	deletesPath := collectionPath(c.dir, deleteSnapshotName(snapshotGeneration))
+	deletesPath := collectionPath(c.dir, common.DeleteSnapshotName(snapshotGeneration))
 	if err := c.manager.Deletes().WriteSnapshot(ctx, deletesPath); err != nil {
 		cleanup()
 		return fmt.Errorf("db: write delete snapshot: %w", err)
@@ -854,11 +833,11 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 		return err
 	}
 	walPath := collectionPath(c.dir, walRelative)
-	if err := ensureDirectorySynced(filepath.Dir(walPath)); err != nil {
+	if err := common.EnsureDirectorySynced(filepath.Dir(walPath)); err != nil {
 		cleanup()
 		return fmt.Errorf("db: create next WAL directory: %w", err)
 	}
-	nextWAL, err := CreateWAL(ctx, walPath, c.wal.options)
+	nextWAL, err := walstore.CreateWAL(ctx, walPath, c.wal.Options())
 	if err != nil {
 		cleanup()
 		return fmt.Errorf("db: create next WAL: %w", err)
@@ -873,7 +852,7 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 
 	nextManifest := current.Clone()
 	nextManifest.PersistedSegments = append(nextManifest.PersistedSegments, immutable.Metadata())
-	nextManifest.WritingSegment = &SegmentMetadata{ID: current.NextSegmentID, Files: []string{walRelative}}
+	nextManifest.WritingSegment = &common.SegmentMetadata{ID: current.NextSegmentID, Files: []string{walRelative}}
 	nextManifest.WritingSegmentStartDocID = lastDocID + 1
 	nextManifest.IDMap = idMapRelative
 	nextManifest.DeleteSnapshotGeneration = snapshotGeneration
@@ -916,9 +895,9 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 }
 
 // Manifest returns an independent copy of the current published metadata.
-func (c *CollectionStore) Manifest() Manifest {
+func (c *CollectionStore) Manifest() common.Manifest {
 	if c == nil {
-		return Manifest{}
+		return common.Manifest{}
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -961,7 +940,7 @@ func (c *CollectionStore) PublishSchema(ctx context.Context, schema json.RawMess
 // PublishSegmentIndexSnapshots atomically installs immutable per-segment index
 // metadata. Vector artifacts must already exist as regular files and FTS/INVERT
 // artifacts as Pebble directories below the collection directory.
-func (c *CollectionStore) PublishSegmentIndexSnapshots(ctx context.Context, snapshots []SegmentIndexSnapshotMetadata) (committed bool, err error) {
+func (c *CollectionStore) PublishSegmentIndexSnapshots(ctx context.Context, snapshots []common.SegmentIndexSnapshotMetadata) (committed bool, err error) {
 	if c == nil {
 		return false, errors.New("db: nil collection")
 	}
@@ -971,7 +950,7 @@ func (c *CollectionStore) PublishSegmentIndexSnapshots(ctx context.Context, snap
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	snapshots = cloneSegmentIndexSnapshots(snapshots)
+	snapshots = common.CloneSegmentIndexSnapshots(snapshots)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireWritableLocked(); err != nil {
@@ -1015,8 +994,8 @@ func (c *CollectionStore) PublishSegmentIndexSnapshots(ctx context.Context, snap
 // the current live snapshot in ascending document-ID order. Superseded and
 // deleted versions are reclaimed by the rewrite, while the next document ID
 // remains monotonic. committed reports whether CURRENT reached the new
-// generation even if a post-commit sync or old-WAL close reports an error.
-func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawMessage, documents []StoredDocument) (committed bool, err error) {
+// generation even if a post-commit sync or old WAL close reports an error.
+func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawMessage, documents []segmentstore.StoredDocument) (committed bool, err error) {
 	if c == nil {
 		return false, errors.New("db: nil collection")
 	}
@@ -1029,7 +1008,7 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 	if err := validateSchemaJSON(schema); err != nil {
 		return false, err
 	}
-	documents = cloneDocuments(documents)
+	documents = segmentstore.CloneDocuments(documents)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1050,10 +1029,10 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 		if document.DocID != current.DocID || document.PrimaryKey != current.PrimaryKey {
 			return false, fmt.Errorf("db: rewrite document %d does not match current snapshot", index)
 		}
-		if err := validatePrimaryKey(document.PrimaryKey); err != nil {
+		if err := common.ValidatePrimaryKey(document.PrimaryKey); err != nil {
 			return false, err
 		}
-		if len(document.Payload) > MaxDocumentPayloadSize {
+		if len(document.Payload) > segmentstore.MaxDocumentPayloadSize {
 			return false, fmt.Errorf("db: rewrite document %d payload is too large", document.DocID)
 		}
 		if _, exists := keys[document.PrimaryKey]; exists {
@@ -1087,7 +1066,7 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 
 	created := make([]string, 0, len(runs)+3)
 	primaryWorking := newIDMapWorkingPath(c.dir)
-	primary, err := CreatePrimaryKeyMap(ctx, primaryWorking)
+	primary, err := common.CreatePrimaryKeyMap(ctx, primaryWorking)
 	if err != nil {
 		return false, fmt.Errorf("db: create rewritten IDMap working copy: %w", err)
 	}
@@ -1102,12 +1081,12 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 		}
 	}
 	artifactGeneration := current.Generation + 1
-	deletes := NewDeleteStore()
-	nextManager := NewSegmentManager(primary, deletes)
-	segmentMetadata := make([]SegmentMetadata, 0, len(runs))
+	deletes := common.NewDeleteStore()
+	nextManager := segmentstore.NewSegmentManager(primary, deletes)
+	segmentMetadata := make([]common.SegmentMetadata, 0, len(runs))
 	for runIndex, run := range runs {
 		segmentID := current.NextSegmentID + uint64(runIndex)
-		writing, createErr := NewWriteSegment(segmentID, run[0].DocID, uint64(len(run)))
+		writing, createErr := segmentstore.NewWriteSegment(segmentID, run[0].DocID, uint64(len(run)))
 		if createErr != nil {
 			cleanup()
 			return false, createErr
@@ -1150,7 +1129,7 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 		segmentMetadata = append(segmentMetadata, immutable.Metadata())
 	}
 
-	nextWriting, err := NewWriteSegment(writingID, nextDocID, current.SegmentMaxDocuments)
+	nextWriting, err := segmentstore.NewWriteSegment(writingID, nextDocID, current.SegmentMaxDocuments)
 	if err != nil {
 		cleanup()
 		return false, err
@@ -1164,7 +1143,7 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 		return false, err
 	}
 
-	idMapRelative, err := c.availableArtifact(idMapCheckpointName, artifactGeneration)
+	idMapRelative, err := c.availableArtifact(common.IDMapCheckpointName, artifactGeneration)
 	if err != nil {
 		cleanup()
 		return false, err
@@ -1180,7 +1159,7 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 		cleanup()
 		return false, err
 	}
-	deletesPath := collectionPath(c.dir, deleteSnapshotName(snapshotGeneration))
+	deletesPath := collectionPath(c.dir, common.DeleteSnapshotName(snapshotGeneration))
 	created = append(created, deletesPath)
 	if err := deletes.WriteSnapshot(ctx, deletesPath); err != nil {
 		cleanup()
@@ -1195,12 +1174,12 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 		return false, err
 	}
 	walPath := collectionPath(c.dir, walRelative)
-	if err := ensureDirectorySynced(filepath.Dir(walPath)); err != nil {
+	if err := common.EnsureDirectorySynced(filepath.Dir(walPath)); err != nil {
 		cleanup()
 		return false, fmt.Errorf("db: create rewritten WAL directory: %w", err)
 	}
 	created = append(created, walPath, walPath+".lock")
-	nextWAL, err := CreateWAL(ctx, walPath, c.wal.options)
+	nextWAL, err := walstore.CreateWAL(ctx, walPath, c.wal.Options())
 	if err != nil {
 		cleanup()
 		return false, fmt.Errorf("db: create rewritten WAL: %w", err)
@@ -1216,7 +1195,7 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 	nextManifest.Schema = slices.Clone(schema)
 	nextManifest.PersistedSegments = segmentMetadata
 	nextManifest.SegmentIndexSnapshots = nil
-	nextManifest.WritingSegment = &SegmentMetadata{ID: writingID, Files: []string{walRelative}}
+	nextManifest.WritingSegment = &common.SegmentMetadata{ID: writingID, Files: []string{walRelative}}
 	nextManifest.WritingSegmentStartDocID = nextDocID
 	nextManifest.IDMap = idMapRelative
 	nextManifest.DeleteSnapshotGeneration = snapshotGeneration
@@ -1254,7 +1233,7 @@ func (c *CollectionStore) rewriteNextDocumentID() (uint64, error) {
 	if err == nil {
 		return next, nil
 	}
-	if !errors.Is(err, ErrSegmentFull) {
+	if !errors.Is(err, segmentstore.ErrSegmentFull) {
 		return 0, err
 	}
 	_, maximum := writing.ReservedRange()
@@ -1270,7 +1249,7 @@ func (c *CollectionStore) nextDeleteSnapshotGeneration(generation uint64) (uint6
 			return 0, errors.New("db: snapshot generation space is exhausted")
 		}
 		generation++
-		if _, err := os.Lstat(collectionPath(c.dir, deleteSnapshotName(generation))); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Lstat(collectionPath(c.dir, common.DeleteSnapshotName(generation))); errors.Is(err, os.ErrNotExist) {
 			return generation, nil
 		} else if err != nil {
 			return 0, fmt.Errorf("db: inspect delete snapshot generation: %w", err)
@@ -1278,11 +1257,11 @@ func (c *CollectionStore) nextDeleteSnapshotGeneration(generation uint64) (uint6
 	}
 }
 
-func rewriteDocumentRuns(documents []StoredDocument, maximum uint64) [][]StoredDocument {
+func rewriteDocumentRuns(documents []segmentstore.StoredDocument, maximum uint64) [][]segmentstore.StoredDocument {
 	if len(documents) == 0 {
 		return nil
 	}
-	runs := make([][]StoredDocument, 0, 1)
+	runs := make([][]segmentstore.StoredDocument, 0, 1)
 	for start := 0; start < len(documents); {
 		end := start + 1
 		for end < len(documents) && uint64(end-start) < maximum && documents[end].DocID == documents[end-1].DocID+1 {
@@ -1354,20 +1333,20 @@ func (c *CollectionStore) requireWritableLocked() error {
 	return nil
 }
 
-func replayWriteWAL(ctx context.Context, wal *WAL, manager *SegmentManager) error {
-	return wal.Replay(ctx, func(record WALRecord) error {
+func replayWriteWAL(ctx context.Context, wal *walstore.WAL, manager *segmentstore.SegmentManager) error {
+	return wal.Replay(ctx, func(record walstore.WALRecord) error {
 		operation, err := decodeWriteOperation(record.Payload)
 		if err != nil {
-			return fmt.Errorf("%w: decode operation: %v", ErrWALCorrupt, err)
+			return fmt.Errorf("%w: decode operation: %v", walstore.ErrWALCorrupt, err)
 		}
 		if err := applyRecoveredOperation(ctx, manager, operation); err != nil {
-			return fmt.Errorf("%w: apply operation: %v", ErrWALCorrupt, err)
+			return fmt.Errorf("%w: apply operation: %v", walstore.ErrWALCorrupt, err)
 		}
 		return nil
 	})
 }
 
-func applyRecoveredOperation(ctx context.Context, manager *SegmentManager, operation writeOperation) error {
+func applyRecoveredOperation(ctx context.Context, manager *segmentstore.SegmentManager, operation writeOperation) error {
 	writing := manager.Writing()
 	if operation.Type != writeOperationDelete {
 		if writing == nil {
@@ -1428,7 +1407,7 @@ func applyRecoveredOperation(ctx context.Context, manager *SegmentManager, opera
 	}
 }
 
-func validateCollectionState(manager *SegmentManager) error {
+func validateCollectionState(manager *segmentstore.SegmentManager) error {
 	live := make(map[uint64]string)
 	known := make(map[uint64]struct{})
 	segments := manager.ImmutableSegments()
@@ -1448,18 +1427,22 @@ func validateCollectionState(manager *SegmentManager) error {
 			}
 		}
 	}
-	manager.deletes.mu.RLock()
-	for docID := range manager.deletes.deleted {
+	var deleteErr error
+	manager.Deletes().Range(func(docID uint64) bool {
 		if _, exists := known[docID]; !exists {
-			manager.deletes.mu.RUnlock()
-			return fmt.Errorf("%w: deletion references missing document %d", ErrCollectionCorrupt, docID)
+			deleteErr = fmt.Errorf("%w: deletion references missing document %d", ErrCollectionCorrupt, docID)
+			return false
 		}
+		return true
+	})
+	if deleteErr != nil {
+		return deleteErr
 	}
-	manager.deletes.mu.RUnlock()
-	if manager.primaryKey.Count() != len(live) {
-		return fmt.Errorf("%w: IDMap count %d differs from live document count %d", ErrCollectionCorrupt, manager.primaryKey.Count(), len(live))
+	primaryKeys := manager.PrimaryKeys()
+	if primaryKeys.Count() != len(live) {
+		return fmt.Errorf("%w: IDMap count %d differs from live document count %d", ErrCollectionCorrupt, primaryKeys.Count(), len(live))
 	}
-	if err := manager.primaryKey.forEach(context.Background(), func(key string, docID uint64) error {
+	if err := primaryKeys.ForEach(context.Background(), func(key string, docID uint64) error {
 		if liveKey, exists := live[docID]; !exists || liveKey != key {
 			return fmt.Errorf("%w: primary key %q has invalid document ID %d", ErrCollectionCorrupt, key, docID)
 		}
@@ -1473,7 +1456,7 @@ func validateCollectionState(manager *SegmentManager) error {
 	return nil
 }
 
-func validateLifecycleManifest(manifest Manifest) error {
+func validateLifecycleManifest(manifest common.Manifest) error {
 	if manifest.SegmentMaxDocuments == 0 || manifest.IDMap == "" || manifest.DeleteSnapshotGeneration == 0 {
 		return fmt.Errorf("%w: invalid lifecycle generations or capacity", ErrCollectionCorrupt)
 	}
@@ -1490,11 +1473,11 @@ func validateLifecycleManifest(manifest Manifest) error {
 
 func validateSchemaJSON(schema json.RawMessage) error {
 	if !json.Valid(schema) {
-		return fmt.Errorf("%w: schema is not valid JSON", ErrManifestCorrupt)
+		return fmt.Errorf("%w: schema is not valid JSON", common.ErrManifestCorrupt)
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(schema, &object); err != nil || object == nil {
-		return fmt.Errorf("%w: schema must be a JSON object", ErrManifestCorrupt)
+		return fmt.Errorf("%w: schema must be a JSON object", common.ErrManifestCorrupt)
 	}
 	return nil
 }
@@ -1526,14 +1509,6 @@ func walFileName(segmentID, generation uint64) string {
 	return fmt.Sprintf("wal/%020d-%020d.wal", segmentID, generation)
 }
 
-func idMapCheckpointName(generation uint64) string {
-	return fmt.Sprintf("idmap/idmap-%020d.pebble", generation)
-}
-
-func deleteSnapshotName(generation uint64) string {
-	return fmt.Sprintf("snapshots/delete-%020d.snap", generation)
-}
-
 func newIDMapWorkingPath(dir string) string {
 	return filepath.Join(dir, "idmap", fmt.Sprintf(".working-%d-%d.pebble", os.Getpid(), time.Now().UnixNano()))
 }
@@ -1555,7 +1530,7 @@ func removeIDMapDirectory(name string) error {
 	if err := os.RemoveAll(name); err != nil {
 		return fmt.Errorf("db: remove IDMap directory %q: %w", name, err)
 	}
-	if err := syncDirectory(filepath.Dir(name)); err != nil {
+	if err := common.SyncDirectory(filepath.Dir(name)); err != nil {
 		return fmt.Errorf("db: sync removed IDMap directory %q: %w", name, err)
 	}
 	return nil

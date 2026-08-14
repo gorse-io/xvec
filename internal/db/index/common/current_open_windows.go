@@ -1,3 +1,5 @@
+//go:build windows
+
 // Copyright 2026-present the xvec project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,16 +14,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package xvec
+package common
 
 import (
-	"testing"
+	"errors"
+	"os"
+	"time"
 
-	"github.com/gorse-io/xvec/internal/db/index/common"
-	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/windows"
 )
 
-func TestReleaseAndDiskFormatVersions(t *testing.T) {
-	require.True(t, Version == "0.5.0")
-	require.Equal(t, common.DiskFormatVersion, NativeDiskFormatVersion)
+func openCurrentFile(name string) (*os.File, error) {
+	var err error
+	for range 100 {
+		var file *os.File
+		file, err = os.Open(name)
+		if err == nil {
+			return file, nil
+		}
+		if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+			return nil, err
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return nil, err
 }

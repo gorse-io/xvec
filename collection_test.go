@@ -34,7 +34,8 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/gorse-io/xvec/internal/core"
 	"github.com/gorse-io/xvec/internal/db"
-	dbsql "github.com/gorse-io/xvec/internal/db/sql"
+	"github.com/gorse-io/xvec/internal/db/index/common"
+	"github.com/gorse-io/xvec/internal/db/sqlengine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -435,7 +436,7 @@ func TestCollectionPersistsAndReopensSnapshotIndexes(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, collection.Close()) }()
 	_, err = collection.Query(ctx, VectorQuery{Filter: "rating >= 2", TopK: 10})
-	require.ErrorIs(t, err, dbsql.ErrCorruptInvertedIndex)
+	require.ErrorIs(t, err, sqlengine.ErrCorruptInvertedIndex)
 }
 
 func TestCollectionRebuildsMissingOptionalSegmentIndexSnapshots(t *testing.T) {
@@ -460,9 +461,9 @@ func TestCollectionRebuildsMissingOptionalSegmentIndexSnapshots(t *testing.T) {
 	require.NotEmpty(t, collection.store.Manifest().SegmentIndexSnapshots)
 	require.NoError(t, collection.Close())
 
-	versions, err := db.OpenVersionManager(ctx, path)
+	versions, err := common.OpenVersionManager(ctx, path)
 	require.NoError(t, err)
-	manifest, err := versions.Update(ctx, func(manifest *db.Manifest) error {
+	manifest, err := versions.Update(ctx, func(manifest *common.Manifest) error {
 		manifest.SegmentIndexSnapshots = nil
 		return nil
 	})
@@ -4112,7 +4113,7 @@ func TestCollectionScalarInvertedCandidatesMatchForwardSemantics(t *testing.T) {
 	plan, err := buildFilterPlan("title LIKE '%alpha' AND rating>=2", schema)
 	require.NoError(t, err)
 
-	configured := make(map[string]dbsql.Field)
+	configured := make(map[string]sqlengine.Field)
 	for _, field := range plan.Fields() {
 		configured[field.Name] = field
 	}
@@ -4187,32 +4188,32 @@ func TestFilterSchemaRejectsFTSAndValueAdapterCoversEveryScalarArray(t *testing.
 	}
 
 	tests := []struct {
-		kind  dbsql.ValueKind
+		kind  sqlengine.ValueKind
 		array bool
 		raw   any
 		len   int
 	}{
-		{dbsql.ValueBinary, false, Binary("x"), 0},
-		{dbsql.ValueString, false, "x", 0},
-		{dbsql.ValueBool, false, true, 0},
-		{dbsql.ValueInt32, false, int32(-1), 0},
-		{dbsql.ValueInt64, false, int64(-1), 0},
-		{dbsql.ValueUint32, false, uint32(1), 0},
-		{dbsql.ValueUint64, false, uint64(1), 0},
-		{dbsql.ValueFloat32, false, float32(1.5), 0},
-		{dbsql.ValueFloat64, false, float64(1.5), 0},
-		{dbsql.ValueBinary, true, BinaryArray{Binary("x")}, 1},
-		{dbsql.ValueString, true, StringArray{"x"}, 1},
-		{dbsql.ValueBool, true, BoolArray{true}, 1},
-		{dbsql.ValueInt32, true, Int32Array{-1}, 1},
-		{dbsql.ValueInt64, true, Int64Array{-1}, 1},
-		{dbsql.ValueUint32, true, Uint32Array{1}, 1},
-		{dbsql.ValueUint64, true, Uint64Array{1}, 1},
-		{dbsql.ValueFloat32, true, Float32Array{1.5}, 1},
-		{dbsql.ValueFloat64, true, Float64Array{1.5}, 1},
+		{sqlengine.ValueBinary, false, Binary("x"), 0},
+		{sqlengine.ValueString, false, "x", 0},
+		{sqlengine.ValueBool, false, true, 0},
+		{sqlengine.ValueInt32, false, int32(-1), 0},
+		{sqlengine.ValueInt64, false, int64(-1), 0},
+		{sqlengine.ValueUint32, false, uint32(1), 0},
+		{sqlengine.ValueUint64, false, uint64(1), 0},
+		{sqlengine.ValueFloat32, false, float32(1.5), 0},
+		{sqlengine.ValueFloat64, false, float64(1.5), 0},
+		{sqlengine.ValueBinary, true, BinaryArray{Binary("x")}, 1},
+		{sqlengine.ValueString, true, StringArray{"x"}, 1},
+		{sqlengine.ValueBool, true, BoolArray{true}, 1},
+		{sqlengine.ValueInt32, true, Int32Array{-1}, 1},
+		{sqlengine.ValueInt64, true, Int64Array{-1}, 1},
+		{sqlengine.ValueUint32, true, Uint32Array{1}, 1},
+		{sqlengine.ValueUint64, true, Uint64Array{1}, 1},
+		{sqlengine.ValueFloat32, true, Float32Array{1.5}, 1},
+		{sqlengine.ValueFloat64, true, Float64Array{1.5}, 1},
 	}
 	for _, testCase := range tests {
-		field := dbsql.Field{Name: "value", Kind: testCase.kind, Array: testCase.array, Filterable: true}
+		field := sqlengine.Field{Name: "value", Kind: testCase.kind, Array: testCase.array, Filterable: true}
 		value, err := toFilterValue(field, testCase.raw, true)
 		require.NoError(t, err)
 		require.Equal(t, testCase.kind, value.Kind())
@@ -4227,11 +4228,11 @@ func TestFilterSchemaRejectsFTSAndValueAdapterCoversEveryScalarArray(t *testing.
 			}
 		}
 	}
-	null, err := toFilterValue(dbsql.Field{Name: "missing", Kind: dbsql.ValueString, Filterable: true}, nil, false)
+	null, err := toFilterValue(sqlengine.Field{Name: "missing", Kind: sqlengine.ValueString, Filterable: true}, nil, false)
 	require.NoError(t, err)
 	require.True(t, null.IsNull())
 	{
-		_, err := toFilterValue(dbsql.Field{Name: "bad", Kind: dbsql.ValueInt32, Filterable: true}, int64(1), true)
+		_, err := toFilterValue(sqlengine.Field{Name: "bad", Kind: sqlengine.ValueInt32, Filterable: true}, int64(1), true)
 		require.Error(t, err,
 			"mismatched adapter value succeeded")
 	}
@@ -5164,8 +5165,8 @@ func TestCollectionMultiQueryValidationAndRerankerBoundaries(t *testing.T) {
 
 func TestEvaluateSegmentFiltersSkipsPredicatesWhenEveryDocumentIsLive(t *testing.T) {
 	segments := []collectionSegmentDocuments{
-		{metadata: db.SegmentMetadata{ID: 1}, documents: []Document{{DocID: 1}, {DocID: 2}}},
-		{metadata: db.SegmentMetadata{ID: 2}, documents: []Document{{DocID: 3}}},
+		{metadata: common.SegmentMetadata{ID: 1}, documents: []Document{{DocID: 1}, {DocID: 2}}},
+		{metadata: common.SegmentMetadata{ID: 2}, documents: []Document{{DocID: 3}}},
 	}
 	live := []Document{{DocID: 1}, {DocID: 2}, {DocID: 3}}
 
@@ -5186,7 +5187,7 @@ func TestEvaluateSegmentFiltersSkipsPredicatesWhenEveryDocumentIsLive(t *testing
 
 func TestEvaluateSegmentFiltersKeepsPredicateForStaleDocument(t *testing.T) {
 	segments := []collectionSegmentDocuments{
-		{metadata: db.SegmentMetadata{ID: 1}, documents: []Document{{DocID: 1}, {DocID: 2}}},
+		{metadata: common.SegmentMetadata{ID: 1}, documents: []Document{{DocID: 1}, {DocID: 2}}},
 	}
 	live := []Document{{DocID: 1}, {DocID: 3}}
 

@@ -24,6 +24,9 @@ import (
 	"sync"
 
 	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/db/index/common"
+	"github.com/gorse-io/xvec/internal/db/index/segment"
+	"github.com/gorse-io/xvec/internal/db/index/storage/wal"
 )
 
 const (
@@ -80,14 +83,18 @@ func (e *BatchWriteError) Error() string {
 
 func (e *BatchWriteError) Unwrap() []error { return slices.Clone(e.causes) }
 
+type writeAheadLog interface {
+	Append(context.Context, []byte) (uint64, error)
+}
+
 // WriteEngine serializes WAL-backed mutations over a SegmentManager. When an
 // automatic synchronization fails after a complete append, the engine still
 // applies that record, returns the synchronization error, and relies on the
 // poisoned WAL to reject later mutations until reopen.
 type WriteEngine struct {
 	mu       sync.Mutex
-	manager  *SegmentManager
-	wal      *WAL
+	manager  *segment.SegmentManager
+	wal      writeAheadLog
 	poisoned error
 }
 
@@ -104,7 +111,7 @@ func (e *WriteEngine) Err() error {
 }
 
 // NewWriteEngine validates the dependencies required for WAL-backed mutations.
-func NewWriteEngine(manager *SegmentManager, wal *WAL) (*WriteEngine, error) {
+func NewWriteEngine(manager *segment.SegmentManager, wal *wal.WAL) (*WriteEngine, error) {
 	if manager == nil {
 		return nil, errors.New("db: nil segment manager")
 	}
@@ -283,11 +290,11 @@ func (e *WriteEngine) insertOneLocked(ctx context.Context, input WriteInput) (ui
 	if e.poisoned != nil {
 		return 0, e.poisoned
 	}
-	if err := validatePrimaryKey(input.PrimaryKey); err != nil {
+	if err := common.ValidatePrimaryKey(input.PrimaryKey); err != nil {
 		return 0, err
 	}
-	if len(input.Payload) > MaxDocumentPayloadSize {
-		return 0, fmt.Errorf("db: document payload is %d bytes, maximum %d", len(input.Payload), MaxDocumentPayloadSize)
+	if len(input.Payload) > segment.MaxDocumentPayloadSize {
+		return 0, fmt.Errorf("db: document payload is %d bytes, maximum %d", len(input.Payload), segment.MaxDocumentPayloadSize)
 	}
 	if _, exists, err := e.manager.PrimaryKeys().Get(input.PrimaryKey); err != nil {
 		return 0, err
@@ -332,11 +339,11 @@ func (e *WriteEngine) upsertOneLocked(ctx context.Context, input WriteInput) (ui
 	if e.poisoned != nil {
 		return 0, e.poisoned
 	}
-	if err := validatePrimaryKey(input.PrimaryKey); err != nil {
+	if err := common.ValidatePrimaryKey(input.PrimaryKey); err != nil {
 		return 0, err
 	}
-	if len(input.Payload) > MaxDocumentPayloadSize {
-		return 0, fmt.Errorf("db: document payload is %d bytes, maximum %d", len(input.Payload), MaxDocumentPayloadSize)
+	if len(input.Payload) > segment.MaxDocumentPayloadSize {
+		return 0, fmt.Errorf("db: document payload is %d bytes, maximum %d", len(input.Payload), segment.MaxDocumentPayloadSize)
 	}
 	previous, existed, err := e.manager.PrimaryKeys().Get(input.PrimaryKey)
 	if err != nil {
@@ -385,11 +392,11 @@ func (e *WriteEngine) updateOneLocked(ctx context.Context, input WriteInput) (ui
 	if e.poisoned != nil {
 		return 0, e.poisoned
 	}
-	if err := validatePrimaryKey(input.PrimaryKey); err != nil {
+	if err := common.ValidatePrimaryKey(input.PrimaryKey); err != nil {
 		return 0, err
 	}
-	if len(input.Payload) > MaxDocumentPayloadSize {
-		return 0, fmt.Errorf("db: document payload is %d bytes, maximum %d", len(input.Payload), MaxDocumentPayloadSize)
+	if len(input.Payload) > segment.MaxDocumentPayloadSize {
+		return 0, fmt.Errorf("db: document payload is %d bytes, maximum %d", len(input.Payload), segment.MaxDocumentPayloadSize)
 	}
 	previous, existed, err := e.manager.PrimaryKeys().Get(input.PrimaryKey)
 	if err != nil {
@@ -438,7 +445,7 @@ func (e *WriteEngine) deleteOneLocked(ctx context.Context, primaryKey string) (u
 	if e.poisoned != nil {
 		return 0, e.poisoned
 	}
-	if err := validatePrimaryKey(primaryKey); err != nil {
+	if err := common.ValidatePrimaryKey(primaryKey); err != nil {
 		return 0, err
 	}
 	docID, existed, err := e.manager.PrimaryKeys().Get(primaryKey)
@@ -494,10 +501,10 @@ func encodeWriteOperation(operation writeOperation) ([]byte, error) {
 	if operation.Type < writeOperationInsert || operation.Type > writeOperationDelete {
 		return nil, errors.New("db: invalid write operation type")
 	}
-	if err := validatePrimaryKey(operation.PrimaryKey); err != nil {
+	if err := common.ValidatePrimaryKey(operation.PrimaryKey); err != nil {
 		return nil, err
 	}
-	if len(operation.Payload) > MaxDocumentPayloadSize {
+	if len(operation.Payload) > segment.MaxDocumentPayloadSize {
 		return nil, errors.New("db: write operation payload is too large")
 	}
 	encoded := make([]byte, writeOperationHeaderSize+4+len(operation.PrimaryKey)+len(operation.Payload))
@@ -524,7 +531,7 @@ func decodeWriteOperation(encoded []byte) (writeOperation, error) {
 		return writeOperation{}, errors.New("db: invalid write operation magic")
 	}
 	if version := binary.LittleEndian.Uint16(encoded[4:6]); version != writeOperationVersion {
-		return writeOperation{}, fmt.Errorf("%w: write operation version %d", ErrUnsupportedFormatVersion, version)
+		return writeOperation{}, fmt.Errorf("%w: write operation version %d", common.ErrUnsupportedFormatVersion, version)
 	}
 	operationType := writeOperationType(encoded[6])
 	if operationType < writeOperationInsert || operationType > writeOperationDelete || encoded[7] != 0 {
@@ -532,7 +539,7 @@ func decodeWriteOperation(encoded []byte) (writeOperation, error) {
 	}
 	keyLength := uint64(binary.LittleEndian.Uint32(encoded[16:20]))
 	payloadLength := uint64(binary.LittleEndian.Uint32(encoded[20:24]))
-	if keyLength == 0 || keyLength > maxPrimaryKeyBytes || payloadLength > MaxDocumentPayloadSize || keyLength+payloadLength != uint64(len(encoded)-writeOperationHeaderSize-4) {
+	if keyLength == 0 || keyLength > common.MaxPrimaryKeyBytes || payloadLength > segment.MaxDocumentPayloadSize || keyLength+payloadLength != uint64(len(encoded)-writeOperationHeaderSize-4) {
 		return writeOperation{}, errors.New("db: invalid write operation lengths")
 	}
 	expectedCRC := binary.LittleEndian.Uint32(encoded[writeOperationHeaderSize : writeOperationHeaderSize+4])
@@ -543,7 +550,7 @@ func decodeWriteOperation(encoded []byte) (writeOperation, error) {
 	}
 	keyStart := writeOperationHeaderSize + 4
 	key := string(encoded[keyStart : keyStart+int(keyLength)])
-	if err := validatePrimaryKey(key); err != nil {
+	if err := common.ValidatePrimaryKey(key); err != nil {
 		return writeOperation{}, err
 	}
 	return writeOperation{

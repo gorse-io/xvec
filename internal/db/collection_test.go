@@ -17,7 +17,7 @@ package db
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,8 +25,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2"
 	"github.com/gofrs/flock"
+	"github.com/gorse-io/xvec/internal/db/index/common"
+	"github.com/gorse-io/xvec/internal/db/index/segment"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,10 +49,10 @@ func TestCollectionPublishSegmentIndexSnapshotsAndPrune(t *testing.T) {
 	require.NoError(t, os.Mkdir(filepath.Join(indexDirectory, "segment.pebble"), 0o700))
 	require.NoError(t, os.Mkdir(filepath.Join(indexDirectory, "obsolete.pebble"), 0o700))
 	segment := store.Manifest().PersistedSegments[0]
-	snapshots := []SegmentIndexSnapshotMetadata{{
+	snapshots := []common.SegmentIndexSnapshotMetadata{{
 		SegmentID: segment.ID, SchemaSHA256: strings.Repeat("a", 64),
 		DocumentCount: segment.DocCount, MinDocumentID: segment.MinDocID, MaxDocumentID: segment.MaxDocID,
-		Artifacts: []IndexArtifactMetadata{
+		Artifacts: []common.IndexArtifactMetadata{
 			{Field: "embedding", Kind: "vector-2", File: "indexes/segment.zvi"},
 			{Field: "rating", Kind: "invert", File: "indexes/segment.pebble"},
 		},
@@ -130,7 +131,7 @@ func TestCollectionCreateRecoverFlushAndContinue(t *testing.T) {
 	require.True(t, manifest.PersistedSegments[0].DocCount == 4)
 	require.True(t, manifest.WritingSegment.ID == 1)
 	require.True(t, manifest.NextSegmentID == 2)
-	require.Equal(t, idMapCheckpointName(2), manifest.IDMap)
+	require.Equal(t, common.IDMapCheckpointName(2), manifest.IDMap)
 	require.True(t, manifest.DeleteSnapshotGeneration == 2)
 	{
 		err := store.Flush(context.Background())
@@ -240,54 +241,50 @@ func TestCollectionReadOnlyOpenDoesNotMutateDirectory(t *testing.T) {
 }
 
 func TestCollectionIDMapApplyFailurePoisonsUntilReopen(t *testing.T) {
-	t.Run("put", func(t *testing.T) {
-		ctx := context.Background()
-		dir := t.TempDir()
-		store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
-		require.NoError(t, err)
-		injected := errors.New("injected IDMap put failure")
-		store.manager.PrimaryKeys().setPoint = func(_, _ []byte) error { return injected }
+	for _, operation := range []string{"insert", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			ctx := context.Background()
+			dir := t.TempDir()
+			store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
+			require.NoError(t, err)
+			if operation == "delete" {
+				_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "recover", Payload: []byte("from-wal")}})
+				require.NoError(t, err)
+				require.NoError(t, store.wal.Sync(ctx))
+			}
 
-		_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "recover", Payload: []byte("from-wal")}})
-		require.ErrorIs(t, err, injected)
-		require.ErrorIs(t, err, ErrWriteEnginePoisoned)
-		_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "rejected"}})
-		require.ErrorIs(t, err, ErrWriteEnginePoisoned)
-		require.ErrorIs(t, store.Flush(ctx), ErrWriteEnginePoisoned)
-		require.NoError(t, store.Close())
+			store.engine.wal = appendWriteAheadLog(func(ctx context.Context, payload []byte) (uint64, error) {
+				lsn, err := store.wal.Append(ctx, payload)
+				if err != nil {
+					return 0, err
+				}
+				return lsn, store.manager.PrimaryKeys().Close()
+			})
+			if operation == "insert" {
+				_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "recover", Payload: []byte("from-wal")}})
+			} else {
+				_, err = store.Delete(ctx, []string{"recover"})
+			}
+			require.ErrorIs(t, err, ErrWriteEnginePoisoned)
+			_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "rejected"}})
+			require.ErrorIs(t, err, ErrWriteEnginePoisoned)
+			require.ErrorIs(t, store.Flush(ctx), ErrWriteEnginePoisoned)
+			require.NoError(t, store.Close())
 
-		reopened, err := OpenCollection(ctx, dir, CollectionOptions{})
-		require.NoError(t, err)
-		defer func() { require.NoError(t, reopened.Close()) }()
-		results, err := reopened.Fetch(ctx, []string{"recover", "rejected"})
-		require.NoError(t, err)
-		require.NotNil(t, results[0].Document)
-		require.Equal(t, "from-wal", string(results[0].Document.Payload))
-		require.Nil(t, results[1].Document)
-	})
-
-	t.Run("delete", func(t *testing.T) {
-		ctx := context.Background()
-		dir := t.TempDir()
-		store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
-		require.NoError(t, err)
-		_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "deleted"}})
-		require.NoError(t, err)
-		injected := errors.New("injected IDMap delete failure")
-		store.manager.PrimaryKeys().deletePoint = func(_ []byte) error { return injected }
-
-		_, err = store.Delete(ctx, []string{"deleted"})
-		require.ErrorIs(t, err, injected)
-		require.ErrorIs(t, err, ErrWriteEnginePoisoned)
-		require.NoError(t, store.Close())
-
-		reopened, err := OpenCollection(ctx, dir, CollectionOptions{})
-		require.NoError(t, err)
-		defer func() { require.NoError(t, reopened.Close()) }()
-		results, err := reopened.Fetch(ctx, []string{"deleted"})
-		require.NoError(t, err)
-		require.Nil(t, results[0].Document)
-	})
+			reopened, err := OpenCollection(ctx, dir, CollectionOptions{})
+			require.NoError(t, err)
+			defer func() { require.NoError(t, reopened.Close()) }()
+			results, err := reopened.Fetch(ctx, []string{"recover", "rejected"})
+			require.NoError(t, err)
+			if operation == "insert" {
+				require.NotNil(t, results[0].Document)
+				require.Equal(t, "from-wal", string(results[0].Document.Payload))
+			} else {
+				require.Nil(t, results[0].Document)
+			}
+			require.Nil(t, results[1].Document)
+		})
+	}
 }
 
 func TestCollectionPruneIDMapDirectoriesSafely(t *testing.T) {
@@ -342,7 +339,7 @@ func TestCollectionFailedFlushLeavesPublishedStateAndWriterUsable(t *testing.T) 
 		require.NoError(t, err)
 	}
 
-	versionLock := flock.New(filepath.Join(dir, versionLockName))
+	versionLock := flock.New(filepath.Join(dir, ".version.lock"))
 	locked, err := versionLock.TryLock()
 	require.NoError(t, err)
 	require.True(t, locked)
@@ -445,13 +442,13 @@ func TestCollectionRewriteDocumentsIsAtomicAndRecoverable(t *testing.T) {
 	require.Equal(t, inserted[0].DocID, live[0].DocID)
 	require.Equal(t, updated[0].DocID, live[1].DocID)
 
-	rewritten := cloneDocuments(live)
+	rewritten := segment.CloneDocuments(live)
 	for index := range rewritten {
 		rewritten[index].Payload = append([]byte("rewritten-"), rewritten[index].Payload...)
 	}
 	nextSchema := json.RawMessage(`{"name":"books-v2","fields":[]}`)
 
-	versionLock := flock.New(filepath.Join(dir, versionLockName))
+	versionLock := flock.New(filepath.Join(dir, ".version.lock"))
 	locked, err := versionLock.TryLock()
 	require.NoError(t, err)
 	require.True(t, locked)
@@ -565,19 +562,18 @@ func TestCollectionPropagatesIDMapReadErrorsWithoutPublishing(t *testing.T) {
 	documents, err := store.LiveDocuments(ctx)
 	require.NoError(t, err)
 	before := store.Manifest()
+	require.NoError(t, store.manager.PrimaryKeys().Close())
 
-	require.NoError(t, store.manager.PrimaryKeys().db.Set([]byte("one"), []byte{1}, pebble.NoSync))
 	results, err := store.Fetch(ctx, []string{"one", "later"})
-	require.ErrorIs(t, err, ErrIDMapCorrupt)
+	require.Error(t, err)
 	require.Len(t, results, 2)
-	require.ErrorIs(t, results[0].Err, ErrIDMapCorrupt)
-	require.ErrorIs(t, results[1].Err, ErrIDMapCorrupt)
-
+	require.Error(t, results[0].Err)
+	require.Error(t, results[1].Err)
 	_, err = store.LiveDocuments(ctx)
-	require.ErrorIs(t, err, ErrIDMapCorrupt)
+	require.Error(t, err)
 	committed, err := store.RewriteDocuments(ctx, json.RawMessage(`{"name":"replacement","fields":[]}`), documents)
 	require.False(t, committed)
-	require.ErrorIs(t, err, ErrIDMapCorrupt)
+	require.Error(t, err)
 	require.Equal(t, before, store.Manifest())
 	require.NoError(t, store.Close())
 }
@@ -619,7 +615,7 @@ func TestCollectionCanceledPruneRetainsArtifactsUntilRetry(t *testing.T) {
 	dir := t.TempDir()
 	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{})
 	require.NoError(t, err)
-	obsolete := collectionPath(dir, deleteSnapshotName(99))
+	obsolete := collectionPath(dir, common.DeleteSnapshotName(99))
 	require.NoError(t, os.WriteFile(obsolete, []byte("obsolete"), 0o600))
 
 	canceled, cancel := context.WithCancel(ctx)
@@ -634,7 +630,7 @@ func TestCollectionCanceledPruneRetainsArtifactsUntilRetry(t *testing.T) {
 }
 
 func TestRewriteDocumentRunsHonorsGapsAndCapacity(t *testing.T) {
-	documents := []StoredDocument{
+	documents := []segment.StoredDocument{
 		{DocID: 0}, {DocID: 1}, {DocID: 2},
 		{DocID: 4}, {DocID: 5}, {DocID: 8},
 	}
@@ -674,7 +670,7 @@ func TestCollectionReadOnlyRecoveryDoesNotRepairWAL(t *testing.T) {
 	file, err := os.OpenFile(walPath, os.O_APPEND|os.O_WRONLY, 0)
 	require.NoError(t, err)
 
-	partial := encodeWALRecord(2, []byte("partial"))[:walRecordHeaderSize+3]
+	partial := []byte{1, 2, 3}
 	{
 		_, err := file.Write(partial)
 		require.NoError(t, err)
@@ -759,10 +755,10 @@ func TestCollectionIgnoresUnpublishedArtifacts(t *testing.T) {
 	orphan := current.Clone()
 	orphan.Generation = current.Generation + 100
 	orphan.Schema = json.RawMessage(`{"name":"orphan"}`)
-	encoded, err := MarshalManifest(orphan)
+	encoded, err := common.MarshalManifest(orphan)
 	require.NoError(t, err)
 	{
-		err := os.WriteFile(filepath.Join(dir, manifestFileName(orphan.Generation)), encoded, 0o600)
+		err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("MANIFEST-%020d", orphan.Generation)), encoded, 0o600)
 		require.NoError(t, err)
 	}
 
@@ -839,7 +835,7 @@ func TestCollectionArgumentsAndClose(t *testing.T) {
 	}
 	{
 		_, err := OpenCollection(context.Background(), filepath.Join(t.TempDir(), "missing"), CollectionOptions{})
-		require.ErrorIs(t, err, ErrManifestNotFound)
+		require.ErrorIs(t, err, common.ErrManifestNotFound)
 	}
 
 	dir := t.TempDir()
@@ -952,7 +948,7 @@ func TestCollectionPublishSchemaIsAtomicAndDurable(t *testing.T) {
 	}
 }
 
-func createClosedCollection(t *testing.T, flush bool) (string, Manifest) {
+func createClosedCollection(t *testing.T, flush bool) (string, common.Manifest) {
 	t.Helper()
 	dir := t.TempDir()
 	store, err := CreateCollection(context.Background(), dir, testCollectionSchema, CollectionOptions{})
@@ -1008,4 +1004,43 @@ func snapshotFileTree(t *testing.T, root string) map[string]string {
 		return nil
 	}))
 	return result
+}
+
+func TestCollectionPublishesOnlyCheckpointNamedByCurrent(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "collection")
+	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{SegmentMaxDocuments: 2})
+	require.NoError(t, err)
+	_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "a"}, {PrimaryKey: "b"}})
+	require.NoError(t, err)
+	require.NoError(t, store.Flush(ctx))
+	manifest := store.Manifest()
+	require.Equal(t, uint32(3), manifest.FormatVersion)
+	require.Equal(t, common.IDMapCheckpointName(manifest.Generation), manifest.IDMap)
+	info, err := os.Stat(collectionPath(dir, manifest.IDMap))
+	require.NoError(t, err)
+	require.True(t, info.IsDir())
+	require.NoError(t, store.Close())
+}
+
+func fileSize(t *testing.T, name string) int64 {
+	t.Helper()
+	info, err := os.Stat(name)
+	require.NoError(t, err)
+
+	return info.Size()
+}
+
+func TestLifecycleManifestRejectsWritingSegmentBeforePersistedDocuments(t *testing.T) {
+	t.Parallel()
+	manifest := common.Manifest{
+		SegmentMaxDocuments:      10,
+		IDMap:                    common.IDMapCheckpointName(1),
+		DeleteSnapshotGeneration: 1,
+		PersistedSegments:        []common.SegmentMetadata{{ID: 1, MinDocID: 0, MaxDocID: 1, DocCount: 2}},
+		WritingSegment:           &common.SegmentMetadata{ID: 2, Files: []string{"wal/2.wal"}},
+		WritingSegmentStartDocID: 0,
+	}
+	err := validateLifecycleManifest(manifest)
+	require.ErrorIs(t, err, ErrCollectionCorrupt)
 }

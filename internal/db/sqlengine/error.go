@@ -12,16 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package xvec
+package sqlengine
 
-import (
-	"testing"
+import "fmt"
 
-	"github.com/gorse-io/xvec/internal/db/index/common"
-	"github.com/stretchr/testify/require"
-)
+// ParseError reports the exact token or byte at which lexing/parsing failed.
+type ParseError struct {
+	Position Position
+	Message  string
+}
 
-func TestReleaseAndDiskFormatVersions(t *testing.T) {
-	require.True(t, Version == "0.5.0")
-	require.Equal(t, common.DiskFormatVersion, NativeDiskFormatVersion)
+func (e *ParseError) Error() string {
+	if e == nil {
+		return "sql filter: parse error"
+	}
+	return fmt.Sprintf("sql filter at %d:%d (byte %d): %s", e.Position.Line, e.Position.Column, e.Position.Offset, e.Message)
+}
+
+func parseError(position Position, format string, arguments ...any) error {
+	return &ParseError{Position: position, Message: fmt.Sprintf(format, arguments...)}
 }

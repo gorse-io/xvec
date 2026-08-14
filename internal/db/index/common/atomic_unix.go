@@ -1,3 +1,5 @@
+//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
+
 // Copyright 2026-present the xvec project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,16 +14,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package xvec
+package common
 
 import (
-	"testing"
-
-	"github.com/gorse-io/xvec/internal/db/index/common"
-	"github.com/stretchr/testify/require"
+	"errors"
+	"os"
 )
 
-func TestReleaseAndDiskFormatVersions(t *testing.T) {
-	require.True(t, Version == "0.5.0")
-	require.Equal(t, common.DiskFormatVersion, NativeDiskFormatVersion)
+func atomicReplaceFile(source, destination string) error {
+	return os.Rename(source, destination)
+}
+
+func installFileNoReplace(source, destination string) error {
+	return os.Link(source, destination)
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return errors.Join(directory.Sync(), directory.Close())
 }
