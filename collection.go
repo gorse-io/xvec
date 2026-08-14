@@ -40,6 +40,8 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/utility"
 	"github.com/gorse-io/xvec/internal/core"
 	"github.com/gorse-io/xvec/internal/db"
+	"github.com/gorse-io/xvec/internal/db/index/column/fts_column"
+	"github.com/gorse-io/xvec/internal/db/index/column/fts_column/tokenizer"
 	"github.com/gorse-io/xvec/internal/db/index/common"
 	"github.com/gorse-io/xvec/internal/db/index/segment"
 	"github.com/gorse-io/xvec/internal/db/index/storage/wal"
@@ -376,7 +378,7 @@ func openCollectionFTSRuntime(ctx context.Context, path string, field FieldSchem
 	if field.DataType != DataTypeString || field.IndexType() != IndexTypeFTS {
 		return nil, invalidArgument("open FTS index", "field %q is not an FTS-indexed STRING field", field.Name)
 	}
-	dictionary, err := core.OpenFTSTermDictionary(ctx, path)
+	dictionary, err := ftscolumn.OpenFTSTermDictionary(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -391,11 +393,11 @@ func openCollectionFTSRuntime(ctx context.Context, path string, field FieldSchem
 	if err != nil {
 		return nil, err
 	}
-	stats, err := core.AggregateFTSCorpusStats(ctx, []core.FTSSegmentView{{Dictionary: dictionary}})
+	stats, err := ftscolumn.AggregateFTSCorpusStats(ctx, []ftscolumn.FTSSegmentView{{Dictionary: dictionary}})
 	if err != nil {
 		return nil, err
 	}
-	scorer, err := core.NewBM25Scorer(core.DefaultBM25Params(), stats)
+	scorer, err := ftscolumn.NewBM25Scorer(ftscolumn.DefaultBM25Params(), stats)
 	if err != nil {
 		return nil, err
 	}
@@ -3261,9 +3263,9 @@ func multiQueryTargetKind(query SubQuery) (multiQueryTarget, error) {
 }
 
 type collectionFTSRuntime struct {
-	analyzer    core.FTSAnalyzer
-	dictionary  *core.FTSTermDictionary
-	scorer      *core.BM25Scorer
+	analyzer    tokenizer.FTSAnalyzer
+	dictionary  *ftscolumn.FTSTermDictionary
+	scorer      *ftscolumn.BM25Scorer
 	deleted     *container.Bitmap
 	documentIDs []uint64
 }
@@ -3305,7 +3307,7 @@ func buildCollectionFTSRuntime(
 	if err != nil {
 		return nil, err
 	}
-	builder := core.NewFTSFieldBuilder()
+	builder := ftscolumn.NewFTSFieldBuilder()
 	documentIDs := make([]uint64, len(documents))
 	var deleted *container.Bitmap
 	if candidateFilter != nil {
@@ -3342,11 +3344,11 @@ func buildCollectionFTSRuntime(
 	}
 	// Shared scalar filtering is deliberately absent from corpus statistics:
 	// it affects eligibility, not BM25 IDF or length normalization.
-	stats, err := core.AggregateFTSCorpusStats(ctx, []core.FTSSegmentView{{Dictionary: dictionary}})
+	stats, err := ftscolumn.AggregateFTSCorpusStats(ctx, []ftscolumn.FTSSegmentView{{Dictionary: dictionary}})
 	if err != nil {
 		return nil, err
 	}
-	scorer, err := core.NewBM25Scorer(core.DefaultBM25Params(), stats)
+	scorer, err := ftscolumn.NewBM25Scorer(ftscolumn.DefaultBM25Params(), stats)
 	if err != nil {
 		return nil, err
 	}
@@ -3376,22 +3378,22 @@ func searchCollectionFTS(
 	if err != nil {
 		return nil, err
 	}
-	var node core.FTSQueryNode
+	var node ftscolumn.FTSQueryNode
 	if hasQuery {
-		node, err = core.ParseFTSQuery(ctx, clause.Query, runtime.analyzer, defaultOperator)
+		node, err = ftscolumn.ParseFTSQuery(ctx, clause.Query, runtime.analyzer, defaultOperator)
 	} else {
-		node, err = core.AnalyzeFTSMatchQuery(ctx, clause.Match, runtime.analyzer, defaultOperator)
+		node, err = ftscolumn.AnalyzeFTSMatchQuery(ctx, clause.Match, runtime.analyzer, defaultOperator)
 	}
 	if err != nil {
 		return nil, err
 	}
-	var results []core.FTSResult
+	var results []ftscolumn.FTSResult
 	if bruteForceByKeys {
 		results, err = searchCollectionFTSCandidates(ctx, runtime, node, candidateOrdinals, topK)
 	} else {
-		results, err = core.SearchFTS(ctx, runtime.dictionary, node, runtime.scorer, core.FTSSearchOptions{
+		results, err = ftscolumn.SearchFTS(ctx, runtime.dictionary, node, runtime.scorer, ftscolumn.FTSSearchOptions{
 			TopK:                     topK,
-			FTSQueryExecutionOptions: core.FTSQueryExecutionOptions{DeletedDocuments: runtime.deleted},
+			FTSQueryExecutionOptions: ftscolumn.FTSQueryExecutionOptions{DeletedDocuments: runtime.deleted},
 		})
 	}
 	if err != nil {
@@ -3410,15 +3412,15 @@ func searchCollectionFTS(
 func searchCollectionFTSCandidates(
 	ctx context.Context,
 	runtime *collectionFTSRuntime,
-	node core.FTSQueryNode,
+	node ftscolumn.FTSQueryNode,
 	candidateOrdinals []uint32,
 	topK int,
-) ([]core.FTSResult, error) {
-	iterator, err := core.NewFTSScoredQueryIterator(ctx, runtime.dictionary, node, runtime.scorer, core.FTSQueryExecutionOptions{})
+) ([]ftscolumn.FTSResult, error) {
+	iterator, err := ftscolumn.NewFTSScoredQueryIterator(ctx, runtime.dictionary, node, runtime.scorer, ftscolumn.FTSQueryExecutionOptions{})
 	if err != nil {
 		return nil, err
 	}
-	results := make([]core.FTSResult, 0, min(topK, len(candidateOrdinals)))
+	results := make([]ftscolumn.FTSResult, 0, min(topK, len(candidateOrdinals)))
 	for _, documentID := range candidateOrdinals {
 		if !iterator.Advance(ctx, documentID) {
 			break
@@ -3426,7 +3428,7 @@ func searchCollectionFTSCandidates(
 		if iterator.DocumentID() != documentID || iterator.Score() <= 0 {
 			continue
 		}
-		results = append(results, core.FTSResult{DocumentID: documentID, Score: iterator.Score()})
+		results = append(results, ftscolumn.FTSResult{DocumentID: documentID, Score: iterator.Score()})
 	}
 	if err := iterator.Err(); err != nil {
 		return nil, err
@@ -3443,7 +3445,7 @@ func searchCollectionFTSCandidates(
 	return results, nil
 }
 
-func collectionFTSDefaultOperator(params QueryParams) (core.FTSDefaultOperator, error) {
+func collectionFTSDefaultOperator(params QueryParams) (ftscolumn.FTSDefaultOperator, error) {
 	value := FTSQueryParams{}
 	if !isNilInterface(params) {
 		if params.IndexType() != IndexTypeFTS {
@@ -3464,7 +3466,7 @@ func collectionFTSDefaultOperator(params QueryParams) (core.FTSDefaultOperator, 
 			return 0, invalidArgument("multi query", "invalid FTS query parameter value")
 		}
 	}
-	operator, err := core.ParseFTSDefaultOperator(value.DefaultOperator)
+	operator, err := ftscolumn.ParseFTSDefaultOperator(value.DefaultOperator)
 	if err != nil {
 		return 0, invalidArgument("multi query", "invalid FTS default operator: %v", err)
 	}
@@ -3493,7 +3495,7 @@ func collectionFTSIndexParams(field FieldSchema) (FTSIndexParams, error) {
 	return params, nil
 }
 
-func newCollectionFTSAnalyzer(ctx context.Context, params FTSIndexParams) (core.FTSAnalyzer, error) {
+func newCollectionFTSAnalyzer(ctx context.Context, params FTSIndexParams) (tokenizer.FTSAnalyzer, error) {
 	if err := params.Validate(); err != nil {
 		return nil, err
 	}
@@ -3505,19 +3507,19 @@ func newCollectionFTSAnalyzer(ctx context.Context, params FTSIndexParams) (core.
 	if tokenizerName == "" {
 		tokenizerName = "standard"
 	}
-	var tokenizer core.Tokenizer
+	var textTokenizer tokenizer.Tokenizer
 	switch tokenizerName {
 	case "whitespace":
-		tokenizer = core.NewWhitespaceTokenizer()
+		textTokenizer = tokenizer.NewWhitespaceTokenizer()
 	case "standard":
-		options := core.DefaultStandardTokenizerOptions()
+		options := tokenizer.DefaultStandardTokenizerOptions()
 		if value, found := extra["max_token_length"]; found {
 			length, _ := jsonPositiveInteger(value)
 			options.MaxTokenLength = uint32(length)
 		}
-		tokenizer, err = core.NewStandardTokenizer(options)
+		textTokenizer, err = tokenizer.NewStandardTokenizer(options)
 	case "ngram":
-		options := core.DefaultNGramTokenizerOptions()
+		options := tokenizer.DefaultNGramTokenizerOptions()
 		minimum, _ := ngramSize(extra, "ngram_min", int64(options.Min))
 		maximum, _ := ngramSize(extra, "ngram_max", int64(options.Max))
 		options.Min, options.Max = uint32(minimum), uint32(maximum)
@@ -3525,21 +3527,21 @@ func newCollectionFTSAnalyzer(ctx context.Context, params FTSIndexParams) (core.
 			for _, item := range raw.([]any) {
 				switch item.(string) {
 				case "letter":
-					options.TokenChars |= core.NGramTokenCharLetter
+					options.TokenChars |= tokenizer.NGramTokenCharLetter
 				case "digit":
-					options.TokenChars |= core.NGramTokenCharDigit
+					options.TokenChars |= tokenizer.NGramTokenCharDigit
 				case "whitespace":
-					options.TokenChars |= core.NGramTokenCharWhitespace
+					options.TokenChars |= tokenizer.NGramTokenCharWhitespace
 				case "punctuation":
-					options.TokenChars |= core.NGramTokenCharPunctuation
+					options.TokenChars |= tokenizer.NGramTokenCharPunctuation
 				case "symbol":
-					options.TokenChars |= core.NGramTokenCharSymbol
+					options.TokenChars |= tokenizer.NGramTokenCharSymbol
 				}
 			}
 		}
-		tokenizer, err = core.NewNGramTokenizer(options)
+		textTokenizer, err = tokenizer.NewNGramTokenizer(options)
 	case "jieba":
-		options := core.DefaultJiebaTokenizerOptions()
+		options := tokenizer.DefaultJiebaTokenizerOptions()
 		if value, found := extra["jieba_dict_dir"]; found {
 			options.DictDir = value.(string)
 		}
@@ -3547,28 +3549,28 @@ func newCollectionFTSAnalyzer(ctx context.Context, params FTSIndexParams) (core.
 			options.UserDictPath = value.(string)
 		}
 		if value, found := extra["cut_mode"]; found {
-			options.CutMode = core.JiebaCutMode(value.(string))
+			options.CutMode = tokenizer.JiebaCutMode(value.(string))
 		}
-		tokenizer, err = core.NewJiebaTokenizer(ctx, options)
+		textTokenizer, err = tokenizer.NewJiebaTokenizer(ctx, options)
 	default:
 		return nil, invalidArgument("multi query", "unknown FTS tokenizer %q", tokenizerName)
 	}
 	if err != nil {
 		return nil, err
 	}
-	filters := make([]core.TokenFilter, 0, len(params.Filters))
+	filters := make([]tokenizer.TokenFilter, 0, len(params.Filters))
 	for _, name := range params.Filters {
 		switch name {
 		case "lowercase":
-			filters = append(filters, core.NewLowercaseTokenFilter())
+			filters = append(filters, tokenizer.NewLowercaseTokenFilter())
 		case "ascii_folding":
-			filters = append(filters, core.NewASCIIFoldingTokenFilter())
+			filters = append(filters, tokenizer.NewASCIIFoldingTokenFilter())
 		case "stemmer":
-			options := core.DefaultStemmerTokenFilterOptions()
+			options := tokenizer.DefaultStemmerTokenFilterOptions()
 			if value, found := extra["stemmer_lang"]; found {
 				options.Language = value.(string)
 			}
-			filter, filterErr := core.NewStemmerTokenFilter(options)
+			filter, filterErr := tokenizer.NewStemmerTokenFilter(options)
 			if filterErr != nil {
 				return nil, filterErr
 			}
@@ -3577,7 +3579,7 @@ func newCollectionFTSAnalyzer(ctx context.Context, params FTSIndexParams) (core.
 			return nil, invalidArgument("multi query", "unknown FTS token filter %q", name)
 		}
 	}
-	return core.NewFTSTokenizerPipeline(tokenizer, filters...)
+	return tokenizer.NewFTSTokenizerPipeline(textTokenizer, filters...)
 }
 
 func wrapMultiQueryBranchError(op, path string, index int, err error) error {
@@ -3600,11 +3602,11 @@ func wrapMultiQueryBranchError(op, path string, index int, err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return wrapCollectionError(op, path, err)
 	}
-	if errors.Is(err, core.ErrFTSQuerySyntax) ||
-		errors.Is(err, core.ErrUnsupportedFTSQuery) ||
-		errors.Is(err, core.ErrInvalidFTSQuery) ||
-		errors.Is(err, core.ErrFTSQueryTooComplex) ||
-		errors.Is(err, core.ErrTokenizerInputTooLarge) {
+	if errors.Is(err, ftscolumn.ErrFTSQuerySyntax) ||
+		errors.Is(err, ftscolumn.ErrUnsupportedFTSQuery) ||
+		errors.Is(err, ftscolumn.ErrInvalidFTSQuery) ||
+		errors.Is(err, ftscolumn.ErrFTSQueryTooComplex) ||
+		errors.Is(err, tokenizer.ErrTokenizerInputTooLarge) {
 		return &Error{
 			Code: ErrorCodeInvalidArgument, Op: op, Path: path,
 			Message: fmt.Sprintf("sub-query %d has an invalid FTS query", index), Err: err,
@@ -4050,7 +4052,7 @@ func (c *Collection) searchFTSSegments(
 	for _, document := range liveDocuments {
 		live[document.DocID] = struct{}{}
 	}
-	views := make([]core.FTSSegmentView, len(runtimes))
+	views := make([]ftscolumn.FTSSegmentView, len(runtimes))
 	for index, segment := range runtimes {
 		runtime := segment.indexes.fts[field.Name]
 		if runtime == nil {
@@ -4062,16 +4064,16 @@ func (c *Collection) searchFTSSegments(
 				deleted.Set(uint64(ordinal))
 			}
 		}
-		views[index] = core.FTSSegmentView{Dictionary: runtime.dictionary, DeletedDocuments: deleted}
+		views[index] = ftscolumn.FTSSegmentView{Dictionary: runtime.dictionary, DeletedDocuments: deleted}
 	}
 	if len(views) == 0 {
 		return []core.Result{}, nil
 	}
-	stats, err := core.AggregateFTSCorpusStats(ctx, views)
+	stats, err := ftscolumn.AggregateFTSCorpusStats(ctx, views)
 	if err != nil {
 		return nil, err
 	}
-	scorer, err := core.NewBM25Scorer(core.DefaultBM25Params(), stats)
+	scorer, err := ftscolumn.NewBM25Scorer(ftscolumn.DefaultBM25Params(), stats)
 	if err != nil {
 		return nil, err
 	}
@@ -5223,7 +5225,7 @@ func ConfigureRuntime(config RuntimeConfig) error {
 	}
 	globalRuntimeRegistry.resources = newRuntimeResources(config)
 	if config.JiebaDictionaryDir != "" {
-		core.SetDefaultJiebaDictDir(config.JiebaDictionaryDir)
+		tokenizer.SetDefaultJiebaDictDir(config.JiebaDictionaryDir)
 	}
 	return nil
 }
@@ -5241,10 +5243,10 @@ func CurrentRuntimeConfig() RuntimeConfig {
 
 // SetDefaultJiebaDictDir sets the process-wide lowest-priority Jieba resource
 // directory. Per-field configuration and ZVEC_JIEBA_DICT_DIR take precedence.
-func SetDefaultJiebaDictDir(path string) { core.SetDefaultJiebaDictDir(path) }
+func SetDefaultJiebaDictDir(path string) { tokenizer.SetDefaultJiebaDictDir(path) }
 
 // DefaultJiebaDictDir returns the current process-wide Jieba fallback.
-func DefaultJiebaDictDir() string { return core.DefaultJiebaDictDir() }
+func DefaultJiebaDictDir() string { return tokenizer.DefaultJiebaDictDir() }
 
 // RuntimeStats is a concurrency-safe point-in-time view of process resource
 // usage.

@@ -4,7 +4,7 @@ linters:
   exclusions:
     rules:
       # Snowball stemmers are generated from upstream language definitions.
-      - path: internal/core/snowball/
+      - path: internal/db/index/column/fts_column/tokenizer/snowball/
         linters:
           - staticcheck
         text: SA4004

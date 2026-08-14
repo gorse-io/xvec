@@ -1,0 +1,172 @@
+//! Generated from hindi.sbl by Snowball 3.1.1 - https://snowballstem.org/
+
+package hindi
+
+import (
+	snowballRuntime "github.com/gorse-io/xvec/internal/db/index/column/fts_column/tokenizer/snowball"
+)
+
+var A_0 = []*snowballRuntime.Among{
+	{Str: "\u0940", A: -1, B: -1, F: nil},
+	{Str: "\u0942\u0902\u0917\u0940", A: 0, B: -1, F: nil},
+	{Str: "\u0947\u0902\u0917\u0940", A: 0, B: -1, F: nil},
+	{Str: "\u090A\u0902\u0917\u0940", A: 0, B: -1, F: nil},
+	{Str: "\u0906\u090A\u0902\u0917\u0940", A: 3, B: -1, F: nil},
+	{Str: "\u093E\u090A\u0902\u0917\u0940", A: 3, B: -1, F: nil},
+	{Str: "\u090F\u0902\u0917\u0940", A: 0, B: -1, F: nil},
+	{Str: "\u0906\u090F\u0902\u0917\u0940", A: 6, B: -1, F: nil},
+	{Str: "\u093E\u090F\u0902\u0917\u0940", A: 6, B: -1, F: nil},
+	{Str: "\u0947\u0917\u0940", A: 0, B: -1, F: nil},
+	{Str: "\u094B\u0917\u0940", A: 0, B: -1, F: nil},
+	{Str: "\u090F\u0917\u0940", A: 0, B: -1, F: nil},
+	{Str: "\u0906\u090F\u0917\u0940", A: 11, B: -1, F: nil},
+	{Str: "\u093E\u090F\u0917\u0940", A: 11, B: -1, F: nil},
+	{Str: "\u0913\u0917\u0940", A: 0, B: -1, F: nil},
+	{Str: "\u0906\u0913\u0917\u0940", A: 14, B: -1, F: nil},
+	{Str: "\u093E\u0913\u0917\u0940", A: 14, B: -1, F: nil},
+	{Str: "\u0924\u0940", A: 0, B: -1, F: r_CONSONANT},
+	{Str: "\u0905\u0924\u0940", A: 17, B: -1, F: nil},
+	{Str: "\u0906\u0924\u0940", A: 17, B: -1, F: nil},
+	{Str: "\u093E\u0924\u0940", A: 17, B: -1, F: nil},
+	{Str: "\u0928\u0940", A: 0, B: -1, F: r_CONSONANT},
+	{Str: "\u0905\u0928\u0940", A: 21, B: -1, F: nil},
+	{Str: "\u0906\u0901", A: -1, B: -1, F: nil},
+	{Str: "\u093E\u0901", A: -1, B: -1, F: nil},
+	{Str: "\u0907\u092F\u093E\u0901", A: 24, B: -1, F: nil},
+	{Str: "\u0906\u0907\u092F\u093E\u0901", A: 25, B: -1, F: nil},
+	{Str: "\u093E\u0907\u092F\u093E\u0901", A: 25, B: -1, F: nil},
+	{Str: "\u093F\u092F\u093E\u0901", A: 24, B: -1, F: nil},
+	{Str: "\u0941", A: -1, B: -1, F: nil},
+	{Str: "\u0940\u0902", A: -1, B: -1, F: nil},
+	{Str: "\u0924\u0940\u0902", A: 30, B: -1, F: r_CONSONANT},
+	{Str: "\u0905\u0924\u0940\u0902", A: 31, B: -1, F: nil},
+	{Str: "\u0906\u0924\u0940\u0902", A: 31, B: -1, F: nil},
+	{Str: "\u093E\u0924\u0940\u0902", A: 31, B: -1, F: nil},
+	{Str: "\u0906\u0902", A: -1, B: -1, F: nil},
+	{Str: "\u0941\u0906\u0902", A: 35, B: -1, F: nil},
+	{Str: "\u0909\u0906\u0902", A: 35, B: -1, F: nil},
+	{Str: "\u0947\u0902", A: -1, B: -1, F: nil},
+	{Str: "\u0908\u0902", A: -1, B: -1, F: nil},
+	{Str: "\u0906\u0908\u0902", A: 39, B: -1, F: nil},
+	{Str: "\u093E\u0908\u0902", A: 39, B: -1, F: nil},
+	{Str: "\u094B\u0902", A: -1, B: -1, F: nil},
+	{Str: "\u0907\u092F\u094B\u0902", A: 42, B: -1, F: nil},
+	{Str: "\u0906\u0907\u092F\u094B\u0902", A: 43, B: -1, F: nil},
+	{Str: "\u093E\u0907\u092F\u094B\u0902", A: 43, B: -1, F: nil},
+	{Str: "\u093F\u092F\u094B\u0902", A: 42, B: -1, F: nil},
+	{Str: "\u090F\u0902", A: -1, B: -1, F: nil},
+	{Str: "\u0941\u090F\u0902", A: 47, B: -1, F: nil},
+	{Str: "\u0906\u090F\u0902", A: 47, B: -1, F: nil},
+	{Str: "\u0909\u090F\u0902", A: 47, B: -1, F: nil},
+	{Str: "\u093E\u090F\u0902", A: 47, B: -1, F: nil},
+	{Str: "\u0924\u093E\u090F\u0902", A: 51, B: -1, F: r_CONSONANT},
+	{Str: "\u0905\u0924\u093E\u090F\u0902", A: 52, B: -1, F: nil},
+	{Str: "\u0928\u093E\u090F\u0902", A: 51, B: -1, F: r_CONSONANT},
+	{Str: "\u0905\u0928\u093E\u090F\u0902", A: 54, B: -1, F: nil},
+	{Str: "\u0913\u0902", A: -1, B: -1, F: nil},
+	{Str: "\u0941\u0913\u0902", A: 56, B: -1, F: nil},
+	{Str: "\u0906\u0913\u0902", A: 56, B: -1, F: nil},
+	{Str: "\u0909\u0913\u0902", A: 56, B: -1, F: nil},
+	{Str: "\u093E\u0913\u0902", A: 56, B: -1, F: nil},
+	{Str: "\u0924\u093E\u0913\u0902", A: 60, B: -1, F: r_CONSONANT},
+	{Str: "\u0905\u0924\u093E\u0913\u0902", A: 61, B: -1, F: nil},
+	{Str: "\u0928\u093E\u0913\u0902", A: 60, B: -1, F: r_CONSONANT},
+	{Str: "\u0905\u0928\u093E\u0913\u0902", A: 63, B: -1, F: nil},
+	{Str: "\u093E\u0902", A: -1, B: -1, F: nil},
+	{Str: "\u0907\u092F\u093E\u0902", A: 65, B: -1, F: nil},
+	{Str: "\u0906\u0907\u092F\u093E\u0902", A: 66, B: -1, F: nil},
+	{Str: "\u093E\u0907\u092F\u093E\u0902", A: 66, B: -1, F: nil},
+	{Str: "\u093F\u092F\u093E\u0902", A: 65, B: -1, F: nil},
+	{Str: "\u0942", A: -1, B: -1, F: nil},
+	{Str: "\u0905", A: -1, B: -1, F: nil},
+	{Str: "\u0906", A: -1, B: -1, F: nil},
+	{Str: "\u0907", A: -1, B: -1, F: nil},
+	{Str: "\u0947", A: -1, B: -1, F: nil},
+	{Str: "\u0947\u0902\u0917\u0947", A: 74, B: -1, F: nil},
+	{Str: "\u090F\u0902\u0917\u0947", A: 74, B: -1, F: nil},
+	{Str: "\u0906\u090F\u0902\u0917\u0947", A: 76, B: -1, F: nil},
+	{Str: "\u093E\u090F\u0902\u0917\u0947", A: 76, B: -1, F: nil},
+	{Str: "\u094B\u0917\u0947", A: 74, B: -1, F: nil},
+	{Str: "\u0913\u0917\u0947", A: 74, B: -1, F: nil},
+	{Str: "\u0906\u0913\u0917\u0947", A: 80, B: -1, F: nil},
+	{Str: "\u093E\u0913\u0917\u0947", A: 80, B: -1, F: nil},
+	{Str: "\u0924\u0947", A: 74, B: -1, F: r_CONSONANT},
+	{Str: "\u0905\u0924\u0947", A: 83, B: -1, F: nil},
+	{Str: "\u0906\u0924\u0947", A: 83, B: -1, F: nil},
+	{Str: "\u093E\u0924\u0947", A: 83, B: -1, F: nil},
+	{Str: "\u0928\u0947", A: 74, B: -1, F: r_CONSONANT},
+	{Str: "\u0905\u0928\u0947", A: 87, B: -1, F: nil},
+	{Str: "\u0906\u0928\u0947", A: 87, B: -1, F: nil},
+	{Str: "\u093E\u0928\u0947", A: 87, B: -1, F: nil},
+	{Str: "\u0908", A: -1, B: -1, F: nil},
+	{Str: "\u0906\u0908", A: 91, B: -1, F: nil},
+	{Str: "\u093E\u0908", A: 91, B: -1, F: nil},
+	{Str: "\u0909", A: -1, B: -1, F: nil},
+	{Str: "\u090A", A: -1, B: -1, F: nil},
+	{Str: "\u094B", A: -1, B: -1, F: nil},
+	{Str: "\u094D", A: -1, B: -1, F: nil},
+	{Str: "\u090F", A: -1, B: -1, F: nil},
+	{Str: "\u0906\u090F", A: 98, B: -1, F: nil},
+	{Str: "\u0907\u090F", A: 98, B: -1, F: nil},
+	{Str: "\u0906\u0907\u090F", A: 100, B: -1, F: nil},
+	{Str: "\u093E\u0907\u090F", A: 100, B: -1, F: nil},
+	{Str: "\u093E\u090F", A: 98, B: -1, F: nil},
+	{Str: "\u093F\u090F", A: 98, B: -1, F: nil},
+	{Str: "\u0913", A: -1, B: -1, F: nil},
+	{Str: "\u0906\u0913", A: 105, B: -1, F: nil},
+	{Str: "\u093E\u0913", A: 105, B: -1, F: nil},
+	{Str: "\u0915\u0930", A: -1, B: -1, F: r_CONSONANT},
+	{Str: "\u0905\u0915\u0930", A: 108, B: -1, F: nil},
+	{Str: "\u0906\u0915\u0930", A: 108, B: -1, F: nil},
+	{Str: "\u093E\u0915\u0930", A: 108, B: -1, F: nil},
+	{Str: "\u093E", A: -1, B: -1, F: nil},
+	{Str: "\u0942\u0902\u0917\u093E", A: 112, B: -1, F: nil},
+	{Str: "\u090A\u0902\u0917\u093E", A: 112, B: -1, F: nil},
+	{Str: "\u0906\u090A\u0902\u0917\u093E", A: 114, B: -1, F: nil},
+	{Str: "\u093E\u090A\u0902\u0917\u093E", A: 114, B: -1, F: nil},
+	{Str: "\u0947\u0917\u093E", A: 112, B: -1, F: nil},
+	{Str: "\u090F\u0917\u093E", A: 112, B: -1, F: nil},
+	{Str: "\u0906\u090F\u0917\u093E", A: 118, B: -1, F: nil},
+	{Str: "\u093E\u090F\u0917\u093E", A: 118, B: -1, F: nil},
+	{Str: "\u0924\u093E", A: 112, B: -1, F: r_CONSONANT},
+	{Str: "\u0905\u0924\u093E", A: 121, B: -1, F: nil},
+	{Str: "\u0906\u0924\u093E", A: 121, B: -1, F: nil},
+	{Str: "\u093E\u0924\u093E", A: 121, B: -1, F: nil},
+	{Str: "\u0928\u093E", A: 112, B: -1, F: r_CONSONANT},
+	{Str: "\u0905\u0928\u093E", A: 125, B: -1, F: nil},
+	{Str: "\u0906\u0928\u093E", A: 125, B: -1, F: nil},
+	{Str: "\u093E\u0928\u093E", A: 125, B: -1, F: nil},
+	{Str: "\u0906\u092F\u093E", A: 112, B: -1, F: nil},
+	{Str: "\u093E\u092F\u093E", A: 112, B: -1, F: nil},
+	{Str: "\u093F", A: -1, B: -1, F: nil},
+}
+
+var G_consonant = []byte{255, 255, 255, 255, 159, 0, 0, 0, 248, 7}
+
+type Context struct {
+}
+
+func r_CONSONANT(env *snowballRuntime.Env, ctx interface{}) bool {
+	context := ctx.(*Context)
+	_ = context
+	return env.InGroupingB(G_consonant, 2325, 2399)
+}
+
+func Stem(env *snowballRuntime.Env) bool {
+	var context = &Context{}
+	_ = context
+	if env.Cursor >= env.Limit {
+		return false
+	}
+	env.NextChar()
+	env.LimitBackward = env.Cursor
+	env.Cursor = env.Limit
+	env.Ket = env.Cursor
+	if env.FindAmongB(A_0, context) == 0 {
+		return false
+	}
+	env.Bra = env.Cursor
+	env.SliceDel()
+	env.Cursor = env.LimitBackward
+	return true
+}

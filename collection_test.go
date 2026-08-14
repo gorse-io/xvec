@@ -34,6 +34,7 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/gorse-io/xvec/internal/core"
 	"github.com/gorse-io/xvec/internal/db"
+	"github.com/gorse-io/xvec/internal/db/index/column/fts_column/tokenizer"
 	"github.com/gorse-io/xvec/internal/db/index/common"
 	"github.com/gorse-io/xvec/internal/db/sqlengine"
 	"github.com/stretchr/testify/assert"
@@ -4939,7 +4940,7 @@ func TestCollectionFTSAnalyzerConfiguration(t *testing.T) {
 			text: "RUNNING", wantTokens: []string{"run"},
 		},
 	}
-	jiebaDirectory, err := filepath.Abs(filepath.Join("internal", "core", "testdata", "jieba"))
+	jiebaDirectory, err := filepath.Abs(filepath.Join("internal", "db", "index", "column", "fts_column", "tokenizer", "testdata", "jieba"))
 	require.NoError(t, err)
 
 	jiebaExtra, _ := json.Marshal(map[string]string{
@@ -4980,7 +4981,7 @@ func TestCollectionFTSAnalyzerConfiguration(t *testing.T) {
 	defaults, err := newCollectionFTSAnalyzer(ctx, NewFTSIndexParams())
 	require.NoError(t, err)
 
-	pipeline, ok := defaults.(*core.FTSTokenizerPipeline)
+	pipeline, ok := defaults.(*tokenizer.FTSTokenizerPipeline)
 	require.True(t, ok)
 	require.True(t, pipeline.TokenizerName() == "standard")
 	require.Equal(t, []string{"lowercase"}, pipeline.FilterNames())
