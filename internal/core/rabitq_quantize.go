@@ -22,7 +22,8 @@ import (
 	"math"
 	"slices"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
 const raBitQErrorConfidence = 1.9
@@ -118,7 +119,7 @@ func quantizeRaBitQVector(
 	var residualNormSquared float64
 	for index := range vector {
 		if !finiteFloat32(vector[index]) || !finiteFloat32(centroid[index]) {
-			return RaBitQCode{}, ailego.ErrNonFiniteVector
+			return RaBitQCode{}, mathutil.ErrNonFiniteVector
 		}
 		value := float64(vector[index]) - float64(centroid[index])
 		residual[index] = value
@@ -329,7 +330,7 @@ func trainRaBitQExtraScale(ctx context.Context, dimension, extraBits, workers in
 		return 0, ErrInvalidRaBitQOptions
 	}
 	scales := make([]float64, raBitQScalingSampleSize)
-	err := ailego.ParallelFor(ctx, len(scales), workers, func(ctx context.Context, sample int) error {
+	err := parallel.ParallelFor(ctx, len(scales), workers, func(ctx context.Context, sample int) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

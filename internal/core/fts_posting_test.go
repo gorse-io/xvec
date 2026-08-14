@@ -21,7 +21,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/stretchr/testify/require"
 )
 
@@ -352,6 +352,6 @@ func repairFTSPostingCRCs(data []byte) {
 	if len(data) < ftsPostingHeaderSize {
 		return
 	}
-	binary.LittleEndian.PutUint32(data[32:36], ailego.CRC32C(data[ftsPostingHeaderSize:]))
-	binary.LittleEndian.PutUint32(data[44:48], ailego.CRC32C(data[:44]))
+	binary.LittleEndian.PutUint32(data[32:36], hashutil.CRC32C(data[ftsPostingHeaderSize:]))
+	binary.LittleEndian.PutUint32(data[44:48], hashutil.CRC32C(data[:44]))
 }

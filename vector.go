@@ -18,7 +18,7 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/utility"
 )
 
 // Binary is an arbitrary byte string. It is distinct from a UTF-8 String
@@ -44,12 +44,12 @@ type Float16 uint16
 
 // Float16FromFloat32 converts value to binary16 using round-to-nearest-even.
 func Float16FromFloat32(value float32) Float16 {
-	return Float16(ailego.Float32ToFloat16Bits(value))
+	return Float16(utility.Float32ToFloat16Bits(value))
 }
 
 // Float32 converts f to the exactly represented float32 value.
 func (f Float16) Float32() float32 {
-	return ailego.Float16BitsToFloat32(uint16(f))
+	return utility.Float16BitsToFloat32(uint16(f))
 }
 
 // DenseVector is implemented by every explicit dense-vector value.

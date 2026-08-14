@@ -27,7 +27,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 )
 
 const (
@@ -266,7 +266,7 @@ func MarshalManifest(m Manifest) ([]byte, error) {
 	binary.LittleEndian.PutUint16(encoded[10:12], manifestHeaderSize)
 	binary.LittleEndian.PutUint64(encoded[12:20], m.Generation)
 	binary.LittleEndian.PutUint64(encoded[20:28], uint64(len(payload)))
-	binary.LittleEndian.PutUint32(encoded[28:32], ailego.CRC32C(payload))
+	binary.LittleEndian.PutUint32(encoded[28:32], hashutil.CRC32C(payload))
 	copy(encoded[manifestHeaderSize:], payload)
 	return encoded, nil
 }
@@ -296,7 +296,7 @@ func UnmarshalManifest(encoded []byte) (Manifest, error) {
 	}
 	payload := encoded[manifestHeaderSize:]
 	expectedCRC := binary.LittleEndian.Uint32(encoded[28:32])
-	if actualCRC := ailego.CRC32C(payload); actualCRC != expectedCRC {
+	if actualCRC := hashutil.CRC32C(payload); actualCRC != expectedCRC {
 		return Manifest{}, fmt.Errorf("%w: checksum got %08x, want %08x", ErrManifestCorrupt, actualCRC, expectedCRC)
 	}
 	var fields map[string]json.RawMessage

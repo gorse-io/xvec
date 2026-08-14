@@ -25,7 +25,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/require"
 )
 
@@ -253,10 +254,10 @@ func TestSparseHNSWBuilderLifecycleAndErrors(t *testing.T) {
 		vector SparseVector
 		want   error
 	}{
-		{SparseVector{Indices: []uint32{1}, Values: nil}, ailego.ErrDimensionMismatch},
-		{SparseVector{Indices: []uint32{2, 1}, Values: []float32{1, 2}}, ailego.ErrInvalidSparseOrder},
-		{SparseVector{Indices: []uint32{1, 1}, Values: []float32{1, 2}}, ailego.ErrInvalidSparseOrder},
-		{SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.NaN())}}, ailego.ErrNonFiniteVector},
+		{SparseVector{Indices: []uint32{1}, Values: nil}, mathutil.ErrDimensionMismatch},
+		{SparseVector{Indices: []uint32{2, 1}, Values: []float32{1, 2}}, mathutil.ErrInvalidSparseOrder},
+		{SparseVector{Indices: []uint32{1, 1}, Values: []float32{1, 2}}, mathutil.ErrInvalidSparseOrder},
+		{SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.NaN())}}, mathutil.ErrNonFiniteVector},
 	}
 	for _, test := range invalid {
 		{
@@ -400,7 +401,7 @@ func assertSparseHNSWGraphInvariants(t testing.TB, index *SparseHNSWIndex) {
 
 		vector := index.sparseVectorAt(position)
 		{
-			_, err := ailego.SparseInnerProduct(vector.Indices, vector.Values, nil, nil)
+			_, err := mathutil.SparseInnerProduct(vector.Indices, vector.Values, nil, nil)
 			require.NoError(t, err)
 		}
 
@@ -606,9 +607,9 @@ func TestSparseHNSWSearchValidation(t *testing.T) {
 		query SparseVector
 		want  error
 	}{
-		{SparseVector{Indices: []uint32{1}, Values: nil}, ailego.ErrDimensionMismatch},
-		{SparseVector{Indices: []uint32{2, 1}, Values: []float32{1, 2}}, ailego.ErrInvalidSparseOrder},
-		{SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.Inf(1))}}, ailego.ErrNonFiniteVector},
+		{SparseVector{Indices: []uint32{1}, Values: nil}, mathutil.ErrDimensionMismatch},
+		{SparseVector{Indices: []uint32{2, 1}, Values: []float32{1, 2}}, mathutil.ErrInvalidSparseOrder},
+		{SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.Inf(1))}}, mathutil.ErrNonFiniteVector},
 	}
 	for _, test := range badQueries {
 		{
@@ -657,7 +658,7 @@ func TestSparseHNSWSearchValidation(t *testing.T) {
 		_, err := overflow.SearchSparse(context.Background(), SparseVector{
 			Indices: []uint32{1}, Values: []float32{math.MaxFloat32},
 		}, 1)
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 }
 
@@ -809,15 +810,15 @@ func TestSparseHNSWIncrementalFailuresAreAtomic(t *testing.T) {
 	}
 	{
 		err := index.AddSparse(context.Background(), 100000, SparseVector{Indices: []uint32{1}, Values: nil})
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 	{
 		err := index.AddSparse(context.Background(), 100000, SparseVector{Indices: []uint32{2, 1}, Values: []float32{1, 2}})
-		require.ErrorIs(t, err, ailego.ErrInvalidSparseOrder)
+		require.ErrorIs(t, err, mathutil.ErrInvalidSparseOrder)
 	}
 	{
 		err := index.AddSparse(context.Background(), 100000, SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.NaN())}})
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 
 	firstKey := sparseHNSWBuildInputs(1)[0].key
@@ -1201,7 +1202,7 @@ func TestSparseHNSWPersistenceRejectsSemanticCorruption(t *testing.T) {
 	for _, mutate := range headerTests {
 		encoded := slices.Clone(valid)
 		mutate(encoded)
-		binary.LittleEndian.PutUint32(encoded[108:112], ailego.CRC32C(encoded[:108]))
+		binary.LittleEndian.PutUint32(encoded[108:112], hashutil.CRC32C(encoded[:108]))
 		{
 			_, err := decodeSparseHNSWIndex(context.Background(), encoded)
 			require.ErrorIs(t, err, ErrInvalidSparseHNSWFile)
@@ -1314,6 +1315,6 @@ func parseSparseHNSWRecordOffsets(t testing.TB, encoded []byte) []sparseHNSWReco
 }
 
 func rechecksumSparseHNSW(encoded []byte) {
-	binary.LittleEndian.PutUint32(encoded[88:92], ailego.CRC32C(encoded[sparseHNSWHeaderSize:]))
-	binary.LittleEndian.PutUint32(encoded[108:112], ailego.CRC32C(encoded[:108]))
+	binary.LittleEndian.PutUint32(encoded[88:92], hashutil.CRC32C(encoded[sparseHNSWHeaderSize:]))
+	binary.LittleEndian.PutUint32(encoded[108:112], hashutil.CRC32C(encoded[:108]))
 }

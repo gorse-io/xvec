@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
+	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
 // Metric selects score computation and ordering for exact search.
@@ -50,13 +52,13 @@ type Result struct {
 func (m Metric) Compute(left, right []float32) (float32, error) {
 	switch m {
 	case MetricL2:
-		return ailego.L2Squared(left, right)
+		return mathutil.L2Squared(left, right)
 	case MetricIP:
-		return ailego.InnerProduct(left, right)
+		return mathutil.InnerProduct(left, right)
 	case MetricCosine:
-		return ailego.CosineDistance(left, right)
+		return mathutil.CosineDistance(left, right)
 	case MetricMIPSL2:
-		return ailego.MIPSL2Squared(left, right)
+		return mathutil.MIPSL2Squared(left, right)
 	default:
 		return 0, errors.New("core: invalid metric")
 	}
@@ -64,16 +66,16 @@ func (m Metric) Compute(left, right []float32) (float32, error) {
 
 // prevalidatedDistance selects the allocation-free kernel used by index hot
 // paths after vectors have passed their storage or query boundary validation.
-func (m Metric) prevalidatedDistance() (ailego.DenseDistance, error) {
+func (m Metric) prevalidatedDistance() (mathutil.DenseDistance, error) {
 	switch m {
 	case MetricL2:
-		return ailego.L2SquaredPrevalidated, nil
+		return mathutil.L2SquaredPrevalidated, nil
 	case MetricIP:
-		return ailego.InnerProductPrevalidated, nil
+		return mathutil.InnerProductPrevalidated, nil
 	case MetricCosine:
-		return ailego.CosineDistancePrevalidated, nil
+		return mathutil.CosineDistancePrevalidated, nil
 	case MetricMIPSL2:
-		return ailego.MIPSL2SquaredPrevalidated, nil
+		return mathutil.MIPSL2SquaredPrevalidated, nil
 	default:
 		return nil, errors.New("core: invalid metric")
 	}
@@ -143,7 +145,7 @@ func topKCandidatesWithOptions(
 func topKPrevalidatedCandidatesWithOptions(
 	ctx context.Context,
 	metric Metric,
-	distance ailego.DenseDistance,
+	distance mathutil.DenseDistance,
 	query []float32,
 	options SearchOptions,
 	count int,
@@ -163,7 +165,7 @@ func topKPrevalidatedCandidatesWithOptions(
 		}
 		return metric.Better(right.Score, left.Score)
 	}
-	heap := ailego.NewHeap(worstFirst)
+	heap := container.NewHeap(worstFirst)
 	for index := 0; index < count; index++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -221,7 +223,7 @@ func BatchTopK(
 		return nil, err
 	}
 	results := make([][]Result, len(queries))
-	err := ailego.ParallelFor(ctx, len(queries), workers, func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(queries), workers, func(ctx context.Context, index int) error {
 		queryResults, err := TopK(ctx, metric, queries[index], candidates, k)
 		if err != nil {
 			return fmt.Errorf("core: query %d: %w", index, err)

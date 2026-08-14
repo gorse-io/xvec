@@ -23,7 +23,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 )
 
 const (
@@ -510,8 +510,8 @@ func encodeWriteOperation(operation writeOperation) ([]byte, error) {
 	keyStart := writeOperationHeaderSize + 4
 	copy(encoded[keyStart:keyStart+len(operation.PrimaryKey)], operation.PrimaryKey)
 	copy(encoded[keyStart+len(operation.PrimaryKey):], operation.Payload)
-	crc := ailego.CRC32C(encoded[:writeOperationHeaderSize])
-	crc = ailego.UpdateCRC32C(crc, encoded[writeOperationHeaderSize+4:])
+	crc := hashutil.CRC32C(encoded[:writeOperationHeaderSize])
+	crc = hashutil.UpdateCRC32C(crc, encoded[writeOperationHeaderSize+4:])
 	binary.LittleEndian.PutUint32(encoded[writeOperationHeaderSize:writeOperationHeaderSize+4], crc)
 	return encoded, nil
 }
@@ -536,8 +536,8 @@ func decodeWriteOperation(encoded []byte) (writeOperation, error) {
 		return writeOperation{}, errors.New("db: invalid write operation lengths")
 	}
 	expectedCRC := binary.LittleEndian.Uint32(encoded[writeOperationHeaderSize : writeOperationHeaderSize+4])
-	crc := ailego.CRC32C(encoded[:writeOperationHeaderSize])
-	crc = ailego.UpdateCRC32C(crc, encoded[writeOperationHeaderSize+4:])
+	crc := hashutil.CRC32C(encoded[:writeOperationHeaderSize])
+	crc = hashutil.UpdateCRC32C(crc, encoded[writeOperationHeaderSize+4:])
 	if crc != expectedCRC {
 		return writeOperation{}, errors.New("db: write operation checksum mismatch")
 	}

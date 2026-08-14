@@ -25,7 +25,9 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/io"
 )
 
 const (
@@ -572,8 +574,8 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 		return i.traversalMetric.Better(left.score, right.score)
 	}
 	worse := func(left, right diskANNQueueNode) bool { return better(right, left) }
-	frontier := ailego.NewHeap(better)
-	retained := ailego.NewHeap(worse)
+	frontier := container.NewHeap(better)
+	retained := container.NewHeap(worse)
 	visited := make([]bool, len(i.keys))
 	retainedMember := make([]bool, len(i.keys))
 	expanded := make([]bool, len(i.keys))
@@ -691,7 +693,7 @@ func (i *DiskANNIndex) diskANNReadBatchSize() int {
 type diskANNResultCollector struct {
 	metric  Metric
 	options SearchOptions
-	heap    *ailego.Heap[Result]
+	heap    *container.Heap[Result]
 }
 
 func newDiskANNResultCollector(metric Metric, options SearchOptions) *diskANNResultCollector {
@@ -701,7 +703,7 @@ func newDiskANNResultCollector(metric Metric, options SearchOptions) *diskANNRes
 		}
 		return metric.Better(right.Score, left.Score)
 	}
-	return &diskANNResultCollector{metric: metric, options: options, heap: ailego.NewHeap(worse)}
+	return &diskANNResultCollector{metric: metric, options: options, heap: container.NewHeap(worse)}
 }
 
 func (c *diskANNResultCollector) Add(result Result) {
@@ -860,7 +862,7 @@ func (i *DiskANNIndex) Save(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := ailego.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
+	if err := ioutil.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
 		return fmt.Errorf("core: save DiskANN file: %w", err)
 	}
 	return nil
@@ -888,7 +890,7 @@ func OpenDiskANNIndexWithMmap(ctx context.Context, path string, cacheCapacity, w
 	if cacheCapacity < 0 || workers < 0 {
 		return nil, fmt.Errorf("%w: negative runtime option", ErrInvalidDiskANNOptions)
 	}
-	reader, err := ailego.OpenReaderAt(path, useMmap)
+	reader, err := ioutil.OpenReaderAt(path, useMmap)
 	if err != nil {
 		return nil, fmt.Errorf("core: open DiskANN file: %w", err)
 	}
@@ -962,11 +964,11 @@ func encodeDiskANNIndex(ctx context.Context, index *DiskANNIndex) ([]byte, error
 		traversalMetric: index.traversalMetric, maxDegree: index.options.MaxDegree,
 		listSize: index.options.ListSize, configuredChunks: index.options.PQChunks,
 		actualChunks: actualChunks, entryPoint: index.entryPoint, sections: sections,
-		keysCRC:    ailego.CRC32C(encoded[sections.keysOffset : sections.keysOffset+sections.keysLength]),
-		offsetsCRC: ailego.CRC32C(encoded[sections.offsetsOffset : sections.offsetsOffset+sections.offsetsLength]),
-		pivotsCRC:  ailego.CRC32C(encoded[sections.pivotsOffset : sections.pivotsOffset+sections.pivotsLength]),
-		codesCRC:   ailego.CRC32C(encoded[sections.codesOffset : sections.codesOffset+sections.codesLength]),
-		nodesCRC:   ailego.CRC32C(nodeArtifact),
+		keysCRC:    hashutil.CRC32C(encoded[sections.keysOffset : sections.keysOffset+sections.keysLength]),
+		offsetsCRC: hashutil.CRC32C(encoded[sections.offsetsOffset : sections.offsetsOffset+sections.offsetsLength]),
+		pivotsCRC:  hashutil.CRC32C(encoded[sections.pivotsOffset : sections.pivotsOffset+sections.pivotsLength]),
+		codesCRC:   hashutil.CRC32C(encoded[sections.codesOffset : sections.codesOffset+sections.codesLength]),
+		nodesCRC:   hashutil.CRC32C(nodeArtifact),
 	}
 	copy(encoded[:diskANNIndexHeaderSize], encodeDiskANNIndexHeader(header))
 	return encoded, nil
@@ -1005,7 +1007,7 @@ func encodeDiskANNIndexHeader(meta diskANNIndexHeader) []byte {
 	binary.LittleEndian.PutUint32(header[152:156], meta.pivotsCRC)
 	binary.LittleEndian.PutUint32(header[156:160], meta.codesCRC)
 	binary.LittleEndian.PutUint32(header[160:164], meta.nodesCRC)
-	binary.LittleEndian.PutUint32(header[diskANNIndexHeaderCRCPos:], ailego.CRC32C(header[:diskANNIndexHeaderCRCPos]))
+	binary.LittleEndian.PutUint32(header[diskANNIndexHeaderCRCPos:], hashutil.CRC32C(header[:diskANNIndexHeaderCRCPos]))
 	return header
 }
 
@@ -1163,7 +1165,7 @@ func decodeDiskANNIndexHeader(header []byte, fileSize int64) (diskANNIndexHeader
 		!allZeroBytes(header[38:40]) || !allZeroBytes(header[164:diskANNIndexHeaderCRCPos]) {
 		return diskANNIndexHeader{}, fmt.Errorf("%w: invalid reserved header fields", ErrInvalidDiskANNFile)
 	}
-	if got, want := ailego.CRC32C(header[:diskANNIndexHeaderCRCPos]), binary.LittleEndian.Uint32(header[diskANNIndexHeaderCRCPos:]); got != want {
+	if got, want := hashutil.CRC32C(header[:diskANNIndexHeaderCRCPos]), binary.LittleEndian.Uint32(header[diskANNIndexHeaderCRCPos:]); got != want {
 		return diskANNIndexHeader{}, fmt.Errorf("%w: header got %08x, want %08x", ErrDiskANNIndexChecksumMismatch, got, want)
 	}
 	total := binary.LittleEndian.Uint64(header[16:24])
@@ -1326,7 +1328,7 @@ func verifyDiskANNIndexSection(ctx context.Context, reader io.ReaderAt, offset, 
 		if err := readFullAt(ctx, reader, buffer[:readLength], offset+readOffset); err != nil {
 			return err
 		}
-		crc = ailego.UpdateCRC32C(crc, buffer[:readLength])
+		crc = hashutil.UpdateCRC32C(crc, buffer[:readLength])
 		readOffset += int64(readLength)
 	}
 	if crc != want {

@@ -24,7 +24,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/stretchr/testify/require"
 )
 
@@ -408,14 +408,14 @@ func diskANNNodes(count, dimension int) []DiskANNNode {
 }
 
 func refreshDiskANNRecordChecksum(record []byte) {
-	binary.LittleEndian.PutUint32(record[len(record)-4:], ailego.CRC32C(record[:len(record)-4]))
+	binary.LittleEndian.PutUint32(record[len(record)-4:], hashutil.CRC32C(record[:len(record)-4]))
 }
 
 func refreshDiskANNDataChecksum(encoded []byte) {
 	header := encoded[:diskANNNodeHeaderSize]
 	data := encoded[diskANNNodeHeaderSize:]
-	binary.LittleEndian.PutUint32(header[72:76], ailego.CRC32C(data))
-	binary.LittleEndian.PutUint32(header[diskANNNodeHeaderCRCPos:], ailego.CRC32C(header[:diskANNNodeHeaderCRCPos]))
+	binary.LittleEndian.PutUint32(header[72:76], hashutil.CRC32C(data))
+	binary.LittleEndian.PutUint32(header[diskANNNodeHeaderCRCPos:], hashutil.CRC32C(header[:diskANNNodeHeaderCRCPos]))
 }
 
 type countingReaderAt struct {

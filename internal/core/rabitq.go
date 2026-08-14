@@ -23,7 +23,8 @@ import (
 	"math"
 	"slices"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
 const (
@@ -336,7 +337,7 @@ func (m *RaBitQModel) EncodeBatch(ctx context.Context, vectors [][]float32, work
 		return nil, err
 	}
 	result := make([]RaBitQCode, len(vectors))
-	err := ailego.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -568,7 +569,7 @@ func newRaBitQPaddedRotator(dimension, paddedDimension int, signs []byte) (*FHTR
 
 func rotateRaBitQVector(rotator *FHTRotator, dimension, paddedDimension int, vector []float32) ([]float32, error) {
 	if len(vector) != dimension {
-		return nil, ailego.ErrDimensionMismatch
+		return nil, mathutil.ErrDimensionMismatch
 	}
 	padded := make([]float32, paddedDimension)
 	copy(padded, vector)

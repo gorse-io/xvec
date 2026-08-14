@@ -31,7 +31,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/gorse-io/xvec/internal/core"
 	"github.com/gorse-io/xvec/internal/db"
 	dbsql "github.com/gorse-io/xvec/internal/db/sql"
@@ -1927,7 +1927,7 @@ func TestCollectionSparseHNSWFP16Controls(t *testing.T) {
 		require.True(t, document.Score >= queryParams.Radius)
 
 		original := originalByKey[document.PrimaryKey]
-		exact, err := ailego.SparseInnerProduct(querySparse.Indices, querySparse.Values, original.Indices, original.Values)
+		exact, err := mathutil.SparseInnerProduct(querySparse.Indices, querySparse.Values, original.Indices, original.Values)
 		require.NoError(t, err)
 		require.Equal(t, exact, document.Score)
 

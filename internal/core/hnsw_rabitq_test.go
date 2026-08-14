@@ -25,7 +25,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/require"
 )
 
@@ -213,7 +214,7 @@ func TestHNSWRaBitQEmptyIncrementalAndValidation(t *testing.T) {
 	}
 	{
 		err := empty.Add(context.Background(), 100, vector[:63])
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 
 	valid := HNSWRaBitQSearchOptions{SearchOptions: SearchOptions{TopK: 1}, EF: 1}
@@ -231,14 +232,14 @@ func TestHNSWRaBitQEmptyIncrementalAndValidation(t *testing.T) {
 	}
 	{
 		_, err := empty.SearchHNSWRaBitQ(context.Background(), vector[:63], valid)
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 
 	nonFinite := slices.Clone(vector)
 	nonFinite[1] = float32(math.NaN())
 	{
 		_, err := empty.SearchHNSWRaBitQ(context.Background(), nonFinite, valid)
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 
 	valid.EF = 0
@@ -268,14 +269,14 @@ func TestHNSWRaBitQIncrementalFailuresAreAtomic(t *testing.T) {
 	}
 	{
 		err := index.Add(context.Background(), 999999, vector[:63])
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 
 	nonFinite := slices.Clone(vector)
 	nonFinite[0] = float32(math.Inf(1))
 	{
 		err := index.Add(context.Background(), 999999, nonFinite)
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 
 	midClone := newCancelAfterChecks(4)
@@ -659,8 +660,8 @@ const mathMaxUint32 = ^uint32(0)
 func refreshHNSWRaBitQChecksums(encoded []byte) {
 	header := encoded[:hnswRaBitQHeaderSize]
 	payload := encoded[hnswRaBitQHeaderSize:]
-	binary.LittleEndian.PutUint32(header[112:116], ailego.CRC32C(payload))
-	binary.LittleEndian.PutUint32(header[124:128], ailego.CRC32C(header[:124]))
+	binary.LittleEndian.PutUint32(header[112:116], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint32(header[124:128], hashutil.CRC32C(header[:124]))
 }
 
 func assertSameHNSWRaBitQIndex(t testing.TB, got, want *HNSWRaBitQIndex) {

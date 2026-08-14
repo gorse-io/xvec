@@ -24,7 +24,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -143,11 +143,11 @@ func TestFHTRotatorValidation(t *testing.T) {
 	rotator, _ := NewFHTRotatorFromSigns(4, make([]byte, 4))
 	{
 		_, err := rotator.Rotate([]float32{1})
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 	{
 		_, err := rotator.Rotate([]float32{1, 2, 3, float32(math.NaN())})
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 
 	var nilRotator *FHTRotator
@@ -241,12 +241,12 @@ func FuzzFHTRotatorRoundTrip(f *testing.F) {
 			}
 		}
 		rotated, err := rotator.Rotate(vector)
-		if errors.Is(err, ailego.ErrNonFiniteVector) {
+		if errors.Is(err, mathutil.ErrNonFiniteVector) {
 			return
 		}
 		require.NoError(t, err)
 		reverted, err := rotator.Unrotate(rotated)
-		if errors.Is(err, ailego.ErrNonFiniteVector) {
+		if errors.Is(err, mathutil.ErrNonFiniteVector) {
 			return
 		}
 		require.NoError(t, err)

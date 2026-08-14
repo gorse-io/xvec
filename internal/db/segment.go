@@ -27,7 +27,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 )
 
 const (
@@ -390,8 +390,8 @@ func encodeSegment(metadata SegmentMetadata, docs []StoredDocument) ([]byte, err
 		binary.LittleEndian.PutUint64(recordHeader[:8], doc.DocID)
 		binary.LittleEndian.PutUint32(recordHeader[8:12], uint32(len(doc.PrimaryKey)))
 		binary.LittleEndian.PutUint32(recordHeader[12:16], uint32(len(doc.Payload)))
-		crc := ailego.CRC32C([]byte(doc.PrimaryKey))
-		crc = ailego.UpdateCRC32C(crc, doc.Payload)
+		crc := hashutil.CRC32C([]byte(doc.PrimaryKey))
+		crc = hashutil.UpdateCRC32C(crc, doc.Payload)
 		binary.LittleEndian.PutUint32(recordHeader[16:20], crc)
 		payload = append(payload, recordHeader[:]...)
 		payload = append(payload, doc.PrimaryKey...)
@@ -406,8 +406,8 @@ func encodeSegment(metadata SegmentMetadata, docs []StoredDocument) ([]byte, err
 	binary.LittleEndian.PutUint64(header[32:40], metadata.MaxDocID)
 	binary.LittleEndian.PutUint64(header[40:48], metadata.DocCount)
 	binary.LittleEndian.PutUint64(header[48:56], uint64(len(payload)))
-	binary.LittleEndian.PutUint32(header[56:60], ailego.CRC32C(payload))
-	binary.LittleEndian.PutUint32(header[60:64], ailego.CRC32C(header[:60]))
+	binary.LittleEndian.PutUint32(header[56:60], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint32(header[60:64], hashutil.CRC32C(header[:60]))
 	return append(header, payload...), nil
 }
 
@@ -428,7 +428,7 @@ func decodeSegment(ctx context.Context, encoded []byte) (SegmentMetadata, []Stor
 	if binary.LittleEndian.Uint32(header[12:16]) != 0 {
 		return SegmentMetadata{}, nil, fmt.Errorf("%w: nonzero reserved bytes", ErrSegmentCorrupt)
 	}
-	if actual, expected := ailego.CRC32C(header[:60]), binary.LittleEndian.Uint32(header[60:64]); actual != expected {
+	if actual, expected := hashutil.CRC32C(header[:60]), binary.LittleEndian.Uint32(header[60:64]); actual != expected {
 		return SegmentMetadata{}, nil, fmt.Errorf("%w: header checksum got %08x, want %08x", ErrSegmentCorrupt, actual, expected)
 	}
 	payloadLength := binary.LittleEndian.Uint64(header[48:56])
@@ -436,7 +436,7 @@ func decodeSegment(ctx context.Context, encoded []byte) (SegmentMetadata, []Stor
 		return SegmentMetadata{}, nil, fmt.Errorf("%w: invalid payload length %d", ErrSegmentCorrupt, payloadLength)
 	}
 	payload := encoded[segmentHeaderSize:]
-	if actual, expected := ailego.CRC32C(payload), binary.LittleEndian.Uint32(header[56:60]); actual != expected {
+	if actual, expected := hashutil.CRC32C(payload), binary.LittleEndian.Uint32(header[56:60]); actual != expected {
 		return SegmentMetadata{}, nil, fmt.Errorf("%w: payload checksum got %08x, want %08x", ErrSegmentCorrupt, actual, expected)
 	}
 	metadata := SegmentMetadata{
@@ -475,8 +475,8 @@ func decodeSegment(ctx context.Context, encoded []byte) (SegmentMetadata, []Stor
 		offset += int(keyLength)
 		documentPayload := slices.Clone(payload[offset : offset+int(documentLength)])
 		offset += int(documentLength)
-		crc := ailego.CRC32C([]byte(key))
-		crc = ailego.UpdateCRC32C(crc, documentPayload)
+		crc := hashutil.CRC32C([]byte(key))
+		crc = hashutil.UpdateCRC32C(crc, documentPayload)
 		if crc != expectedCRC {
 			return SegmentMetadata{}, nil, fmt.Errorf("%w: record %d checksum", ErrSegmentCorrupt, index)
 		}

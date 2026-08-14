@@ -20,7 +20,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/require"
 )
 
@@ -234,7 +234,7 @@ func TestScalarQuantizedIndexValidation(t *testing.T) {
 	nonfinite := []Candidate{{Key: 1, Vector: []float32{1, 2, 3, float32(math.NaN())}}}
 	{
 		_, err := NewScalarQuantizedFlatIndex(context.Background(), 4, MetricL2, QuantizationInt8, nil, nonfinite)
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 
 	wrongRotator, _ := NewFHTRotatorFromSigns(2, []byte{1, 2, 3, 4})

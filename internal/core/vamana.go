@@ -24,7 +24,9 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/io"
 )
 
 const (
@@ -307,8 +309,8 @@ func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32
 	}
 	better := func(left, right vamanaDistanceNode) bool { return vamanaDistanceBetter(left, right) }
 	worse := func(left, right vamanaDistanceNode) bool { return vamanaDistanceBetter(right, left) }
-	frontier := ailego.NewHeap(better)
-	retained := ailego.NewHeap(worse)
+	frontier := container.NewHeap(better)
+	retained := container.NewHeap(worse)
 	visited := make([]bool, len(i.keys))
 	distance, err := i.graphDistance(query, i.vectorAt(entry))
 	if err != nil {
@@ -731,8 +733,8 @@ func searchVamanaGraph(
 		return metric.Better(left.score, right.score)
 	}
 	worse := func(left, right hnswScoredNode) bool { return resultBetter(right, left) }
-	frontier := ailego.NewHeap(better)
-	accepted := ailego.NewHeap(worse)
+	frontier := container.NewHeap(better)
+	accepted := container.NewHeap(worse)
 	visited := make([]bool, len(keys))
 	score, err := scoreAt(entry)
 	if err != nil {
@@ -911,7 +913,7 @@ func (i *VamanaIndex) Save(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := ailego.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
+	if err := ioutil.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
 		return fmt.Errorf("core: save Vamana file: %w", err)
 	}
 	return nil
@@ -1016,8 +1018,8 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error) 
 		entry = uint64(index.entryPoint)
 	}
 	binary.LittleEndian.PutUint64(header[72:80], entry)
-	binary.LittleEndian.PutUint32(header[80:84], ailego.CRC32C(payload))
-	binary.LittleEndian.PutUint32(header[124:128], ailego.CRC32C(header[:124]))
+	binary.LittleEndian.PutUint32(header[80:84], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint32(header[124:128], hashutil.CRC32C(header[:124]))
 	return append(header, payload...), nil
 }
 
@@ -1044,7 +1046,7 @@ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error
 		!hnswAllZero(header[53:56]) || !hnswAllZero(header[84:124]) {
 		return nil, fmt.Errorf("%w: invalid header fields", ErrInvalidVamanaFile)
 	}
-	if got, want := ailego.CRC32C(header[:124]), binary.LittleEndian.Uint32(header[124:128]); got != want {
+	if got, want := hashutil.CRC32C(header[:124]), binary.LittleEndian.Uint32(header[124:128]); got != want {
 		return nil, fmt.Errorf("%w: header got %08x, want %08x", ErrVamanaChecksumMismatch, got, want)
 	}
 	if binary.LittleEndian.Uint64(header[16:24]) != uint64(len(encoded)) ||
@@ -1052,7 +1054,7 @@ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error
 		return nil, fmt.Errorf("%w: inconsistent file length", ErrInvalidVamanaFile)
 	}
 	payload := encoded[vamanaHeaderSize:]
-	if got, want := ailego.CRC32C(payload), binary.LittleEndian.Uint32(header[80:84]); got != want {
+	if got, want := hashutil.CRC32C(payload), binary.LittleEndian.Uint32(header[80:84]); got != want {
 		return nil, fmt.Errorf("%w: payload got %08x, want %08x", ErrVamanaChecksumMismatch, got, want)
 	}
 	count64 := binary.LittleEndian.Uint64(header[32:40])

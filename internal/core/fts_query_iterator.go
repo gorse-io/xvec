@@ -21,7 +21,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 )
 
 // ErrInvalidFTSQueryExecution identifies an invalid dictionary, AST, deletion
@@ -32,7 +32,7 @@ var ErrInvalidFTSQueryExecution = errors.New("core: invalid FTS query execution"
 type FTSQueryExecutionOptions struct {
 	// DeletedDocuments contains segment-local tombstones. It is snapshotted by
 	// NewFTSQueryIterator and may be changed by the caller afterward.
-	DeletedDocuments *ailego.Bitmap
+	DeletedDocuments *container.Bitmap
 }
 
 // FTSQueryIterator lazily emits exact matching segment-local document IDs in

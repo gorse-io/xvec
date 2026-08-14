@@ -20,7 +20,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/require"
 )
 
@@ -274,7 +274,7 @@ func TestRaBitQValidationCancellationAndOwnership(t *testing.T) {
 		"BinaryCode exposed mutable storage")
 	{
 		_, err := model.Encode(vector[:63])
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 	{
 		_, err := model.EncodeBatch(nil, [][]float32{vector}, 1)

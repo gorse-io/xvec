@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/stretchr/testify/require"
 )
 
@@ -75,8 +75,8 @@ func TestDeleteStoreLifecycleAndSnapshot(t *testing.T) {
 	second := binary.LittleEndian.Uint64(payload[8:16])
 	binary.LittleEndian.PutUint64(payload[:8], second)
 	binary.LittleEndian.PutUint64(payload[8:16], first)
-	binary.LittleEndian.PutUint32(encoded[32:36], ailego.CRC32C(payload))
-	binary.LittleEndian.PutUint32(encoded[36:40], ailego.CRC32C(encoded[:36]))
+	binary.LittleEndian.PutUint32(encoded[32:36], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint32(encoded[36:40], hashutil.CRC32C(encoded[:36]))
 	badName := filepath.Join(t.TempDir(), "delete-bad")
 	{
 		err := os.WriteFile(badName, encoded, 0o600)

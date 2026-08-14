@@ -21,7 +21,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/require"
 )
 
@@ -194,13 +194,13 @@ func TestQuantizationValidation(t *testing.T) {
 	}
 	{
 		_, err := QuantizeVector(QuantizationFP16, nil)
-		require.ErrorIs(t, err, ailego.ErrEmptyVector)
+		require.ErrorIs(t, err, mathutil.ErrEmptyVector)
 	}
 
 	for _, value := range []float32{float32(math.NaN()), float32(math.Inf(1))} {
 		{
 			_, err := QuantizeVector(QuantizationInt8, []float32{value})
-			require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+			require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 		}
 	}
 	{
@@ -222,7 +222,7 @@ func TestQuantizationValidation(t *testing.T) {
 	short, _ := QuantizeVector(QuantizationInt8, []float32{1})
 	{
 		_, err := QuantizedDistance(MetricL2, int8Vector, short)
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 
 	corrupt := int8Vector
@@ -238,7 +238,7 @@ func TestQuantizationValidation(t *testing.T) {
 	}
 	{
 		_, err := QuantizedDistanceToFloat(MetricL2, int8Vector, []float32{1})
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 	require.Equal(t, []byte(nil), QuantizedVector{}.Codes(),
 		"zero vector codes should be nil")
@@ -251,7 +251,7 @@ func FuzzQuantizedVector(f *testing.F) {
 		kind := Quantization(rawKind%3 + 1)
 		input := []float32{a, b, c, d}
 		vector, err := QuantizeVector(kind, input)
-		if errors.Is(err, ailego.ErrNonFiniteVector) || errors.Is(err, ErrQuantizationOverflow) {
+		if errors.Is(err, mathutil.ErrNonFiniteVector) || errors.Is(err, ErrQuantizationOverflow) {
 			return
 		}
 		require.NoError(t, err)
@@ -265,7 +265,7 @@ func FuzzQuantizedVector(f *testing.F) {
 		for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
 			{
 				_, err := QuantizedDistance(metric, vector, vector)
-				require.False(t, err != nil && !errors.Is(err, ailego.ErrNonFiniteVector))
+				require.False(t, err != nil && !errors.Is(err, mathutil.ErrNonFiniteVector))
 			}
 		}
 	})

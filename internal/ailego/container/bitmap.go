@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package ailego
+package container
 
 import (
 	"sync"
@@ -190,3 +190,5 @@ func bitmapWordIndex(bit uint64) int {
 	}
 	return int(word)
 }
+
+func maxInt() int { return int(^uint(0) >> 1) }

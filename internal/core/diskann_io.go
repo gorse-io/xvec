@@ -20,7 +20,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
 var ErrDiskANNShortRead = errors.New("core: short DiskANN ReaderAt read")
@@ -48,7 +49,7 @@ func ParallelReadAt(ctx context.Context, reader io.ReaderAt, requests []DiskANNR
 		return nil, err
 	}
 	result := make([][]byte, len(requests))
-	err := ailego.ParallelFor(ctx, len(requests), workers, func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(requests), workers, func(ctx context.Context, index int) error {
 		request := requests[index]
 		if request.Offset < 0 || request.Length <= 0 {
 			return fmt.Errorf("core: invalid ReaderAt request %d", index)
@@ -220,7 +221,7 @@ func verifyDiskANNData(ctx context.Context, reader io.ReaderAt, layout DiskANNLa
 		if err := readFullAt(ctx, reader, buffer[:length], layout.dataOffset+offset); err != nil {
 			return err
 		}
-		crc = ailego.UpdateCRC32C(crc, buffer[:length])
+		crc = hashutil.UpdateCRC32C(crc, buffer[:length])
 		offset += int64(length)
 	}
 	if crc != layout.dataCRC {

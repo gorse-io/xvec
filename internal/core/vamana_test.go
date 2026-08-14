@@ -25,7 +25,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/require"
 )
 
@@ -229,7 +230,7 @@ func TestVamanaEmptyIncrementalAndValidation(t *testing.T) {
 	}
 	{
 		err := index.Add(context.Background(), 8, vector[:2])
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 	{
 		_, err := index.SearchVamana(nil, vector, validSearch)
@@ -748,8 +749,8 @@ func FuzzVamanaDecode(f *testing.F) {
 func refreshVamanaChecksums(encoded []byte) {
 	header := encoded[:vamanaHeaderSize]
 	payload := encoded[vamanaHeaderSize:]
-	binary.LittleEndian.PutUint32(header[80:84], ailego.CRC32C(payload))
-	binary.LittleEndian.PutUint32(header[124:128], ailego.CRC32C(header[:124]))
+	binary.LittleEndian.PutUint32(header[80:84], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint32(header[124:128], hashutil.CRC32C(header[:124]))
 }
 
 func vamanaAdjacencyWithDegree(encoded []byte, minimum int) (int, bool) {

@@ -23,7 +23,8 @@ import (
 	"math"
 	"slices"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
 var (
@@ -127,9 +128,9 @@ func (r *FHTRotator) Rotate(vector []float32) ([]float32, error) {
 	if r.truncated == r.dimension {
 		for round := 0; round < 4; round++ {
 			roundSigns := r.signs[round*r.bytesPerRound : (round+1)*r.bytesPerRound]
-			_ = ailego.FHTFlipSigns(roundSigns, result)
-			_ = ailego.FHTInPlace(result)
-			ailego.ScaleFloat32(result, r.inverseSqrtSize)
+			_ = mathutil.FHTFlipSigns(roundSigns, result)
+			_ = mathutil.FHTInPlace(result)
+			mathutil.ScaleFloat32(result, r.inverseSqrtSize)
 		}
 		return validateTransformedVector(result)
 	}
@@ -137,16 +138,16 @@ func (r *FHTRotator) Rotate(vector []float32) ([]float32, error) {
 	start := r.dimension - r.truncated
 	for round := 0; round < 4; round++ {
 		roundSigns := r.signs[round*r.bytesPerRound : (round+1)*r.bytesPerRound]
-		_ = ailego.FHTFlipSigns(roundSigns, result)
+		_ = mathutil.FHTFlipSigns(roundSigns, result)
 		window := result[:r.truncated]
 		if round%2 != 0 {
 			window = result[start:]
 		}
-		_ = ailego.FHTInPlace(window)
-		ailego.ScaleFloat32(window, r.inverseSqrtSize)
-		_ = ailego.FHTKacWalk(result)
+		_ = mathutil.FHTInPlace(window)
+		mathutil.ScaleFloat32(window, r.inverseSqrtSize)
+		_ = mathutil.FHTKacWalk(result)
 	}
-	ailego.ScaleFloat32(result, .25)
+	mathutil.ScaleFloat32(result, .25)
 	return validateTransformedVector(result)
 }
 
@@ -158,26 +159,26 @@ func (r *FHTRotator) Unrotate(vector []float32) ([]float32, error) {
 	result := slices.Clone(vector)
 	if r.truncated == r.dimension {
 		for round := 3; round >= 0; round-- {
-			_ = ailego.FHTInPlace(result)
-			ailego.ScaleFloat32(result, r.inverseSqrtSize)
+			_ = mathutil.FHTInPlace(result)
+			mathutil.ScaleFloat32(result, r.inverseSqrtSize)
 			roundSigns := r.signs[round*r.bytesPerRound : (round+1)*r.bytesPerRound]
-			_ = ailego.FHTFlipSigns(roundSigns, result)
+			_ = mathutil.FHTFlipSigns(roundSigns, result)
 		}
 		return validateTransformedVector(result)
 	}
 
-	ailego.ScaleFloat32(result, 4)
+	mathutil.ScaleFloat32(result, 4)
 	start := r.dimension - r.truncated
 	for round := 3; round >= 0; round-- {
-		_ = ailego.FHTInverseKacWalk(result)
+		_ = mathutil.FHTInverseKacWalk(result)
 		window := result[:r.truncated]
 		if round%2 != 0 {
 			window = result[start:]
 		}
-		_ = ailego.FHTInPlace(window)
-		ailego.ScaleFloat32(window, r.inverseSqrtSize)
+		_ = mathutil.FHTInPlace(window)
+		mathutil.ScaleFloat32(window, r.inverseSqrtSize)
 		roundSigns := r.signs[round*r.bytesPerRound : (round+1)*r.bytesPerRound]
-		_ = ailego.FHTFlipSigns(roundSigns, result)
+		_ = mathutil.FHTFlipSigns(roundSigns, result)
 	}
 	return validateTransformedVector(result)
 }
@@ -194,7 +195,7 @@ func (r *FHTRotator) RotateBatch(ctx context.Context, vectors [][]float32, worke
 		return nil, err
 	}
 	result := make([][]float32, len(vectors))
-	err := ailego.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -216,11 +217,11 @@ func (r *FHTRotator) validateVector(vector []float32) error {
 		return ErrInvalidRotator
 	}
 	if len(vector) != r.dimension {
-		return fmt.Errorf("%w: got %d, want %d", ailego.ErrDimensionMismatch, len(vector), r.dimension)
+		return fmt.Errorf("%w: got %d, want %d", mathutil.ErrDimensionMismatch, len(vector), r.dimension)
 	}
 	for _, value := range vector {
 		if !finiteFloat32(value) {
-			return ailego.ErrNonFiniteVector
+			return mathutil.ErrNonFiniteVector
 		}
 	}
 	return nil
@@ -229,7 +230,7 @@ func (r *FHTRotator) validateVector(vector []float32) error {
 func validateTransformedVector(vector []float32) ([]float32, error) {
 	for _, value := range vector {
 		if !finiteFloat32(value) {
-			return nil, ailego.ErrNonFiniteVector
+			return nil, mathutil.ErrNonFiniteVector
 		}
 	}
 	return vector, nil

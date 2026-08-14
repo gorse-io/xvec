@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/stretchr/testify/require"
 )
 
@@ -334,9 +334,9 @@ func TestAggregateFTSCorpusStats(t *testing.T) {
 		{{Text: "alpha", Position: 0}, {Text: "gamma", Position: 1}},
 		{{Text: "beta", Position: 0}, {Text: "gamma", Position: 1}, {Text: "gamma", Position: 2}},
 	})
-	deleted0 := ailego.NewBitmap(3)
+	deleted0 := container.NewBitmap(3)
 	deleted0.Set(2)
-	deleted1 := ailego.NewBitmap(2)
+	deleted1 := container.NewBitmap(2)
 	deleted1.Set(0)
 	stats, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{
 		{Dictionary: segment0, DeletedDocuments: deleted0},
@@ -374,7 +374,7 @@ func TestAggregateFTSCorpusStatsValidationAndCancellation(t *testing.T) {
 	}
 
 	dictionary := buildFTSTestDictionary(t, [][]Token{{{Text: "alpha", Position: 0}}})
-	deleted := ailego.NewBitmap(65)
+	deleted := container.NewBitmap(65)
 	deleted.Set(64)
 	{
 		_, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{{Dictionary: dictionary, DeletedDocuments: deleted}})

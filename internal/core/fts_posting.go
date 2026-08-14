@@ -23,7 +23,7 @@ import (
 	"math/bits"
 	"sort"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 )
 
 const (
@@ -206,8 +206,8 @@ func BuildFTSPostingList(ctx context.Context, postings []FTSPosting) (*FTSPostin
 	binary.LittleEndian.PutUint32(output[20:24], uint32(ftsPostingHeaderSize)+uint32(directoryBytes))
 	binary.LittleEndian.PutUint32(output[24:28], positionsOffset)
 	binary.LittleEndian.PutUint32(output[28:32], uint32(len(output)))
-	binary.LittleEndian.PutUint32(output[32:36], ailego.CRC32C(output[ftsPostingHeaderSize:]))
-	binary.LittleEndian.PutUint32(output[44:48], ailego.CRC32C(output[:44]))
+	binary.LittleEndian.PutUint32(output[32:36], hashutil.CRC32C(output[ftsPostingHeaderSize:]))
+	binary.LittleEndian.PutUint32(output[44:48], hashutil.CRC32C(output[:44]))
 	return openFTSPostingList(ctx, output, false)
 }
 
@@ -259,10 +259,10 @@ func openFTSPostingList(ctx context.Context, data []byte, clone bool) (*FTSPosti
 	if data[36] != 0 || data[37] != 0 || data[38] != 0 || data[39] != 0 || data[40] != 0 || data[41] != 0 || data[42] != 0 || data[43] != 0 {
 		return nil, fmt.Errorf("%w: reserved header bytes are nonzero", ErrCorruptFTSPosting)
 	}
-	if got, want := ailego.CRC32C(data[:44]), binary.LittleEndian.Uint32(data[44:48]); got != want {
+	if got, want := hashutil.CRC32C(data[:44]), binary.LittleEndian.Uint32(data[44:48]); got != want {
 		return nil, fmt.Errorf("%w: header CRC32C mismatch", ErrCorruptFTSPosting)
 	}
-	if got, want := ailego.CRC32C(data[ftsPostingHeaderSize:]), binary.LittleEndian.Uint32(data[32:36]); got != want {
+	if got, want := hashutil.CRC32C(data[ftsPostingHeaderSize:]), binary.LittleEndian.Uint32(data[32:36]); got != want {
 		return nil, fmt.Errorf("%w: payload CRC32C mismatch", ErrCorruptFTSPosting)
 	}
 	if clone {

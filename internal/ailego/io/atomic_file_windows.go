@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package ailego
+package ioutil
 
 import "golang.org/x/sys/windows"
 

@@ -1,5 +1,3 @@
-//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
-
 // Copyright 2026-present the xvec project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,21 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package ailego
+package hashutil
 
 import (
-	"errors"
-	"os"
+	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func atomicReplaceFile(source, destination string) error {
-	return os.Rename(source, destination)
-}
-
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
+func TestCRC32C(t *testing.T) {
+	{
+		got, want := CRC32C([]byte("123456789")), uint32(0xe3069283)
+		require.Equal(t, want, got)
 	}
-	return errors.Join(directory.Sync(), directory.Close())
+
+	crc := UpdateCRC32C(0, []byte("1234"))
+	crc = UpdateCRC32C(crc, []byte("56789"))
+	{
+		got, want := crc, CRC32C([]byte("123456789"))
+		require.Equal(t, want, got)
+	}
 }

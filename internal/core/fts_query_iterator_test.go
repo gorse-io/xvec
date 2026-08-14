@@ -23,7 +23,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -117,7 +117,7 @@ func TestFTSQueryIteratorDeletionSnapshot(t *testing.T) {
 	node, err := ParseFTSQuery(context.Background(), `"quick brown"`, pipeline, FTSDefaultOperatorOR)
 	require.NoError(t, err)
 
-	deleted := ailego.NewBitmap(uint64(len(ftsQueryTestDocuments)))
+	deleted := container.NewBitmap(uint64(len(ftsQueryTestDocuments)))
 	deleted.Set(0)
 	deleted.Set(6)
 	iterator, err := NewFTSQueryIterator(context.Background(), dictionary, node, FTSQueryExecutionOptions{DeletedDocuments: deleted})
@@ -130,7 +130,7 @@ func TestFTSQueryIteratorDeletionSnapshot(t *testing.T) {
 		require.Equal(t, want, got)
 	}
 
-	invalid := ailego.NewBitmap(0)
+	invalid := container.NewBitmap(0)
 	invalid.Set(1 << 26)
 	{
 		runtime.GC()

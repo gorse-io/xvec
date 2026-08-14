@@ -23,7 +23,7 @@ import (
 	"math"
 	"slices"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
 const (
@@ -315,7 +315,7 @@ func (m *PQModel) EncodeBatch(ctx context.Context, vectors [][]float32, workers 
 		return nil, err
 	}
 	result := make([]PQCode, len(vectors))
-	err := ailego.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -609,7 +609,7 @@ func (t *PQDistanceTable) LookupBatch(ctx context.Context, codes []PQCode, worke
 		return nil, err
 	}
 	result := make([]float32, len(codes))
-	err := ailego.ParallelFor(ctx, len(codes), workers, func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(codes), workers, func(ctx context.Context, index int) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

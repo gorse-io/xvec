@@ -22,7 +22,9 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
+	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
 var (
@@ -130,7 +132,7 @@ func (i *DenseFlatIndex) Add(ctx context.Context, key uint64, vector []float32) 
 	if len(vector) != i.dimension {
 		return fmt.Errorf("%w: got %d, want %d", ErrInvalidDimension, len(vector), i.dimension)
 	}
-	if _, err := ailego.L2Squared(vector, vector); err != nil {
+	if _, err := mathutil.L2Squared(vector, vector); err != nil {
 		return fmt.Errorf("core: validate dense Flat vector: %w", err)
 	}
 	i.mu.Lock()
@@ -342,7 +344,7 @@ func (i *SparseFlatIndex) AddSparse(ctx context.Context, key uint64, vector Spar
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, err := ailego.SparseInnerProduct(vector.Indices, vector.Values, nil, nil); err != nil {
+	if _, err := mathutil.SparseInnerProduct(vector.Indices, vector.Values, nil, nil); err != nil {
 		return fmt.Errorf("core: validate sparse Flat vector: %w", err)
 	}
 	i.mu.Lock()
@@ -408,7 +410,7 @@ func (i *SparseFlatIndex) searchSparse(ctx context.Context, query SparseVector, 
 	} else if options.TopK < 0 {
 		return nil, errors.New("core: negative top-k")
 	}
-	if _, err := ailego.SparseInnerProduct(query.Indices, query.Values, nil, nil); err != nil {
+	if _, err := mathutil.SparseInnerProduct(query.Indices, query.Values, nil, nil); err != nil {
 		return nil, fmt.Errorf("core: validate sparse Flat query: %w", err)
 	}
 	i.mu.RLock()
@@ -426,7 +428,7 @@ func (i *SparseFlatIndex) searchSparse(ctx context.Context, query SparseVector, 
 		}
 		return left.Score < right.Score
 	}
-	heap := ailego.NewHeap(worstFirst)
+	heap := container.NewHeap(worstFirst)
 	for position, key := range i.keys {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -435,7 +437,7 @@ func (i *SparseFlatIndex) searchSparse(ctx context.Context, query SparseVector, 
 			continue
 		}
 		start, end := i.offsets[position], i.offsets[position+1]
-		score, err := ailego.SparseInnerProduct(
+		score, err := mathutil.SparseInnerProduct(
 			i.indices[start:end], i.values[start:end], query.Indices, query.Values,
 		)
 		if err != nil {
@@ -647,7 +649,7 @@ func (i *SparseFlatIndex) SearchSparseGroups(ctx context.Context, query SparseVe
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
-	if _, err := ailego.SparseInnerProduct(query.Indices, query.Values, nil, nil); err != nil {
+	if _, err := mathutil.SparseInnerProduct(query.Indices, query.Values, nil, nil); err != nil {
 		return nil, fmt.Errorf("core: validate sparse Flat group-by query: %w", err)
 	}
 
@@ -662,7 +664,7 @@ func (i *SparseFlatIndex) SearchSparseGroups(ctx context.Context, query SparseVe
 			continue
 		}
 		start, end := i.offsets[position], i.offsets[position+1]
-		score, err := ailego.SparseInnerProduct(
+		score, err := mathutil.SparseInnerProduct(
 			i.indices[start:end], i.values[start:end], query.Indices, query.Values,
 		)
 		if err != nil {
@@ -703,7 +705,7 @@ func QueryDenseGroups(
 		return nil, err
 	}
 	batches := make([][]GroupResult, len(searchers))
-	err := ailego.ParallelFor(ctx, len(searchers), workers, func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(searchers), workers, func(ctx context.Context, index int) error {
 		searcher := searchers[index]
 		if searcher == nil {
 			return errors.New("nil dense group searcher")
@@ -743,7 +745,7 @@ func QuerySparseGroups(
 		return nil, err
 	}
 	batches := make([][]GroupResult, len(searchers))
-	err := ailego.ParallelFor(ctx, len(searchers), workers, func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(searchers), workers, func(ctx context.Context, index int) error {
 		searcher := searchers[index]
 		if searcher == nil {
 			return errors.New("nil sparse group searcher")
@@ -785,21 +787,21 @@ func MergeGroupResults(metric Metric, groupCount, topKPerGroup int, batches ...[
 type groupAccumulator struct {
 	metric       Metric
 	topKPerGroup int
-	groups       map[string]*ailego.Heap[Result]
+	groups       map[string]*container.Heap[Result]
 }
 
 func newGroupAccumulator(metric Metric, topKPerGroup int) *groupAccumulator {
 	return &groupAccumulator{
 		metric:       metric,
 		topKPerGroup: topKPerGroup,
-		groups:       make(map[string]*ailego.Heap[Result]),
+		groups:       make(map[string]*container.Heap[Result]),
 	}
 }
 
 func (a *groupAccumulator) add(value string, result Result) {
 	heap := a.groups[value]
 	if heap == nil {
-		heap = ailego.NewHeap(func(left, right Result) bool {
+		heap = container.NewHeap(func(left, right Result) bool {
 			return resultBetter(a.metric, right, left)
 		})
 		a.groups[value] = heap

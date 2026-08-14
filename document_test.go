@@ -20,7 +20,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/stretchr/testify/require"
 )
 
@@ -305,10 +305,10 @@ func FuzzDocumentPayload(f *testing.F) {
 }
 
 func fixDocumentPayloadCRC(encoded []byte) {
-	binary.LittleEndian.PutUint32(encoded[24:28], ailego.CRC32C(encoded[documentHeaderSize:]))
+	binary.LittleEndian.PutUint32(encoded[24:28], hashutil.CRC32C(encoded[documentHeaderSize:]))
 	fixDocumentHeaderCRC(encoded)
 }
 
 func fixDocumentHeaderCRC(encoded []byte) {
-	binary.LittleEndian.PutUint32(encoded[28:32], ailego.CRC32C(encoded[:28]))
+	binary.LittleEndian.PutUint32(encoded[28:32], hashutil.CRC32C(encoded[:28]))
 }

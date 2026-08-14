@@ -26,7 +26,10 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/io"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 )
 
 const (
@@ -235,7 +238,7 @@ type HNSWIndex struct {
 	mu            sync.RWMutex
 	dimension     int
 	options       HNSWBuildOptions
-	distance      ailego.DenseDistance
+	distance      mathutil.DenseDistance
 	keys          []uint64
 	vectors       []float32
 	positions     map[uint64]int
@@ -412,8 +415,8 @@ func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, entrie
 	}
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(i.options.Metric, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return hnswNodeBetter(i.options.Metric, right, left) }
-	candidates := ailego.NewHeap(better)
-	results := ailego.NewHeap(worse)
+	candidates := container.NewHeap(better)
+	results := container.NewHeap(worse)
 	visited.reset(len(i.keys))
 	for _, entry := range entries {
 		if entry < 0 || entry >= len(i.keys) || i.levels[entry] < level || visited.seen(entry) {
@@ -784,8 +787,8 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, entry, capacity int, options HNSWSearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(i.options.Metric, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.hnswResultNodeBetter(right, left) }
-	frontier := ailego.NewHeap(better)
-	accepted := ailego.NewHeap(worse)
+	frontier := container.NewHeap(better)
+	accepted := container.NewHeap(worse)
 	visited.reset(len(i.keys))
 
 	score, err := i.computeDistance(query, i.vectorAt(entry))
@@ -1023,7 +1026,7 @@ func (i *HNSWIndex) Save(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := ailego.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
+	if err := ioutil.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
 		return fmt.Errorf("core: save HNSW file: %w", err)
 	}
 	return nil
@@ -1121,8 +1124,8 @@ func encodeHNSWIndex(ctx context.Context, index *HNSWIndex) ([]byte, error) {
 	binary.LittleEndian.PutUint32(header[64:68], uint32(int32(index.maxLevel)))
 	binary.LittleEndian.PutUint64(header[68:76], index.options.Seed)
 	binary.LittleEndian.PutUint64(header[76:84], index.levelRNGState)
-	binary.LittleEndian.PutUint32(header[84:88], ailego.CRC32C(payload))
-	binary.LittleEndian.PutUint32(header[108:112], ailego.CRC32C(header[:108]))
+	binary.LittleEndian.PutUint32(header[84:88], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint32(header[108:112], hashutil.CRC32C(header[:108]))
 	return append(header, payload...), nil
 }
 
@@ -1152,7 +1155,7 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 		!hnswAllZero(header[88:108]) {
 		return nil, fmt.Errorf("%w: nonzero reserved field", ErrInvalidHNSWFile)
 	}
-	if got, want := ailego.CRC32C(header[:108]), binary.LittleEndian.Uint32(header[108:112]); got != want {
+	if got, want := hashutil.CRC32C(header[:108]), binary.LittleEndian.Uint32(header[108:112]); got != want {
 		return nil, fmt.Errorf("%w: header got %08x, want %08x", ErrHNSWChecksumMismatch, got, want)
 	}
 	if binary.LittleEndian.Uint64(header[16:24]) != uint64(len(encoded)) ||
@@ -1160,7 +1163,7 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 		return nil, fmt.Errorf("%w: inconsistent file length", ErrInvalidHNSWFile)
 	}
 	payload := encoded[hnswHeaderSize:]
-	if got, want := ailego.CRC32C(payload), binary.LittleEndian.Uint32(header[84:88]); got != want {
+	if got, want := hashutil.CRC32C(payload), binary.LittleEndian.Uint32(header[84:88]); got != want {
 		return nil, fmt.Errorf("%w: payload got %08x, want %08x", ErrHNSWChecksumMismatch, got, want)
 	}
 

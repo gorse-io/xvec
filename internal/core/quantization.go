@@ -22,7 +22,9 @@ import (
 	"math"
 	"slices"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
+	"github.com/gorse-io/xvec/internal/ailego/utility"
 )
 
 // Quantization identifies one scalar vector encoding. The values are internal
@@ -79,11 +81,11 @@ func QuantizeVector(kind Quantization, vector []float32) (QuantizedVector, error
 		return QuantizedVector{}, ErrInvalidQuantization
 	}
 	if len(vector) == 0 {
-		return QuantizedVector{}, ailego.ErrEmptyVector
+		return QuantizedVector{}, mathutil.ErrEmptyVector
 	}
 	for _, value := range vector {
 		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
-			return QuantizedVector{}, ailego.ErrNonFiniteVector
+			return QuantizedVector{}, mathutil.ErrNonFiniteVector
 		}
 	}
 	if kind == QuantizationInt4 && len(vector)%2 != 0 {
@@ -115,7 +117,7 @@ func QuantizeBatch(ctx context.Context, kind Quantization, vectors [][]float32, 
 		return nil, err
 	}
 	result := make([]QuantizedVector, len(vectors))
-	err := ailego.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -142,7 +144,7 @@ func (v QuantizedVector) Decode() ([]float32, error) {
 	case QuantizationFP16:
 		for index := range decoded {
 			bits := binary.LittleEndian.Uint16(v.codes[index*2:])
-			decoded[index] = ailego.Float16BitsToFloat32(bits)
+			decoded[index] = utility.Float16BitsToFloat32(bits)
 		}
 	case QuantizationInt8:
 		for index, code := range v.codes {
@@ -180,7 +182,7 @@ func QuantizedDistance(metric Metric, left, right QuantizedVector) (float32, err
 		return 0, fmt.Errorf("%w: encoding mismatch", ErrInvalidQuantizedVector)
 	}
 	if left.dimension != right.dimension {
-		return 0, ailego.ErrDimensionMismatch
+		return 0, mathutil.ErrDimensionMismatch
 	}
 	if left.kind == QuantizationFP16 {
 		leftDecoded, _ := left.Decode()
@@ -240,7 +242,7 @@ func QuantizedDistanceToFloat(metric Metric, candidate QuantizedVector, query []
 		return 0, fmt.Errorf("core: validate candidate quantized vector: %w", err)
 	}
 	if len(query) != candidate.dimension {
-		return 0, ailego.ErrDimensionMismatch
+		return 0, mathutil.ErrDimensionMismatch
 	}
 	quantizedQuery, err := QuantizeVector(candidate.kind, query)
 	if err != nil {
@@ -252,8 +254,8 @@ func QuantizedDistanceToFloat(metric Metric, candidate QuantizedVector, query []
 func quantizeFP16(vector []float32) (QuantizedVector, error) {
 	codes := make([]byte, len(vector)*2)
 	for index, value := range vector {
-		bits := ailego.Float32ToFloat16Bits(value)
-		decoded := ailego.Float16BitsToFloat32(bits)
+		bits := utility.Float32ToFloat16Bits(value)
+		decoded := utility.Float16BitsToFloat32(bits)
 		if math.IsInf(float64(decoded), 0) {
 			return QuantizedVector{}, fmt.Errorf("%w at element %d", ErrQuantizationOverflow, index)
 		}
@@ -340,7 +342,7 @@ func (v QuantizedVector) validate() error {
 	}
 	if v.kind == QuantizationFP16 {
 		for index := 0; index < v.dimension; index++ {
-			decoded := ailego.Float16BitsToFloat32(binary.LittleEndian.Uint16(v.codes[index*2:]))
+			decoded := utility.Float16BitsToFloat32(binary.LittleEndian.Uint16(v.codes[index*2:]))
 			if !finiteFloat32(decoded) {
 				return fmt.Errorf("%w: non-finite FP16 code at element %d", ErrInvalidQuantizedVector, index)
 			}
@@ -385,7 +387,7 @@ func finiteFloat32(value float32) bool {
 func finiteQuantizedScore(value float64) (float32, error) {
 	result := float32(value)
 	if math.IsNaN(value) || math.IsInf(value, 0) || !finiteFloat32(result) {
-		return 0, ailego.ErrNonFiniteVector
+		return 0, mathutil.ErrNonFiniteVector
 	}
 	return result, nil
 }

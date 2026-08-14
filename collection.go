@@ -34,7 +34,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
+	"github.com/gorse-io/xvec/internal/ailego/io"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
+	"github.com/gorse-io/xvec/internal/ailego/utility"
 	"github.com/gorse-io/xvec/internal/core"
 	"github.com/gorse-io/xvec/internal/db"
 	dbsql "github.com/gorse-io/xvec/internal/db/sql"
@@ -561,7 +564,7 @@ func (c *Collection) writeSegmentRuntimeArtifacts(ctx context.Context, segmentID
 			return err
 		}
 		if directory {
-			if err := ailego.SyncDirectory(indexDirectory); err != nil {
+			if err := ioutil.SyncDirectory(indexDirectory); err != nil {
 				_ = os.RemoveAll(path)
 				return fmt.Errorf("sync index artifact directory: %w", err)
 			}
@@ -1988,7 +1991,7 @@ func sparseFP16Vector(vector core.SparseVector) (core.SparseVector, error) {
 		Values:  make([]float32, len(vector.Values)),
 	}
 	for index, value := range vector.Values {
-		converted := ailego.Float16BitsToFloat32(ailego.Float32ToFloat16Bits(value))
+		converted := utility.Float16BitsToFloat32(utility.Float32ToFloat16Bits(value))
 		if math.IsInf(float64(converted), 0) || math.IsNaN(float64(converted)) {
 			return core.SparseVector{}, core.ErrQuantizationOverflow
 		}
@@ -2227,7 +2230,7 @@ func (c *Collection) rewriteCollectionDocumentsLocked(
 	}
 	workers = c.optimizeWorkers(workers)
 	rewritten := make([]db.StoredDocument, len(documents))
-	if err := ailego.ParallelFor(ctx, len(documents), workers, func(_ context.Context, index int) error {
+	if err := parallel.ParallelFor(ctx, len(documents), workers, func(_ context.Context, index int) error {
 		document := documents[index]
 		if transformErr := transform(&document); transformErr != nil {
 			return fmt.Errorf("document %d: %w", document.DocID, transformErr)
@@ -2323,7 +2326,7 @@ func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field Fiel
 		if err != nil {
 			return err
 		}
-		if err := ailego.ParallelFor(ctx, len(documents), workers, func(_ context.Context, position int) error {
+		if err := parallel.ParallelFor(ctx, len(documents), workers, func(_ context.Context, position int) error {
 			document := &documents[position]
 			raw, found := document.Fields[field.Name]
 			value, err := toFilterValue(index.Field(), raw, found)
@@ -3258,7 +3261,7 @@ type collectionFTSRuntime struct {
 	analyzer    core.FTSAnalyzer
 	dictionary  *core.FTSTermDictionary
 	scorer      *core.BM25Scorer
-	deleted     *ailego.Bitmap
+	deleted     *container.Bitmap
 	documentIDs []uint64
 }
 
@@ -3267,7 +3270,7 @@ func (r *collectionFTSRuntime) withFilter(candidateFilter core.CandidateFilter) 
 		return r
 	}
 	clone := *r
-	clone.deleted = ailego.NewBitmap(uint64(len(r.documentIDs)))
+	clone.deleted = container.NewBitmap(uint64(len(r.documentIDs)))
 	for index, documentID := range r.documentIDs {
 		if !candidateFilter(documentID) {
 			clone.deleted.Set(uint64(index))
@@ -3301,9 +3304,9 @@ func buildCollectionFTSRuntime(
 	}
 	builder := core.NewFTSFieldBuilder()
 	documentIDs := make([]uint64, len(documents))
-	var deleted *ailego.Bitmap
+	var deleted *container.Bitmap
 	if candidateFilter != nil {
-		deleted = ailego.NewBitmap(uint64(len(documents)))
+		deleted = container.NewBitmap(uint64(len(documents)))
 	}
 	for index := range documents {
 		if err := ctx.Err(); err != nil {
@@ -4003,7 +4006,7 @@ func (c *Collection) searchVectorSegments(
 		segmentByID[segment.metadata.ID] = segment
 	}
 	batches := make([][]core.Result, len(runtimes))
-	err = ailego.ParallelFor(ctx, len(runtimes), c.queryWorkers(), func(ctx context.Context, index int) error {
+	err = parallel.ParallelFor(ctx, len(runtimes), c.queryWorkers(), func(ctx context.Context, index int) error {
 		runtime := runtimes[index]
 		segment, found := segmentByID[runtime.segmentID]
 		if !found {
@@ -4050,7 +4053,7 @@ func (c *Collection) searchFTSSegments(
 		if runtime == nil {
 			return nil, invalidArgument(op, "field %q is not an FTS-indexed STRING field", field.Name)
 		}
-		deleted := ailego.NewBitmap(uint64(len(runtime.documentIDs)))
+		deleted := container.NewBitmap(uint64(len(runtime.documentIDs)))
 		for ordinal, documentID := range runtime.documentIDs {
 			if _, found := live[documentID]; !found {
 				deleted.Set(uint64(ordinal))
@@ -4071,7 +4074,7 @@ func (c *Collection) searchFTSSegments(
 	}
 	batches := make([][]core.Result, len(runtimes))
 	runtimeConfig := c.runtimeConfig()
-	err = ailego.ParallelFor(ctx, len(runtimes), c.queryWorkers(), func(ctx context.Context, index int) error {
+	err = parallel.ParallelFor(ctx, len(runtimes), c.queryWorkers(), func(ctx context.Context, index int) error {
 		segment := runtimes[index]
 		local, found := filters.local[segment.segmentID]
 		if !found {
@@ -4300,7 +4303,7 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 		segmentByID[segment.metadata.ID] = segment
 	}
 	batches := make([][]core.GroupResult, len(runtimes))
-	err = ailego.ParallelFor(ctx, len(runtimes), c.queryWorkers(), func(ctx context.Context, index int) error {
+	err = parallel.ParallelFor(ctx, len(runtimes), c.queryWorkers(), func(ctx context.Context, index int) error {
 		runtime := runtimes[index]
 		segment, found := segmentByID[runtime.segmentID]
 		if !found {

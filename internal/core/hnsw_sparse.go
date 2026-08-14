@@ -26,7 +26,10 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/io"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 )
 
 // ErrSparseHNSWCapacity reports that another node or coordinate cannot be
@@ -79,7 +82,7 @@ func (b *SparseHNSWBuilder) AddSparse(ctx context.Context, key uint64, vector Sp
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, err := ailego.SparseInnerProduct(vector.Indices, vector.Values, nil, nil); err != nil {
+	if _, err := mathutil.SparseInnerProduct(vector.Indices, vector.Values, nil, nil); err != nil {
 		return fmt.Errorf("core: validate sparse HNSW vector: %w", err)
 	}
 
@@ -365,8 +368,8 @@ func (i *SparseHNSWIndex) searchLayer(ctx context.Context, query SparseVector, e
 	}
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(MetricIP, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return hnswNodeBetter(MetricIP, right, left) }
-	candidates := ailego.NewHeap(better)
-	results := ailego.NewHeap(worse)
+	candidates := container.NewHeap(better)
+	results := container.NewHeap(worse)
 	visited.reset(len(i.keys))
 	for _, entry := range entries {
 		if entry < 0 || entry >= len(i.keys) || i.levels[entry] < level || visited.seen(entry) {
@@ -508,7 +511,7 @@ func (v SparseVector) clone() SparseVector {
 }
 
 func sparseHNSWScore(left, right SparseVector) (float32, error) {
-	return ailego.SparseInnerProduct(left.Indices, left.Values, right.Indices, right.Values)
+	return mathutil.SparseInnerProduct(left.Indices, left.Values, right.Indices, right.Values)
 }
 
 var _ SparseProvider = (*SparseHNSWIndex)(nil)
@@ -675,8 +678,8 @@ func (i *SparseHNSWIndex) searchSparseHNSW(ctx context.Context, query SparseVect
 func (i *SparseHNSWIndex) searchBase(ctx context.Context, query SparseVector, entry, capacity int, options HNSWSearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(MetricIP, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.resultNodeBetter(right, left) }
-	frontier := ailego.NewHeap(better)
-	accepted := ailego.NewHeap(worse)
+	frontier := container.NewHeap(better)
+	accepted := container.NewHeap(worse)
 	visited.reset(len(i.keys))
 
 	score, err := sparseHNSWScore(query, i.sparseVectorAt(entry))
@@ -784,7 +787,7 @@ func topKSparseCandidatesWithOptions(
 		}
 		return left.Score < right.Score
 	}
-	heap := ailego.NewHeap(worstFirst)
+	heap := container.NewHeap(worstFirst)
 	for position, key := range keys {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -793,7 +796,7 @@ func topKSparseCandidatesWithOptions(
 			continue
 		}
 		start, end := offsets[position], offsets[position+1]
-		score, err := ailego.SparseInnerProduct(query.Indices, query.Values, indices[start:end], values[start:end])
+		score, err := mathutil.SparseInnerProduct(query.Indices, query.Values, indices[start:end], values[start:end])
 		if err != nil {
 			return nil, fmt.Errorf("core: score sparse candidate %d (key %d): %w", position, key, err)
 		}
@@ -841,7 +844,7 @@ func (i *SparseHNSWIndex) AddSparse(ctx context.Context, key uint64, vector Spar
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, err := ailego.SparseInnerProduct(vector.Indices, vector.Values, nil, nil); err != nil {
+	if _, err := mathutil.SparseInnerProduct(vector.Indices, vector.Values, nil, nil); err != nil {
 		return fmt.Errorf("core: validate incremental sparse HNSW vector: %w", err)
 	}
 
@@ -995,7 +998,7 @@ func (i *SparseHNSWIndex) Save(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := ailego.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
+	if err := ioutil.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
 		return fmt.Errorf("core: save sparse HNSW file: %w", err)
 	}
 	return nil
@@ -1092,8 +1095,8 @@ func encodeSparseHNSWIndex(ctx context.Context, index *SparseHNSWIndex) ([]byte,
 	binary.LittleEndian.PutUint32(header[68:72], uint32(int32(index.maxLevel)))
 	binary.LittleEndian.PutUint64(header[72:80], index.options.Seed)
 	binary.LittleEndian.PutUint64(header[80:88], index.levelRNGState)
-	binary.LittleEndian.PutUint32(header[88:92], ailego.CRC32C(payload))
-	binary.LittleEndian.PutUint32(header[108:112], ailego.CRC32C(header[:108]))
+	binary.LittleEndian.PutUint32(header[88:92], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint32(header[108:112], hashutil.CRC32C(header[:108]))
 	return append(header, payload...), nil
 }
 
@@ -1121,7 +1124,7 @@ func decodeSparseHNSWIndex(ctx context.Context, encoded []byte) (*SparseHNSWInde
 	if binary.LittleEndian.Uint32(header[12:16]) != 0 || !hnswAllZero(header[57:60]) || !hnswAllZero(header[92:108]) {
 		return nil, fmt.Errorf("%w: nonzero reserved field", ErrInvalidSparseHNSWFile)
 	}
-	if got, want := ailego.CRC32C(header[:108]), binary.LittleEndian.Uint32(header[108:112]); got != want {
+	if got, want := hashutil.CRC32C(header[:108]), binary.LittleEndian.Uint32(header[108:112]); got != want {
 		return nil, fmt.Errorf("%w: header got %08x, want %08x", ErrSparseHNSWChecksumMismatch, got, want)
 	}
 	if binary.LittleEndian.Uint64(header[16:24]) != uint64(len(encoded)) ||
@@ -1129,7 +1132,7 @@ func decodeSparseHNSWIndex(ctx context.Context, encoded []byte) (*SparseHNSWInde
 		return nil, fmt.Errorf("%w: inconsistent file length", ErrInvalidSparseHNSWFile)
 	}
 	payload := encoded[sparseHNSWHeaderSize:]
-	if got, want := ailego.CRC32C(payload), binary.LittleEndian.Uint32(header[88:92]); got != want {
+	if got, want := hashutil.CRC32C(payload), binary.LittleEndian.Uint32(header[88:92]); got != want {
 		return nil, fmt.Errorf("%w: payload got %08x, want %08x", ErrSparseHNSWChecksumMismatch, got, want)
 	}
 

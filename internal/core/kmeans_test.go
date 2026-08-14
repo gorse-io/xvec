@@ -21,7 +21,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -196,15 +196,15 @@ func TestKMeansValidation(t *testing.T) {
 	}
 	{
 		_, err := TrainKMeans(context.Background(), [][]float32{{}}, valid)
-		require.ErrorIs(t, err, ailego.ErrEmptyVector)
+		require.ErrorIs(t, err, mathutil.ErrEmptyVector)
 	}
 	{
 		_, err := TrainKMeans(context.Background(), [][]float32{{1}, {1, 2}}, valid)
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 	{
 		_, err := TrainKMeans(context.Background(), [][]float32{{float32(math.NaN())}}, valid)
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 
 	invalidOptions := []KMeansOptions{
@@ -246,7 +246,7 @@ func TestKMeansModelValidation(t *testing.T) {
 	require.NoError(t, err)
 	{
 		_, _, err := model.Nearest([]float32{1, 2})
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 	{
 		_, _, err := model.Classify(nil, nil, 1)
@@ -289,7 +289,7 @@ func FuzzTrainKMeans(f *testing.F) {
 		options.Seed = seed
 		options.Initializer = KMeansInitializer(seed%2 + 1)
 		model, err := TrainKMeans(context.Background(), vectors, options)
-		if errors.Is(err, ailego.ErrNonFiniteVector) {
+		if errors.Is(err, mathutil.ErrNonFiniteVector) {
 			return
 		}
 		require.NoError(t, err)

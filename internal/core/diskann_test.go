@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -643,10 +643,10 @@ func TestDiskANNPersistenceDetectsHeaderSectionAndRecordCorruption(t *testing.T)
 	recordCorrupt[nodesOffset+diskANNNodeHeaderSize+4] ^= 1
 	nodeHeader := recordCorrupt[nodesOffset : nodesOffset+diskANNNodeHeaderSize]
 	nodeData := recordCorrupt[nodesOffset+diskANNNodeHeaderSize : nodesOffset+nodesLength]
-	binary.LittleEndian.PutUint32(nodeHeader[72:76], ailego.CRC32C(nodeData))
-	binary.LittleEndian.PutUint32(nodeHeader[diskANNNodeHeaderCRCPos:], ailego.CRC32C(nodeHeader[:diskANNNodeHeaderCRCPos]))
-	binary.LittleEndian.PutUint32(recordCorrupt[160:164], ailego.CRC32C(recordCorrupt[nodesOffset:nodesOffset+nodesLength]))
-	binary.LittleEndian.PutUint32(recordCorrupt[diskANNIndexHeaderCRCPos:], ailego.CRC32C(recordCorrupt[:diskANNIndexHeaderCRCPos]))
+	binary.LittleEndian.PutUint32(nodeHeader[72:76], hashutil.CRC32C(nodeData))
+	binary.LittleEndian.PutUint32(nodeHeader[diskANNNodeHeaderCRCPos:], hashutil.CRC32C(nodeHeader[:diskANNNodeHeaderCRCPos]))
+	binary.LittleEndian.PutUint32(recordCorrupt[160:164], hashutil.CRC32C(recordCorrupt[nodesOffset:nodesOffset+nodesLength]))
+	binary.LittleEndian.PutUint32(recordCorrupt[diskANNIndexHeaderCRCPos:], hashutil.CRC32C(recordCorrupt[:diskANNIndexHeaderCRCPos]))
 	opened, err := openDiskANNIndexReader(context.Background(), bytes.NewReader(recordCorrupt), int64(len(recordCorrupt)), 0, 1, nil)
 	require.NoError(t, err)
 	{

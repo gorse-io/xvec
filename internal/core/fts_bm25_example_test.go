@@ -18,7 +18,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/core"
 )
 
@@ -63,7 +63,7 @@ func ExampleMergeFTSTermDictionaries() {
 	_ = rightBuilder.AddDocument(ctx, 0, []core.Token{{Text: "y", Position: 0}})
 	right, _ := rightBuilder.Build(ctx)
 
-	deleted := ailego.NewBitmap(2)
+	deleted := container.NewBitmap(2)
 	deleted.Set(1)
 	merged, err := core.MergeFTSTermDictionaries(ctx, []core.FTSSegmentView{
 		{Dictionary: left, DeletedDocuments: deleted},

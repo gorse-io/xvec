@@ -12,24 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package ailego
+package mathutil
 
-import (
-	"testing"
+import stdmath "math"
 
-	"github.com/stretchr/testify/require"
-)
-
-func TestCRC32C(t *testing.T) {
-	{
-		got, want := CRC32C([]byte("123456789")), uint32(0xe3069283)
-		require.Equal(t, want, got)
+// NormalizeL2 scales vector to unit L2 norm in place. A zero vector is left
+// unchanged.
+func NormalizeL2(vector []float32) {
+	var normSquared float64
+	for _, value := range vector {
+		normSquared += float64(value) * float64(value)
 	}
-
-	crc := UpdateCRC32C(0, []byte("1234"))
-	crc = UpdateCRC32C(crc, []byte("56789"))
-	{
-		got, want := crc, CRC32C([]byte("123456789"))
-		require.Equal(t, want, got)
+	if normSquared == 0 {
+		return
+	}
+	inverseNorm := 1 / stdmath.Sqrt(normSquared)
+	for index := range vector {
+		vector[index] = float32(float64(vector[index]) * inverseNorm)
 	}
 }

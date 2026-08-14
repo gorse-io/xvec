@@ -20,7 +20,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
 type parallelHNSWGraph struct {
@@ -51,7 +52,7 @@ func buildParallelHNSW(
 		nodeLocks: make([]sync.RWMutex, len(levels)), score: score,
 		entry: 0, maxLevel: levels[0],
 	}
-	if err := ailego.ParallelFor(ctx, len(levels)-1, workers, func(workerCtx context.Context, offset int) error {
+	if err := parallel.ParallelFor(ctx, len(levels)-1, workers, func(workerCtx context.Context, offset int) error {
 		position := offset + 1
 		if insertErr := graph.insert(workerCtx, position); insertErr != nil {
 			return fmt.Errorf("construct HNSW node %d: %w", position, insertErr)
@@ -129,8 +130,8 @@ func (g *parallelHNSWGraph) searchLayer(
 	}
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(g.options.Metric, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return hnswNodeBetter(g.options.Metric, right, left) }
-	candidates := ailego.NewHeap(better)
-	results := ailego.NewHeap(worse)
+	candidates := container.NewHeap(better)
+	results := container.NewHeap(worse)
 	visited.reset(len(g.levels))
 	for _, entry := range entries {
 		if entry < 0 || entry >= len(g.levels) || g.levels[entry] < level || visited.seen(entry) {

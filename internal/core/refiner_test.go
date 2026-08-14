@@ -20,7 +20,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/require"
 )
 
@@ -88,7 +88,7 @@ func TestOriginalVectorRefinerValidation(t *testing.T) {
 	}
 	{
 		_, err := refiner.Refine(context.Background(), []float32{0, float32(math.NaN())}, nil, SearchOptions{TopK: 1})
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 	{
 		_, err := refiner.Refine(context.Background(), []float32{0, 0}, []Result{{Key: 99}}, SearchOptions{TopK: 1})

@@ -21,7 +21,9 @@ import (
 	"math"
 	"slices"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/algorithm"
+	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
 const (
@@ -224,7 +226,7 @@ func TrainKMeans(ctx context.Context, vectors [][]float32, options KMeansOptions
 					return nil, err
 				}
 			}
-			normalizeCentroid(centroids[index])
+			mathutil.NormalizeL2(centroids[index])
 		}
 	}
 
@@ -314,7 +316,7 @@ func validateTrainingVectors(ctx context.Context, vectors [][]float32, dimension
 		return ErrEmptyTrainingSet
 	}
 	if dimension <= 0 {
-		return ailego.ErrEmptyVector
+		return mathutil.ErrEmptyVector
 	}
 	for index, vector := range vectors {
 		if ctx != nil && index&1023 == 0 {
@@ -331,11 +333,11 @@ func validateTrainingVectors(ctx context.Context, vectors [][]float32, dimension
 
 func validateTrainingVector(vector []float32, dimension int) error {
 	if len(vector) != dimension {
-		return ailego.ErrDimensionMismatch
+		return mathutil.ErrDimensionMismatch
 	}
 	for _, value := range vector {
 		if !finiteFloat32(value) {
-			return ailego.ErrNonFiniteVector
+			return mathutil.ErrNonFiniteVector
 		}
 	}
 	return nil
@@ -354,100 +356,19 @@ func initializeKMeans(ctx context.Context, vectors [][]float32, clusters, dimens
 	random := splitMix64{state: options.Seed}
 	switch options.Initializer {
 	case KMeansInitReservoir:
-		indices := make([]int, clusters)
-		for index := range indices {
-			indices[index] = index
-		}
-		for index := clusters; index < len(vectors); index++ {
-			if index&1023 == 0 {
-				if err := ctx.Err(); err != nil {
-					return nil, err
-				}
-			}
-			selected := random.intn(index + 1)
-			if selected < clusters {
-				indices[selected] = index
-			}
-		}
-		centroids := make([][]float32, clusters)
-		for index, input := range indices {
-			if index&255 == 0 {
-				if err := ctx.Err(); err != nil {
-					return nil, err
-				}
-			}
-			centroids[index] = slices.Clone(vectors[input])
-		}
-		return centroids, nil
+		return algorithm.InitializeReservoir(ctx, vectors, clusters, random.intn)
 	case KMeansInitPlusPlus:
-		return initializeKMeansPlusPlus(ctx, vectors, clusters, &random)
+		return algorithm.InitializePlusPlus(
+			ctx,
+			vectors,
+			clusters,
+			random.intn,
+			random.float64,
+			squaredL2Float64,
+		)
 	default:
 		return nil, ErrInvalidKMeansOptions
 	}
-}
-
-func initializeKMeansPlusPlus(ctx context.Context, vectors [][]float32, clusters int, random *splitMix64) ([][]float32, error) {
-	first := random.intn(len(vectors))
-	selected := make([]bool, len(vectors))
-	selected[first] = true
-	centroids := [][]float32{slices.Clone(vectors[first])}
-	distances := make([]float64, len(vectors))
-	for len(centroids) < clusters {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		var total float64
-		for index, vector := range vectors {
-			if index&1023 == 0 {
-				if err := ctx.Err(); err != nil {
-					return nil, err
-				}
-			}
-			if selected[index] {
-				distances[index] = 0
-				continue
-			}
-			best := math.Inf(1)
-			for centroidIndex, centroid := range centroids {
-				if centroidIndex&63 == 0 {
-					if err := ctx.Err(); err != nil {
-						return nil, err
-					}
-				}
-				distance, err := squaredL2Float64(vector, centroid)
-				if err != nil {
-					return nil, err
-				}
-				best = min(best, distance)
-			}
-			distances[index] = best
-			total += best
-		}
-
-		chosen := -1
-		if total > 0 && !math.IsInf(total, 0) {
-			target := random.float64() * total
-			var cumulative float64
-			for index, distance := range distances {
-				cumulative += distance
-				if !selected[index] && target < cumulative {
-					chosen = index
-					break
-				}
-			}
-		}
-		if chosen < 0 {
-			for index := range vectors {
-				if !selected[index] {
-					chosen = index
-					break
-				}
-			}
-		}
-		selected[chosen] = true
-		centroids = append(centroids, slices.Clone(vectors[chosen]))
-	}
-	return centroids, nil
 }
 
 func assignKMeans(
@@ -458,7 +379,7 @@ func assignKMeans(
 ) ([]int, []float32, error) {
 	labels := make([]int, len(vectors))
 	scores := make([]float32, len(vectors))
-	err := ailego.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -512,102 +433,23 @@ func updateKMeans(
 	scores []float32,
 	options KMeansOptions,
 ) (float64, [][]float32, bool, error) {
-	dimension := len(vectors[0])
-	counts := make([]int, len(centroids))
-	sums := make([][]float64, len(centroids))
-	for index := range sums {
-		sums[index] = make([]float64, dimension)
-	}
-	for index, vector := range vectors {
-		if index&1023 == 0 {
-			if err := ctx.Err(); err != nil {
-				return 0, nil, false, err
-			}
-		}
-		label := labels[index]
-		counts[label]++
-		for coordinate, value := range vector {
-			sums[label][coordinate] += float64(value)
-		}
-	}
-
-	next := make([][]float32, len(centroids))
-	empty := make([]int, 0)
-	for cluster := range centroids {
-		if cluster&255 == 0 {
-			if err := ctx.Err(); err != nil {
-				return 0, nil, false, err
-			}
-		}
-		if counts[cluster] == 0 {
-			empty = append(empty, cluster)
-			next[cluster] = slices.Clone(centroids[cluster])
-			continue
-		}
-		next[cluster] = make([]float32, dimension)
-		for coordinate := range dimension {
-			next[cluster][coordinate] = float32(sums[cluster][coordinate] / float64(counts[cluster]))
-		}
-		if options.Spherical {
-			normalizeCentroid(next[cluster])
-		}
-	}
-
-	changedShape := false
+	emptyPolicy := algorithm.EmptyKeep
 	switch options.EmptyPolicy {
-	case KMeansEmptyKeep:
-	case KMeansEmptyDrop:
-		if len(empty) > 0 {
-			compacted := make([][]float32, 0, len(next)-len(empty))
-			for cluster := range next {
-				if counts[cluster] != 0 {
-					compacted = append(compacted, next[cluster])
-				}
-			}
-			next = compacted
-			changedShape = true
-		}
 	case KMeansEmptyReseedFarthest:
-		used := make([]bool, len(vectors))
-		for _, cluster := range empty {
-			selected, err := worstAssignedVector(ctx, options.Metric, scores, used)
-			if err != nil {
-				return 0, nil, false, err
-			}
-			if selected < 0 {
-				break
-			}
-			used[selected] = true
-			next[cluster] = slices.Clone(vectors[selected])
-			if options.Spherical {
-				normalizeCentroid(next[cluster])
-			}
-			changedShape = true
-		}
+		emptyPolicy = algorithm.EmptyReseedFarthest
+	case KMeansEmptyDrop:
+		emptyPolicy = algorithm.EmptyDrop
 	}
-	cost, err := kMeansObjective(ctx, options.Metric, scores)
-	if err != nil {
-		return 0, nil, false, err
-	}
-	return cost, next, changedShape, nil
-}
-
-func worstAssignedVector(ctx context.Context, metric Metric, scores []float32, used []bool) (int, error) {
-	selected := -1
-	for index, score := range scores {
-		if index&1023 == 0 {
-			if err := ctx.Err(); err != nil {
-				return -1, err
-			}
-		}
-		if used[index] {
-			continue
-		}
-		if selected < 0 || metric.Better(scores[selected], score) {
-			selected = index
-		}
-	}
-	return selected, nil
+	return algorithm.LloydUpdate(ctx, vectors, centroids, labels, scores, algorithm.LloydOptions{
+		Spherical:   options.Spherical,
+		EmptyPolicy: emptyPolicy,
+		Worse: func(current, candidate float32) bool {
+			return options.Metric.Better(current, candidate)
+		},
+		Objective: func(ctx context.Context, scores []float32) (float64, error) {
+			return kMeansObjective(ctx, options.Metric, scores)
+		},
+	})
 }
 
 func kMeansObjective(ctx context.Context, metric Metric, scores []float32) (float64, error) {
@@ -627,23 +469,9 @@ func kMeansObjective(ctx context.Context, metric Metric, scores []float32) (floa
 	return cost, nil
 }
 
-func normalizeCentroid(vector []float32) {
-	var normSquared float64
-	for _, value := range vector {
-		normSquared += float64(value) * float64(value)
-	}
-	if normSquared == 0 {
-		return
-	}
-	inverseNorm := 1 / math.Sqrt(normSquared)
-	for index := range vector {
-		vector[index] = float32(float64(vector[index]) * inverseNorm)
-	}
-}
-
 func squaredL2Float64(left, right []float32) (float64, error) {
 	if len(left) != len(right) {
-		return 0, ailego.ErrDimensionMismatch
+		return 0, mathutil.ErrDimensionMismatch
 	}
 	var sum float64
 	for index, value := range left {
@@ -651,7 +479,7 @@ func squaredL2Float64(left, right []float32) (float64, error) {
 		sum += difference * difference
 	}
 	if math.IsInf(sum, 0) || math.IsNaN(sum) {
-		return 0, ailego.ErrNonFiniteVector
+		return 0, mathutil.ErrNonFiniteVector
 	}
 	return sum, nil
 }

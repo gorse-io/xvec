@@ -26,7 +26,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/io"
 )
 
 const (
@@ -668,7 +669,7 @@ func (i *IVFIndex) Save(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := ailego.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
+	if err := ioutil.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
 		return fmt.Errorf("core: save IVF file: %w", err)
 	}
 	return nil
@@ -809,8 +810,8 @@ func encodeIVFIndex(ctx context.Context, index *IVFIndex) ([]byte, error) {
 		binary.LittleEndian.PutUint64(header[84:92], math.Float64bits(index.model.cost))
 		binary.LittleEndian.PutUint32(header[92:96], uint32(index.model.iterations))
 	}
-	binary.LittleEndian.PutUint32(header[96:100], ailego.CRC32C(payload))
-	binary.LittleEndian.PutUint32(header[108:112], ailego.CRC32C(header[:108]))
+	binary.LittleEndian.PutUint32(header[96:100], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint32(header[108:112], hashutil.CRC32C(header[:108]))
 	return append(header, payload...), nil
 }
 
@@ -840,7 +841,7 @@ func decodeIVFIndex(ctx context.Context, encoded []byte) (*IVFIndex, error) {
 		binary.LittleEndian.Uint64(header[100:108]) != 0 {
 		return nil, fmt.Errorf("%w: nonzero reserved field", ErrInvalidIVFFile)
 	}
-	if got, want := ailego.CRC32C(header[:108]), binary.LittleEndian.Uint32(header[108:112]); got != want {
+	if got, want := hashutil.CRC32C(header[:108]), binary.LittleEndian.Uint32(header[108:112]); got != want {
 		return nil, fmt.Errorf("%w: header got %08x, want %08x", ErrIVFChecksumMismatch, got, want)
 	}
 	if binary.LittleEndian.Uint64(header[16:24]) != uint64(len(encoded)) ||
@@ -866,7 +867,7 @@ func decodeIVFIndex(ctx context.Context, encoded []byte) (*IVFIndex, error) {
 		return nil, fmt.Errorf("%w: invalid payload length", ErrInvalidIVFFile)
 	}
 	payload := encoded[ivfHeaderSize:]
-	if got, want := ailego.CRC32C(payload), binary.LittleEndian.Uint32(header[96:100]); got != want {
+	if got, want := hashutil.CRC32C(payload), binary.LittleEndian.Uint32(header[96:100]); got != want {
 		return nil, fmt.Errorf("%w: payload got %08x, want %08x", ErrIVFChecksumMismatch, got, want)
 	}
 

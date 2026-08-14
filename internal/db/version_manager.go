@@ -28,7 +28,7 @@ import (
 	"sync"
 
 	"github.com/gofrs/flock"
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 )
 
 const (
@@ -357,7 +357,7 @@ func marshalCurrent(name string) ([]byte, error) {
 	copy(encoded[:8], currentMagic[:])
 	binary.LittleEndian.PutUint16(encoded[8:10], uint16(len(name)))
 	binary.LittleEndian.PutUint16(encoded[10:12], currentHeaderLen)
-	binary.LittleEndian.PutUint32(encoded[12:16], ailego.CRC32C([]byte(name)))
+	binary.LittleEndian.PutUint32(encoded[12:16], hashutil.CRC32C([]byte(name)))
 	copy(encoded[currentHeaderLen:], name)
 	return encoded, nil
 }
@@ -393,7 +393,7 @@ func readCurrent(dir string) (string, error) {
 		return "", fmt.Errorf("%w: invalid CURRENT payload length", ErrManifestCorrupt)
 	}
 	name := string(encoded[currentHeaderLen:])
-	if actual, expected := ailego.CRC32C([]byte(name)), binary.LittleEndian.Uint32(encoded[12:16]); actual != expected {
+	if actual, expected := hashutil.CRC32C([]byte(name)), binary.LittleEndian.Uint32(encoded[12:16]); actual != expected {
 		return "", fmt.Errorf("%w: CURRENT checksum got %08x, want %08x", ErrManifestCorrupt, actual, expected)
 	}
 	if _, ok := parseManifestFileName(name); !ok {

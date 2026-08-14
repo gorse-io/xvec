@@ -24,7 +24,7 @@ import (
 	"sort"
 	"unicode/utf8"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 )
 
 // MaxPrimaryKeyBytes is the maximum UTF-8 primary-key size accepted by the
@@ -426,8 +426,8 @@ func marshalDocumentPayload(fields map[string]any) ([]byte, error) {
 	binary.LittleEndian.PutUint16(encoded[10:12], documentHeaderSize)
 	binary.LittleEndian.PutUint32(encoded[12:16], uint32(len(names)))
 	binary.LittleEndian.PutUint64(encoded[16:24], uint64(len(payload)))
-	binary.LittleEndian.PutUint32(encoded[24:28], ailego.CRC32C(payload))
-	binary.LittleEndian.PutUint32(encoded[28:32], ailego.CRC32C(encoded[:28]))
+	binary.LittleEndian.PutUint32(encoded[24:28], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint32(encoded[28:32], hashutil.CRC32C(encoded[:28]))
 	copy(encoded[documentHeaderSize:], payload)
 	return encoded, nil
 }
@@ -445,7 +445,7 @@ func unmarshalDocumentPayload(encoded []byte) (map[string]any, error) {
 	if size := binary.LittleEndian.Uint16(encoded[10:12]); size != documentHeaderSize {
 		return nil, fmt.Errorf("%w: invalid header size %d", errDocumentPayloadCorrupt, size)
 	}
-	if got, want := ailego.CRC32C(encoded[:28]), binary.LittleEndian.Uint32(encoded[28:32]); got != want {
+	if got, want := hashutil.CRC32C(encoded[:28]), binary.LittleEndian.Uint32(encoded[28:32]); got != want {
 		return nil, fmt.Errorf("%w: header checksum", errDocumentPayloadCorrupt)
 	}
 	fieldCount := binary.LittleEndian.Uint32(encoded[12:16])
@@ -457,7 +457,7 @@ func unmarshalDocumentPayload(encoded []byte) (map[string]any, error) {
 		return nil, fmt.Errorf("%w: invalid payload length %d", errDocumentPayloadCorrupt, payloadLength)
 	}
 	payload := encoded[documentHeaderSize:]
-	if got, want := ailego.CRC32C(payload), binary.LittleEndian.Uint32(encoded[24:28]); got != want {
+	if got, want := hashutil.CRC32C(payload), binary.LittleEndian.Uint32(encoded[24:28]); got != want {
 		return nil, fmt.Errorf("%w: payload checksum", errDocumentPayloadCorrupt)
 	}
 	fields := make(map[string]any, int(fieldCount))

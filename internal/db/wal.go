@@ -27,7 +27,8 @@ import (
 	"sync"
 
 	"github.com/gofrs/flock"
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/io"
 )
 
 const (
@@ -134,7 +135,7 @@ func CreateWAL(ctx context.Context, name string, options WALOptions) (*WAL, erro
 		}
 	}()
 	header := encodeWALFileHeader()
-	if err := ailego.WriteFullAt(file, header, 0); err != nil {
+	if err := ioutil.WriteFullAt(file, header, 0); err != nil {
 		return nil, fmt.Errorf("db: write WAL header: %w", err)
 	}
 	if err := file.Sync(); err != nil {
@@ -282,7 +283,7 @@ func (w *WAL) Append(ctx context.Context, payload []byte) (uint64, error) {
 	}
 	lsn := w.lastLSN + 1
 	encoded := encodeWALRecord(lsn, payload)
-	if err := ailego.WriteFullAt(w.file, encoded, w.size); err != nil {
+	if err := ioutil.WriteFullAt(w.file, encoded, w.size); err != nil {
 		w.poisoned = fmt.Errorf("%w: write record %d: %v", ErrWALPoisoned, lsn, err)
 		return 0, w.poisoned
 	}
@@ -349,7 +350,7 @@ func (w *WAL) NewReader() (*WALReader, error) {
 		return nil, fmt.Errorf("db: open WAL reader: %w", err)
 	}
 	header := make([]byte, walFileHeaderSize)
-	if err := ailego.ReadFullAt(file, header, 0); err != nil {
+	if err := ioutil.ReadFullAt(file, header, 0); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("%w: read WAL reader header: %v", ErrWALCorrupt, err)
 	}
@@ -468,7 +469,7 @@ func scanWAL(ctx context.Context, reader io.ReaderAt, size int64) (WALRecovery, 
 		return WALRecovery{}, fmt.Errorf("%w: file is shorter than its header", ErrWALCorrupt)
 	}
 	header := make([]byte, walFileHeaderSize)
-	if err := ailego.ReadFullAt(reader, header, 0); err != nil {
+	if err := ioutil.ReadFullAt(reader, header, 0); err != nil {
 		return WALRecovery{}, fmt.Errorf("%w: read file header: %v", ErrWALCorrupt, err)
 	}
 	if err := validateWALFileHeader(header); err != nil {
@@ -488,7 +489,7 @@ func scanWAL(ctx context.Context, reader io.ReaderAt, size int64) (WALRecovery, 
 			return recovery, nil
 		}
 		recordHeader := make([]byte, walRecordHeaderSize)
-		if err := ailego.ReadFullAt(reader, recordHeader, offset); err != nil {
+		if err := ioutil.ReadFullAt(reader, recordHeader, offset); err != nil {
 			return WALRecovery{}, fmt.Errorf("%w: read record header at %d: %v", ErrWALCorrupt, offset, err)
 		}
 		metadata, err := decodeWALRecordHeader(recordHeader, expectedLSN)
@@ -501,10 +502,10 @@ func scanWAL(ctx context.Context, reader io.ReaderAt, size int64) (WALRecovery, 
 			return recovery, nil
 		}
 		payload := make([]byte, metadata.payloadLength)
-		if err := ailego.ReadFullAt(reader, payload, offset+walRecordHeaderSize); err != nil {
+		if err := ioutil.ReadFullAt(reader, payload, offset+walRecordHeaderSize); err != nil {
 			return WALRecovery{}, fmt.Errorf("%w: read record %d payload: %v", ErrWALCorrupt, expectedLSN, err)
 		}
-		if actual := ailego.CRC32C(payload); actual != metadata.payloadCRC {
+		if actual := hashutil.CRC32C(payload); actual != metadata.payloadCRC {
 			return WALRecovery{}, fmt.Errorf("%w: record %d payload checksum got %08x, want %08x", ErrWALCorrupt, expectedLSN, actual, metadata.payloadCRC)
 		}
 		offset += recordSize
@@ -522,7 +523,7 @@ func readWALRecordAt(reader io.ReaderAt, offset, limit int64, expectedLSN uint64
 		return WALRecord{}, 0, fmt.Errorf("%w: partial record header at %d", ErrWALCorrupt, offset)
 	}
 	header := make([]byte, walRecordHeaderSize)
-	if err := ailego.ReadFullAt(reader, header, offset); err != nil {
+	if err := ioutil.ReadFullAt(reader, header, offset); err != nil {
 		return WALRecord{}, 0, fmt.Errorf("%w: read record header: %v", ErrWALCorrupt, err)
 	}
 	metadata, err := decodeWALRecordHeader(header, expectedLSN)
@@ -534,10 +535,10 @@ func readWALRecordAt(reader io.ReaderAt, offset, limit int64, expectedLSN uint64
 		return WALRecord{}, 0, fmt.Errorf("%w: partial record %d payload", ErrWALCorrupt, expectedLSN)
 	}
 	payload := make([]byte, metadata.payloadLength)
-	if err := ailego.ReadFullAt(reader, payload, offset+walRecordHeaderSize); err != nil {
+	if err := ioutil.ReadFullAt(reader, payload, offset+walRecordHeaderSize); err != nil {
 		return WALRecord{}, 0, fmt.Errorf("%w: read record payload: %v", ErrWALCorrupt, err)
 	}
-	if actual := ailego.CRC32C(payload); actual != metadata.payloadCRC {
+	if actual := hashutil.CRC32C(payload); actual != metadata.payloadCRC {
 		return WALRecord{}, 0, fmt.Errorf("%w: record %d payload checksum got %08x, want %08x", ErrWALCorrupt, expectedLSN, actual, metadata.payloadCRC)
 	}
 	return WALRecord{LSN: metadata.lsn, Payload: payload}, recordSize, nil
@@ -555,7 +556,7 @@ func encodeWALFileHeader() []byte {
 	binary.LittleEndian.PutUint16(header[8:10], walFormatVersion)
 	binary.LittleEndian.PutUint16(header[10:12], walFileHeaderSize)
 	binary.LittleEndian.PutUint32(header[12:16], MaxWALRecordSize)
-	binary.LittleEndian.PutUint32(header[24:28], ailego.CRC32C(header[:24]))
+	binary.LittleEndian.PutUint32(header[24:28], hashutil.CRC32C(header[:24]))
 	return header
 }
 
@@ -578,7 +579,7 @@ func validateWALFileHeader(header []byte) error {
 	if binary.LittleEndian.Uint64(header[16:24]) != 0 || binary.LittleEndian.Uint32(header[28:32]) != 0 {
 		return fmt.Errorf("%w: nonzero file header reserved bytes", ErrWALCorrupt)
 	}
-	if actual, expected := ailego.CRC32C(header[:24]), binary.LittleEndian.Uint32(header[24:28]); actual != expected {
+	if actual, expected := hashutil.CRC32C(header[:24]), binary.LittleEndian.Uint32(header[24:28]); actual != expected {
 		return fmt.Errorf("%w: file header checksum got %08x, want %08x", ErrWALCorrupt, actual, expected)
 	}
 	return nil
@@ -591,8 +592,8 @@ func encodeWALRecord(lsn uint64, payload []byte) []byte {
 	binary.LittleEndian.PutUint16(encoded[6:8], walRecordHeaderSize)
 	binary.LittleEndian.PutUint64(encoded[8:16], lsn)
 	binary.LittleEndian.PutUint32(encoded[16:20], uint32(len(payload)))
-	binary.LittleEndian.PutUint32(encoded[20:24], ailego.CRC32C(payload))
-	binary.LittleEndian.PutUint32(encoded[24:28], ailego.CRC32C(encoded[:24]))
+	binary.LittleEndian.PutUint32(encoded[20:24], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint32(encoded[24:28], hashutil.CRC32C(encoded[:24]))
 	copy(encoded[walRecordHeaderSize:], payload)
 	return encoded
 }
@@ -621,7 +622,7 @@ func decodeWALRecordHeader(header []byte, expectedLSN uint64) (walRecordMetadata
 	if binary.LittleEndian.Uint32(header[28:32]) != 0 {
 		return walRecordMetadata{}, errors.New("nonzero record header reserved bytes")
 	}
-	if actual, expected := ailego.CRC32C(header[:24]), binary.LittleEndian.Uint32(header[24:28]); actual != expected {
+	if actual, expected := hashutil.CRC32C(header[:24]), binary.LittleEndian.Uint32(header[24:28]); actual != expected {
 		return walRecordMetadata{}, fmt.Errorf("header checksum got %08x, want %08x", actual, expected)
 	}
 	return walRecordMetadata{

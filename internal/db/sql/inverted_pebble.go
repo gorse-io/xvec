@@ -27,7 +27,7 @@ import (
 	"os"
 	"unicode/utf8"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/indexstore"
 )
 
@@ -92,7 +92,7 @@ func (i *InvertedIndex) Save(ctx context.Context, path string) error {
 	if err := writer.set(invertedFieldKey, field); err != nil {
 		return fail(err)
 	}
-	for kind, bitmap := range []*ailego.Bitmap{i.rows, i.nulls, i.nonNull} {
+	for kind, bitmap := range []*container.Bitmap{i.rows, i.nulls, i.nonNull} {
 		if err := writeInvertedBitmap(ctx, writer, []byte{'b', byte(kind)}, bitmap); err != nil {
 			return fail(err)
 		}
@@ -171,7 +171,7 @@ func OpenInvertedIndex(ctx context.Context, path string) (*InvertedIndex, error)
 	if err != nil {
 		return nil, invertedCorruption("invalid field metadata", err)
 	}
-	bitmaps := []*ailego.Bitmap{index.rows, index.nulls, index.nonNull}
+	bitmaps := []*container.Bitmap{index.rows, index.nulls, index.nonNull}
 	for kind := range bitmaps {
 		bitmaps[kind], err = readInvertedBitmap(ctx, store, []byte{'b', byte(kind)})
 		if err != nil {
@@ -331,7 +331,7 @@ func invertedPostingPrefix(ordinal uint32) []byte {
 	return prefix
 }
 
-func writeInvertedBitmap(ctx context.Context, writer *invertedStoreWriter, prefix []byte, bitmap *ailego.Bitmap) error {
+func writeInvertedBitmap(ctx context.Context, writer *invertedStoreWriter, prefix []byte, bitmap *container.Bitmap) error {
 	words := bitmap.Snapshot()
 	wordOffset := 0
 	chunk := uint32(0)
@@ -356,7 +356,7 @@ func writeInvertedBitmap(ctx context.Context, writer *invertedStoreWriter, prefi
 	return nil
 }
 
-func readInvertedBitmap(ctx context.Context, store *indexstore.Store, prefix []byte) (*ailego.Bitmap, error) {
+func readInvertedBitmap(ctx context.Context, store *indexstore.Store, prefix []byte) (*container.Bitmap, error) {
 	iterator, err := store.NewPrefixIterator(prefix)
 	if err != nil {
 		return nil, invertedCorruption("open bitmap iterator", err)
@@ -468,8 +468,8 @@ func validPersistedScalarKey(key scalarKey) bool {
 	return true
 }
 
-func bitmapFromPersistedWords(words []uint64) *ailego.Bitmap {
-	bitmap := ailego.NewBitmap(uint64(len(words)) * 64)
+func bitmapFromPersistedWords(words []uint64) *container.Bitmap {
+	bitmap := container.NewBitmap(uint64(len(words)) * 64)
 	for wordIndex, word := range words {
 		for word != 0 {
 			bit := bits.TrailingZeros64(word)
@@ -480,7 +480,7 @@ func bitmapFromPersistedWords(words []uint64) *ailego.Bitmap {
 	return bitmap
 }
 
-func bitmapSubset(left, right *ailego.Bitmap) bool {
+func bitmapSubset(left, right *container.Bitmap) bool {
 	leftWords, rightWords := left.Snapshot(), right.Snapshot()
 	for index, word := range leftWords {
 		if index >= len(rightWords) {
@@ -496,7 +496,7 @@ func bitmapSubset(left, right *ailego.Bitmap) bool {
 	return true
 }
 
-func bitmapPartition(rows, nulls, nonNull *ailego.Bitmap) bool {
+func bitmapPartition(rows, nulls, nonNull *container.Bitmap) bool {
 	rowWords, nullWords, nonNullWords := rows.Snapshot(), nulls.Snapshot(), nonNull.Snapshot()
 	length := max(len(rowWords), len(nullWords), len(nonNullWords))
 	for index := 0; index < length; index++ {

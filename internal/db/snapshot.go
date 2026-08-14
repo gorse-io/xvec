@@ -26,7 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 )
 
 const (
@@ -47,8 +47,8 @@ func encodeSnapshot(magic [8]byte, count uint64, payload []byte) ([]byte, error)
 	binary.LittleEndian.PutUint16(encoded[10:12], snapshotHeaderSize)
 	binary.LittleEndian.PutUint64(encoded[16:24], count)
 	binary.LittleEndian.PutUint64(encoded[24:32], uint64(len(payload)))
-	binary.LittleEndian.PutUint32(encoded[32:36], ailego.CRC32C(payload))
-	binary.LittleEndian.PutUint32(encoded[36:40], ailego.CRC32C(encoded[:36]))
+	binary.LittleEndian.PutUint32(encoded[32:36], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint32(encoded[36:40], hashutil.CRC32C(encoded[:36]))
 	copy(encoded[snapshotHeaderSize:], payload)
 	return encoded, nil
 }
@@ -69,7 +69,7 @@ func decodeSnapshot(encoded []byte, magic [8]byte) (count uint64, payload []byte
 	if binary.LittleEndian.Uint32(encoded[12:16]) != 0 {
 		return 0, nil, fmt.Errorf("%w: nonzero reserved bytes", ErrSnapshotCorrupt)
 	}
-	if actual, expected := ailego.CRC32C(encoded[:36]), binary.LittleEndian.Uint32(encoded[36:40]); actual != expected {
+	if actual, expected := hashutil.CRC32C(encoded[:36]), binary.LittleEndian.Uint32(encoded[36:40]); actual != expected {
 		return 0, nil, fmt.Errorf("%w: header checksum got %08x, want %08x", ErrSnapshotCorrupt, actual, expected)
 	}
 	payloadLength := binary.LittleEndian.Uint64(encoded[24:32])
@@ -77,7 +77,7 @@ func decodeSnapshot(encoded []byte, magic [8]byte) (count uint64, payload []byte
 		return 0, nil, fmt.Errorf("%w: invalid payload length %d", ErrSnapshotCorrupt, payloadLength)
 	}
 	payload = encoded[snapshotHeaderSize:]
-	if actual, expected := ailego.CRC32C(payload), binary.LittleEndian.Uint32(encoded[32:36]); actual != expected {
+	if actual, expected := hashutil.CRC32C(payload), binary.LittleEndian.Uint32(encoded[32:36]); actual != expected {
 		return 0, nil, fmt.Errorf("%w: payload checksum got %08x, want %08x", ErrSnapshotCorrupt, actual, expected)
 	}
 	return binary.LittleEndian.Uint64(encoded[16:24]), payload, nil

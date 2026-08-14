@@ -24,7 +24,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/stretchr/testify/require"
 )
 
@@ -175,9 +175,9 @@ func TestSegmentValidationAndCorruption(t *testing.T) {
 	badDocID := append([]byte(nil), encoded...)
 	binary.LittleEndian.PutUint64(badDocID[segmentHeaderSize:segmentHeaderSize+8], 999)
 	record := badDocID[segmentHeaderSize : segmentHeaderSize+segmentRecordHeaderSize]
-	binary.LittleEndian.PutUint32(record[16:20], ailego.CRC32C(badDocID[segmentHeaderSize+segmentRecordHeaderSize:segmentHeaderSize+segmentRecordHeaderSize+len(docs[0].PrimaryKey)+len(docs[0].Payload)]))
-	binary.LittleEndian.PutUint32(badDocID[56:60], ailego.CRC32C(badDocID[segmentHeaderSize:]))
-	binary.LittleEndian.PutUint32(badDocID[60:64], ailego.CRC32C(badDocID[:60]))
+	binary.LittleEndian.PutUint32(record[16:20], hashutil.CRC32C(badDocID[segmentHeaderSize+segmentRecordHeaderSize:segmentHeaderSize+segmentRecordHeaderSize+len(docs[0].PrimaryKey)+len(docs[0].Payload)]))
+	binary.LittleEndian.PutUint32(badDocID[56:60], hashutil.CRC32C(badDocID[segmentHeaderSize:]))
+	binary.LittleEndian.PutUint32(badDocID[60:64], hashutil.CRC32C(badDocID[:60]))
 	{
 		_, _, err := decodeSegment(context.Background(), badDocID)
 		require.ErrorIs(t, err, ErrSegmentCorrupt)
@@ -248,7 +248,7 @@ func TestSegmentPayloadCRC(t *testing.T) {
 	encoded, err := encodeSegment(metadata, docs)
 	require.NoError(t, err)
 	{
-		actual, expected := binary.LittleEndian.Uint32(encoded[56:60]), ailego.CRC32C(encoded[segmentHeaderSize:])
+		actual, expected := binary.LittleEndian.Uint32(encoded[56:60]), hashutil.CRC32C(encoded[segmentHeaderSize:])
 		require.Equal(t, expected, actual)
 	}
 	require.False(t, bytes.Equal(encoded[:8], make([]byte, 8)),

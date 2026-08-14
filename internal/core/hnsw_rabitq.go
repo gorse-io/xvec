@@ -24,7 +24,9 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/io"
 )
 
 var ErrInvalidHNSWRaBitQOptions = errors.New("core: invalid HNSW-RaBitQ build options")
@@ -612,7 +614,7 @@ func (i *HNSWRaBitQIndex) searchPrepared(ctx context.Context, query *RaBitQQuery
 
 func (i *HNSWRaBitQIndex) scanRaBitQCodes(ctx context.Context, query *RaBitQQuery, options SearchOptions) ([]Result, error) {
 	worse := func(left, right hnswScoredNode) bool { return i.raBitQNodeBetter(right, left) }
-	selected := ailego.NewHeap(worse)
+	selected := container.NewHeap(worse)
 	for position, code := range i.codes {
 		if position&255 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -669,8 +671,8 @@ func (i *HNSWRaBitQIndex) searchRaBitQLayer(ctx context.Context, query *RaBitQQu
 func (i *HNSWRaBitQIndex) searchRaBitQBase(ctx context.Context, query *RaBitQQuery, entry, capacity int, options SearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
 	better := func(left, right hnswScoredNode) bool { return i.raBitQNodeBetter(left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.raBitQNodeBetter(right, left) }
-	frontier := ailego.NewHeap(better)
-	accepted := ailego.NewHeap(worse)
+	frontier := container.NewHeap(better)
+	accepted := container.NewHeap(worse)
 	visited.reset(len(i.codes))
 	estimate, err := query.Estimate(i.codes[entry])
 	if err != nil {
@@ -955,7 +957,7 @@ func (i *HNSWRaBitQIndex) Save(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := ailego.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
+	if err := ioutil.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
 		return fmt.Errorf("core: save HNSW-RaBitQ file: %w", err)
 	}
 	return nil
@@ -1083,8 +1085,8 @@ func encodeHNSWRaBitQIndex(ctx context.Context, index *HNSWRaBitQIndex) ([]byte,
 	binary.LittleEndian.PutUint32(header[96:100], uint32(index.options.MaxIterations))
 	binary.LittleEndian.PutUint32(header[100:104], uint32(index.options.Workers))
 	binary.LittleEndian.PutUint64(header[104:112], index.options.Seed)
-	binary.LittleEndian.PutUint32(header[112:116], ailego.CRC32C(payload))
-	binary.LittleEndian.PutUint32(header[124:128], ailego.CRC32C(header[:124]))
+	binary.LittleEndian.PutUint32(header[112:116], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint32(header[124:128], hashutil.CRC32C(header[:124]))
 	return append(header, payload...), nil
 }
 
@@ -1111,7 +1113,7 @@ func decodeHNSWRaBitQIndex(ctx context.Context, encoded []byte) (*HNSWRaBitQInde
 		!hnswAllZero(header[116:124]) {
 		return nil, fmt.Errorf("%w: invalid header fields", ErrInvalidHNSWRaBitQFile)
 	}
-	if got, want := ailego.CRC32C(header[:124]), binary.LittleEndian.Uint32(header[124:128]); got != want {
+	if got, want := hashutil.CRC32C(header[:124]), binary.LittleEndian.Uint32(header[124:128]); got != want {
 		return nil, fmt.Errorf("%w: header got %08x, want %08x", ErrHNSWRaBitQChecksumMismatch, got, want)
 	}
 	if binary.LittleEndian.Uint64(header[16:24]) != uint64(len(encoded)) ||
@@ -1119,7 +1121,7 @@ func decodeHNSWRaBitQIndex(ctx context.Context, encoded []byte) (*HNSWRaBitQInde
 		return nil, fmt.Errorf("%w: inconsistent file length", ErrInvalidHNSWRaBitQFile)
 	}
 	payload := encoded[hnswRaBitQHeaderSize:]
-	if got, want := ailego.CRC32C(payload), binary.LittleEndian.Uint32(header[112:116]); got != want {
+	if got, want := hashutil.CRC32C(payload), binary.LittleEndian.Uint32(header[112:116]); got != want {
 		return nil, fmt.Errorf("%w: payload got %08x, want %08x", ErrHNSWRaBitQChecksumMismatch, got, want)
 	}
 

@@ -26,7 +26,7 @@ import (
 	"sync"
 
 	"github.com/cockroachdb/pebble/v2"
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/io"
 )
 
 const (
@@ -494,7 +494,7 @@ func writeIndexstoreMarker(path string) (err error) {
 	if err := os.Rename(temporary, filepath.Join(path, indexstoreMarkerName)); err != nil {
 		return fmt.Errorf("indexstore: publish zvec marker: %w", err)
 	}
-	if err := ailego.SyncDirectory(path); err != nil {
+	if err := ioutil.SyncDirectory(path); err != nil {
 		return fmt.Errorf("indexstore: sync marker directory: %w", err)
 	}
 	return nil

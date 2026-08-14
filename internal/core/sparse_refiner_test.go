@@ -20,7 +20,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,7 +71,7 @@ func TestOriginalSparseVectorRefinerValidation(t *testing.T) {
 	invalid := SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.NaN())}}
 	{
 		_, err := refiner.RefineSparse(context.Background(), invalid, nil, SearchOptions{TopK: 1})
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 	{
 		_, err := refiner.RefineSparse(context.Background(), valid, []Result{{Key: 99}}, SearchOptions{TopK: 1})

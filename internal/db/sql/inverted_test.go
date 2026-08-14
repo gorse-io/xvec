@@ -20,7 +20,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -375,7 +375,7 @@ func assertInvertedResult(t *testing.T, result InvertedResult, want []uint64, st
 	}
 }
 
-func bitmapBits(bitmap *ailego.Bitmap) []uint64 {
+func bitmapBits(bitmap *container.Bitmap) []uint64 {
 	if bitmap == nil {
 		return nil
 	}

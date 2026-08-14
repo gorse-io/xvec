@@ -19,7 +19,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 )
 
 // SparseRefiner re-scores approximate sparse candidates in an exact
@@ -71,7 +71,7 @@ func (r *OriginalSparseVectorRefiner) RefineSparse(
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
-	if _, err := ailego.SparseInnerProduct(query.Indices, query.Values, nil, nil); err != nil {
+	if _, err := mathutil.SparseInnerProduct(query.Indices, query.Values, nil, nil); err != nil {
 		return nil, fmt.Errorf("core: validate sparse refine query: %w", err)
 	}
 
@@ -92,7 +92,7 @@ func (r *OriginalSparseVectorRefiner) RefineSparse(
 		if !found {
 			return nil, fmt.Errorf("%w: key %d", ErrMissingRefineVector, candidate.Key)
 		}
-		score, err := ailego.SparseInnerProduct(query.Indices, query.Values, vector.Indices, vector.Values)
+		score, err := mathutil.SparseInnerProduct(query.Indices, query.Values, vector.Indices, vector.Values)
 		if err != nil {
 			return nil, fmt.Errorf("core: score original sparse vector %d: %w", candidate.Key, err)
 		}

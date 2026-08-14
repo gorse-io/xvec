@@ -27,7 +27,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/require"
 )
 
@@ -319,11 +320,11 @@ func TestHNSWBuilderLifecycleAndErrors(t *testing.T) {
 	}
 	{
 		err := builder.Add(context.Background(), 1, []float32{1})
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 	{
 		err := builder.Add(context.Background(), 1, []float32{1, float32(math.NaN())})
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 	{
 		err := builder.Add(context.Background(), 1, []float32{1, 2})
@@ -375,7 +376,7 @@ func TestHNSWSmallIndexUsesPrevalidatedDistance(t *testing.T) {
 	calls := 0
 	index.distance = func(left, right []float32) (float32, error) {
 		calls++
-		return ailego.L2SquaredPrevalidated(left, right)
+		return mathutil.L2SquaredPrevalidated(left, right)
 	}
 	results, err := index.SearchHNSW(context.Background(), []float32{0, 0}, HNSWSearchOptions{
 		SearchOptions: SearchOptions{TopK: 1},
@@ -393,7 +394,7 @@ func TestHNSWBuildPropagatesPrevalidatedDistanceOverflow(t *testing.T) {
 	require.NoError(t, builder.Add(context.Background(), 1, large))
 	require.NoError(t, builder.Add(context.Background(), 2, large))
 	_, err = builder.Build(context.Background())
-	require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+	require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 }
 
 func TestHNSWLevelSamplingDeterministicAndBounded(t *testing.T) {
@@ -709,7 +710,7 @@ func TestHNSWSearchValidation(t *testing.T) {
 	}
 	{
 		_, err := index.SearchHNSW(context.Background(), []float32{1, float32(math.NaN()), 3}, valid)
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 
 	invalidEF := valid
@@ -897,11 +898,11 @@ func TestHNSWIncrementalFailuresAreAtomic(t *testing.T) {
 	}
 	{
 		err := index.Add(context.Background(), 100000, []float32{1, 2})
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 	{
 		err := index.Add(context.Background(), 100000, []float32{1, float32(math.NaN()), 3})
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 	{
 		err := index.Add(context.Background(), index.keys[0], []float32{1, 2, 3})
@@ -1407,7 +1408,7 @@ func TestHNSWPersistenceRejectsSemanticCorruption(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			encoded := slices.Clone(valid)
 			test.mutate(encoded)
-			binary.LittleEndian.PutUint32(encoded[108:112], ailego.CRC32C(encoded[:108]))
+			binary.LittleEndian.PutUint32(encoded[108:112], hashutil.CRC32C(encoded[:108]))
 			{
 				_, err := decodeHNSWIndex(context.Background(), encoded)
 				require.ErrorIs(t, err, ErrInvalidHNSWFile)
@@ -1525,6 +1526,6 @@ func parseHNSWRecordOffsets(t testing.TB, encoded []byte) []hnswRecordOffset {
 }
 
 func rechecksumHNSW(encoded []byte) {
-	binary.LittleEndian.PutUint32(encoded[84:88], ailego.CRC32C(encoded[hnswHeaderSize:]))
-	binary.LittleEndian.PutUint32(encoded[108:112], ailego.CRC32C(encoded[:108]))
+	binary.LittleEndian.PutUint32(encoded[84:88], hashutil.CRC32C(encoded[hnswHeaderSize:]))
+	binary.LittleEndian.PutUint32(encoded[108:112], hashutil.CRC32C(encoded[:108]))
 }

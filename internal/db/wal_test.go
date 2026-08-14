@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/stretchr/testify/require"
 )
 
@@ -639,7 +639,7 @@ func fileSize(t *testing.T, name string) int64 {
 func TestWALRecordHeaderCRCUsesCastagnoli(t *testing.T) {
 	header := encodeWALRecord(1, []byte("payload"))[:walRecordHeaderSize]
 	{
-		actual, expected := binary.LittleEndian.Uint32(header[24:28]), ailego.CRC32C(header[:24])
+		actual, expected := binary.LittleEndian.Uint32(header[24:28]), hashutil.CRC32C(header[:24])
 		require.Equal(t, expected, actual)
 	}
 }

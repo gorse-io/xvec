@@ -22,7 +22,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -238,7 +238,7 @@ func TestSearchFTSBlockMaxMatchesExhaustiveBooleanAndPhraseSearch(t *testing.T) 
 		documents[documentID] = tokens
 	}
 	dictionary := buildFTSTestDictionary(t, documents)
-	deleted := ailego.NewBitmap(uint64(len(documents)))
+	deleted := container.NewBitmap(uint64(len(documents)))
 	for documentID := 17; documentID < len(documents); documentID += 71 {
 		deleted.Set(uint64(documentID))
 	}
@@ -369,7 +369,7 @@ func TestSearchFTSTiesDeletionAdvanceAndValidation(t *testing.T) {
 		{{Text: "same", Position: 0}},
 		{{Text: "same", Position: 0}},
 	})
-	deleted := ailego.NewBitmap(3)
+	deleted := container.NewBitmap(3)
 	deleted.Set(1)
 	stats, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{{Dictionary: dictionary, DeletedDocuments: deleted}})
 	require.NoError(t, err)
@@ -506,7 +506,7 @@ func FuzzSearchFTSBM25(f *testing.F) {
 			}
 		}
 		dictionary := buildFTSTestDictionary(t, documents)
-		deleted := ailego.NewBitmap(uint64(len(documents)))
+		deleted := container.NewBitmap(uint64(len(documents)))
 		for documentID := range documents {
 			if deletionMask&(uint16(1)<<documentID) != 0 {
 				deleted.Set(uint64(documentID))

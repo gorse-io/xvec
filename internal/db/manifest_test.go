@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/stretchr/testify/require"
 )
 
@@ -277,7 +277,7 @@ func manifestWithPayloadField(name string, value any) ([]byte, error) {
 	}
 	encoded = append(encoded[:manifestHeaderSize], newPayload...)
 	binary.LittleEndian.PutUint64(encoded[20:28], uint64(len(newPayload)))
-	binary.LittleEndian.PutUint32(encoded[28:32], ailego.CRC32C(newPayload))
+	binary.LittleEndian.PutUint32(encoded[28:32], hashutil.CRC32C(newPayload))
 	return encoded, nil
 }
 
@@ -297,7 +297,7 @@ func manifestWithoutPayloadField(name string) ([]byte, error) {
 	}
 	encoded = append(encoded[:manifestHeaderSize], newPayload...)
 	binary.LittleEndian.PutUint64(encoded[20:28], uint64(len(newPayload)))
-	binary.LittleEndian.PutUint32(encoded[28:32], ailego.CRC32C(newPayload))
+	binary.LittleEndian.PutUint32(encoded[28:32], hashutil.CRC32C(newPayload))
 	return encoded, nil
 }
 

@@ -25,7 +25,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -211,11 +212,11 @@ func TestIVFBuilderLifecycleAndValidation(t *testing.T) {
 	}
 	{
 		err := builder.Add(context.Background(), 1, []float32{1})
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 	{
 		err := builder.Add(context.Background(), 1, []float32{1, float32(math.Inf(1))})
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 	{
 		err := builder.Add(context.Background(), 1, []float32{1, 2})
@@ -436,7 +437,7 @@ func TestIVFSearchValidation(t *testing.T) {
 	}
 	{
 		_, err := index.SearchIVF(context.Background(), []float32{1, float32(math.NaN())}, valid)
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 
 	invalidProbe := valid
@@ -603,11 +604,11 @@ func TestIVFIncrementalValidationIsAtomic(t *testing.T) {
 	}
 	{
 		err := index.Add(context.Background(), 1000, []float32{1, 2})
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 	{
 		err := index.Add(context.Background(), 1000, []float32{1, float32(math.NaN()), 3})
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 	{
 		err := index.Add(context.Background(), index.keys[0], []float32{1, 2, 3})
@@ -937,7 +938,7 @@ func TestIVFPersistenceRejectsSemanticCorruption(t *testing.T) {
 
 	badOptions := slices.Clone(valid)
 	binary.LittleEndian.PutUint32(badOptions[52:56], 0)
-	binary.LittleEndian.PutUint32(badOptions[108:112], ailego.CRC32C(badOptions[:108]))
+	binary.LittleEndian.PutUint32(badOptions[108:112], hashutil.CRC32C(badOptions[:108]))
 	{
 		_, err := decodeIVFIndex(context.Background(), badOptions)
 		require.ErrorIs(t, err, ErrInvalidIVFFile)
@@ -945,7 +946,7 @@ func TestIVFPersistenceRejectsSemanticCorruption(t *testing.T) {
 
 	badLength := slices.Clone(valid)
 	binary.LittleEndian.PutUint64(badLength[16:24], uint64(len(badLength)+1))
-	binary.LittleEndian.PutUint32(badLength[108:112], ailego.CRC32C(badLength[:108]))
+	binary.LittleEndian.PutUint32(badLength[108:112], hashutil.CRC32C(badLength[:108]))
 	{
 		_, err := decodeIVFIndex(context.Background(), badLength)
 		require.ErrorIs(t, err, ErrInvalidIVFFile)
@@ -1026,6 +1027,6 @@ func assertSameIVFIndex(t testing.TB, got, want *IVFIndex) {
 }
 
 func rechecksumIVF(encoded []byte) {
-	binary.LittleEndian.PutUint32(encoded[96:100], ailego.CRC32C(encoded[ivfHeaderSize:]))
-	binary.LittleEndian.PutUint32(encoded[108:112], ailego.CRC32C(encoded[:108]))
+	binary.LittleEndian.PutUint32(encoded[96:100], hashutil.CRC32C(encoded[ivfHeaderSize:]))
+	binary.LittleEndian.PutUint32(encoded[108:112], hashutil.CRC32C(encoded[:108]))
 }

@@ -21,7 +21,8 @@ import (
 	"math"
 	"slices"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
 var (
@@ -88,7 +89,7 @@ func QueryDense(
 		return nil, err
 	}
 	batches := make([][]Result, len(searchers))
-	err := ailego.ParallelFor(ctx, len(searchers), workers, func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(searchers), workers, func(ctx context.Context, index int) error {
 		searcher := searchers[index]
 		if searcher == nil {
 			return errors.New("nil dense query searcher")
@@ -127,7 +128,7 @@ func QuerySparse(
 		return nil, err
 	}
 	batches := make([][]Result, len(searchers))
-	err := ailego.ParallelFor(ctx, len(searchers), workers, func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(searchers), workers, func(ctx context.Context, index int) error {
 		searcher := searchers[index]
 		if searcher == nil {
 			return errors.New("nil sparse query searcher")
@@ -160,7 +161,7 @@ func MergeSearchResults(metric Metric, k int, batches ...[]Result) []Result {
 		}
 		return metric.Better(right.Score, left.Score)
 	}
-	heap := ailego.NewHeap(worstFirst)
+	heap := container.NewHeap(worstFirst)
 	for _, batch := range batches {
 		for _, result := range batch {
 			if heap.Len() < k {

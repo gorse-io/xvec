@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/require"
 )
 
@@ -141,11 +141,11 @@ func TestTopKBoundsAndValidation(t *testing.T) {
 	}
 	{
 		_, err = TopK(context.Background(), MetricL2, nil, nil, 1)
-		require.ErrorIs(t, err, ailego.ErrEmptyVector)
+		require.ErrorIs(t, err, mathutil.ErrEmptyVector)
 	}
 	{
 		_, err = TopK(context.Background(), MetricL2, []float32{1}, []Candidate{{Key: 1, Vector: []float32{1, 2}}}, 1)
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 	{
 		_, err = TopK(nil, MetricL2, []float32{1}, nil, 1)
@@ -181,7 +181,7 @@ func TestBatchTopK(t *testing.T) {
 	require.Len(t, empty, 0)
 	{
 		_, err = BatchTopK(context.Background(), MetricIP, [][]float32{{1, 0}, {1}}, exactCandidates, 2, 2)
-		require.ErrorIs(t, err, ailego.ErrDimensionMismatch)
+		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
 	}
 
 	defaultWorkers, err := BatchTopK(context.Background(), MetricIP, queries, exactCandidates, 2, 0)

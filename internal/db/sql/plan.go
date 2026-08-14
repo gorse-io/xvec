@@ -17,7 +17,7 @@ package sql
 import (
 	"fmt"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 )
 
 // Resolver returns one typed field value. Missing nullable fields should be
@@ -97,17 +97,17 @@ type IndexSet map[string]*InvertedIndex
 // Candidates returns a safe row-ordinal prefilter. used=false means no safe
 // index prefilter exists. exact reports whether the bitmap itself represents
 // the complete SQL match set; callers may always forward-verify candidates.
-func (p *Plan) Candidates(indexes IndexSet, totalRows uint64) (bitmap *ailego.Bitmap, used, exact bool, err error) {
+func (p *Plan) Candidates(indexes IndexSet, totalRows uint64) (bitmap *container.Bitmap, used, exact bool, err error) {
 	if p == nil || p.root == nil {
 		return nil, false, false, fmt.Errorf("sql: nil filter plan")
 	}
 	return candidatesForNode(p.root, indexes, totalRows)
 }
 
-func candidatesForNode(node planNode, indexes IndexSet, totalRows uint64) (*ailego.Bitmap, bool, bool, error) {
+func candidatesForNode(node planNode, indexes IndexSet, totalRows uint64) (*container.Bitmap, bool, bool, error) {
 	switch node := node.(type) {
 	case *constantPlanNode:
-		bitmap := ailego.NewBitmap(totalRows)
+		bitmap := container.NewBitmap(totalRows)
 		if node.value == TruthTrue {
 			for row := uint64(0); row < totalRows; row++ {
 				bitmap.Set(row)

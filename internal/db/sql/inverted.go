@@ -22,7 +22,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 )
 
 // InvertedStrategy identifies how an index search produced its candidate set.
@@ -68,7 +68,7 @@ func (s InvertedStrategy) String() string {
 // InvertedResult is an immutable search result. Supported=false instructs the
 // planner to use forward evaluation for that predicate.
 type InvertedResult struct {
-	Bitmap    *ailego.Bitmap
+	Bitmap    *container.Bitmap
 	Supported bool
 	Strategy  InvertedStrategy
 	Terms     int
@@ -80,12 +80,12 @@ type InvertedIndex struct {
 	mu          sync.RWMutex
 	field       Field
 	sealed      bool
-	rows        *ailego.Bitmap
-	nulls       *ailego.Bitmap
-	nonNull     *ailego.Bitmap
-	postings    map[scalarKey]*ailego.Bitmap
+	rows        *container.Bitmap
+	nulls       *container.Bitmap
+	nonNull     *container.Bitmap
+	postings    map[scalarKey]*container.Bitmap
 	ordered     []scalarKey
-	arrayLength map[uint32]*ailego.Bitmap
+	arrayLength map[uint32]*container.Bitmap
 	lengths     []uint32
 }
 
@@ -94,8 +94,8 @@ func NewInvertedIndex(field Field) (*InvertedIndex, error) {
 		return nil, fmt.Errorf("sql: field %q is not a valid inverted-index field", field.Name)
 	}
 	return &InvertedIndex{
-		field: field, rows: ailego.NewBitmap(0), nulls: ailego.NewBitmap(0), nonNull: ailego.NewBitmap(0),
-		postings: make(map[scalarKey]*ailego.Bitmap), arrayLength: make(map[uint32]*ailego.Bitmap),
+		field: field, rows: container.NewBitmap(0), nulls: container.NewBitmap(0), nonNull: container.NewBitmap(0),
+		postings: make(map[scalarKey]*container.Bitmap), arrayLength: make(map[uint32]*container.Bitmap),
 	}, nil
 }
 
@@ -144,7 +144,7 @@ func (i *InvertedIndex) Add(row uint64, value Value) error {
 		length := uint32(len(value.elements))
 		posting := i.arrayLength[length]
 		if posting == nil {
-			posting = ailego.NewBitmap(0)
+			posting = container.NewBitmap(0)
 			i.arrayLength[length] = posting
 		}
 		posting.Set(row)
@@ -166,7 +166,7 @@ func (i *InvertedIndex) Add(row uint64, value Value) error {
 func (i *InvertedIndex) addPosting(key scalarKey, row uint64) {
 	posting := i.postings[key]
 	if posting == nil {
-		posting = ailego.NewBitmap(0)
+		posting = container.NewBitmap(0)
 		i.postings[key] = posting
 	}
 	posting.Set(row)
@@ -324,7 +324,7 @@ func (i *InvertedIndex) SearchArrayLength(predicate BoundPredicate) (InvertedRes
 		bitmap.AndNot(i.arrayLength[target])
 		return supportedBitmap(bitmap, InvertedArrayLength, 1), nil
 	}
-	bitmap := ailego.NewBitmap(0)
+	bitmap := container.NewBitmap(0)
 	start, end := orderedUint32Bounds(i.lengths, target, predicate.operator)
 	for _, length := range i.lengths[start:end] {
 		bitmap.Or(i.arrayLength[length])
@@ -332,16 +332,16 @@ func (i *InvertedIndex) SearchArrayLength(predicate BoundPredicate) (InvertedRes
 	return supportedBitmap(bitmap, InvertedArrayLength, end-start), nil
 }
 
-func (i *InvertedIndex) posting(value Value) *ailego.Bitmap {
+func (i *InvertedIndex) posting(value Value) *container.Bitmap {
 	posting := i.postings[keyFromValue(value)]
 	if posting == nil {
-		return ailego.NewBitmap(0)
+		return container.NewBitmap(0)
 	}
 	return posting.Clone()
 }
 
-func (i *InvertedIndex) unionValues(values []Value) *ailego.Bitmap {
-	bitmap := ailego.NewBitmap(0)
+func (i *InvertedIndex) unionValues(values []Value) *container.Bitmap {
+	bitmap := container.NewBitmap(0)
 	for _, value := range values {
 		if posting := i.postings[keyFromValue(value)]; posting != nil {
 			bitmap.Or(posting)
@@ -350,8 +350,8 @@ func (i *InvertedIndex) unionValues(values []Value) *ailego.Bitmap {
 	return bitmap
 }
 
-func (i *InvertedIndex) searchContain(predicate BoundPredicate) *ailego.Bitmap {
-	var bitmap *ailego.Bitmap
+func (i *InvertedIndex) searchContain(predicate BoundPredicate) *container.Bitmap {
+	var bitmap *container.Bitmap
 	if predicate.operator == PredicateContainAll {
 		bitmap = i.nonNull.Clone()
 		for _, value := range predicate.set {
@@ -374,7 +374,7 @@ func (i *InvertedIndex) searchContain(predicate BoundPredicate) *ailego.Bitmap {
 }
 
 func (i *InvertedIndex) searchRange(predicate BoundPredicate) (InvertedResult, error) {
-	bitmap := ailego.NewBitmap(0)
+	bitmap := container.NewBitmap(0)
 	terms := 0
 	strategy := InvertedTermScan
 	if i.field.RangeOptimized {
@@ -520,7 +520,7 @@ func (i *InvertedIndex) searchLike(pattern *LikePattern) (InvertedResult, error)
 }
 
 func (i *InvertedIndex) scanLikeTerms(pattern *LikePattern, strategy InvertedStrategy) InvertedResult {
-	bitmap := ailego.NewBitmap(0)
+	bitmap := container.NewBitmap(0)
 	terms := 0
 	for key, posting := range i.postings {
 		if pattern.Match(key.text) {
@@ -532,7 +532,7 @@ func (i *InvertedIndex) scanLikeTerms(pattern *LikePattern, strategy InvertedStr
 }
 
 func (i *InvertedIndex) scanStringTerms(prefix, suffix string, strategy InvertedStrategy) InvertedResult {
-	bitmap := ailego.NewBitmap(0)
+	bitmap := container.NewBitmap(0)
 	terms := 0
 	for key, posting := range i.postings {
 		if strings.HasPrefix(key.text, prefix) && strings.HasSuffix(key.text, suffix) {
@@ -591,7 +591,7 @@ func unescapedWildcardCounts(pattern string) (percents, underscores int) {
 	return percents, underscores
 }
 
-func supportedBitmap(bitmap *ailego.Bitmap, strategy InvertedStrategy, terms int) InvertedResult {
+func supportedBitmap(bitmap *container.Bitmap, strategy InvertedStrategy, terms int) InvertedResult {
 	return InvertedResult{Bitmap: bitmap, Supported: true, Strategy: strategy, Terms: terms}
 }
 

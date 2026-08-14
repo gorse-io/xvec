@@ -21,7 +21,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,9 +36,9 @@ func TestMergeFTSTermDictionariesDenseRemapPositions(t *testing.T) {
 		{{Text: "banana", Position: 0}, {Text: "carrot", Position: 1}},
 		{{Text: "apple", Position: 0}, {Text: "banana", Position: 1}},
 	})
-	deleted0 := ailego.NewBitmap(3)
+	deleted0 := container.NewBitmap(3)
 	deleted0.Set(1)
-	deleted1 := ailego.NewBitmap(2)
+	deleted1 := container.NewBitmap(2)
 	deleted1.Set(0)
 	merged, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{
 		{Dictionary: segment0, DeletedDocuments: deleted0},
@@ -113,7 +113,7 @@ func TestMergeFTSTermDictionariesEmptyAllDeletedAndMaximumTF(t *testing.T) {
 		{{Text: "x", Position: 0}, {Text: "x", Position: 1}, {Text: "x", Position: 2}},
 		{{Text: "x", Position: 0}},
 	})
-	deleteHighest := ailego.NewBitmap(2)
+	deleteHighest := container.NewBitmap(2)
 	deleteHighest.Set(0)
 	merged, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{{Dictionary: source, DeletedDocuments: deleteHighest}})
 	require.NoError(t, err)
@@ -125,7 +125,7 @@ func TestMergeFTSTermDictionariesEmptyAllDeletedAndMaximumTF(t *testing.T) {
 		{DocumentID: 0, TermFrequency: 1, DocumentLength: 1, Positions: []uint32{0}},
 	}, collectFTSPostings(postings.Iterator()))
 
-	deleteAll := ailego.NewBitmap(2)
+	deleteAll := container.NewBitmap(2)
 	deleteAll.Set(0)
 	deleteAll.Set(1)
 	allDeleted, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{{Dictionary: source, DeletedDocuments: deleteAll}})
@@ -155,7 +155,7 @@ func TestMergeFTSTermDictionariesValidationCancellationAndConcurrency(t *testing
 		require.ErrorIs(t, err, ErrInvalidFTSMerge)
 	}
 
-	outside := ailego.NewBitmap(1)
+	outside := container.NewBitmap(1)
 	outside.Set(1)
 	{
 		merged, err := MergeFTSTermDictionaries(context.Background(), []FTSSegmentView{{Dictionary: source, DeletedDocuments: outside}})
@@ -229,7 +229,7 @@ func FuzzMergeFTSTermDictionaries(f *testing.F) {
 		global := 0
 		for partIndex, part := range parts {
 			views[partIndex].Dictionary = buildFTSTestDictionary(t, part)
-			deleted := ailego.NewBitmap(uint64(len(part)))
+			deleted := container.NewBitmap(uint64(len(part)))
 			for local := range part {
 				isDeleted := global < 64 && deletionMask&(uint64(1)<<global) != 0
 				if isDeleted {

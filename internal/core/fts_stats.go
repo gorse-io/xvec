@@ -21,7 +21,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 )
 
 // ErrInvalidFTSStats identifies an invalid segment view or overflow while
@@ -32,7 +32,7 @@ var ErrInvalidFTSStats = errors.New("core: invalid FTS statistics")
 // of deleted segment-local document IDs to corpus statistics.
 type FTSSegmentView struct {
 	Dictionary       *FTSTermDictionary
-	DeletedDocuments *ailego.Bitmap
+	DeletedDocuments *container.Bitmap
 }
 
 // FTSCorpusStats is a deletion-aware summary across multiple FTS segments.

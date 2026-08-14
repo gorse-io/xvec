@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 )
 
 // ScalarQuantizedHNSWIndex owns a stable HNSW topology, original vectors for
@@ -294,8 +294,8 @@ func (i *ScalarQuantizedHNSWIndex) searchLayer(
 	metric := i.vectors.metric
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, right, left) }
-	candidates := ailego.NewHeap(better)
-	results := ailego.NewHeap(worse)
+	candidates := container.NewHeap(better)
+	results := container.NewHeap(worse)
 	visited.reset(len(i.vectors.keys))
 	for _, entry := range entries {
 		if entry < 0 || entry >= len(i.vectors.keys) || i.base.levels[entry] < level || visited.seen(entry) {
@@ -362,8 +362,8 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 	metric := i.vectors.metric
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.resultNodeBetter(right, left) }
-	frontier := ailego.NewHeap(better)
-	accepted := ailego.NewHeap(worse)
+	frontier := container.NewHeap(better)
+	accepted := container.NewHeap(worse)
 	visited.reset(len(i.vectors.keys))
 
 	score, err := scoreAt(entry)

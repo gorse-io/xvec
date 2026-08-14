@@ -21,7 +21,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -101,7 +101,7 @@ func TestDenseFlatValidation(t *testing.T) {
 	}
 	{
 		err := index.Add(context.Background(), 1, []float32{1, float32(math.NaN())})
-		require.ErrorIs(t, err, ailego.ErrNonFiniteVector)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
 	}
 	{
 		err := index.Add(context.Background(), 1, []float32{1, 2})
@@ -322,10 +322,10 @@ func TestSparseFlatValidation(t *testing.T) {
 		vector SparseVector
 		want   error
 	}{
-		{"length", SparseVector{Indices: []uint32{1}, Values: nil}, ailego.ErrDimensionMismatch},
-		{"order", SparseVector{Indices: []uint32{2, 1}, Values: []float32{1, 2}}, ailego.ErrInvalidSparseOrder},
-		{"duplicate", SparseVector{Indices: []uint32{1, 1}, Values: []float32{1, 2}}, ailego.ErrInvalidSparseOrder},
-		{"non-finite", SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.Inf(1))}}, ailego.ErrNonFiniteVector},
+		{"length", SparseVector{Indices: []uint32{1}, Values: nil}, mathutil.ErrDimensionMismatch},
+		{"order", SparseVector{Indices: []uint32{2, 1}, Values: []float32{1, 2}}, mathutil.ErrInvalidSparseOrder},
+		{"duplicate", SparseVector{Indices: []uint32{1, 1}, Values: []float32{1, 2}}, mathutil.ErrInvalidSparseOrder},
+		{"non-finite", SparseVector{Indices: []uint32{1}, Values: []float32{float32(math.Inf(1))}}, mathutil.ErrNonFiniteVector},
 	}
 	for _, testCase := range tests {
 		{
@@ -347,7 +347,7 @@ func TestSparseFlatValidation(t *testing.T) {
 	}
 	{
 		_, err := index.SearchSparse(context.Background(), SparseVector{Indices: []uint32{2, 1}, Values: []float32{1, 1}}, 1)
-		require.ErrorIs(t, err, ailego.ErrInvalidSparseOrder)
+		require.ErrorIs(t, err, mathutil.ErrInvalidSparseOrder)
 	}
 	{
 		_, err := index.SearchSparse(context.Background(), SparseVector{}, -1)

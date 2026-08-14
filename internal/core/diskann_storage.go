@@ -23,7 +23,7 @@ import (
 	"math"
 	"slices"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/hash"
 )
 
 const (
@@ -174,7 +174,7 @@ func (l DiskANNLayout) encodeNode(node DiskANNNode) ([]byte, error) {
 		binary.LittleEndian.PutUint32(record[offset:offset+4], neighbor)
 		offset += 4
 	}
-	binary.LittleEndian.PutUint32(record[len(record)-4:], ailego.CRC32C(record[:len(record)-4]))
+	binary.LittleEndian.PutUint32(record[len(record)-4:], hashutil.CRC32C(record[:len(record)-4]))
 	return record, nil
 }
 
@@ -183,7 +183,7 @@ func (l DiskANNLayout) decodeNode(nodeID uint32, record []byte) (DiskANNNode, er
 		return DiskANNNode{}, ErrInvalidDiskANNNode
 	}
 	record = record[:l.recordSize]
-	if got, want := ailego.CRC32C(record[:len(record)-4]), binary.LittleEndian.Uint32(record[len(record)-4:]); got != want {
+	if got, want := hashutil.CRC32C(record[:len(record)-4]), binary.LittleEndian.Uint32(record[len(record)-4:]); got != want {
 		return DiskANNNode{}, fmt.Errorf("%w: node %d got %08x, want %08x", ErrDiskANNChecksumMismatch, nodeID, got, want)
 	}
 	node := DiskANNNode{ID: nodeID, Vector: make([]float32, l.dimension)}
@@ -251,7 +251,7 @@ func encodeDiskANNNodeFile(ctx context.Context, layout DiskANNLayout, nodes []Di
 		start := int(spec.offset-layout.dataOffset) + spec.recordOffset
 		copy(data[start:start+layout.recordSize], record)
 	}
-	layout.dataCRC = ailego.CRC32C(data)
+	layout.dataCRC = hashutil.CRC32C(data)
 	header := layout.encodeHeader()
 	return append(header, data...), nil
 }
@@ -272,7 +272,7 @@ func (l DiskANNLayout) encodeHeader() []byte {
 	binary.LittleEndian.PutUint32(header[64:68], uint32(l.sectorsPerNode))
 	header[68] = byte(l.metric)
 	binary.LittleEndian.PutUint32(header[72:76], l.dataCRC)
-	binary.LittleEndian.PutUint32(header[diskANNNodeHeaderCRCPos:], ailego.CRC32C(header[:diskANNNodeHeaderCRCPos]))
+	binary.LittleEndian.PutUint32(header[diskANNNodeHeaderCRCPos:], hashutil.CRC32C(header[:diskANNNodeHeaderCRCPos]))
 	return header
 }
 
@@ -287,7 +287,7 @@ func decodeDiskANNLayout(header []byte, fileSize int64) (DiskANNLayout, error) {
 		!allZeroBytes(header[69:72]) || !allZeroBytes(header[76:diskANNNodeHeaderCRCPos]) {
 		return DiskANNLayout{}, fmt.Errorf("%w: invalid reserved header fields", ErrInvalidDiskANNLayout)
 	}
-	if got, want := ailego.CRC32C(header[:diskANNNodeHeaderCRCPos]), binary.LittleEndian.Uint32(header[diskANNNodeHeaderCRCPos:]); got != want {
+	if got, want := hashutil.CRC32C(header[:diskANNNodeHeaderCRCPos]), binary.LittleEndian.Uint32(header[diskANNNodeHeaderCRCPos:]); got != want {
 		return DiskANNLayout{}, fmt.Errorf("%w: header got %08x, want %08x", ErrDiskANNChecksumMismatch, got, want)
 	}
 	total := binary.LittleEndian.Uint64(header[16:24])

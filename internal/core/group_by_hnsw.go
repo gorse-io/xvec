@@ -18,7 +18,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gorse-io/xvec/internal/ailego"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 )
 
 // HNSWGroupSearchOptions combines group retention with the level-zero graph
@@ -93,7 +93,7 @@ func expandHNSWGroups(
 		return accumulator.finish(options.GroupCount), nil
 	}
 
-	frontier := ailego.NewHeap(nodeBetter)
+	frontier := container.NewHeap(nodeBetter)
 	visited.reset(len(keys))
 	for _, node := range initial {
 		if node.position < 0 || node.position >= len(keys) || visited.seen(node.position) {
