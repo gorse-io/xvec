@@ -111,6 +111,10 @@ type Collection struct {
 	querySnapshotMu         sync.Mutex
 	querySnapshot           atomic.Pointer[collectionQuerySnapshot]
 	querySnapshotBuildCount atomic.Uint64
+	queryLeases             sync.WaitGroup
+
+	retiredRuntimeMu sync.Mutex
+	retiredRuntimes  map[*collectionSegmentRuntime]error
 }
 
 type collectionRuntimeKey struct {
@@ -129,6 +133,9 @@ type collectionRuntimeIndexes struct {
 	sparseExact  map[string]*core.SparseFlatIndex
 	fts          map[string]*collectionFTSRuntime
 	scalar       sqlengine.IndexSet
+
+	closeMu          sync.Mutex
+	closedDenseIndex map[string]struct{}
 }
 
 type collectionSegmentDocuments struct {
@@ -141,12 +148,97 @@ type collectionSegmentRuntime struct {
 	segmentID uint64
 	key       collectionRuntimeKey
 	indexes   *collectionRuntimeIndexes
+	refs      atomic.Int64
 }
 
 type collectionQuerySnapshot struct {
+	schema    CollectionSchema
 	documents []Document
 	segments  []collectionSegmentDocuments
 	runtimes  []*collectionSegmentRuntime
+}
+
+func (r *collectionSegmentRuntime) retain() {
+	if r == nil {
+		return
+	}
+	if refs := r.refs.Add(1); refs <= 1 {
+		panic("xvec: retain released collection segment runtime")
+	}
+}
+
+func (r *collectionSegmentRuntime) release() error {
+	if r == nil {
+		return nil
+	}
+	refs := r.refs.Add(-1)
+	if refs < 0 {
+		panic("xvec: collection segment runtime reference count underflow")
+	}
+	if refs == 0 && r.indexes != nil {
+		if err := r.indexes.Close(); err != nil {
+			r.refs.Store(1)
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *collectionQuerySnapshot) retainRuntimes() {
+	if s == nil {
+		return
+	}
+	for _, runtime := range s.runtimes {
+		runtime.retain()
+	}
+}
+
+func (c *Collection) releaseSnapshotRuntimes(s *collectionQuerySnapshot) error {
+	if s == nil {
+		return nil
+	}
+	errs := make([]error, 0, len(s.runtimes))
+	for _, runtime := range s.runtimes {
+		errs = append(errs, c.releaseSegmentRuntime(runtime))
+	}
+	return errors.Join(errs...)
+}
+
+func (c *Collection) releaseSegmentRuntime(runtime *collectionSegmentRuntime) error {
+	err := runtime.release()
+	if err == nil {
+		return nil
+	}
+	c.retiredRuntimeMu.Lock()
+	if c.retiredRuntimes == nil {
+		c.retiredRuntimes = make(map[*collectionSegmentRuntime]error)
+	}
+	c.retiredRuntimes[runtime] = errors.Join(c.retiredRuntimes[runtime], err)
+	c.retiredRuntimeMu.Unlock()
+	return err
+}
+
+func (c *Collection) closeRetiredSegmentRuntimes() error {
+	c.retiredRuntimeMu.Lock()
+	pending := make(map[*collectionSegmentRuntime]error, len(c.retiredRuntimes))
+	for runtime, err := range c.retiredRuntimes {
+		pending[runtime] = err
+	}
+	c.retiredRuntimeMu.Unlock()
+
+	errs := make([]error, 0, 2*len(pending))
+	for runtime, previousErr := range pending {
+		err := runtime.release()
+		errs = append(errs, previousErr, err)
+		c.retiredRuntimeMu.Lock()
+		if err == nil {
+			delete(c.retiredRuntimes, runtime)
+		} else {
+			c.retiredRuntimes[runtime] = errors.Join(previousErr, err)
+		}
+		c.retiredRuntimeMu.Unlock()
+	}
+	return errors.Join(errs...)
 }
 
 func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQuerySnapshot, error) {
@@ -170,14 +262,38 @@ func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQueryS
 	if err != nil {
 		return nil, err
 	}
-	snapshot := &collectionQuerySnapshot{documents: documents, segments: segments, runtimes: runtimes}
+	snapshot := &collectionQuerySnapshot{
+		schema: c.schema.Clone(), documents: documents, segments: segments, runtimes: runtimes,
+	}
+	snapshot.retainRuntimes()
 	c.querySnapshot.Store(snapshot)
 	c.querySnapshotBuildCount.Add(1)
 	return snapshot, nil
 }
 
 func (c *Collection) invalidateQuerySnapshotLocked() {
-	c.querySnapshot.Store(nil)
+	if snapshot := c.querySnapshot.Swap(nil); snapshot != nil {
+		_ = c.releaseSnapshotRuntimes(snapshot)
+	}
+}
+
+// acquireQuerySnapshotLocked pins the immutable segment runtimes for one query.
+// The caller must hold c.mu for reading so Close and invalidation cannot race
+// the acquisition. The returned release function does not acquire c.mu.
+func (c *Collection) acquireQuerySnapshotLocked(ctx context.Context) (*collectionQuerySnapshot, func(), error) {
+	snapshot, err := c.querySnapshotLocked(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	snapshot.retainRuntimes()
+	c.queryLeases.Add(1)
+	var once sync.Once
+	return snapshot, func() {
+		once.Do(func() {
+			_ = c.releaseSnapshotRuntimes(snapshot)
+			c.queryLeases.Done()
+		})
+	}, nil
 }
 
 func collectionRuntimeKeyFor(schema CollectionSchema, documents []Document) (collectionRuntimeKey, error) {
@@ -223,7 +339,7 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 	// Match Alibaba zvec's query path: collect an owned list of shared segment
 	// handles under a read lock, then search them without taking an exclusive
 	// collection-index lock. Segment runtimes are immutable after publication;
-	// c.mu keeps writers and Close out for the lifetime of this query.
+	// query snapshots retain them until every in-flight lease is released.
 	c.indexMu.RLock()
 	if len(c.segmentIndexes) == len(requested) {
 		ordered := make([]*collectionSegmentRuntime, len(requested))
@@ -253,7 +369,7 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 	created := make([]*collectionSegmentRuntime, 0)
 	fail := func(err error) ([]*collectionSegmentRuntime, error) {
 		for _, runtime := range created {
-			_ = runtime.indexes.Close()
+			_ = c.releaseSegmentRuntime(runtime)
 		}
 		return nil, err
 	}
@@ -282,6 +398,7 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 		runtime := &collectionSegmentRuntime{
 			segmentID: segment.metadata.ID, key: key, indexes: indexes,
 		}
+		runtime.refs.Store(1)
 		created = append(created, runtime)
 		next[segment.metadata.ID] = runtime
 		ordered = append(ordered, runtime)
@@ -289,7 +406,7 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 	}
 	for segmentID, runtime := range previous {
 		if next[segmentID] != runtime {
-			_ = runtime.indexes.Close()
+			_ = c.releaseSegmentRuntime(runtime)
 		}
 	}
 	c.segmentIndexes = next
@@ -810,11 +927,20 @@ func (i *collectionRuntimeIndexes) Close() error {
 	if i == nil {
 		return nil
 	}
-	seen := make(map[uintptr]struct{})
+	i.closeMu.Lock()
+	defer i.closeMu.Unlock()
+	if i.closedDenseIndex == nil {
+		i.closedDenseIndex = make(map[string]struct{})
+	}
+	seen := make(map[uintptr]error)
 	var errs []error
-	for _, index := range i.denseNative {
+	for field, index := range i.denseNative {
+		if _, closed := i.closedDenseIndex[field]; closed {
+			continue
+		}
 		closer, ok := index.(interface{ Close() error })
 		if !ok || isNilInterface(closer) {
+			i.closedDenseIndex[field] = struct{}{}
 			continue
 		}
 		value := reflect.ValueOf(closer)
@@ -823,12 +949,22 @@ func (i *collectionRuntimeIndexes) Close() error {
 			pointer = value.Pointer()
 		}
 		if pointer != 0 {
-			if _, duplicate := seen[pointer]; duplicate {
+			if previousErr, duplicate := seen[pointer]; duplicate {
+				if previousErr == nil {
+					i.closedDenseIndex[field] = struct{}{}
+				}
 				continue
 			}
-			seen[pointer] = struct{}{}
 		}
-		errs = append(errs, closer.Close())
+		err := closer.Close()
+		if pointer != 0 {
+			seen[pointer] = err
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		i.closedDenseIndex[field] = struct{}{}
 	}
 	return errors.Join(errs...)
 }
@@ -1004,17 +1140,21 @@ func (c *Collection) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return nil
+		return wrapCollectionError("close collection", c.path, c.closeRetiredSegmentRuntimes())
 	}
 	c.closed = true
+	c.invalidateQuerySnapshotLocked()
+	c.queryLeases.Wait()
 	c.indexMu.Lock()
 	segmentIndexes := c.segmentIndexes
 	c.segmentIndexes = nil
 	c.indexMu.Unlock()
-	segmentErr := closeCollectionSegmentRuntimes(segmentIndexes)
+	_ = c.closeCollectionSegmentRuntimes(segmentIndexes)
+	runtimeErr := c.closeRetiredSegmentRuntimes()
+	storeErr := c.store.Close()
 	return errors.Join(
-		wrapCollectionError("close collection", c.path, c.store.Close()),
-		segmentErr,
+		wrapCollectionError("close collection", c.path, storeErr),
+		wrapCollectionError("close collection", c.path, runtimeErr),
 	)
 }
 
@@ -1042,21 +1182,24 @@ func (c *Collection) Destroy(ctx context.Context) error {
 		return &Error{Code: ErrorCodeInvalidArgument, Op: "destroy collection", Path: c.path, Message: "refusing to remove an unsafe collection path"}
 	}
 	c.closed = true
+	c.invalidateQuerySnapshotLocked()
+	c.queryLeases.Wait()
 	c.indexMu.Lock()
 	segmentIndexes := c.segmentIndexes
 	c.segmentIndexes = nil
 	c.indexMu.Unlock()
-	indexErr := closeCollectionSegmentRuntimes(segmentIndexes)
+	_ = c.closeCollectionSegmentRuntimes(segmentIndexes)
+	indexErr := c.closeRetiredSegmentRuntimes()
 	closeErr := c.store.Close()
 	removeErr := os.RemoveAll(c.path)
 	return wrapCollectionError("destroy collection", c.path, errors.Join(indexErr, closeErr, removeErr))
 }
 
-func closeCollectionSegmentRuntimes(runtimes map[uint64]*collectionSegmentRuntime) error {
+func (c *Collection) closeCollectionSegmentRuntimes(runtimes map[uint64]*collectionSegmentRuntime) error {
 	errs := make([]error, 0, len(runtimes))
 	for _, runtime := range runtimes {
-		if runtime != nil && runtime.indexes != nil {
-			errs = append(errs, runtime.indexes.Close())
+		if runtime != nil {
+			errs = append(errs, c.releaseSegmentRuntime(runtime))
 		}
 	}
 	return errors.Join(errs...)
@@ -3117,18 +3260,16 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 	if err != nil {
 		return nil, invalidArgument(op, "invalid filter: %v", err)
 	}
-	documents, err := c.liveDocumentsLocked(ctx)
+	snapshot, releaseSnapshot, err := c.acquireQuerySnapshotLocked(ctx)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	segments, err := c.segmentDocumentsLocked(ctx)
-	if err != nil {
-		return nil, wrapCollectionError(op, c.path, err)
-	}
-	runtimes, err := c.segmentRuntimeIndexesLocked(ctx, segments)
-	if err != nil {
-		return nil, wrapCollectionError(op, c.path, err)
-	}
+	schema := snapshot.schema
+	path := c.path
+	c.mu.RUnlock()
+	locked = false
+	defer releaseSnapshot()
+	documents, segments, runtimes := snapshot.documents, snapshot.segments, snapshot.runtimes
 	runtimeConfig := c.runtimeConfig()
 	filters, err := evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
 	if err != nil {
@@ -3147,7 +3288,7 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 		if err != nil {
 			return nil, err
 		}
-		field, found := c.schema.Field(subQuery.Field)
+		field, found := schema.Field(subQuery.Field)
 		if !found {
 			return nil, invalidArgument(op, "sub-query %d field %q does not exist", index, subQuery.Field)
 		}
@@ -3181,7 +3322,7 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 		if err != nil {
 			return nil, wrapMultiQueryBranchError(op, c.path, index, err)
 		}
-		materialized, err := c.materializeResults(documents, results, projection)
+		materialized, err := c.materializeResults(schema, documents, results, projection)
 		if err != nil {
 			return nil, err
 		}
@@ -3191,12 +3332,9 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 		batches[index] = RerankBatch{Field: field.Clone(), Documents: materialized}
 	}
 
-	// Release the collection lock before invoking caller code. The immutable
-	// snapshot, schema, and candidate batches remain owned by this call.
-	schema := c.schema.Clone()
-	path := c.path
-	c.mu.RUnlock()
-	locked = false
+	// Candidate generation no longer needs segment runtimes. Release the lease
+	// before invoking caller code so Close is not coupled to reranker latency.
+	releaseSnapshot()
 	if err := ctx.Err(); err != nil {
 		return nil, wrapCollectionError(op, path, err)
 	}
@@ -3835,7 +3973,12 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	}
 	defer releaseRuntime()
 	c.mu.RLock()
-	defer c.mu.RUnlock()
+	locked := true
+	defer func() {
+		if locked {
+			c.mu.RUnlock()
+		}
+	}()
 	if err := c.requireOpenLocked(op); err != nil {
 		return nil, err
 	}
@@ -3846,10 +3989,15 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err != nil {
 		return nil, invalidArgument(op, "invalid filter: %v", err)
 	}
-	snapshot, err := c.querySnapshotLocked(ctx)
+	snapshot, releaseSnapshot, err := c.acquireQuerySnapshotLocked(ctx)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
+	schema := snapshot.schema
+	c.mu.RUnlock()
+	locked = false
+	defer releaseSnapshot()
+
 	documents, segments, runtimes := snapshot.documents, snapshot.segments, snapshot.runtimes
 	runtimeConfig := c.runtimeConfig()
 	filters, err := evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
@@ -3869,13 +4017,13 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 		}
 		results = filterOnlyResults(documents, candidateFilter.predicate, query.TopK)
 	case singleQueryTargetFTS:
-		field, found := c.schema.Field(query.Field)
+		field, found := schema.Field(query.Field)
 		if !found {
 			return nil, invalidArgument(op, "FTS field %q does not exist", query.Field)
 		}
 		results, err = c.searchFTSSegments(ctx, op, field, query.FTS, query.Params, query.TopK, documents, runtimes, filters)
 	case singleQueryTargetDense, singleQueryTargetSparse, singleQueryTargetPrimaryKey:
-		field, found := c.schema.Field(query.Field)
+		field, found := schema.Field(query.Field)
 		if !found || !field.DataType.IsVector() {
 			return nil, invalidArgument(op, "vector field %q does not exist", query.Field)
 		}
@@ -3893,7 +4041,7 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	return c.materializeResults(documents, results, query.Projection)
+	return c.materializeResults(schema, documents, results, query.Projection)
 }
 
 type singleQueryTarget uint8
@@ -4228,7 +4376,12 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	}
 	defer releaseRuntime()
 	c.mu.RLock()
-	defer c.mu.RUnlock()
+	locked := true
+	defer func() {
+		if locked {
+			c.mu.RUnlock()
+		}
+	}()
 	if err := c.requireOpenLocked(op); err != nil {
 		return nil, err
 	}
@@ -4267,18 +4420,15 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	if err != nil {
 		return nil, invalidArgument(op, "invalid filter: %v", err)
 	}
-	documents, err := c.liveDocumentsLocked(ctx)
+	snapshot, releaseSnapshot, err := c.acquireQuerySnapshotLocked(ctx)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	segments, err := c.segmentDocumentsLocked(ctx)
-	if err != nil {
-		return nil, wrapCollectionError(op, c.path, err)
-	}
-	runtimes, err := c.segmentRuntimeIndexesLocked(ctx, segments)
-	if err != nil {
-		return nil, wrapCollectionError(op, c.path, err)
-	}
+	schema := snapshot.schema
+	c.mu.RUnlock()
+	locked = false
+	defer releaseSnapshot()
+	documents, segments, runtimes := snapshot.documents, snapshot.segments, snapshot.runtimes
 	runtimeConfig := c.runtimeConfig()
 	filters, err := evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
 	if err != nil {
@@ -4336,7 +4486,7 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 		metric = core.MetricIP
 	}
 	groups := core.MergeGroupResults(metric, query.GroupCount, query.TopKPerGroup, batches...)
-	return c.materializeGroups(documents, groups, query.Projection)
+	return c.materializeGroups(schema, documents, groups, query.Projection)
 }
 
 func (c *Collection) searchGroupSegment(
@@ -4614,7 +4764,7 @@ func sparseValueToCore(value any) (core.SparseVector, error) {
 	}
 }
 
-func (c *Collection) materializeResults(documents []Document, results []core.Result, projection Projection) ([]Document, error) {
+func (c *Collection) materializeResults(schema CollectionSchema, documents []Document, results []core.Result, projection Projection) ([]Document, error) {
 	byID := make(map[uint64]Document, len(documents))
 	for _, document := range documents {
 		byID[document.DocID] = document
@@ -4626,7 +4776,7 @@ func (c *Collection) materializeResults(documents []Document, results []core.Res
 			return nil, &Error{Code: ErrorCodeInternal, Op: "materialize query", Path: c.path, Message: fmt.Sprintf("document %d disappeared from snapshot", result.Key)}
 		}
 		document.Score = result.Score
-		projected, err := ProjectDocument(document, c.schema, projection)
+		projected, err := ProjectDocument(document, schema, projection)
 		if err != nil {
 			return nil, err
 		}
@@ -4635,10 +4785,10 @@ func (c *Collection) materializeResults(documents []Document, results []core.Res
 	return output, nil
 }
 
-func (c *Collection) materializeGroups(documents []Document, groups []core.GroupResult, projection Projection) ([]GroupResult, error) {
+func (c *Collection) materializeGroups(schema CollectionSchema, documents []Document, groups []core.GroupResult, projection Projection) ([]GroupResult, error) {
 	output := make([]GroupResult, len(groups))
 	for index, group := range groups {
-		materialized, err := c.materializeResults(documents, group.Results, projection)
+		materialized, err := c.materializeResults(schema, documents, group.Results, projection)
 		if err != nil {
 			return nil, err
 		}

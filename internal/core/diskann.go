@@ -447,10 +447,12 @@ func (i *DiskANNIndex) Close() error {
 	if i.closed {
 		return nil
 	}
-	i.closed = true
 	if i.closer != nil {
-		return i.closer.Close()
+		if err := i.closer.Close(); err != nil {
+			return err
+		}
 	}
+	i.closed = true
 	return nil
 }
 

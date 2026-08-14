@@ -5245,6 +5245,280 @@ func TestCollectionQueryReusesSnapshotAndRebuildsAfterUpdate(t *testing.T) {
 	require.Equal(t, uint64(5), collection.querySnapshotBuildCount.Load())
 }
 
+type failingCollectionDenseIndex struct {
+	collectionDenseIndex
+	closeErr error
+	closes   int
+}
+
+func (i *failingCollectionDenseIndex) Close() error {
+	i.closes++
+	if i.closes == 1 {
+		return i.closeErr
+	}
+	return nil
+}
+
+func TestCollectionRetainsFailedRuntimeCloseForRetry(t *testing.T) {
+	index, err := core.NewDenseFlatIndex(2, core.MetricIP)
+	require.NoError(t, err)
+	closeErr := errors.New("close runtime")
+	failing := &failingCollectionDenseIndex{collectionDenseIndex: index, closeErr: closeErr}
+	otherIndex, err := core.NewDenseFlatIndex(2, core.MetricIP)
+	require.NoError(t, err)
+	successful := &closingCollectionDenseIndex{collectionDenseIndex: otherIndex}
+	runtime := &collectionSegmentRuntime{indexes: &collectionRuntimeIndexes{
+		denseNative: map[string]collectionDenseIndex{
+			"embedding": failing,
+			"other":     successful,
+		},
+	}}
+	runtime.refs.Store(1)
+	collection := &Collection{}
+
+	require.ErrorIs(t, collection.releaseSegmentRuntime(runtime), closeErr)
+	require.Equal(t, int64(1), runtime.refs.Load(), "failed close must preserve retry ownership")
+	require.ErrorIs(t, collection.closeRetiredSegmentRuntimes(), closeErr)
+	require.Equal(t, 2, failing.closes)
+	require.Equal(t, 1, successful.closes, "retry must not close an already closed index again")
+	require.Zero(t, runtime.refs.Load())
+	require.NoError(t, collection.closeRetiredSegmentRuntimes())
+}
+
+func TestCollectionCloseReportsAndRetriesRetiredRuntimeError(t *testing.T) {
+	ctx := context.Background()
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "close-runtime-retry"), testMultiQuerySchema(), NewCollectionOptions())
+	require.NoError(t, err)
+	_, err = collection.Insert(ctx, testMultiQueryDocuments())
+	require.NoError(t, err)
+	_, err = collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2})
+	require.NoError(t, err)
+
+	snapshot := collection.querySnapshot.Load()
+	require.NotNil(t, snapshot)
+	require.NotEmpty(t, snapshot.runtimes)
+	runtime := snapshot.runtimes[0]
+	closeErr := errors.New("close runtime")
+	failing := &failingCollectionDenseIndex{
+		collectionDenseIndex: runtime.indexes.denseNative["embedding"],
+		closeErr:             closeErr,
+	}
+	runtime.indexes.denseNative["embedding"] = failing
+
+	require.ErrorIs(t, collection.Close(), closeErr)
+	require.Equal(t, 2, failing.closes, "Close should retry the retained runtime")
+	require.NoError(t, collection.Close())
+}
+
+type closingCollectionDenseIndex struct {
+	collectionDenseIndex
+	closes int
+}
+
+func (i *closingCollectionDenseIndex) Close() error {
+	i.closes++
+	return nil
+}
+
+func TestCollectionSegmentRuntimeClosesAfterSnapshotAndQueryRelease(t *testing.T) {
+	index, err := core.NewDenseFlatIndex(2, core.MetricIP)
+	require.NoError(t, err)
+	closing := &closingCollectionDenseIndex{collectionDenseIndex: index}
+	runtime := &collectionSegmentRuntime{indexes: &collectionRuntimeIndexes{
+		denseNative: map[string]collectionDenseIndex{"embedding": closing},
+	}}
+	runtime.refs.Store(1) // segmentIndexes ownership
+	snapshot := &collectionQuerySnapshot{runtimes: []*collectionSegmentRuntime{runtime}}
+	snapshot.retainRuntimes() // published snapshot ownership
+	runtime.retain()          // in-flight query ownership
+
+	collection := &Collection{}
+	require.NoError(t, collection.releaseSnapshotRuntimes(snapshot))
+	require.NoError(t, collection.releaseSegmentRuntime(runtime))
+	require.Zero(t, closing.closes, "retired runtime closed while a query still held a lease")
+	require.NoError(t, collection.releaseSegmentRuntime(runtime))
+	require.Equal(t, 1, closing.closes)
+}
+
+type blockingCollectionDenseIndex struct {
+	collectionDenseIndex
+	started   chan struct{}
+	release   chan struct{}
+	closed    chan struct{}
+	once      sync.Once
+	closeOnce sync.Once
+}
+
+func (i *blockingCollectionDenseIndex) Close() error {
+	if i.closed != nil {
+		i.closeOnce.Do(func() { close(i.closed) })
+	}
+	if closer, ok := i.collectionDenseIndex.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
+func (i *blockingCollectionDenseIndex) wait(ctx context.Context) error {
+	i.once.Do(func() { close(i.started) })
+	select {
+	case <-i.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (i *blockingCollectionDenseIndex) SearchWithOptions(ctx context.Context, query []float32, options core.SearchOptions) ([]core.Result, error) {
+	if err := i.wait(ctx); err != nil {
+		return nil, err
+	}
+	return i.collectionDenseIndex.SearchWithOptions(ctx, query, options)
+}
+
+func (i *blockingCollectionDenseIndex) SearchGroups(ctx context.Context, query []float32, options core.GroupByOptions) ([]core.GroupResult, error) {
+	if err := i.wait(ctx); err != nil {
+		return nil, err
+	}
+	return i.collectionDenseIndex.(core.DenseGroupSearcher).SearchGroups(ctx, query, options)
+}
+
+func TestCollectionQueryDoesNotBlockConcurrentUpdate(t *testing.T) {
+	assertCollectionSearchDoesNotBlockConcurrentUpdate(t, func(ctx context.Context, collection *Collection) error {
+		_, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2})
+		return err
+	})
+}
+
+func TestCollectionMultiQueryDoesNotBlockConcurrentUpdate(t *testing.T) {
+	assertCollectionSearchDoesNotBlockConcurrentUpdate(t, func(ctx context.Context, collection *Collection) error {
+		_, err := collection.MultiQuery(ctx, MultiQuery{Queries: []SubQuery{
+			{Field: "embedding", DenseVector: VectorFP32{1, 0}, NumCandidates: 2},
+			{Field: "embedding", DenseVector: VectorFP32{0, 1}, NumCandidates: 2},
+		}, TopK: 2})
+		return err
+	})
+}
+
+func TestCollectionGroupByQueryDoesNotBlockConcurrentUpdate(t *testing.T) {
+	assertCollectionSearchDoesNotBlockConcurrentUpdate(t, func(ctx context.Context, collection *Collection) error {
+		_, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
+			Field: "embedding", DenseVector: VectorFP32{1, 0},
+			GroupByField: "category", GroupCount: 2, TopKPerGroup: 1,
+		})
+		return err
+	})
+}
+
+func TestCollectionCloseWaitsForQueryLease(t *testing.T) {
+	ctx := context.Background()
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "close-query-lease"), testMultiQuerySchema(), NewCollectionOptions())
+	require.NoError(t, err)
+	_, err = collection.Insert(ctx, testMultiQueryDocuments())
+	require.NoError(t, err)
+	_, err = collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2})
+	require.NoError(t, err)
+
+	snapshot := collection.querySnapshot.Load()
+	require.NotNil(t, snapshot)
+	require.NotEmpty(t, snapshot.runtimes)
+	runtime := snapshot.runtimes[0]
+	blocking := &blockingCollectionDenseIndex{
+		collectionDenseIndex: runtime.indexes.denseFlat["embedding"],
+		started:              make(chan struct{}),
+		release:              make(chan struct{}),
+		closed:               make(chan struct{}),
+	}
+	runtime.indexes.denseNative["embedding"] = blocking
+	runtime.indexes.denseFlat["embedding"] = blocking
+
+	queryDone := make(chan error, 1)
+	go func() {
+		_, queryErr := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2})
+		queryDone <- queryErr
+	}()
+	select {
+	case <-blocking.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("query did not reach the blocking index")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- collection.Close() }()
+	select {
+	case <-blocking.closed:
+		t.Fatal("runtime closed before the query released its lease")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(blocking.release)
+	require.NoError(t, <-queryDone)
+	require.NoError(t, <-closeDone)
+	select {
+	case <-blocking.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime was not closed after the query released its lease")
+	}
+}
+
+func assertCollectionSearchDoesNotBlockConcurrentUpdate(t *testing.T, search func(context.Context, *Collection) error) {
+	t.Helper()
+	ctx := context.Background()
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "query-write-concurrency"), testMultiQuerySchema(), NewCollectionOptions())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, collection.Close()) }()
+	_, err = collection.Insert(ctx, testMultiQueryDocuments())
+	require.NoError(t, err)
+	_, err = collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2})
+	require.NoError(t, err)
+
+	snapshot := collection.querySnapshot.Load()
+	require.NotNil(t, snapshot)
+	require.NotEmpty(t, snapshot.runtimes)
+	runtime := snapshot.runtimes[0]
+	originalNative := runtime.indexes.denseNative["embedding"]
+	originalFlat := runtime.indexes.denseFlat["embedding"]
+	blocking := &blockingCollectionDenseIndex{
+		collectionDenseIndex: originalFlat,
+		started:              make(chan struct{}),
+		release:              make(chan struct{}),
+	}
+	runtime.indexes.denseNative["embedding"] = blocking
+	runtime.indexes.denseFlat["embedding"] = blocking
+	defer func() {
+		runtime.indexes.denseNative["embedding"] = originalNative
+		runtime.indexes.denseFlat["embedding"] = originalFlat
+	}()
+
+	queryDone := make(chan error, 1)
+	go func() { queryDone <- search(ctx, collection) }()
+	select {
+	case <-blocking.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("query did not reach the blocking index")
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, writeErr := collection.Update(ctx, []Document{{PrimaryKey: "a", Fields: map[string]any{"rating": int32(5)}}})
+		writeDone <- writeErr
+	}()
+
+	var writeErr error
+	writeCompletedBeforeQuery := false
+	select {
+	case writeErr = <-writeDone:
+		writeCompletedBeforeQuery = true
+	case <-time.After(5 * time.Second):
+	}
+	close(blocking.release)
+	require.NoError(t, <-queryDone)
+	if !writeCompletedBeforeQuery {
+		writeErr = <-writeDone
+	}
+	require.NoError(t, writeErr)
+	require.True(t, writeCompletedBeforeQuery, "concurrent update waited for the query to release the collection read lock")
+}
+
 func TestCollectionQuerySnapshotPublishesOnceUntilInvalidated(t *testing.T) {
 	ctx := context.Background()
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "query-snapshot"), testMultiQuerySchema(), NewCollectionOptions())

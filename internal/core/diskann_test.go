@@ -33,6 +33,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type failOnceDiskANNCloser struct {
+	err   error
+	calls int
+}
+
+func (c *failOnceDiskANNCloser) Close() error {
+	c.calls++
+	if c.calls == 1 {
+		return c.err
+	}
+	return nil
+}
+
+func TestDiskANNCloseRetriesFailedCloser(t *testing.T) {
+	closeErr := errors.New("close diskann")
+	closer := &failOnceDiskANNCloser{err: closeErr}
+	index := &DiskANNIndex{closer: closer}
+
+	require.ErrorIs(t, index.Close(), closeErr)
+	require.NoError(t, index.Close())
+	require.Equal(t, 2, closer.calls)
+}
+
 func TestDiskANNBuildSearchMetricsFilterRadiusAndRefiner(t *testing.T) {
 	for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
 		t.Run(diskANNMetricName(metric), func(t *testing.T) {
