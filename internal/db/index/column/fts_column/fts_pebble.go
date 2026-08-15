@@ -23,7 +23,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/gorse-io/xvec/internal/indexstore"
+	"github.com/gorse-io/xvec/internal/db/common"
 )
 
 const (
@@ -51,7 +51,7 @@ func (d *FTSTermDictionary) Save(ctx context.Context, path string) error {
 	if err := requireEmptyFTSDirectory(path); err != nil {
 		return err
 	}
-	store, err := indexstore.Open(path, indexstore.Options{})
+	store, err := common.Open(path, common.Options{})
 	if err != nil {
 		return fmt.Errorf("core: create FTS Pebble store: %w", err)
 	}
@@ -118,7 +118,7 @@ func OpenFTSTermDictionary(ctx context.Context, path string) (*FTSTermDictionary
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	store, err := indexstore.Open(path, indexstore.Options{ReadOnly: true})
+	store, err := common.Open(path, common.Options{ReadOnly: true})
 	if err != nil {
 		return nil, ftsDictionaryCorruption("open Pebble store", err)
 	}
@@ -277,12 +277,12 @@ func requireEmptyFTSDirectory(path string) error {
 }
 
 type ftsStoreWriter struct {
-	store *indexstore.Store
-	batch *indexstore.Batch
+	store *common.Store
+	batch *common.Batch
 	size  int
 }
 
-func newFTSStoreWriter(store *indexstore.Store) *ftsStoreWriter {
+func newFTSStoreWriter(store *common.Store) *ftsStoreWriter {
 	return &ftsStoreWriter{store: store, batch: store.NewBatch()}
 }
 
@@ -335,7 +335,7 @@ func writeFTSDocumentLengths(ctx context.Context, writer *ftsStoreWriter, length
 	return nil
 }
 
-func readFTSDocumentLengths(ctx context.Context, store *indexstore.Store) ([]uint32, error) {
+func readFTSDocumentLengths(ctx context.Context, store *common.Store) ([]uint32, error) {
 	iterator, err := store.NewPrefixIterator([]byte{'d'})
 	if err != nil {
 		return nil, ftsDictionaryCorruption("open document-length iterator", err)
@@ -385,7 +385,7 @@ func writeFTSPostingChunks(ctx context.Context, writer *ftsStoreWriter, ordinal 
 	return nil
 }
 
-func readFTSPostingChunks(ctx context.Context, store *indexstore.Store, ordinal uint32) ([]byte, error) {
+func readFTSPostingChunks(ctx context.Context, store *common.Store, ordinal uint32) ([]byte, error) {
 	prefix := make([]byte, 5)
 	prefix[0] = 'p'
 	binary.BigEndian.PutUint32(prefix[1:], ordinal)
@@ -418,7 +418,7 @@ func readFTSPostingChunks(ctx context.Context, store *indexstore.Store, ordinal 
 	return data, nil
 }
 
-func validateFTSPostingKeys(ctx context.Context, store *indexstore.Store, termCount uint32) error {
+func validateFTSPostingKeys(ctx context.Context, store *common.Store, termCount uint32) error {
 	iterator, err := store.NewPrefixIterator([]byte{'p'})
 	if err != nil {
 		return ftsDictionaryCorruption("open posting-key iterator", err)
@@ -475,7 +475,7 @@ func ftsDictionaryCorruption(message string, err error) error {
 }
 
 func inspectFTSStoreKeys(path string) ([][]byte, error) {
-	store, err := indexstore.Open(path, indexstore.Options{ReadOnly: true})
+	store, err := common.Open(path, common.Options{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
