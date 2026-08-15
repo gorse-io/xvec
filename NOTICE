@@ -53,7 +53,7 @@ Snowball
 Project: Snowball
 Homepage: https://snowballstem.org/
 License:  BSD-3-Clause
-Used in:  internal/core/snowball
+Used in:  thirdparty/snowball
 
 The Go runtime and 36 generated stemming algorithms are vendored from
 Snowball 3.1.1 at commit cd195b51e948a902a4312f023f4a14392516a543.
