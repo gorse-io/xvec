@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"strings"
 
-	snowball "github.com/gorse-io/xvec/internal/db/index/column/fts_column/tokenizer/snowball"
-	"github.com/gorse-io/xvec/internal/db/index/column/fts_column/tokenizer/snowball/stemmers"
+	snowball "github.com/gorse-io/xvec/thirdparty/snowball"
+	"github.com/gorse-io/xvec/thirdparty/snowball/stemmers"
 )
 
 // ErrInvalidStemmerOptions identifies an unknown Snowball language or alias.
