@@ -63,7 +63,7 @@ func DefaultIVFBuildOptions(metric Metric) IVFBuildOptions {
 
 // Validate checks IVF build invariants.
 func (o IVFBuildOptions) Validate() error {
-	if !o.Metric.valid() {
+	if !o.Metric.Valid() {
 		return fmt.Errorf("%w: invalid metric", ErrInvalidIVFOptions)
 	}
 	if o.NList <= 0 {

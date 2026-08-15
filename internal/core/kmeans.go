@@ -299,7 +299,7 @@ func validateKMeansOptions(options KMeansOptions) error {
 	if options.Tolerance < 0 || math.IsNaN(options.Tolerance) || math.IsInf(options.Tolerance, 0) {
 		return fmt.Errorf("%w: Tolerance must be finite and non-negative", ErrInvalidKMeansOptions)
 	}
-	if !options.Metric.valid() {
+	if !options.Metric.Valid() {
 		return fmt.Errorf("%w: invalid metric", ErrInvalidKMeansOptions)
 	}
 	if options.Initializer != KMeansInitReservoir && options.Initializer != KMeansInitPlusPlus {
@@ -512,7 +512,7 @@ func cloneVectorsContext(ctx context.Context, vectors [][]float32) ([][]float32,
 }
 
 func (m *KMeansModel) validate() error {
-	if m == nil || !m.metric.valid() || m.dimension <= 0 || len(m.centroids) == 0 {
+	if m == nil || !m.metric.Valid() || m.dimension <= 0 || len(m.centroids) == 0 {
 		return errors.New("core: invalid k-means model")
 	}
 	return nil

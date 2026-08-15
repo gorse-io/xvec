@@ -66,7 +66,7 @@ func DefaultDiskANNBuildOptions(metric Metric) DiskANNBuildOptions {
 
 // Validate checks invariants that do not depend on vector dimension.
 func (o DiskANNBuildOptions) Validate() error {
-	if !o.Metric.valid() {
+	if !o.Metric.Valid() {
 		return fmt.Errorf("%w: invalid metric", ErrInvalidDiskANNOptions)
 	}
 	if o.MaxDegree <= 0 || o.MaxDegree > MaxVamanaDegree {

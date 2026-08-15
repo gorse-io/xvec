@@ -81,7 +81,7 @@ func NewDenseFlatIndex(dimension int, metric Metric) (*DenseFlatIndex, error) {
 	if dimension <= 0 {
 		return nil, fmt.Errorf("%w: got %d", ErrInvalidDimension, dimension)
 	}
-	if !metric.valid() {
+	if !metric.Valid() {
 		return nil, errors.New("core: invalid metric")
 	}
 	return &DenseFlatIndex{
@@ -242,10 +242,6 @@ func (b *DenseFlatIndexBuilder) Build(ctx context.Context) (DenseIndex, error) {
 	}
 	b.built = true
 	return b.index, nil
-}
-
-func (m Metric) valid() bool {
-	return m >= MetricL2 && m <= MetricMIPSL2
 }
 
 var (
@@ -698,7 +694,7 @@ func QueryDenseGroups(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !metric.valid() {
+	if !metric.Valid() {
 		return nil, errors.New("core: invalid group-by metric")
 	}
 	if err := options.Validate(); err != nil {

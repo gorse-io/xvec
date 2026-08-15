@@ -67,7 +67,7 @@ func DefaultHNSWBuildOptions(metric Metric) HNSWBuildOptions {
 
 // Validate checks graph degree and construction-search invariants.
 func (o HNSWBuildOptions) Validate() error {
-	if !o.Metric.valid() {
+	if !o.Metric.Valid() {
 		return fmt.Errorf("%w: invalid metric", ErrInvalidHNSWOptions)
 	}
 	if o.M <= 0 || o.M > MaxHNSWM {
@@ -173,7 +173,7 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	distance, err := b.options.Metric.prevalidatedDistance()
+	distance, err := b.options.Metric.PrevalidatedDistance()
 	if err != nil {
 		return nil, err
 	}
@@ -559,7 +559,7 @@ func (i *HNSWIndex) computeDistance(left, right []float32) (float32, error) {
 		// Keep package-local literal fixtures usable while production indexes
 		// always install the scorer at build or open time.
 		var err error
-		distance, err = i.options.Metric.prevalidatedDistance()
+		distance, err = i.options.Metric.PrevalidatedDistance()
 		if err != nil {
 			return 0, err
 		}
@@ -1203,7 +1203,7 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 	if count > maxPlatformInt()/dimension {
 		return nil, fmt.Errorf("%w: vector storage exceeds platform capacity", ErrInvalidHNSWFile)
 	}
-	distance, err := options.Metric.prevalidatedDistance()
+	distance, err := options.Metric.PrevalidatedDistance()
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid metric", ErrInvalidHNSWFile)
 	}

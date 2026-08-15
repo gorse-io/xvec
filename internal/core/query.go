@@ -82,7 +82,7 @@ func QueryDense(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !metric.valid() {
+	if !metric.Valid() {
 		return nil, errors.New("core: invalid metric")
 	}
 	if err := options.Validate(); err != nil {

@@ -64,7 +64,7 @@ func DefaultVamanaBuildOptions(metric Metric) VamanaBuildOptions {
 
 // Validate checks graph degree, construction width, and RobustPrune settings.
 func (o VamanaBuildOptions) Validate() error {
-	if !o.Metric.valid() {
+	if !o.Metric.Valid() {
 		return fmt.Errorf("%w: invalid metric", ErrInvalidVamanaOptions)
 	}
 	if o.MaxDegree <= 0 || o.MaxDegree > MaxVamanaDegree {

@@ -47,7 +47,7 @@ func NewOriginalVectorRefiner(provider DenseProvider, metric Metric) (*OriginalV
 	if provider.Dimension() <= 0 {
 		return nil, ErrInvalidDimension
 	}
-	if !metric.valid() {
+	if !metric.Valid() {
 		return nil, errors.New("core: invalid metric")
 	}
 	return &OriginalVectorRefiner{provider: provider, metric: metric}, nil

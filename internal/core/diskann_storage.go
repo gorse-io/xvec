@@ -59,7 +59,7 @@ type DiskANNLayout struct {
 
 // NewDiskANNLayout calculates the pinned packed-or-multi-sector node layout.
 func NewDiskANNLayout(metric Metric, count, dimension, maxDegree int) (DiskANNLayout, error) {
-	if !metric.valid() {
+	if !metric.Valid() {
 		return DiskANNLayout{}, fmt.Errorf("%w: invalid metric", ErrInvalidDiskANNLayout)
 	}
 	if count < 0 || uint64(count) > math.MaxUint32 {

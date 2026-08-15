@@ -197,7 +197,7 @@ func newScalarQuantizedVectors(
 	if dimension <= 0 || dimension > MaxRotationDimension {
 		return nil, fmt.Errorf("%w: got %d", ErrInvalidDimension, dimension)
 	}
-	if !metric.valid() {
+	if !metric.Valid() {
 		return nil, errors.New("core: invalid scalar-quantized index metric")
 	}
 	if !kind.valid() {

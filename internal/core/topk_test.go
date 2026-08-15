@@ -85,24 +85,6 @@ func TestTopKMetricOrdering(t *testing.T) {
 	}
 }
 
-func TestMetricPrevalidatedDistanceMatchesCheckedCompute(t *testing.T) {
-	t.Parallel()
-
-	left := []float32{0.2, 0.9, -0.4, 0.7}
-	right := []float32{0.3, 0.5, 0.8, -0.1}
-	for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
-		distance, err := metric.prevalidatedDistance()
-		require.NoError(t, err)
-		expected, err := metric.Compute(left, right)
-		require.NoError(t, err)
-		actual, err := distance(left, right)
-		require.NoError(t, err)
-		require.Equal(t, expected, actual)
-	}
-	_, err := Metric(0).prevalidatedDistance()
-	require.Error(t, err)
-}
-
 func TestTopKStableAcrossCandidateOrder(t *testing.T) {
 	t.Parallel()
 

@@ -23,16 +23,17 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
+	"github.com/gorse-io/xvec/internal/core/metric"
 )
 
 // Metric selects score computation and ordering for exact search.
-type Metric uint8
+type Metric = metric.Metric
 
 const (
-	MetricL2 Metric = iota + 1
-	MetricIP
-	MetricCosine
-	MetricMIPSL2
+	MetricL2     = metric.L2
+	MetricIP     = metric.IP
+	MetricCosine = metric.Cosine
+	MetricMIPSL2 = metric.MIPSL2
 )
 
 // Candidate is one immutable dense vector considered by exact search.
@@ -46,47 +47,6 @@ type Candidate struct {
 type Result struct {
 	Key   uint64
 	Score float32
-}
-
-// Compute calculates the score for left and right.
-func (m Metric) Compute(left, right []float32) (float32, error) {
-	switch m {
-	case MetricL2:
-		return mathutil.L2Squared(left, right)
-	case MetricIP:
-		return mathutil.InnerProduct(left, right)
-	case MetricCosine:
-		return mathutil.CosineDistance(left, right)
-	case MetricMIPSL2:
-		return mathutil.MIPSL2Squared(left, right)
-	default:
-		return 0, errors.New("core: invalid metric")
-	}
-}
-
-// prevalidatedDistance selects the allocation-free kernel used by index hot
-// paths after vectors have passed their storage or query boundary validation.
-func (m Metric) prevalidatedDistance() (mathutil.DenseDistance, error) {
-	switch m {
-	case MetricL2:
-		return mathutil.L2SquaredPrevalidated, nil
-	case MetricIP:
-		return mathutil.InnerProductPrevalidated, nil
-	case MetricCosine:
-		return mathutil.CosineDistancePrevalidated, nil
-	case MetricMIPSL2:
-		return mathutil.MIPSL2SquaredPrevalidated, nil
-	default:
-		return nil, errors.New("core: invalid metric")
-	}
-}
-
-// Better reports whether left should rank before right.
-func (m Metric) Better(left, right float32) bool {
-	if m == MetricIP {
-		return left > right
-	}
-	return left < right
 }
 
 // TopK computes exact scores and returns at most k results. It uses O(k)

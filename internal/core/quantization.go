@@ -169,7 +169,7 @@ func (v QuantizedVector) Decode() ([]float32, error) {
 // QuantizedDistance calculates a metric directly from scalar codes. Both
 // vectors must use the same encoding and logical dimension.
 func QuantizedDistance(metric Metric, left, right QuantizedVector) (float32, error) {
-	if !metric.valid() {
+	if !metric.Valid() {
 		return 0, errors.New("core: invalid metric")
 	}
 	if err := left.validate(); err != nil {
