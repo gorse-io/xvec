@@ -23,7 +23,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
-	"github.com/gorse-io/xvec/thirdparty/cppjieba"
+	"github.com/gorse-io/xvec/thirdparty/jieba"
 )
 
 const (
@@ -31,22 +31,22 @@ const (
 	jiebaHMMModelFile   = "hmm_model.utf8"
 )
 
-// JiebaCutMode selects the baseline cppjieba segmentation algorithm.
-type JiebaCutMode = cppjieba.CutMode
+// JiebaCutMode selects the baseline Jieba segmentation algorithm.
+type JiebaCutMode = jieba.CutMode
 
 const (
-	JiebaCutModeSearch = cppjieba.CutModeSearch
-	JiebaCutModeMix    = cppjieba.CutModeMix
-	JiebaCutModeFull   = cppjieba.CutModeFull
-	JiebaCutModeHMM    = cppjieba.CutModeHMM
+	JiebaCutModeSearch = jieba.CutModeSearch
+	JiebaCutModeMix    = jieba.CutModeMix
+	JiebaCutModeFull   = jieba.CutModeFull
+	JiebaCutModeHMM    = jieba.CutModeHMM
 )
 
 var (
 	// ErrInvalidJiebaTokenizerOptions identifies invalid construction options.
 	ErrInvalidJiebaTokenizerOptions = errors.New("core: invalid jieba tokenizer options")
-	// ErrInvalidJiebaUTF8 identifies input that cppjieba's pinned decoder
+	// ErrInvalidJiebaUTF8 identifies input that the pinned Jieba decoder
 	// cannot decode as one complete sequence.
-	ErrInvalidJiebaUTF8 = cppjieba.ErrInvalidUTF8
+	ErrInvalidJiebaUTF8 = jieba.ErrInvalidUTF8
 
 	defaultJiebaDictionaryDirectory atomic.Pointer[string]
 )
@@ -99,11 +99,11 @@ func (o JiebaTokenizerOptions) Validate() error {
 	return nil
 }
 
-// JiebaTokenizer adapts the vendored cppjieba implementation to Tokenizer.
+// JiebaTokenizer adapts the vendored Jieba implementation to Tokenizer.
 type JiebaTokenizer struct {
 	mode      JiebaCutMode
 	dictDir   string
-	segmenter *cppjieba.Segmenter
+	segmenter *jieba.Segmenter
 }
 
 // NewJiebaTokenizer loads and validates the resources required by the chosen
@@ -124,7 +124,7 @@ func NewJiebaTokenizer(ctx context.Context, options JiebaTokenizerOptions) (*Jie
 		mode = JiebaCutModeSearch
 	}
 	directory := resolveJiebaDictDir(options.DictDir)
-	segmenter, err := cppjieba.New(ctx, cppjieba.Options{
+	segmenter, err := jieba.New(ctx, jieba.Options{
 		DictionaryPath: filepath.Join(directory, jiebaDictionaryFile),
 		HMMModelPath:   filepath.Join(directory, jiebaHMMModelFile),
 		UserDictPath:   options.UserDictPath,
@@ -152,7 +152,7 @@ func resolveJiebaDictDir(explicit string) string {
 	return DefaultJiebaDictDir()
 }
 
-// Tokenize converts cppjieba words to FTS tokens with contiguous positions.
+// Tokenize converts Jieba words to FTS tokens with contiguous positions.
 func (t *JiebaTokenizer) Tokenize(ctx context.Context, text string) ([]Token, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil tokenizer context")

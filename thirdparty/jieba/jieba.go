@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package cppjieba provides the pure-Go port of cppjieba segmentation used by xvec.
-package cppjieba
+// Package jieba provides the pure-Go Jieba segmentation used by xvec.
+package jieba
 
 import (
 	"bufio"
@@ -35,7 +35,7 @@ const (
 	jiebaMinDouble     = -3.14e100
 )
 
-// CutMode selects a cppjieba segmentation algorithm.
+// CutMode selects a Jieba segmentation algorithm.
 type CutMode string
 
 const (
@@ -45,7 +45,7 @@ const (
 	CutModeHMM    CutMode = "hmm"
 )
 
-// ErrInvalidUTF8 identifies input the pinned cppjieba decoder cannot decode.
+// ErrInvalidUTF8 identifies input the pinned Jieba decoder cannot decode.
 var ErrInvalidUTF8 = errors.New("core: invalid UTF-8 for jieba tokenizer")
 
 var dictionaryCache = struct {
@@ -67,7 +67,7 @@ type Word struct {
 	Offset uint32
 }
 
-// Segmenter is an immutable, concurrency-safe cppjieba segmenter.
+// Segmenter is an immutable, concurrency-safe Jieba segmenter.
 type Segmenter struct {
 	mode       CutMode
 	dictionary *jiebaDictionary
