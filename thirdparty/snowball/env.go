@@ -1,7 +1,6 @@
 package snowball
 
 import (
-	"log"
 	"strings"
 	"unicode/utf8"
 )
@@ -463,9 +462,8 @@ func (env *Env) FindAmongB(amongs []*Among, ctx interface{}) int32 {
 	}
 }
 
-func (env *Env) Debug(count, lineNumber int) {
-	log.Printf("snowball debug, count: %d, line: %d", count, lineNumber)
-}
+// Debug is retained for compatibility and intentionally produces no output.
+func (env *Env) Debug(_, _ int) {}
 
 func (env *Env) Clone() *Env {
 	clone := *env
