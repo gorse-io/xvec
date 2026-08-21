@@ -26,6 +26,7 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
+	"github.com/gorse-io/xvec/internal/db/common"
 )
 
 const MaxPrimaryKeyBytes = 64 << 10
@@ -60,6 +61,7 @@ func NewPrimaryKeyMap() *PrimaryKeyMap {
 		FS:                 vfs.NewMem(),
 		DisableWAL:         true,
 		FormatMajorVersion: pebble.FormatNewest,
+		Logger:             common.PebbleLogger{},
 	})
 	if err != nil {
 		panic(fmt.Sprintf("db: create in-memory IDMap: %v", err))
@@ -195,6 +197,7 @@ func writableIDMapOptions(errorIfExists bool) *pebble.Options {
 		DisableWAL:         true,
 		ErrorIfExists:      errorIfExists,
 		FormatMajorVersion: pebble.FormatNewest,
+		Logger:             common.PebbleLogger{},
 	}
 }
 
@@ -203,6 +206,7 @@ func readOnlyIDMapOptions() *pebble.Options {
 		ReadOnly:           true,
 		ErrorIfNotExists:   true,
 		FormatMajorVersion: pebble.FormatNewest,
+		Logger:             common.PebbleLogger{},
 	}
 }
 

@@ -4,13 +4,43 @@
 package common
 
 import (
+	"bytes"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestOpenDoesNotLog(t *testing.T) {
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	path := filepath.Join(t.TempDir(), "index.pebble")
+	store, err := Open(path, Options{})
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+	store, err = Open(path, Options{})
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+	require.Empty(t, output.String())
+}
+
+func TestPebbleLogger(t *testing.T) {
+	logger := PebbleLogger{}
+	logger.Infof("info")
+	logger.Errorf("error")
+	defer func() {
+		if got := recover(); got != "fatal: 42" {
+			t.Fatalf("Fatalf panic = %v, want %q", got, "fatal: 42")
+		}
+	}()
+	logger.Fatalf("fatal: %d", 42)
+}
 
 func TestStoreOperationsIteratorsAndReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index.pebble")

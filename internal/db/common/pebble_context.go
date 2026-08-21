@@ -43,6 +43,17 @@ var (
 	ErrReadOnly = errors.New("indexstore: read-only")
 )
 
+// PebbleLogger discards Pebble's internal log messages.
+type PebbleLogger struct{}
+
+var _ pebble.Logger = PebbleLogger{}
+
+func (PebbleLogger) Infof(string, ...interface{})  {}
+func (PebbleLogger) Errorf(string, ...interface{}) {}
+func (PebbleLogger) Fatalf(format string, args ...interface{}) {
+	panic(fmt.Sprintf(format, args...))
+}
+
 // Options controls how a Store is opened.
 type Options struct {
 	ReadOnly bool
@@ -90,6 +101,7 @@ func Open(path string, options Options) (*Store, error) {
 		ReadOnly:           options.ReadOnly,
 		ErrorIfNotExists:   options.ReadOnly,
 		FormatMajorVersion: pebble.FormatNewest,
+		Logger:             PebbleLogger{},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("indexstore: open %q: %w", clean, err)
