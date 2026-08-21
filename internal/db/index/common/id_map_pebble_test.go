@@ -4,8 +4,10 @@
 package common
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,18 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPrimaryKeyMapDoesNotLog(t *testing.T) {
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	primary, err := CreatePrimaryKeyMap(context.Background(), filepath.Join(t.TempDir(), "idmap.pebble"))
+	require.NoError(t, err)
+	require.NoError(t, primary.Close())
+	require.Empty(t, output.String())
+}
 
 func TestPrimaryKeyMapPersistsGlobalDocumentIDsInPebbleCheckpoint(t *testing.T) {
 	ctx := context.Background()
