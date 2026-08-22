@@ -182,13 +182,9 @@ func (b *IVFBuilder) Build(ctx context.Context) (*IVFIndex, error) {
 		kmeans.Tolerance = b.options.Tolerance
 		kmeans.Workers = b.options.Workers
 		kmeans.Seed = b.options.Seed
-		model, err := TrainKMeans(ctx, training, kmeans)
+		model, labels, err := trainKMeansWithAssignments(ctx, training, kmeans)
 		if err != nil {
 			return nil, fmt.Errorf("core: train IVF centroids: %w", err)
-		}
-		labels, _, err := model.Classify(ctx, training, b.options.Workers)
-		if err != nil {
-			return nil, fmt.Errorf("core: assign IVF lists: %w", err)
 		}
 		index.model = model
 		index.lists = make([]ivfList, model.Len())

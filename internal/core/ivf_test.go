@@ -972,6 +972,40 @@ func FuzzDecodeIVFIndex(f *testing.F) {
 	})
 }
 
+func BenchmarkIVFBuild(b *testing.B) {
+	const (
+		count     = 4096
+		dimension = 64
+	)
+	vectors := make([][]float32, count)
+	for position := range vectors {
+		vectors[position] = make([]float32, dimension)
+		for coordinate := range vectors[position] {
+			vectors[position][coordinate] = float32((position*17+coordinate*31)%997) / 997
+		}
+	}
+	options := DefaultIVFBuildOptions(MetricCosine)
+	options.NList = 64
+	options.NIterations = 5
+	options.Workers = 8
+
+	b.ResetTimer()
+	for range b.N {
+		builder, err := NewIVFBuilder(dimension, options)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for position, vector := range vectors {
+			if err := builder.Add(context.Background(), uint64(position), vector); err != nil {
+				b.Fatal(err)
+			}
+		}
+		if _, err := builder.Build(context.Background()); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func persistedIVFIndex(t testing.TB, metric Metric, nlist int) *IVFIndex {
 	t.Helper()
 	options := DefaultIVFBuildOptions(metric)

@@ -56,6 +56,20 @@ func TestTrainKMeansTwoClusters(t *testing.T) {
 	require.True(t, score == 1.25)
 }
 
+func TestTrainKMeansReturnsFinalAssignments(t *testing.T) {
+	t.Parallel()
+	vectors := [][]float32{{0, 0}, {0, 1}, {9, 9}, {10, 9}}
+	options := DefaultKMeansOptions(2, MetricL2)
+	options.MaxIterations = 8
+	options.Seed = 7
+
+	model, labels, err := trainKMeansWithAssignments(context.Background(), vectors, options)
+	require.NoError(t, err)
+	want, _, err := model.Classify(context.Background(), vectors, options.Workers)
+	require.NoError(t, err)
+	require.Equal(t, want, labels)
+}
+
 func TestKMeansDeterministicAcrossWorkers(t *testing.T) {
 	t.Parallel()
 	vectors := make([][]float32, 300)

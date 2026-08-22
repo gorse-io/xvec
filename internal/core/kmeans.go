@@ -198,32 +198,40 @@ func (m *KMeansModel) Classify(ctx context.Context, vectors [][]float32, workers
 // Assignment is parallel; accumulation is performed in input order so results
 // are bit-for-bit stable across worker counts.
 func TrainKMeans(ctx context.Context, vectors [][]float32, options KMeansOptions) (*KMeansModel, error) {
+	model, _, err := trainKMeansWithAssignments(ctx, vectors, options)
+	return model, err
+}
+
+// trainKMeansWithAssignments returns the final assignment computed while
+// producing model statistics. Index builders can consume it without repeating
+// the most expensive phase of Lloyd training.
+func trainKMeansWithAssignments(ctx context.Context, vectors [][]float32, options KMeansOptions) (*KMeansModel, []int, error) {
 	if ctx == nil {
-		return nil, errors.New("core: nil k-means training context")
+		return nil, nil, errors.New("core: nil k-means training context")
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := validateKMeansOptions(options); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(vectors) == 0 {
-		return nil, ErrEmptyTrainingSet
+		return nil, nil, ErrEmptyTrainingSet
 	}
 	dimension := len(vectors[0])
 	if err := validateTrainingVectors(ctx, vectors, dimension, true); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	effectiveClusters := min(options.Clusters, len(vectors))
 	centroids, err := initializeKMeans(ctx, vectors, effectiveClusters, dimension, options)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if options.Spherical {
 		for index := range centroids {
 			if index&255 == 0 {
 				if err := ctx.Err(); err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 			}
 			mathutil.NormalizeL2(centroids[index])
@@ -235,15 +243,15 @@ func TrainKMeans(ctx context.Context, vectors [][]float32, options KMeansOptions
 	converged := false
 	for iteration := 0; iteration < options.MaxIterations && len(centroids) > 0; iteration++ {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		labels, scores, err := assignKMeans(ctx, options.Metric, vectors, centroids, options.Workers)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		cost, next, changedShape, err := updateKMeans(ctx, vectors, centroids, labels, scores, options)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		centroids = next
 		iterations = iteration + 1
@@ -254,29 +262,29 @@ func TrainKMeans(ctx context.Context, vectors [][]float32, options KMeansOptions
 		previousCost = cost
 	}
 	if len(centroids) == 0 {
-		return nil, ErrInvalidCentroid
+		return nil, nil, ErrInvalidCentroid
 	}
 
 	labels, scores, err := assignKMeans(ctx, options.Metric, vectors, centroids, options.Workers)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	counts := make([]int, len(centroids))
 	for index, label := range labels {
 		if index&1023 == 0 {
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		counts[label]++
 	}
 	modelCentroids, err := cloneVectorsContext(ctx, centroids)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	finalCost, err := kMeansObjective(ctx, options.Metric, scores)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return &KMeansModel{
 		metric:     options.Metric,
@@ -286,7 +294,7 @@ func TrainKMeans(ctx context.Context, vectors [][]float32, options KMeansOptions
 		cost:       finalCost,
 		iterations: iterations,
 		converged:  converged,
-	}, nil
+	}, labels, nil
 }
 
 func validateKMeansOptions(options KMeansOptions) error {
