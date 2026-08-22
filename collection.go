@@ -144,9 +144,10 @@ type collectionSegmentRuntime struct {
 }
 
 type collectionQuerySnapshot struct {
-	documents []Document
-	segments  []collectionSegmentDocuments
-	runtimes  []*collectionSegmentRuntime
+	documents  []Document
+	segments   []collectionSegmentDocuments
+	runtimes   []*collectionSegmentRuntime
+	liveFilter evaluatedSegmentFilters
 }
 
 func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQuerySnapshot, error) {
@@ -170,7 +171,13 @@ func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQueryS
 	if err != nil {
 		return nil, err
 	}
-	snapshot := &collectionQuerySnapshot{documents: documents, segments: segments, runtimes: runtimes}
+	liveFilter, err := evaluateSegmentFilters(ctx, nil, documents, segments, runtimes, c.runtimeConfig().InvertToForwardScanRatio)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &collectionQuerySnapshot{
+		documents: documents, segments: segments, runtimes: runtimes, liveFilter: liveFilter,
+	}
 	c.querySnapshot.Store(snapshot)
 	c.querySnapshotBuildCount.Add(1)
 	return snapshot, nil
@@ -3852,9 +3859,12 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	}
 	documents, segments, runtimes := snapshot.documents, snapshot.segments, snapshot.runtimes
 	runtimeConfig := c.runtimeConfig()
-	filters, err := evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
-	if err != nil {
-		return nil, wrapFilterEvaluationError(op, c.path, err)
+	filters := snapshot.liveFilter
+	if filterPlan != nil {
+		filters, err = evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
+		if err != nil {
+			return nil, wrapFilterEvaluationError(op, c.path, err)
+		}
 	}
 	candidateFilter := filters.global
 	target, err := singleQueryTargetKind(query)

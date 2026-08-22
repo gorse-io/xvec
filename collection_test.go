@@ -5264,6 +5264,9 @@ func TestCollectionQuerySnapshotPublishesOnceUntilInvalidated(t *testing.T) {
 	require.Len(t, first.documents, len(testMultiQueryDocuments()))
 	require.NotEmpty(t, first.segments)
 	require.NotEmpty(t, first.runtimes)
+	require.Equal(t, uint64(len(first.documents)), first.liveFilter.global.matched)
+	require.Equal(t, uint64(len(first.documents)), first.liveFilter.global.total)
+	require.Len(t, first.liveFilter.local, len(first.segments))
 
 	collection.mu.Lock()
 	collection.invalidateQuerySnapshotLocked()
