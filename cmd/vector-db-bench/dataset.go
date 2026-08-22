@@ -169,11 +169,11 @@ func downloadDatasetFile(ctx context.Context, client *http.Client, remoteURL, lo
 }
 
 func readQueryData(ctx context.Context, datasetDir string, dimension, limit int) (queryData, error) {
-	queries, err := readParquetRows[vectorParquetRow](ctx, filepath.Join(datasetDir, testFileName), limit)
+	queries, err := readVectorParquetRows(ctx, filepath.Join(datasetDir, testFileName), limit)
 	if err != nil {
 		return queryData{}, fmt.Errorf("read test vectors: %w", err)
 	}
-	neighbors, err := readParquetRows[neighborParquetRow](ctx, filepath.Join(datasetDir, neighborsFileName), limit)
+	neighbors, err := readNeighborParquetRows(ctx, filepath.Join(datasetDir, neighborsFileName), limit)
 	if err != nil {
 		return queryData{}, fmt.Errorf("read ground truth: %w", err)
 	}
@@ -203,42 +203,129 @@ func readQueryData(ctx context.Context, datasetDir string, dimension, limit int)
 	return data, nil
 }
 
-func readParquetRows[T any](ctx context.Context, path string, limit int) ([]T, error) {
+func forEachParquetRow(ctx context.Context, path string, limit int64, consume func(parquet.Row) error) (count int64, err error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	reader := parquet.NewGenericReader[T](file)
-	capacity := reader.NumRows()
-	if capacity < 0 {
-		capacity = 0
+	defer func() { err = errors.Join(err, file.Close()) }()
+	info, err := file.Stat()
+	if err != nil {
+		return 0, err
 	}
-	if limit > 0 && int64(limit) < capacity {
-		capacity = int64(limit)
+	parquetFile, err := parquet.OpenFile(file, info.Size())
+	if err != nil {
+		return 0, err
 	}
-	rows := make([]T, 0, int(capacity))
-	buffer := make([]T, 256)
-	for limit == 0 || len(rows) < limit {
-		if err := ctx.Err(); err != nil {
-			return nil, errors.Join(err, reader.Close(), file.Close())
+	buffer := make([]parquet.Row, 256)
+	for _, rowGroup := range parquetFile.RowGroups() {
+		rows := rowGroup.Rows()
+		for limit == 0 || count < limit {
+			if err := ctx.Err(); err != nil {
+				return count, errors.Join(err, rows.Close())
+			}
+			readBuffer := buffer
+			if limit > 0 && int64(len(readBuffer)) > limit-count {
+				readBuffer = readBuffer[:limit-count]
+			}
+			read, readErr := rows.ReadRows(readBuffer)
+			for index := range read {
+				if err := consume(readBuffer[index]); err != nil {
+					return count, errors.Join(err, rows.Close())
+				}
+				count++
+			}
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			if readErr != nil {
+				return count, errors.Join(readErr, rows.Close())
+			}
+			if read == 0 {
+				break
+			}
 		}
-		readBuffer := buffer
-		if limit > 0 && len(rows)+len(readBuffer) > limit {
-			readBuffer = readBuffer[:limit-len(rows)]
+		if err := rows.Close(); err != nil {
+			return count, err
 		}
-		count, readErr := reader.Read(readBuffer)
-		rows = append(rows, readBuffer[:count]...)
-		if errors.Is(readErr, io.EOF) {
+		if limit > 0 && count >= limit {
 			break
 		}
-		if readErr != nil {
-			return nil, errors.Join(readErr, reader.Close(), file.Close())
+	}
+	return count, nil
+}
+
+func decodeVectorParquetRow(row parquet.Row) (vectorParquetRow, error) {
+	decoded := vectorParquetRow{}
+	hasID := false
+	for _, value := range row {
+		if value.IsNull() {
+			continue
 		}
-		if count == 0 {
-			break
+		switch value.Column() {
+		case 0:
+			decoded.ID = value.Int64()
+			hasID = true
+		case 1:
+			switch value.Kind() {
+			case parquet.Float:
+				decoded.Embedding = append(decoded.Embedding, value.Float())
+			case parquet.Double:
+				decoded.Embedding = append(decoded.Embedding, float32(value.Double()))
+			default:
+				return vectorParquetRow{}, fmt.Errorf("vector element has physical type %s, want FLOAT or DOUBLE", value.Kind())
+			}
 		}
 	}
-	return rows, errors.Join(reader.Close(), file.Close())
+	if !hasID {
+		return vectorParquetRow{}, errors.New("vector row has no id")
+	}
+	return decoded, nil
+}
+
+func decodeNeighborParquetRow(row parquet.Row) (neighborParquetRow, error) {
+	decoded := neighborParquetRow{}
+	hasID := false
+	for _, value := range row {
+		if value.IsNull() {
+			continue
+		}
+		switch value.Column() {
+		case 0:
+			decoded.ID = value.Int64()
+			hasID = true
+		case 1:
+			decoded.Neighbors = append(decoded.Neighbors, value.Int64())
+		}
+	}
+	if !hasID {
+		return neighborParquetRow{}, errors.New("neighbor row has no id")
+	}
+	return decoded, nil
+}
+
+func readVectorParquetRows(ctx context.Context, path string, limit int) ([]vectorParquetRow, error) {
+	rows := make([]vectorParquetRow, 0)
+	_, err := forEachParquetRow(ctx, path, int64(limit), func(row parquet.Row) error {
+		decoded, err := decodeVectorParquetRow(row)
+		if err == nil {
+			rows = append(rows, decoded)
+		}
+		return err
+	})
+	return rows, err
+}
+
+func readNeighborParquetRows(ctx context.Context, path string, limit int) ([]neighborParquetRow, error) {
+	rows := make([]neighborParquetRow, 0)
+	_, err := forEachParquetRow(ctx, path, int64(limit), func(row parquet.Row) error {
+		decoded, err := decodeNeighborParquetRow(row)
+		if err == nil {
+			rows = append(rows, decoded)
+		}
+		return err
+	})
+	return rows, err
 }
 
 func forEachTrainingBatch(
@@ -255,40 +342,34 @@ func forEachTrainingBatch(
 			break
 		}
 		path := filepath.Join(datasetDir, name)
-		file, err := os.Open(path)
-		if err != nil {
-			return total, fmt.Errorf("open training file %s: %w", path, err)
+		buffer := make([]vectorParquetRow, 0, batchSize)
+		remaining := int64(0)
+		if limit > 0 {
+			remaining = limit - total
 		}
-		reader := parquet.NewGenericReader[vectorParquetRow](file)
-		buffer := make([]vectorParquetRow, batchSize)
-		for limit == 0 || total < limit {
-			if err := ctx.Err(); err != nil {
-				return total, errors.Join(err, reader.Close(), file.Close())
+		count, err := forEachParquetRow(ctx, path, remaining, func(row parquet.Row) error {
+			decoded, err := decodeVectorParquetRow(row)
+			if err != nil {
+				return err
 			}
-			readBuffer := buffer
-			if limit > 0 && int64(len(readBuffer)) > limit-total {
-				readBuffer = readBuffer[:limit-total]
-			}
-			count, readErr := reader.Read(readBuffer)
-			if count > 0 {
-				if err := consume(readBuffer[:count]); err != nil {
-					return total, errors.Join(err, reader.Close(), file.Close())
+			buffer = append(buffer, decoded)
+			if len(buffer) == batchSize {
+				if err := consume(buffer); err != nil {
+					return err
 				}
-				total += int64(count)
+				buffer = buffer[:0]
 			}
-			if errors.Is(readErr, io.EOF) {
-				break
-			}
-			if readErr != nil {
-				return total, errors.Join(readErr, reader.Close(), file.Close())
-			}
-			if count == 0 {
-				break
+			return nil
+		})
+		if err != nil {
+			return total, fmt.Errorf("read training file %s: %w", path, err)
+		}
+		if len(buffer) > 0 {
+			if err := consume(buffer); err != nil {
+				return total, err
 			}
 		}
-		if err := errors.Join(reader.Close(), file.Close()); err != nil {
-			return total, err
-		}
+		total += count
 	}
 	return total, nil
 }
