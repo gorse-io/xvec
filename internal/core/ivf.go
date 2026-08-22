@@ -469,33 +469,27 @@ func (i *IVFIndex) searchIVF(ctx context.Context, query []float32, options IVFSe
 	if err != nil {
 		return nil, err
 	}
-	count := 0
-	for _, list := range lists {
-		count += len(i.lists[list].positions)
-	}
-	positions := make([]int, 0, count)
-	for _, list := range lists {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		positions = append(positions, i.lists[list].positions...)
-	}
+	batchLen := func(batch int) int { return len(i.lists[lists[batch]].positions) }
 	if i.options.Metric == MetricCosine {
 		var candidateMagnitude float32
-		return topKPrevalidatedCandidatesWithOptions(ctx, i.options.Metric, func(candidate, query []float32) (float32, error) {
+		return topKPrevalidatedCandidateBatchesWithOptions(ctx, i.options.Metric, func(candidate, query []float32) (float32, error) {
 			return mathutil.CosineDistanceWithMagnitudesPrevalidated(candidate, query, candidateMagnitude, queryMagnitude)
-		}, query, options.SearchOptions, len(positions), func(index int) Candidate {
-			position := positions[index]
+		}, query, options.SearchOptions, len(lists), batchLen, func(batch, index int) Candidate {
+			position := i.lists[lists[batch]].positions[index]
 			candidateMagnitude = i.vectorMagnitudes[position]
 			start := position * i.dimension
 			return Candidate{Key: i.keys[position], Vector: i.vectors[start : start+i.dimension]}
 		})
 	}
-	return topKCandidatesWithOptions(ctx, i.options.Metric, query, options.SearchOptions, len(positions), func(index int) Candidate {
-		position := positions[index]
+	distance, err := i.options.Metric.PrevalidatedDistance()
+	if err != nil {
+		return nil, err
+	}
+	return topKPrevalidatedCandidateBatchesWithOptions(ctx, i.options.Metric, distance, query, options.SearchOptions, len(lists), batchLen, func(batch, index int) Candidate {
+		position := i.lists[lists[batch]].positions[index]
 		start := position * i.dimension
 		return Candidate{Key: i.keys[position], Vector: i.vectors[start : start+i.dimension]}
-	}, requirePositiveTopK)
+	})
 }
 
 // ProbedLists returns up to nprobe centroid indexes in metric-best order.

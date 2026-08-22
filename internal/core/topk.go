@@ -165,6 +165,77 @@ func topKPrevalidatedCandidatesWithOptions(
 	return results, nil
 }
 
+// topKPrevalidatedCandidateBatchesWithOptions scans already partitioned
+// candidates without flattening them into a temporary slice. IVF uses one
+// batch per probed inverted list.
+func topKPrevalidatedCandidateBatchesWithOptions(
+	ctx context.Context,
+	metric Metric,
+	distance mathutil.DenseDistance,
+	query []float32,
+	options SearchOptions,
+	batches int,
+	batchLen func(int) int,
+	candidateAt func(int, int) Candidate,
+) ([]Result, error) {
+	count := 0
+	for batch := range batches {
+		count += batchLen(batch)
+	}
+	if options.TopK == 0 || count == 0 {
+		return []Result{}, nil
+	}
+	k := min(options.TopK, count)
+	worstFirst := func(left, right Result) bool {
+		if left.Score == right.Score {
+			return left.Key > right.Key
+		}
+		return metric.Better(right.Score, left.Score)
+	}
+	heap := container.NewHeap(worstFirst)
+	ordinal := 0
+	for batch := range batches {
+		for index := range batchLen(batch) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			candidate := candidateAt(batch, index)
+			if options.Filter != nil && !options.Filter(candidate.Key) {
+				ordinal++
+				continue
+			}
+			score, err := distance(candidate.Vector, query)
+			if err != nil {
+				return nil, fmt.Errorf("core: score candidate %d (key %d): %w", ordinal, candidate.Key, err)
+			}
+			ordinal++
+			if !scoreWithinRadius(metric, score, options.Radius) {
+				continue
+			}
+			result := Result{Key: candidate.Key, Score: score}
+			if heap.Len() < k {
+				heap.Push(result)
+				continue
+			}
+			worst, _ := heap.Peek()
+			if resultBetter(metric, result, worst) {
+				heap.Replace(result)
+			}
+		}
+	}
+	results := heap.Values()
+	slices.SortFunc(results, func(left, right Result) int {
+		if resultBetter(metric, left, right) {
+			return -1
+		}
+		if resultBetter(metric, right, left) {
+			return 1
+		}
+		return 0
+	})
+	return results, nil
+}
+
 // BatchTopK computes independent top-k results for queries, preserving query
 // order while using at most workers goroutines. A non-positive workers value
 // uses GOMAXPROCS.
