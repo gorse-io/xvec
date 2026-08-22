@@ -16,6 +16,7 @@ package ioutil
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -25,6 +26,28 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMmapReaderCloseRetriesFailedUnmap(t *testing.T) {
+	closeErr := errors.New("unmap")
+	calls := 0
+	reader := &mmapReaderAt{unmap: func() error {
+		calls++
+		if calls == 1 {
+			return closeErr
+		}
+		return nil
+	}}
+
+	require.ErrorIs(t, reader.Close(), closeErr)
+	_, err := reader.ReadAt(make([]byte, 1), 0)
+	require.ErrorIs(t, err, io.EOF)
+	require.NoError(t, reader.Close())
+	require.Equal(t, 2, calls)
+	_, err = reader.ReadAt(make([]byte, 1), 0)
+	require.ErrorIs(t, err, os.ErrClosed)
+	require.NoError(t, reader.Close())
+	require.Equal(t, 2, calls)
+}
 
 func TestOpenReaderAt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "segment.dat")
