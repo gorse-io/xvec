@@ -4018,6 +4018,23 @@ func (c *Collection) searchVectorSegments(
 	if err != nil {
 		return nil, err
 	}
+	if len(runtimes) == 1 {
+		runtime := runtimes[0]
+		for _, segment := range segments {
+			if segment.metadata.ID != runtime.segmentID {
+				continue
+			}
+			local, found := filters.local[runtime.segmentID]
+			if !found {
+				return nil, fmt.Errorf("candidate filter for segment %d is missing", runtime.segmentID)
+			}
+			return c.searchVectorSnapshotResolved(
+				ctx, op, field, dense, sparse, topK, segment.documents, local,
+				vectorIndex, params, runtime.indexes,
+			)
+		}
+		return nil, fmt.Errorf("runtime references missing segment %d", runtime.segmentID)
+	}
 	segmentByID := make(map[uint64]collectionSegmentDocuments, len(segments))
 	for _, segment := range segments {
 		segmentByID[segment.metadata.ID] = segment
