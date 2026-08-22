@@ -5262,6 +5262,10 @@ func TestCollectionQuerySnapshotPublishesOnceUntilInvalidated(t *testing.T) {
 	require.Same(t, first, second)
 	require.Equal(t, uint64(1), collection.querySnapshotBuildCount.Load())
 	require.Len(t, first.documents, len(testMultiQueryDocuments()))
+	require.Len(t, first.documentOrdinals, len(first.documents))
+	for index, document := range first.documents {
+		require.Equal(t, index, first.documentOrdinals[document.DocID])
+	}
 	require.NotEmpty(t, first.segments)
 	require.NotEmpty(t, first.runtimes)
 	require.Equal(t, uint64(len(first.documents)), first.liveFilter.global.matched)

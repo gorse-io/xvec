@@ -144,10 +144,11 @@ type collectionSegmentRuntime struct {
 }
 
 type collectionQuerySnapshot struct {
-	documents  []Document
-	segments   []collectionSegmentDocuments
-	runtimes   []*collectionSegmentRuntime
-	liveFilter evaluatedSegmentFilters
+	documents        []Document
+	documentOrdinals map[uint64]int
+	segments         []collectionSegmentDocuments
+	runtimes         []*collectionSegmentRuntime
+	liveFilter       evaluatedSegmentFilters
 }
 
 func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQuerySnapshot, error) {
@@ -176,7 +177,8 @@ func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQueryS
 		return nil, err
 	}
 	snapshot := &collectionQuerySnapshot{
-		documents: documents, segments: segments, runtimes: runtimes, liveFilter: liveFilter,
+		documents: documents, documentOrdinals: indexDocumentOrdinals(documents),
+		segments: segments, runtimes: runtimes, liveFilter: liveFilter,
 	}
 	c.querySnapshot.Store(snapshot)
 	c.querySnapshotBuildCount.Add(1)
@@ -3903,7 +3905,7 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	return c.materializeResults(documents, results, query.Projection)
+	return c.materializeResultsByOrdinal(documents, snapshot.documentOrdinals, results, query.Projection)
 }
 
 type singleQueryTarget uint8
@@ -4625,16 +4627,30 @@ func sparseValueToCore(value any) (core.SparseVector, error) {
 }
 
 func (c *Collection) materializeResults(documents []Document, results []core.Result, projection Projection) ([]Document, error) {
-	byID := make(map[uint64]Document, len(documents))
-	for _, document := range documents {
-		byID[document.DocID] = document
+	return c.materializeResultsByOrdinal(documents, indexDocumentOrdinals(documents), results, projection)
+}
+
+func indexDocumentOrdinals(documents []Document) map[uint64]int {
+	ordinals := make(map[uint64]int, len(documents))
+	for index, document := range documents {
+		ordinals[document.DocID] = index
 	}
+	return ordinals
+}
+
+func (c *Collection) materializeResultsByOrdinal(
+	documents []Document,
+	ordinals map[uint64]int,
+	results []core.Result,
+	projection Projection,
+) ([]Document, error) {
 	output := make([]Document, 0, len(results))
 	for _, result := range results {
-		document, found := byID[result.Key]
-		if !found {
+		ordinal, found := ordinals[result.Key]
+		if !found || ordinal < 0 || ordinal >= len(documents) || documents[ordinal].DocID != result.Key {
 			return nil, &Error{Code: ErrorCodeInternal, Op: "materialize query", Path: c.path, Message: fmt.Sprintf("document %d disappeared from snapshot", result.Key)}
 		}
+		document := documents[ordinal]
 		document.Score = result.Score
 		projected, err := ProjectDocument(document, c.schema, projection)
 		if err != nil {
