@@ -30,10 +30,14 @@ func ExampleDiskANNIndex() {
 	if err != nil {
 		panic(err)
 	}
-	for key, vector := range map[uint64][]float32{
-		10: {0, 0}, 20: {1, 0}, 30: {0, 2}, 40: {3, 3},
+	for _, candidate := range []struct {
+		key    uint64
+		vector []float32
+	}{
+		{10, []float32{0, 0}}, {20, []float32{1, 0}},
+		{30, []float32{0, 2}}, {40, []float32{3, 3}},
 	} {
-		if err := builder.Add(context.Background(), key, vector); err != nil {
+		if err := builder.Add(context.Background(), candidate.key, candidate.vector); err != nil {
 			panic(err)
 		}
 	}

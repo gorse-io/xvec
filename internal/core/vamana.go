@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"runtime"
 	"slices"
 	"sync"
 
@@ -36,6 +35,7 @@ const (
 	DefaultVamanaSearchListSize   = 100
 	DefaultVamanaMaxOcclusionSize = 750
 	DefaultVamanaAlpha            = float32(1.2)
+	defaultVamanaBuildWorkers     = 8
 	MaxVamanaDegree               = 65_535
 )
 
@@ -229,7 +229,10 @@ func (b *VamanaBuilder) build(ctx context.Context, workers int) (*VamanaIndex, e
 
 func vamanaBuildWorkers(workers, count int) int {
 	if workers <= 0 {
-		workers = runtime.GOMAXPROCS(0)
+		// The worker count also defines the immutable graph-generation batch.
+		// Keep the default fixed so identical inputs do not produce different
+		// graph topology and recall on machines with different CPU counts.
+		workers = defaultVamanaBuildWorkers
 	}
 	return max(1, min(workers, max(1, count)))
 }

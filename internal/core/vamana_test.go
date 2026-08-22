@@ -131,6 +131,12 @@ func TestVamanaParallelBuildIsDeterministic(t *testing.T) {
 	require.Equal(t, first.entryPoint, second.entryPoint)
 }
 
+func TestVamanaDefaultBuildWorkersAreTopologyStable(t *testing.T) {
+	require.Equal(t, 1, vamanaBuildWorkers(0, 1))
+	require.Equal(t, defaultVamanaBuildWorkers, vamanaBuildWorkers(0, 320))
+	require.Equal(t, 3, vamanaBuildWorkers(3, 320))
+}
+
 func TestVamanaSearchMetricsFilterRadiusAndRecall(t *testing.T) {
 	for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
 		inputs := hnswBuildInputs(180)
