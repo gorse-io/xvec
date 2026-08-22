@@ -45,6 +45,45 @@ func TestParseConfigVectorDBBenchCases(t *testing.T) {
 	require.True(t, config.UseRefiner)
 }
 
+func TestResolveVectorDBBenchDatasetCases(t *testing.T) {
+	testCases := []struct {
+		caseType      string
+		datasetName   string
+		datasetFolder string
+		size          int64
+		dimension     int
+		metric        string
+		trainCount    int
+		firstTrain    string
+		lastTrain     string
+	}{
+		{"Performance768D100K", "cohere", "cohere_small_100k", 100_000, 768, "cosine", 1, "shuffle_train.parquet", "shuffle_train.parquet"},
+		{"Performance768D1M", "cohere", "cohere_medium_1m", 1_000_000, 768, "cosine", 1, "shuffle_train.parquet", "shuffle_train.parquet"},
+		{"Performance768D10M", "cohere", "cohere_large_10m", 10_000_000, 768, "cosine", 10, "shuffle_train-00-of-10.parquet", "shuffle_train-09-of-10.parquet"},
+		{"Performance768D100M", "laion", "laion_large_100m", 100_000_000, 768, "l2", 100, "train-00-of-100.parquet", "train-99-of-100.parquet"},
+		{"Performance1024D1M", "bioasq", "bioasq_medium_1m", 1_000_000, 1024, "cosine", 1, "shuffle_train.parquet", "shuffle_train.parquet"},
+		{"Performance1024D10M", "bioasq", "bioasq_large_10m", 10_000_000, 1024, "cosine", 10, "shuffle_train-00-of-10.parquet", "shuffle_train-09-of-10.parquet"},
+		{"Performance1536D50K", "openai", "openai_small_50k", 50_000, 1536, "cosine", 1, "shuffle_train.parquet", "shuffle_train.parquet"},
+		{"Performance1536D500K", "openai", "openai_medium_500k", 500_000, 1536, "cosine", 1, "shuffle_train.parquet", "shuffle_train.parquet"},
+		{"Performance1536D5M", "openai", "openai_large_5m", 5_000_000, 1536, "cosine", 10, "shuffle_train-00-of-10.parquet", "shuffle_train-09-of-10.parquet"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.caseType, func(t *testing.T) {
+			resolved, err := resolveBenchmarkCase(benchConfig{CaseType: testCase.caseType})
+			require.NoError(t, err)
+			require.Equal(t, testCase.caseType, resolved.Name)
+			require.Equal(t, testCase.datasetName, resolved.DatasetName)
+			require.Equal(t, testCase.datasetFolder, resolved.DatasetFolder)
+			require.Equal(t, testCase.size, resolved.Size)
+			require.Equal(t, testCase.dimension, resolved.Dimension)
+			require.Equal(t, testCase.metric, resolved.Metric)
+			require.Len(t, resolved.TrainFiles, testCase.trainCount)
+			require.Equal(t, testCase.firstTrain, resolved.TrainFiles[0])
+			require.Equal(t, testCase.lastTrain, resolved.TrainFiles[len(resolved.TrainFiles)-1])
+		})
+	}
+}
+
 func TestParseConfigCustomAndValidation(t *testing.T) {
 	datasetDir := t.TempDir()
 	config, err := parseConfig([]string{

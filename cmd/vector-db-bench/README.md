@@ -3,18 +3,18 @@
 `vector-db-bench` is a native Go benchmark driver for comparing
 [xvec](https://github.com/gorse-io/xvec) and
 [zvec-go](https://github.com/zvec-ai/zvec-go). It follows the VectorDBBench
-Cohere performance workload used by the Alibaba zvec benchmark guide:
+vector search performance workloads:
 
-- Cohere 1M and 10M Parquet datasets;
+- Cohere, LAION, BioASQ, and OpenAI Parquet datasets;
 - HNSW loading and optimization;
 - serial Recall@K, QPS, and latency percentiles;
 - sustained concurrent QPS and latency at multiple worker counts;
 - JSON results containing the run configuration and host information.
 
 The program downloads the same public VectorDBBench files from
-`https://assets.zilliz.com/benchmark` unless `--skip-download` is set. Be aware
-that the 1M shuffled training file is about 3.1 GB and the ten 10M shards total
-substantially more.
+`https://assets.zilliz.com/benchmark` unless `--skip-download` is set. Large
+cases can require hundreds of gigabytes of downloads and additional space for
+the database collection.
 
 ## Build
 
@@ -35,7 +35,27 @@ For example, on Linux x86-64:
 export ZVEC_LIBRARY_PATH=/path/to/linux_amd64/libzvec_c_api.so
 ```
 
-## Cohere 1M
+## Built-in datasets
+
+The built-in cases mirror VectorDBBench's standard vector performance dataset
+presets:
+
+| Case type | Dataset | Dimension | Size | Metric |
+| --- | --- | ---: | ---: | --- |
+| `Performance768D100K` | Cohere | 768 | 100K | cosine |
+| `Performance768D1M` | Cohere | 768 | 1M | cosine |
+| `Performance768D10M` | Cohere | 768 | 10M | cosine |
+| `Performance768D100M` | LAION | 768 | 100M | L2 |
+| `Performance1024D1M` | BioASQ | 1024 | 1M | cosine |
+| `Performance1024D10M` | BioASQ | 1024 | 10M | cosine |
+| `Performance1536D50K` | OpenAI | 1536 | 50K | cosine |
+| `Performance1536D500K` | OpenAI | 1536 | 500K | cosine |
+| `Performance1536D5M` | OpenAI | 1536 | 5M | cosine |
+
+Pass one of these names to `--case-type`. The dataset directory, dimensions,
+metric, and training shards are resolved automatically.
+
+## Cohere 1M example
 
 The following configuration mirrors the published 1M Alibaba zvec benchmark. The
 first invocation downloads the data, recreates the collection, loads it, and
@@ -78,7 +98,7 @@ To rerun only the search phases against that collection:
   --output result-cohere-1m-search.json
 ```
 
-## Cohere 10M
+## Cohere 10M example
 
 This mirrors the published INT8/refiner configuration:
 

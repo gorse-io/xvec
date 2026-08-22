@@ -30,9 +30,16 @@ const (
 	backendXvec = "xvec"
 	backendZvec = "zvec"
 
-	casePerformance768D1M  = "Performance768D1M"
-	casePerformance768D10M = "Performance768D10M"
-	caseCustom             = "Custom"
+	casePerformance768D100K  = "Performance768D100K"
+	casePerformance768D1M    = "Performance768D1M"
+	casePerformance768D10M   = "Performance768D10M"
+	casePerformance768D100M  = "Performance768D100M"
+	casePerformance1024D1M   = "Performance1024D1M"
+	casePerformance1024D10M  = "Performance1024D10M"
+	casePerformance1536D50K  = "Performance1536D50K"
+	casePerformance1536D500K = "Performance1536D500K"
+	casePerformance1536D5M   = "Performance1536D5M"
+	caseCustom               = "Custom"
 )
 
 type benchmarkCase struct {
@@ -98,7 +105,7 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	flags := flag.NewFlagSet("vector-db-bench", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&config.Path, "path", "", "collection path (required)")
-	flags.StringVar(&config.CaseType, "case-type", casePerformance768D1M, "benchmark case: Performance768D1M, Performance768D10M, or Custom")
+	flags.StringVar(&config.CaseType, "case-type", casePerformance768D1M, "VectorDBBench dataset case or Custom; see README for available cases")
 	flags.StringVar(&config.DatasetDir, "dataset-dir", "", "local VectorDBBench dataset directory")
 	flags.StringVar(&config.DatasetBaseURL, "dataset-base-url", "https://assets.zilliz.com/benchmark", "VectorDBBench dataset base URL")
 	flags.IntVar(&config.Dimension, "dimension", 0, "vector dimension for Custom case")
@@ -221,19 +228,50 @@ func (c benchConfig) validate() error {
 
 func resolveBenchmarkCase(config benchConfig) (benchmarkCase, error) {
 	switch strings.ToLower(config.CaseType) {
+	case strings.ToLower(casePerformance768D100K):
+		return benchmarkCase{
+			Name: casePerformance768D100K, DatasetName: "cohere", DatasetFolder: "cohere_small_100k",
+			Size: 100_000, Dimension: 768, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1),
+		}, nil
 	case strings.ToLower(casePerformance768D1M):
 		return benchmarkCase{
 			Name: casePerformance768D1M, DatasetName: "cohere", DatasetFolder: "cohere_medium_1m",
-			Size: 1_000_000, Dimension: 768, Metric: "cosine", TrainFiles: []string{"shuffle_train.parquet"},
+			Size: 1_000_000, Dimension: 768, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1),
 		}, nil
 	case strings.ToLower(casePerformance768D10M):
-		files := make([]string, 10)
-		for index := range files {
-			files[index] = fmt.Sprintf("shuffle_train-%02d-of-10.parquet", index)
-		}
 		return benchmarkCase{
 			Name: casePerformance768D10M, DatasetName: "cohere", DatasetFolder: "cohere_large_10m",
-			Size: 10_000_000, Dimension: 768, Metric: "cosine", TrainFiles: files,
+			Size: 10_000_000, Dimension: 768, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 10),
+		}, nil
+	case strings.ToLower(casePerformance768D100M):
+		return benchmarkCase{
+			Name: casePerformance768D100M, DatasetName: "laion", DatasetFolder: "laion_large_100m",
+			Size: 100_000_000, Dimension: 768, Metric: "l2", TrainFiles: vectorDBBenchTrainFiles(false, 100),
+		}, nil
+	case strings.ToLower(casePerformance1024D1M):
+		return benchmarkCase{
+			Name: casePerformance1024D1M, DatasetName: "bioasq", DatasetFolder: "bioasq_medium_1m",
+			Size: 1_000_000, Dimension: 1024, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1),
+		}, nil
+	case strings.ToLower(casePerformance1024D10M):
+		return benchmarkCase{
+			Name: casePerformance1024D10M, DatasetName: "bioasq", DatasetFolder: "bioasq_large_10m",
+			Size: 10_000_000, Dimension: 1024, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 10),
+		}, nil
+	case strings.ToLower(casePerformance1536D50K):
+		return benchmarkCase{
+			Name: casePerformance1536D50K, DatasetName: "openai", DatasetFolder: "openai_small_50k",
+			Size: 50_000, Dimension: 1536, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1),
+		}, nil
+	case strings.ToLower(casePerformance1536D500K):
+		return benchmarkCase{
+			Name: casePerformance1536D500K, DatasetName: "openai", DatasetFolder: "openai_medium_500k",
+			Size: 500_000, Dimension: 1536, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1),
+		}, nil
+	case strings.ToLower(casePerformance1536D5M):
+		return benchmarkCase{
+			Name: casePerformance1536D5M, DatasetName: "openai", DatasetFolder: "openai_large_5m",
+			Size: 5_000_000, Dimension: 1536, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 10),
 		}, nil
 	case strings.ToLower(caseCustom):
 		files := splitNonEmpty(config.TrainFiles)
@@ -251,6 +289,21 @@ func resolveBenchmarkCase(config benchConfig) (benchmarkCase, error) {
 	default:
 		return benchmarkCase{}, fmt.Errorf("unsupported case-type %q", config.CaseType)
 	}
+}
+
+func vectorDBBenchTrainFiles(shuffled bool, count int) []string {
+	prefix := "train"
+	if shuffled {
+		prefix = "shuffle_train"
+	}
+	if count == 1 {
+		return []string{prefix + ".parquet"}
+	}
+	files := make([]string, count)
+	for index := range files {
+		files[index] = fmt.Sprintf("%s-%02d-of-%d.parquet", prefix, index, count)
+	}
+	return files
 }
 
 func parseFlexibleDuration(value string) (time.Duration, error) {
