@@ -26,7 +26,7 @@ libraries.
 
 ## Install
 
-xvec requires Go 1.26 or later.
+xvec requires Go 1.27 or later.
 
 ```bash
 go get github.com/gorse-io/xvec
