@@ -21,12 +21,14 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"slices"
 	"sync"
 
 	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/gorse-io/xvec/internal/ailego/io"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
 const (
@@ -144,6 +146,13 @@ func (b *VamanaBuilder) Add(ctx context.Context, key uint64, vector []float32) e
 // Build inserts vectors in input order, applies RobustPrune and reverse-link
 // updates, then selects the persisted-search medoid entry point.
 func (b *VamanaBuilder) Build(ctx context.Context) (*VamanaIndex, error) {
+	return b.build(ctx, 1)
+}
+
+// build constructs a deterministic graph with batched parallel candidate
+// discovery. Each batch reads an immutable graph generation, then publishes
+// forward and reverse edges in input order so scheduling cannot affect output.
+func (b *VamanaBuilder) build(ctx context.Context, workers int) (*VamanaIndex, error) {
 	if b == nil {
 		return nil, errors.New("core: nil Vamana builder")
 	}
@@ -164,12 +173,43 @@ func (b *VamanaBuilder) Build(ctx context.Context) (*VamanaIndex, error) {
 		neighbors: make([][]int, len(b.keys)), neighborDistances: make([][]float32, len(b.keys)),
 		entryPoint: -1,
 	}
-	for position := range index.keys {
+	workers = vamanaBuildWorkers(workers, len(index.keys))
+	for batchStart := 0; batchStart < len(index.keys); batchStart += workers {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if err := index.insertNode(ctx, position); err != nil {
-			return nil, fmt.Errorf("core: construct Vamana node %d: %w", position, err)
+		batchEnd := min(batchStart+workers, len(index.keys))
+		computeStart := batchStart
+		if computeStart == 0 {
+			index.entryPoint = 0
+			computeStart++
+			if computeStart == batchEnd {
+				continue
+			}
+		}
+		selected := make([][]vamanaDistanceNode, batchEnd-computeStart)
+		err := parallel.ParallelFor(ctx, len(selected), workers, func(ctx context.Context, offset int) error {
+			position := computeStart + offset
+			candidates, err := index.searchBuildCandidates(
+				ctx, index.vectorAt(position), index.entryPoint, index.options.SearchListSize,
+			)
+			if err != nil {
+				return err
+			}
+			selected[offset], err = index.robustPrune(ctx, position, candidates)
+			return err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("core: construct Vamana batch at node %d: %w", computeStart, err)
+		}
+		for offset, neighbors := range selected {
+			position := computeStart + offset
+			index.setVamanaNeighbors(position, neighbors)
+			for _, neighbor := range neighbors {
+				if err := index.addReverseEdge(ctx, position, neighbor.position, neighbor.distance); err != nil {
+					return nil, fmt.Errorf("core: construct Vamana node %d: %w", position, err)
+				}
+			}
 		}
 	}
 	entry, err := index.calculateMedoid(ctx)
@@ -185,6 +225,13 @@ func (b *VamanaBuilder) Build(ctx context.Context) (*VamanaIndex, error) {
 	b.vectors = nil
 	b.positions = nil
 	return index, nil
+}
+
+func vamanaBuildWorkers(workers, count int) int {
+	if workers <= 0 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+	return max(1, min(workers, max(1, count)))
 }
 
 // VamanaIndex stores original FP32 vectors and one bounded directed graph.

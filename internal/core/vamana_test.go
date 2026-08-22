@@ -108,6 +108,29 @@ func TestVamanaBuildOptionsGraphDeterminismAndOwnership(t *testing.T) {
 		"Vector exposed mutable storage")
 }
 
+func TestVamanaParallelBuildIsDeterministic(t *testing.T) {
+	inputs := diskANNIndexCandidates(320, 24)
+	build := func() *VamanaIndex {
+		options := DefaultVamanaBuildOptions(MetricL2)
+		options.MaxDegree = 16
+		options.SearchListSize = 64
+		builder, err := NewVamanaBuilder(24, options)
+		require.NoError(t, err)
+		for _, input := range inputs {
+			require.NoError(t, builder.Add(context.Background(), input.Key, input.Vector))
+		}
+		index, err := builder.build(context.Background(), 8)
+		require.NoError(t, err)
+		assertVamanaGraphInvariants(t, index)
+		return index
+	}
+
+	first, second := build(), build()
+	require.Equal(t, first.neighbors, second.neighbors)
+	require.Equal(t, first.neighborDistances, second.neighborDistances)
+	require.Equal(t, first.entryPoint, second.entryPoint)
+}
+
 func TestVamanaSearchMetricsFilterRadiusAndRecall(t *testing.T) {
 	for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
 		inputs := hnswBuildInputs(180)

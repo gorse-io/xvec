@@ -182,7 +182,7 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 			return nil, fmt.Errorf("core: add DiskANN graph vector %d: %w", position, err)
 		}
 	}
-	graph, err := graphBuilder.Build(ctx)
+	graph, err := graphBuilder.build(ctx, b.options.Workers)
 	if err != nil {
 		return nil, fmt.Errorf("core: build DiskANN graph: %w", err)
 	}

@@ -286,33 +286,31 @@ func BenchmarkV04DenseSearchQuality(b *testing.B) {
 }
 
 func BenchmarkV04DiskANNBuild(b *testing.B) {
-	candidates := diskANNIndexCandidates(512, 32)
-	options := DefaultDiskANNBuildOptions(MetricL2)
-	options.MaxDegree, options.ListSize, options.PQChunks = 16, 64, 16
-	b.ReportAllocs()
-	for b.Loop() {
-		builder, err := NewDiskANNBuilder(32, options)
-		if err != nil {
-			require.NoError(b, err)
-		}
-
-		for _, candidate := range candidates {
-			{
-				err := builder.Add(context.Background(), candidate.Key, candidate.Vector)
+	candidates := diskANNIndexCandidates(2048, 64)
+	for _, workers := range []int{1, 8} {
+		b.Run(fmt.Sprintf("workers=%d", workers), func(b *testing.B) {
+			options := DefaultDiskANNBuildOptions(MetricL2)
+			options.MaxDegree, options.ListSize, options.PQChunks = 32, 100, 16
+			options.Workers = workers
+			b.ReportAllocs()
+			for b.Loop() {
+				builder, err := NewDiskANNBuilder(64, options)
 				if err != nil {
 					require.NoError(b, err)
 				}
+				for _, candidate := range candidates {
+					if err := builder.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
+						require.NoError(b, err)
+					}
+				}
+				index, err := builder.Build(context.Background())
+				if err != nil {
+					require.NoError(b, err)
+				}
+				if err := index.Close(); err != nil {
+					require.NoError(b, err)
+				}
 			}
-		}
-		index, err := builder.Build(context.Background())
-		if err != nil {
-			require.NoError(b, err)
-		}
-		{
-			err := index.Close()
-			if err != nil {
-				require.NoError(b, err)
-			}
-		}
+		})
 	}
 }
