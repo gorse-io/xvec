@@ -70,6 +70,20 @@ func TestTrainKMeansReturnsFinalAssignments(t *testing.T) {
 	require.Equal(t, want, labels)
 }
 
+func TestAssignKMeansCosineMatchesGenericScoring(t *testing.T) {
+	t.Parallel()
+	vectors := [][]float32{{1, 2, 3}, {0, 0, 0}, {-2, 1, 4}}
+	centroids := [][]float32{{1, 0, 0}, {0, 0, 0}, {-1, 2, 3}}
+	labels, scores, err := assignKMeansCosine(context.Background(), vectors, centroids, 2)
+	require.NoError(t, err)
+	for index, vector := range vectors {
+		wantLabel, wantScore, err := nearestCentroid(MetricCosine, centroids, vector)
+		require.NoError(t, err)
+		require.Equal(t, wantLabel, labels[index])
+		require.InDelta(t, wantScore, scores[index], 1e-6)
+	}
+}
+
 func TestKMeansDeterministicAcrossWorkers(t *testing.T) {
 	t.Parallel()
 	vectors := make([][]float32, 300)

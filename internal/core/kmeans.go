@@ -385,6 +385,9 @@ func assignKMeans(
 	vectors, centroids [][]float32,
 	workers int,
 ) ([]int, []float32, error) {
+	if metric == MetricCosine {
+		return assignKMeansCosine(ctx, vectors, centroids, workers)
+	}
 	labels := make([]int, len(vectors))
 	scores := make([]float32, len(vectors))
 	err := parallel.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
@@ -402,6 +405,77 @@ func assignKMeans(
 		return nil, nil, err
 	}
 	return labels, scores, nil
+}
+
+// assignKMeansCosine hoists both sides' magnitudes out of the centroid loop.
+// The centroid update remains unchanged, so this is score-equivalent to the
+// generic cosine path without copying or normalizing the training set.
+func assignKMeansCosine(ctx context.Context, vectors, centroids [][]float32, workers int) ([]int, []float32, error) {
+	centroidMagnitudes := make([]float32, len(centroids))
+	for index, centroid := range centroids {
+		magnitude, err := mathutil.L2MagnitudePrevalidated(centroid)
+		if err != nil {
+			return nil, nil, fmt.Errorf("core: prepare k-means centroid %d: %w", index, err)
+		}
+		centroidMagnitudes[index] = magnitude
+	}
+	labels := make([]int, len(vectors))
+	scores := make([]float32, len(vectors))
+	err := parallel.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		vectorMagnitude, err := mathutil.L2MagnitudePrevalidated(vectors[index])
+		if err != nil {
+			return fmt.Errorf("core: prepare k-means vector %d: %w", index, err)
+		}
+		label, score, err := nearestCosineCentroidContext(ctx, centroids, centroidMagnitudes, vectors[index], vectorMagnitude)
+		if err != nil {
+			return fmt.Errorf("core: assign k-means vector %d: %w", index, err)
+		}
+		labels[index], scores[index] = label, score
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return labels, scores, nil
+}
+
+func nearestCosineCentroidContext(
+	ctx context.Context,
+	centroids [][]float32,
+	centroidMagnitudes []float32,
+	vector []float32,
+	vectorMagnitude float32,
+) (int, float32, error) {
+	if len(centroids) == 0 {
+		return 0, 0, ErrInvalidCentroid
+	}
+	bestIndex := 0
+	bestScore, err := mathutil.CosineDistanceWithMagnitudesPrevalidated(
+		centroids[0], vector, centroidMagnitudes[0], vectorMagnitude,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	for index := 1; index < len(centroids); index++ {
+		if ctx != nil && index&63 == 0 {
+			if err := ctx.Err(); err != nil {
+				return 0, 0, err
+			}
+		}
+		score, err := mathutil.CosineDistanceWithMagnitudesPrevalidated(
+			centroids[index], vector, centroidMagnitudes[index], vectorMagnitude,
+		)
+		if err != nil {
+			return 0, 0, err
+		}
+		if score < bestScore {
+			bestIndex, bestScore = index, score
+		}
+	}
+	return bestIndex, bestScore, nil
 }
 
 func nearestCentroid(metric Metric, centroids [][]float32, vector []float32) (int, float32, error) {
