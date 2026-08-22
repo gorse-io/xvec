@@ -12,8 +12,8 @@ your application without CGO, a separate database server, or prebuilt native
 libraries.
 
 > [!WARNING]
-> xvec is under active development and is not ready for production use. Public
-> APIs and on-disk formats may change before v1.0.
+> xvec is an experimental project created through vibe coding. Unless you
+> specifically need a pure-Go implementation, please use [zvec-go](https://github.com/zvec-ai/zvec-go).
 
 ## Features
 
