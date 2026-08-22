@@ -23,10 +23,19 @@ type Heap[T any] struct {
 
 // NewHeap constructs an empty heap. It panics when less is nil.
 func NewHeap[T any](less func(a, b T) bool) *Heap[T] {
+	return NewHeapWithCapacity(0, less)
+}
+
+// NewHeapWithCapacity constructs an empty heap with storage reserved for at
+// least capacity values. It panics when capacity is negative or less is nil.
+func NewHeapWithCapacity[T any](capacity int, less func(a, b T) bool) *Heap[T] {
+	if capacity < 0 {
+		panic("ailego: negative heap capacity")
+	}
 	if less == nil {
 		panic("ailego: nil heap comparator")
 	}
-	return &Heap[T]{less: less}
+	return &Heap[T]{values: make([]T, 0, capacity), less: less}
 }
 
 // Len returns the number of values in h.

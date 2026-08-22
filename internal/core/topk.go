@@ -125,7 +125,7 @@ func topKPrevalidatedCandidatesWithOptions(
 		}
 		return metric.Better(right.Score, left.Score)
 	}
-	heap := container.NewHeap(worstFirst)
+	heap := container.NewHeapWithCapacity(k, worstFirst)
 	for index := 0; index < count; index++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -192,7 +192,7 @@ func topKPrevalidatedCandidateBatchesWithOptions(
 		}
 		return metric.Better(right.Score, left.Score)
 	}
-	heap := container.NewHeap(worstFirst)
+	heap := container.NewHeapWithCapacity(k, worstFirst)
 	ordinal := 0
 	for batch := range batches {
 		for index := range batchLen(batch) {

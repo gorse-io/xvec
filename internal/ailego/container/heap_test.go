@@ -21,7 +21,8 @@ import (
 )
 
 func TestHeap(t *testing.T) {
-	heap := NewHeap(func(a, b int) bool { return a < b })
+	heap := NewHeapWithCapacity(5, func(a, b int) bool { return a < b })
+	require.Equal(t, 5, cap(heap.values))
 	for _, value := range []int{5, 1, 9, 2, 7} {
 		heap.Push(value)
 	}
@@ -46,4 +47,9 @@ func TestHeap(t *testing.T) {
 		require.False(t, ok,
 			"empty heap returned a value")
 	}
+}
+
+func TestHeapWithCapacityRejectsInvalidArguments(t *testing.T) {
+	require.Panics(t, func() { NewHeapWithCapacity(-1, func(a, b int) bool { return a < b }) })
+	require.Panics(t, func() { NewHeapWithCapacity[int](0, nil) })
 }
