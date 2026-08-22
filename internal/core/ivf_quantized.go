@@ -17,6 +17,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 // ScalarQuantizedIVFIndex owns a stable IVF snapshot, scalar codes for list
@@ -168,7 +169,11 @@ func (i *ScalarQuantizedIVFIndex) search(
 	if options.TopK == 0 || len(i.vectors.keys) == 0 {
 		return []Result{}, nil
 	}
-	lists, err := i.base.probedListsLocked(ctx, query, options.NProbe)
+	queryMagnitude, err := i.base.cosineQueryMagnitude(query)
+	if err != nil {
+		return nil, fmt.Errorf("core: prepare scalar-quantized IVF query: %w", err)
+	}
+	lists, err := i.base.probedListsLocked(ctx, query, queryMagnitude, options.NProbe)
 	if err != nil {
 		return nil, err
 	}

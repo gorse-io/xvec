@@ -28,6 +28,7 @@ import (
 
 	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/gorse-io/xvec/internal/ailego/io"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 )
 
 const (
@@ -198,6 +199,9 @@ func (b *IVFBuilder) Build(ctx context.Context) (*IVFIndex, error) {
 			index.lists[label].positions = append(index.lists[label].positions, position)
 			index.listForPosition[position] = label
 		}
+		if err := index.cacheCosineMagnitudes(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	b.built = true
@@ -212,15 +216,17 @@ type ivfList struct{ positions []int }
 // IVFIndex is the streamable output of IVF construction. It retains original
 // vectors for exact refinement and stores list membership by vector position.
 type IVFIndex struct {
-	mu              sync.RWMutex
-	dimension       int
-	options         IVFBuildOptions
-	model           *KMeansModel
-	keys            []uint64
-	vectors         []float32
-	positions       map[uint64]int
-	lists           []ivfList
-	listForPosition []int
+	mu                 sync.RWMutex
+	dimension          int
+	options            IVFBuildOptions
+	model              *KMeansModel
+	keys               []uint64
+	vectors            []float32
+	vectorMagnitudes   []float32
+	centroidMagnitudes []float32
+	positions          map[uint64]int
+	lists              []ivfList
+	listForPosition    []int
 }
 
 // Dimension returns the fixed vector dimension.
@@ -455,7 +461,11 @@ func (i *IVFIndex) searchIVF(ctx context.Context, query []float32, options IVFSe
 		return []Result{}, nil
 	}
 
-	lists, err := i.probedListsLocked(ctx, query, options.NProbe)
+	queryMagnitude, err := i.cosineQueryMagnitude(query)
+	if err != nil {
+		return nil, fmt.Errorf("core: prepare IVF query: %w", err)
+	}
+	lists, err := i.probedListsLocked(ctx, query, queryMagnitude, options.NProbe)
 	if err != nil {
 		return nil, err
 	}
@@ -469,6 +479,17 @@ func (i *IVFIndex) searchIVF(ctx context.Context, query []float32, options IVFSe
 			return nil, err
 		}
 		positions = append(positions, i.lists[list].positions...)
+	}
+	if i.options.Metric == MetricCosine {
+		var candidateMagnitude float32
+		return topKPrevalidatedCandidatesWithOptions(ctx, i.options.Metric, func(candidate, query []float32) (float32, error) {
+			return mathutil.CosineDistanceWithMagnitudesPrevalidated(candidate, query, candidateMagnitude, queryMagnitude)
+		}, query, options.SearchOptions, len(positions), func(index int) Candidate {
+			position := positions[index]
+			candidateMagnitude = i.vectorMagnitudes[position]
+			start := position * i.dimension
+			return Candidate{Key: i.keys[position], Vector: i.vectors[start : start+i.dimension]}
+		})
 	}
 	return topKCandidatesWithOptions(ctx, i.options.Metric, query, options.SearchOptions, len(positions), func(index int) Candidate {
 		position := positions[index]
@@ -499,14 +520,36 @@ func (i *IVFIndex) ProbedLists(ctx context.Context, query []float32, nprobe int)
 	}
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return i.probedListsLocked(ctx, query, nprobe)
+	queryMagnitude, err := i.cosineQueryMagnitude(query)
+	if err != nil {
+		return nil, fmt.Errorf("core: prepare IVF probe query: %w", err)
+	}
+	return i.probedListsLocked(ctx, query, queryMagnitude, nprobe)
 }
 
-func (i *IVFIndex) probedListsLocked(ctx context.Context, query []float32, nprobe int) ([]int, error) {
+func (i *IVFIndex) probedListsLocked(ctx context.Context, query []float32, queryMagnitude float32, nprobe int) ([]int, error) {
 	if len(i.lists) == 0 {
 		return []int{}, nil
 	}
 	centroids := i.model.centroids
+	if i.options.Metric == MetricCosine {
+		count := min(nprobe, len(centroids))
+		var centroidMagnitude float32
+		results, err := topKPrevalidatedCandidatesWithOptions(ctx, i.options.Metric, func(centroid, query []float32) (float32, error) {
+			return mathutil.CosineDistanceWithMagnitudesPrevalidated(centroid, query, centroidMagnitude, queryMagnitude)
+		}, query, SearchOptions{TopK: count}, len(centroids), func(index int) Candidate {
+			centroidMagnitude = i.centroidMagnitudes[index]
+			return Candidate{Key: uint64(index), Vector: centroids[index]}
+		})
+		if err != nil {
+			return nil, fmt.Errorf("core: select IVF centroids: %w", err)
+		}
+		lists := make([]int, len(results))
+		for index, result := range results {
+			lists[index] = int(result.Key)
+		}
+		return lists, nil
+	}
 	candidates := make([]Candidate, len(centroids))
 	for index := range centroids {
 		candidates[index] = Candidate{Key: uint64(index), Vector: centroids[index]}
@@ -521,6 +564,42 @@ func (i *IVFIndex) probedListsLocked(ctx context.Context, query []float32, nprob
 		lists[index] = int(result.Key)
 	}
 	return lists, nil
+}
+
+func (i *IVFIndex) cosineQueryMagnitude(query []float32) (float32, error) {
+	if i.options.Metric != MetricCosine {
+		return 0, nil
+	}
+	return mathutil.L2MagnitudePrevalidated(query)
+}
+
+func (i *IVFIndex) cacheCosineMagnitudes(ctx context.Context) error {
+	if i.options.Metric != MetricCosine {
+		return nil
+	}
+	i.vectorMagnitudes = make([]float32, len(i.keys))
+	for position := range i.keys {
+		if position&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		start := position * i.dimension
+		magnitude, err := mathutil.L2MagnitudePrevalidated(i.vectors[start : start+i.dimension])
+		if err != nil {
+			return fmt.Errorf("core: cache IVF vector magnitude %d: %w", position, err)
+		}
+		i.vectorMagnitudes[position] = magnitude
+	}
+	i.centroidMagnitudes = make([]float32, len(i.model.centroids))
+	for index, centroid := range i.model.centroids {
+		magnitude, err := mathutil.L2MagnitudePrevalidated(centroid)
+		if err != nil {
+			return fmt.Errorf("core: cache IVF centroid magnitude %d: %w", index, err)
+		}
+		i.centroidMagnitudes[index] = magnitude
+	}
+	return nil
 }
 
 var _ DenseSearcher = (*IVFIndex)(nil)
@@ -544,6 +623,14 @@ func (i *IVFIndex) Add(ctx context.Context, key uint64, vector []float32) error 
 	}
 	if err := validateTrainingVector(vector, i.dimension); err != nil {
 		return fmt.Errorf("core: validate incremental IVF vector: %w", err)
+	}
+	var vectorMagnitude float32
+	if i.options.Metric == MetricCosine {
+		var err error
+		vectorMagnitude, err = mathutil.L2MagnitudePrevalidated(vector)
+		if err != nil {
+			return fmt.Errorf("core: prepare incremental IVF vector: %w", err)
+		}
 	}
 
 	i.mu.Lock()
@@ -593,6 +680,9 @@ func (i *IVFIndex) Add(ctx context.Context, key uint64, vector []float32) error 
 	i.positions[key] = position
 	i.keys = append(i.keys, key)
 	i.vectors = append(i.vectors, vector...)
+	if i.options.Metric == MetricCosine {
+		i.vectorMagnitudes = append(i.vectorMagnitudes, vectorMagnitude)
+	}
 	i.listForPosition = append(i.listForPosition, list)
 	if i.model == nil {
 		i.model = &KMeansModel{
@@ -605,10 +695,16 @@ func (i *IVFIndex) Add(ctx context.Context, key uint64, vector []float32) error 
 			converged:  false,
 		}
 		i.lists = append(i.lists, ivfList{positions: []int{position}})
+		if i.options.Metric == MetricCosine {
+			i.centroidMagnitudes = append(i.centroidMagnitudes, vectorMagnitude)
+		}
 		return nil
 	}
 	if growCentroids {
 		i.model.centroids = append(i.model.centroids, slices.Clone(vector))
+		if i.options.Metric == MetricCosine {
+			i.centroidMagnitudes = append(i.centroidMagnitudes, vectorMagnitude)
+		}
 		i.model.counts = append(i.model.counts, 1)
 		i.lists = append(i.lists, ivfList{positions: []int{position}})
 	} else {
@@ -681,13 +777,15 @@ func (i *IVFIndex) persistenceSnapshot(ctx context.Context) (*IVFIndex, error) {
 		return nil, err
 	}
 	snapshot := &IVFIndex{
-		dimension:       i.dimension,
-		options:         i.options,
-		keys:            append([]uint64(nil), i.keys...),
-		vectors:         append([]float32(nil), i.vectors...),
-		positions:       make(map[uint64]int, len(i.positions)),
-		lists:           make([]ivfList, len(i.lists)),
-		listForPosition: append([]int(nil), i.listForPosition...),
+		dimension:          i.dimension,
+		options:            i.options,
+		keys:               append([]uint64(nil), i.keys...),
+		vectors:            append([]float32(nil), i.vectors...),
+		vectorMagnitudes:   append([]float32(nil), i.vectorMagnitudes...),
+		centroidMagnitudes: append([]float32(nil), i.centroidMagnitudes...),
+		positions:          make(map[uint64]int, len(i.positions)),
+		lists:              make([]ivfList, len(i.lists)),
+		listForPosition:    append([]int(nil), i.listForPosition...),
 	}
 	for key, position := range i.positions {
 		snapshot.positions[key] = position
@@ -954,6 +1052,9 @@ func decodeIVFIndex(ctx context.Context, encoded []byte) (*IVFIndex, error) {
 			iterations: int(trainingIterations),
 			converged:  converged == 1,
 		}
+		if err := index.cacheCosineMagnitudes(ctx); err != nil {
+			return nil, err
+		}
 	}
 	return index, nil
 }
@@ -993,6 +1094,13 @@ func validateIVFIndex(ctx context.Context, index *IVFIndex) error {
 	}
 	if count > maxPlatformInt()/index.dimension || len(index.vectors) != count*index.dimension || len(index.positions) != count {
 		return fmt.Errorf("%w: inconsistent vector storage", ErrInvalidIVFFile)
+	}
+	if index.options.Metric == MetricCosine {
+		if len(index.vectorMagnitudes) != count || len(index.centroidMagnitudes) != len(index.lists) {
+			return fmt.Errorf("%w: inconsistent cosine magnitude cache", ErrInvalidIVFFile)
+		}
+	} else if len(index.vectorMagnitudes) != 0 || len(index.centroidMagnitudes) != 0 {
+		return fmt.Errorf("%w: unexpected magnitude cache", ErrInvalidIVFFile)
 	}
 	if count == 0 {
 		if index.model != nil || len(index.lists) != 0 || len(index.listForPosition) != 0 {

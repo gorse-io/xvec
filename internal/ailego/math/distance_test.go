@@ -194,6 +194,28 @@ func TestPrevalidatedDenseDistanceKernelsMatchCheckedMetrics(t *testing.T) {
 	require.ErrorIs(t, err, ErrNonFiniteVector)
 }
 
+func TestCosineDistanceWithCachedMagnitudes(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		left  []float32
+		right []float32
+	}{
+		{left: []float32{1, 2, 3}, right: []float32{4, 5, 6}},
+		{left: []float32{0, 0, 0}, right: []float32{0, 0, 0}},
+		{left: []float32{0, 0, 0}, right: []float32{1, 0, 0}},
+	} {
+		leftMagnitude, err := L2MagnitudePrevalidated(test.left)
+		require.NoError(t, err)
+		rightMagnitude, err := L2MagnitudePrevalidated(test.right)
+		require.NoError(t, err)
+		got, err := CosineDistanceWithMagnitudesPrevalidated(test.left, test.right, leftMagnitude, rightMagnitude)
+		require.NoError(t, err)
+		want, err := CosineDistance(test.left, test.right)
+		require.NoError(t, err)
+		require.InDelta(t, want, got, 1e-6)
+	}
+}
+
 var benchmarkDenseScore float32
 var benchmarkDenseErr error
 

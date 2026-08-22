@@ -14,7 +14,11 @@
 
 package mathutil
 
-import "github.com/gorse-io/xvec/internal/floats"
+import (
+	"math"
+
+	"github.com/gorse-io/xvec/internal/floats"
+)
 
 // DenseDistance computes a score for two already validated dense vectors.
 // Callers must guarantee equal, non-zero dimensions and finite components.
@@ -35,6 +39,31 @@ func InnerProductPrevalidated(left, right []float32) (float32, error) {
 // CosineDistancePrevalidated computes cosine distance without validating inputs.
 func CosineDistancePrevalidated(left, right []float32) (float32, error) {
 	return finiteScore(float64(cosineDistance(left, right)))
+}
+
+// L2MagnitudePrevalidated computes a vector magnitude without validating its
+// components. It is intended for indexes that cache norms at ingestion time.
+func L2MagnitudePrevalidated(vector []float32) (float32, error) {
+	norm := floats.InnerProduct(vector, vector)
+	if norm < 0 {
+		norm = 0
+	}
+	return finiteScore(math.Sqrt(float64(norm)))
+}
+
+// CosineDistanceWithMagnitudesPrevalidated computes cosine distance while
+// reusing magnitudes cached by an index. This reduces every candidate score to
+// one dot product, matching the normalized-vector hot path used by zvec.
+func CosineDistanceWithMagnitudesPrevalidated(left, right []float32, leftMagnitude, rightMagnitude float32) (float32, error) {
+	if leftMagnitude == 0 && rightMagnitude == 0 {
+		return 0, nil
+	}
+	if leftMagnitude == 0 || rightMagnitude == 0 {
+		return 1, nil
+	}
+	cosine := floats.InnerProduct(left, right) / (leftMagnitude * rightMagnitude)
+	cosine = min(1, max(-1, cosine))
+	return finiteScore(float64(1 - cosine))
 }
 
 // MIPSL2SquaredPrevalidated computes MIPS-to-L2 distance without validating inputs.

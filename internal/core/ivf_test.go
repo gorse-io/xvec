@@ -1006,6 +1006,43 @@ func BenchmarkIVFBuild(b *testing.B) {
 	}
 }
 
+func BenchmarkIVFSearch(b *testing.B) {
+	const (
+		count     = 8192
+		dimension = 128
+	)
+	options := DefaultIVFBuildOptions(MetricCosine)
+	options.NList = 256
+	options.NIterations = 2
+	options.Workers = 8
+	builder, err := NewIVFBuilder(dimension, options)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for position := range count {
+		vector := make([]float32, dimension)
+		for coordinate := range vector {
+			vector[coordinate] = float32((position*17+coordinate*31)%997) / 997
+		}
+		if err := builder.Add(context.Background(), uint64(position), vector); err != nil {
+			b.Fatal(err)
+		}
+	}
+	index, err := builder.Build(context.Background())
+	if err != nil {
+		b.Fatal(err)
+	}
+	query, _ := index.Vector(17)
+	search := IVFSearchOptions{SearchOptions: SearchOptions{TopK: 100}, NProbe: 10}
+
+	b.ResetTimer()
+	for range b.N {
+		if _, err := index.SearchIVF(context.Background(), query, search); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func persistedIVFIndex(t testing.TB, metric Metric, nlist int) *IVFIndex {
 	t.Helper()
 	options := DefaultIVFBuildOptions(metric)
