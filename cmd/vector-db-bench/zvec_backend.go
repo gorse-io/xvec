@@ -215,9 +215,6 @@ func writableZvecBenchmarkCollection(config benchConfig) (*zvec.Collection, erro
 		}
 		defer textField.Destroy()
 		tokenizer := strings.ToLower(config.FTSTokenizer)
-		if tokenizer == "standard" {
-			tokenizer = "default"
-		}
 		index, err := zvec.NewFTSIndexParams(tokenizer, splitNonEmpty(strings.ToLower(config.FTSTokenFilters)), config.FTSExtraParams)
 		if err != nil {
 			return nil, fmt.Errorf("create zvec FTS index params: %w", err)

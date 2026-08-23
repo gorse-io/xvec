@@ -53,6 +53,11 @@ func TestVectorDBBenchDiskANNEndToEndCustomDataset(t *testing.T) {
 }
 
 func TestVectorDBBenchEndToEndFTSDataset(t *testing.T) {
+	testVectorDBBenchEndToEndFTSDataset(t, backendXvec)
+}
+
+func testVectorDBBenchEndToEndFTSDataset(t *testing.T, backend string) {
+	t.Helper()
 	directory := t.TempDir()
 	datasetDir := filepath.Join(directory, "dataset")
 	require.NoError(t, mkdir(datasetDir))
@@ -75,7 +80,7 @@ func TestVectorDBBenchEndToEndFTSDataset(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runCLI(context.Background(), []string{
-		backendXvec, "--path", filepath.Join(directory, "collection"),
+		backend, "--path", filepath.Join(directory, "collection"),
 		"--case-type", caseFTSBm25Performance,
 		"--dataset-with-size-type", ftsMSMarcoSmall,
 		"--dataset-dir", datasetDir,
