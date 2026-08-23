@@ -148,6 +148,16 @@ func (r *DiskANNNodeReader) ReadNode(ctx context.Context, nodeID uint32) (DiskAN
 }
 
 func (r *DiskANNNodeReader) ReadNodes(ctx context.Context, nodeIDs []uint32) ([]DiskANNNode, error) {
+	return r.readNodes(ctx, nodeIDs, true)
+}
+
+// readNodesBorrowed serves immutable nodes to the internal search path. Cache
+// hits share their backing slices; callers must not retain or modify them.
+func (r *DiskANNNodeReader) readNodesBorrowed(ctx context.Context, nodeIDs []uint32) ([]DiskANNNode, error) {
+	return r.readNodes(ctx, nodeIDs, false)
+}
+
+func (r *DiskANNNodeReader) readNodes(ctx context.Context, nodeIDs []uint32, cloneCached bool) ([]DiskANNNode, error) {
 	if r == nil || r.reader == nil {
 		return nil, ErrInvalidDiskANNLayout
 	}
@@ -165,7 +175,14 @@ func (r *DiskANNNodeReader) ReadNodes(ctx context.Context, nodeIDs []uint32) ([]
 	groups := make([]group, 0)
 	groupForOffset := make(map[[2]int64]int)
 	for index, nodeID := range nodeIDs {
-		if node, found := r.cache.Get(nodeID); found {
+		var node DiskANNNode
+		var found bool
+		if cloneCached {
+			node, found = r.cache.Get(nodeID)
+		} else {
+			node, found = r.cache.getBorrowed(nodeID)
+		}
+		if found {
 			result[index] = node
 			continue
 		}

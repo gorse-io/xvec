@@ -49,6 +49,14 @@ func NewDiskANNNodeCache(capacity int) (*DiskANNNodeCache, error) {
 }
 
 func (c *DiskANNNodeCache) Get(id uint32) (DiskANNNode, bool) {
+	return c.get(id, true)
+}
+
+func (c *DiskANNNodeCache) getBorrowed(id uint32) (DiskANNNode, bool) {
+	return c.get(id, false)
+}
+
+func (c *DiskANNNodeCache) get(id uint32, clone bool) (DiskANNNode, bool) {
 	if c == nil {
 		return DiskANNNode{}, false
 	}
@@ -61,7 +69,11 @@ func (c *DiskANNNodeCache) Get(id uint32) (DiskANNNode, bool) {
 	}
 	c.order.MoveToFront(element)
 	c.stats.Hits++
-	return cloneDiskANNNode(element.Value.(diskANNCacheEntry).node), true
+	node := element.Value.(diskANNCacheEntry).node
+	if clone {
+		node = cloneDiskANNNode(node)
+	}
+	return node, true
 }
 
 func (c *DiskANNNodeCache) Put(node DiskANNNode) {

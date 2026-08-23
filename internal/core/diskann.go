@@ -564,7 +564,7 @@ func (i *DiskANNIndex) searchDiskANNLinear(ctx context.Context, query []float32,
 		for offset := range ids {
 			ids[offset] = uint32(start + offset)
 		}
-		nodes, err := i.nodes.ReadNodes(ctx, ids)
+		nodes, err := i.nodes.readNodesBorrowed(ctx, ids)
 		if err != nil {
 			return nil, fmt.Errorf("core: linear DiskANN node read: %w", err)
 		}
@@ -645,7 +645,7 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 		for position := range batch {
 			ids[position] = batch[position].id
 		}
-		nodes, err := i.nodes.ReadNodes(ctx, ids)
+		nodes, err := i.nodes.readNodesBorrowed(ctx, ids)
 		if err != nil {
 			return nil, fmt.Errorf("core: DiskANN graph node read: %w", err)
 		}

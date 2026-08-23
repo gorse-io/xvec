@@ -378,6 +378,34 @@ func BenchmarkDiskANNWarmNodeRead(b *testing.B) {
 	}
 }
 
+func BenchmarkDiskANNWarmNodeRead1536D(b *testing.B) {
+	_, _, encoded := diskANNFixture(b, 100, 1536, 100)
+	reader, err := OpenDiskANNNodeReader(context.Background(), bytes.NewReader(encoded), int64(len(encoded)), 100, 4)
+	if err != nil {
+		require.NoError(b, err)
+	}
+	ids := []uint32{50}
+	if _, err := reader.ReadNodes(context.Background(), ids); err != nil {
+		require.NoError(b, err)
+	}
+	b.Run("public-copy", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := reader.ReadNodes(context.Background(), ids); err != nil {
+				require.NoError(b, err)
+			}
+		}
+	})
+	b.Run("internal-borrow", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := reader.readNodesBorrowed(context.Background(), ids); err != nil {
+				require.NoError(b, err)
+			}
+		}
+	})
+}
+
 func diskANNFixture(t testing.TB, count, dimension, maxDegree int) (DiskANNLayout, []DiskANNNode, []byte) {
 	t.Helper()
 	layout, err := NewDiskANNLayout(MetricL2, count, dimension, maxDegree)
