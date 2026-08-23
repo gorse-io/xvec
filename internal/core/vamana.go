@@ -293,8 +293,17 @@ func (b *VamanaBuilder) buildInterleaved(ctx context.Context, workers int) (*Vam
 	workers = vamanaBuildWorkers(workers, len(index.keys))
 	if len(index.keys) != 0 {
 		locks := newVamanaBuildLocks(len(index.keys))
+		seedEnd := min(len(index.keys), max(1, index.options.SearchListSize))
+		for position := 0; position < seedEnd; position++ {
+			if position == index.entryPoint {
+				continue
+			}
+			if err := index.insertNodeInterleaved(ctx, position, locks); err != nil {
+				return nil, fmt.Errorf("core: seed interleaved Vamana graph at node %d: %w", position, err)
+			}
+		}
 		err = parallel.ParallelFor(ctx, workers, workers, func(ctx context.Context, worker int) error {
-			for position := worker; position < len(index.keys); position += workers {
+			for position := seedEnd + worker; position < len(index.keys); position += workers {
 				// The medoid starts as the shared empty entry node. Inserting it
 				// concurrently could overwrite reverse links published by another
 				// worker and leave the graph unreachable from its entry point.
@@ -726,11 +735,15 @@ func (i *VamanaIndex) addReverseEdge(ctx context.Context, node, owner int, dista
 }
 
 type vamanaBuildLocks struct {
-	stripes []sync.RWMutex
+	stripes  []sync.RWMutex
+	versions []uint64
 }
 
 func newVamanaBuildLocks(count int) *vamanaBuildLocks {
-	return &vamanaBuildLocks{stripes: make([]sync.RWMutex, min(count, vamanaBuildLockStripes))}
+	return &vamanaBuildLocks{
+		stripes:  make([]sync.RWMutex, min(count, vamanaBuildLockStripes)),
+		versions: make([]uint64, count),
+	}
 }
 
 func (l *vamanaBuildLocks) forPosition(position int) *sync.RWMutex {
@@ -748,10 +761,9 @@ func (i *VamanaIndex) insertNodeInterleaved(ctx context.Context, position int, l
 	if err != nil {
 		return err
 	}
-	lock := locks.forPosition(position)
-	lock.Lock()
-	i.setVamanaNeighbors(position, selected)
-	lock.Unlock()
+	if err := i.publishVamanaNeighborsInterleaved(ctx, position, selected, locks); err != nil {
+		return err
+	}
 	for _, neighbor := range selected {
 		if err := i.addReverseEdgeInterleaved(ctx, position, neighbor.position, neighbor.distance, locks); err != nil {
 			return err
@@ -778,19 +790,65 @@ func (i *VamanaIndex) addReverseEdgeInterleaved(
 	if len(i.neighbors[owner]) < maxBuildDegree {
 		i.neighbors[owner] = append(i.neighbors[owner], node)
 		i.neighborDistances[owner] = append(i.neighborDistances[owner], distance)
+		locks.versions[owner]++
 		lock.Unlock()
 		return nil
 	}
+	version := locks.versions[owner]
 	candidates := i.vamanaNeighborCandidates(owner, node, distance)
 	lock.Unlock()
-	selected, err := i.robustPrune(ctx, owner, candidates)
-	if err != nil {
-		return err
+	for {
+		selected, err := i.robustPrune(ctx, owner, candidates)
+		if err != nil {
+			return err
+		}
+		lock.Lock()
+		if locks.versions[owner] == version {
+			i.setVamanaNeighbors(owner, selected)
+			locks.versions[owner]++
+			lock.Unlock()
+			return nil
+		}
+		version = locks.versions[owner]
+		candidates = i.vamanaNeighborCandidates(owner, node, distance)
+		lock.Unlock()
 	}
+}
+
+func (i *VamanaIndex) publishVamanaNeighborsInterleaved(
+	ctx context.Context,
+	owner int,
+	selected []vamanaDistanceNode,
+	locks *vamanaBuildLocks,
+) error {
+	lock := locks.forPosition(owner)
 	lock.Lock()
-	i.setVamanaNeighbors(owner, selected)
+	if len(i.neighbors[owner]) == 0 {
+		i.setVamanaNeighbors(owner, selected)
+		locks.versions[owner]++
+		lock.Unlock()
+		return nil
+	}
+	version := locks.versions[owner]
+	candidates := append(selected, i.vamanaNeighborCandidates(owner, -1, 0)...)
 	lock.Unlock()
-	return nil
+	for {
+		var err error
+		selected, err = i.robustPrune(ctx, owner, candidates)
+		if err != nil {
+			return err
+		}
+		lock.Lock()
+		if locks.versions[owner] == version {
+			i.setVamanaNeighbors(owner, selected)
+			locks.versions[owner]++
+			lock.Unlock()
+			return nil
+		}
+		version = locks.versions[owner]
+		candidates = append(selected, i.vamanaNeighborCandidates(owner, -1, 0)...)
+		lock.Unlock()
+	}
 }
 
 func (i *VamanaIndex) vamanaNeighborCandidates(owner, extra int, distance float32) []vamanaDistanceNode {
