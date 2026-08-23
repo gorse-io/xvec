@@ -669,7 +669,7 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 	retained.Push(start)
 	visited[entry], retainedMember[entry] = true, true
 	collector := newDiskANNResultCollector(i.metric, options.SearchOptions)
-	beam := i.diskANNReadBatchSize()
+	beam := i.diskANNBeamWidth(options.ListSize)
 	neighborIDs := make([]uint32, 0, i.options.MaxDegree)
 	neighborScores := make([]float32, i.options.MaxDegree)
 
@@ -825,6 +825,11 @@ func (i *DiskANNIndex) diskANNReadBatchSize() int {
 		sectors = max(1, i.nodes.layout.sectorsPerNode)
 	}
 	return max(1, MaxDiskANNReadSectors/sectors)
+}
+
+func (i *DiskANNIndex) diskANNBeamWidth(listSize int) int {
+	adaptive := max(8, min(listSize/5, 32))
+	return max(1, min(adaptive, i.diskANNReadBatchSize()))
 }
 
 type diskANNResultCollector struct {
