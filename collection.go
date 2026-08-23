@@ -160,11 +160,11 @@ func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQueryS
 	if snapshot := c.querySnapshot.Load(); snapshot != nil {
 		return snapshot, nil
 	}
-	documents, err := c.liveDocumentsLocked(ctx)
+	segments, err := c.segmentDocumentsLocked(ctx)
 	if err != nil {
 		return nil, err
 	}
-	segments, err := c.segmentDocumentsLocked(ctx)
+	documents, err := c.liveDocumentsFromSegmentsLocked(ctx, segments)
 	if err != nil {
 		return nil, err
 	}
@@ -4566,6 +4566,41 @@ func (c *Collection) liveDocumentsLocked(ctx context.Context) ([]Document, error
 			return nil, fmt.Errorf("stored document %d violates schema: %w", item.DocID, err)
 		}
 		documents[index] = document
+	}
+	return documents, nil
+}
+
+func (c *Collection) liveDocumentsFromSegmentsLocked(
+	ctx context.Context,
+	segments []collectionSegmentDocuments,
+) ([]Document, error) {
+	live, err := c.store.LiveDocumentPrimaryKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	documents := make([]Document, 0, len(live))
+	seen := make(map[uint64]struct{}, len(live))
+	for _, segment := range segments {
+		for _, document := range segment.documents {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			primaryKey, found := live[document.DocID]
+			if !found {
+				continue
+			}
+			if primaryKey != document.PrimaryKey {
+				return nil, fmt.Errorf("live document %d primary key is %q, stored version has %q", document.DocID, primaryKey, document.PrimaryKey)
+			}
+			if _, duplicate := seen[document.DocID]; duplicate {
+				return nil, fmt.Errorf("live document %d appears in multiple segments", document.DocID)
+			}
+			seen[document.DocID] = struct{}{}
+			documents = append(documents, document)
+		}
+	}
+	if len(documents) != len(live) {
+		return nil, fmt.Errorf("resolved %d of %d live documents from segment snapshots", len(documents), len(live))
 	}
 	return documents, nil
 }

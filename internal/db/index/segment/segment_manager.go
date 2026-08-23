@@ -393,6 +393,32 @@ func (m *SegmentManager) LiveDocuments(ctx context.Context) ([]StoredDocument, e
 	return result, nil
 }
 
+// LiveDocumentPrimaryKeys returns the authoritative primary key for every
+// live document ID without cloning stored document payloads.
+func (m *SegmentManager) LiveDocumentPrimaryKeys(ctx context.Context) (map[uint64]string, error) {
+	if m == nil {
+		return nil, errors.New("db: nil segment manager")
+	}
+	if ctx == nil {
+		return nil, errors.New("db: nil live-document context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	result := make(map[uint64]string, m.primaryKey.Count())
+	err := m.primaryKey.ForEach(ctx, func(primaryKey string, docID uint64) error {
+		if previous, found := result[docID]; found {
+			return fmt.Errorf("db: document ID %d is assigned to primary keys %q and %q", docID, previous, primaryKey)
+		}
+		result[docID] = primaryKey
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // StorageStats returns a stable snapshot of retained segment resources.
 func (m *SegmentManager) StorageStats() StorageStats {
 	if m == nil {

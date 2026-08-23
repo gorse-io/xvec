@@ -405,6 +405,20 @@ func (c *CollectionStore) LiveDocuments(ctx context.Context) ([]segmentstore.Sto
 	return c.manager.LiveDocuments(ctx)
 }
 
+// LiveDocumentPrimaryKeys returns the authoritative primary key for every
+// live document ID without cloning stored document payloads.
+func (c *CollectionStore) LiveDocumentPrimaryKeys(ctx context.Context) (map[uint64]string, error) {
+	if c == nil {
+		return nil, errors.New("db: nil collection")
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.closed {
+		return nil, ErrCollectionClosed
+	}
+	return c.manager.LiveDocumentPrimaryKeys(ctx)
+}
+
 // SegmentSnapshots returns retained documents grouped by physical segment.
 // Logical deletions and superseded versions remain present so immutable index
 // artifacts never need rewriting; query-time live masks exclude them.

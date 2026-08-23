@@ -5289,6 +5289,9 @@ func TestCollectionQuerySnapshotPublishesOnceUntilInvalidated(t *testing.T) {
 	}
 	require.NotEmpty(t, first.segments)
 	require.NotEmpty(t, first.runtimes)
+	liveVector := first.documents[0].Fields["embedding"].(VectorFP32)
+	segmentVector := first.segments[0].documents[0].Fields["embedding"].(VectorFP32)
+	require.Same(t, &segmentVector[0], &liveVector[0], "live snapshot should borrow decoded segment vectors")
 	require.Equal(t, uint64(len(first.documents)), first.liveFilter.global.matched)
 	require.Equal(t, uint64(len(first.documents)), first.liveFilter.global.total)
 	require.Len(t, first.liveFilter.local, len(first.segments))
