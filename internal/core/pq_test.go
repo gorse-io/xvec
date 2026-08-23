@@ -478,6 +478,30 @@ func BenchmarkPQDistanceLookup(b *testing.B) {
 	}
 }
 
+func BenchmarkPQDistanceTable1536D(b *testing.B) {
+	const dimension = 1536
+	const chunks = 768
+	model, err := RestorePQModel(PQModelState{
+		Dimension:    dimension,
+		Metric:       MetricL2,
+		ChunkOffsets: pqChunkOffsets(dimension, chunks),
+		Pivots:       make([]float32, PQCentroidCount*dimension),
+	})
+	if err != nil {
+		require.NoError(b, err)
+	}
+	query := make([]float32, dimension)
+	for index := range query {
+		query[index] = float32(index%31) / 31
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := model.DistanceTable(query); err != nil {
+			require.NoError(b, err)
+		}
+	}
+}
+
 func BenchmarkPQTrain(b *testing.B) {
 	vectors := pqTrainingVectors(2048, 64)
 	options := DefaultPQOptions(MetricL2)

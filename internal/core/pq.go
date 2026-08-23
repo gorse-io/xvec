@@ -23,6 +23,7 @@ import (
 	"math"
 	"slices"
 
+	mathutil "github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
@@ -97,6 +98,7 @@ type PQModelState struct {
 type PQModel struct {
 	dimension    int
 	metric       Metric
+	distance     mathutil.DenseDistance
 	chunkOffsets []int
 	pivots       []float32
 	fingerprint  uint64
@@ -204,8 +206,13 @@ func RestorePQModel(state PQModelState) (*PQModel, error) {
 			return nil, fmt.Errorf("%w: non-finite pivot", ErrInvalidPQModel)
 		}
 	}
+	distance, err := state.Metric.PrevalidatedDistance()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidPQModel, err)
+	}
 	model := &PQModel{
 		dimension: state.Dimension, metric: state.Metric,
+		distance:     distance,
 		chunkOffsets: slices.Clone(state.ChunkOffsets), pivots: slices.Clone(state.Pivots),
 	}
 	model.fingerprint = fingerprintPQModel(model)
@@ -372,7 +379,15 @@ func (m *PQModel) validateCode(code PQCode) error {
 
 func (m *PQModel) subspaceScore(vector []float32, centroid, start, end int) (float32, error) {
 	pivot := m.pivots[centroid*m.dimension+start : centroid*m.dimension+end]
-	return m.metric.Compute(vector[start:end], pivot)
+	distance := m.distance
+	if distance == nil {
+		var err error
+		distance, err = m.metric.PrevalidatedDistance()
+		if err != nil {
+			return 0, err
+		}
+	}
+	return distance(vector[start:end], pivot)
 }
 
 // PQCode stores one unsigned 8-bit centroid ID per chunk.
