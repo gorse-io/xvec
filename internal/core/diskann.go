@@ -1044,10 +1044,6 @@ func encodeDiskANNIndex(ctx context.Context, index *DiskANNIndex) ([]byte, error
 	if nodeLength < 0 || nodeLength > int64(maxPlatformInt()) {
 		return nil, fmt.Errorf("%w: node artifact exceeds platform capacity", ErrInvalidDiskANNFile)
 	}
-	nodeArtifact := make([]byte, int(nodeLength))
-	if err := readFullAt(ctx, index.nodes.reader, nodeArtifact, 0); err != nil {
-		return nil, fmt.Errorf("core: snapshot DiskANN node artifact: %w", err)
-	}
 	actualChunks := 0
 	if index.pq != nil {
 		actualChunks = index.pq.Chunks()
@@ -1060,6 +1056,10 @@ func encodeDiskANNIndex(ctx context.Context, index *DiskANNIndex) ([]byte, error
 		return nil, fmt.Errorf("%w: artifact exceeds platform capacity", ErrInvalidDiskANNFile)
 	}
 	encoded := make([]byte, int(sections.totalLength))
+	nodeArtifact := encoded[sections.nodesOffset : sections.nodesOffset+sections.nodesLength]
+	if err := readFullAt(ctx, index.nodes.reader, nodeArtifact, 0); err != nil {
+		return nil, fmt.Errorf("core: snapshot DiskANN node artifact: %w", err)
+	}
 	for position, key := range index.keys {
 		if position&1023 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -1083,7 +1083,6 @@ func encodeDiskANNIndex(ctx context.Context, index *DiskANNIndex) ([]byte, error
 		}
 		copy(encoded[sections.codesOffset:sections.codesOffset+sections.codesLength], index.codes)
 	}
-	copy(encoded[sections.nodesOffset:sections.nodesOffset+sections.nodesLength], nodeArtifact)
 	header := diskANNIndexHeader{
 		count: len(index.keys), dimension: index.dimension, metric: index.metric,
 		traversalMetric: index.traversalMetric, maxDegree: index.options.MaxDegree,

@@ -735,6 +735,20 @@ func BenchmarkDiskANNBuilderReserve1536D(b *testing.B) {
 	}
 }
 
+func BenchmarkDiskANNEncode(b *testing.B) {
+	options := DefaultDiskANNBuildOptions(MetricL2)
+	options.MaxDegree, options.ListSize, options.PQChunks = 32, 100, 16
+	options.Workers = 4
+	index := buildDiskANNIndex(b, diskANNIndexCandidates(1024, 64), options)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := encodeDiskANNIndex(context.Background(), index); err != nil {
+			require.NoError(b, err)
+		}
+	}
+}
+
 func BenchmarkDiskANNPQNeighborScores1536D(b *testing.B) {
 	const chunks = 768
 	const dimension = 1536
