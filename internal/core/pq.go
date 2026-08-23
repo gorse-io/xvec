@@ -96,12 +96,13 @@ type PQModelState struct {
 
 // PQModel is an immutable 8-bit product quantizer.
 type PQModel struct {
-	dimension    int
-	metric       Metric
-	distance     mathutil.DenseDistance
-	chunkOffsets []int
-	pivots       []float32
-	fingerprint  uint64
+	dimension      int
+	metric         Metric
+	distance       mathutil.DenseDistance
+	chunkOffsets   []int
+	pivots         []float32
+	encodingPivots []float32
+	fingerprint    uint64
 }
 
 // TrainPQ partitions dimensions into contiguous chunks and trains one
@@ -449,6 +450,18 @@ func RestorePQModel(state PQModelState) (*PQModel, error) {
 		distance:     distance,
 		chunkOffsets: slices.Clone(state.ChunkOffsets), pivots: slices.Clone(state.Pivots),
 	}
+	model.encodingPivots = make([]float32, len(model.pivots))
+	for chunk := 0; chunk+1 < len(model.chunkOffsets); chunk++ {
+		start, end := model.chunkOffsets[chunk], model.chunkOffsets[chunk+1]
+		width := end - start
+		chunkPivots := model.encodingPivots[PQCentroidCount*start : PQCentroidCount*end]
+		for centroid := 0; centroid < PQCentroidCount; centroid++ {
+			copy(
+				chunkPivots[centroid*width:(centroid+1)*width],
+				model.pivots[centroid*model.dimension+start:centroid*model.dimension+end],
+			)
+		}
+	}
 	model.fingerprint = fingerprintPQModel(model)
 	return model, nil
 }
@@ -520,17 +533,27 @@ func (m *PQModel) Encode(vector []float32) (PQCode, error) {
 		return PQCode{}, err
 	}
 	codes := make([]byte, m.Chunks())
+	if err := m.encodePrevalidated(vector, codes); err != nil {
+		return PQCode{}, err
+	}
+	return PQCode{modelFingerprint: m.fingerprint, codes: codes}, nil
+}
+
+func (m *PQModel) encodePrevalidated(vector []float32, codes []byte) error {
+	if m.metric == MetricL2 {
+		return m.encodeL2Prevalidated(vector, codes)
+	}
 	for chunk := range codes {
 		start, end := m.chunkOffsets[chunk], m.chunkOffsets[chunk+1]
 		best := 0
 		bestScore, err := m.subspaceScore(vector, 0, start, end)
 		if err != nil {
-			return PQCode{}, err
+			return err
 		}
 		for centroid := 1; centroid < PQCentroidCount; centroid++ {
 			score, err := m.subspaceScore(vector, centroid, start, end)
 			if err != nil {
-				return PQCode{}, err
+				return err
 			}
 			if m.metric.Better(score, bestScore) {
 				best, bestScore = centroid, score
@@ -538,7 +561,58 @@ func (m *PQModel) Encode(vector []float32) (PQCode, error) {
 		}
 		codes[chunk] = byte(best)
 	}
-	return PQCode{modelFingerprint: m.fingerprint, codes: codes}, nil
+	return nil
+}
+
+func (m *PQModel) encodeL2Prevalidated(vector []float32, codes []byte) error {
+	for chunk := range codes {
+		start, end := m.chunkOffsets[chunk], m.chunkOffsets[chunk+1]
+		width := end - start
+		pivots := m.encodingPivots[PQCentroidCount*start : PQCentroidCount*end]
+		best := 0
+		var bestScore float32
+		switch width {
+		case 1:
+			value := vector[start]
+			difference := value - pivots[0]
+			bestScore = difference * difference
+			for centroid := 1; centroid < PQCentroidCount; centroid++ {
+				difference = value - pivots[centroid]
+				score := difference * difference
+				if score < bestScore {
+					best, bestScore = centroid, score
+				}
+			}
+		case 2:
+			first, second := vector[start], vector[start+1]
+			firstDifference := first - pivots[0]
+			secondDifference := second - pivots[1]
+			bestScore = firstDifference*firstDifference + secondDifference*secondDifference
+			for centroid := 1; centroid < PQCentroidCount; centroid++ {
+				offset := centroid * 2
+				firstDifference = first - pivots[offset]
+				secondDifference = second - pivots[offset+1]
+				score := firstDifference*firstDifference + secondDifference*secondDifference
+				if score < bestScore {
+					best, bestScore = centroid, score
+				}
+			}
+		default:
+			bestScore = pqL2SquaredSmall(vector[start:end], pivots[:width])
+			for centroid := 1; centroid < PQCentroidCount; centroid++ {
+				offset := centroid * width
+				score := pqL2SquaredSmall(vector[start:end], pivots[offset:offset+width])
+				if score < bestScore {
+					best, bestScore = centroid, score
+				}
+			}
+		}
+		if !finiteFloat32(bestScore) {
+			return ErrPQScoreOverflow
+		}
+		codes[chunk] = byte(best)
+	}
+	return nil
 }
 
 // EncodeBatch converts vectors concurrently while preserving input order.
@@ -556,15 +630,20 @@ func (m *PQModel) EncodeBatch(ctx context.Context, vectors [][]float32, workers 
 		return nil, err
 	}
 	result := make([]PQCode, len(vectors))
+	chunks := m.Chunks()
+	codeStorage := make([]byte, len(vectors)*chunks)
 	err := parallel.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		code, err := m.Encode(vectors[index])
-		if err != nil {
+		if err := validateTrainingVector(vectors[index], m.dimension); err != nil {
 			return fmt.Errorf("core: encode PQ vector %d: %w", index, err)
 		}
-		result[index] = code
+		codes := codeStorage[index*chunks : (index+1)*chunks]
+		if err := m.encodePrevalidated(vectors[index], codes); err != nil {
+			return fmt.Errorf("core: encode PQ vector %d: %w", index, err)
+		}
+		result[index] = PQCode{modelFingerprint: m.fingerprint, codes: codes}
 		return nil
 	})
 	if err != nil {
@@ -589,7 +668,8 @@ func (m *PQModel) Decode(code PQCode) ([]float32, error) {
 
 func (m *PQModel) validate() error {
 	if m == nil || m.dimension <= 0 || (m.metric != MetricL2 && m.metric != MetricIP) ||
-		len(m.chunkOffsets) < 2 || len(m.pivots) != PQCentroidCount*m.dimension || m.fingerprint == 0 {
+		len(m.chunkOffsets) < 2 || len(m.pivots) != PQCentroidCount*m.dimension ||
+		len(m.encodingPivots) != len(m.pivots) || m.fingerprint == 0 {
 		return ErrInvalidPQModel
 	}
 	return nil
