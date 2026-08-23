@@ -369,14 +369,19 @@ func openCollectionDenseArtifact(
 		}
 		return core.OpenScalarQuantizedVamanaIndex(ctx, path, kind, reformer)
 	case IndexTypeDiskANN:
+		if spec.quantize == QuantizeTypeUndefined {
+			candidateCount, candidateErr := collectionDenseCandidateCount(ctx, field, documents)
+			if candidateErr != nil {
+				return nil, candidateErr
+			}
+			cacheCapacity := collectionDiskANNCacheCapacity(maxBufferSize, candidateCount)
+			return core.OpenDiskANNIndexWithMmap(ctx, path, cacheCapacity, workers, useMmap)
+		}
 		candidates, candidateErr := collectionDenseCandidates(ctx, field, documents)
 		if candidateErr != nil {
 			return nil, candidateErr
 		}
 		cacheCapacity := collectionDiskANNCacheCapacity(maxBufferSize, len(candidates))
-		if spec.quantize == QuantizeTypeUndefined {
-			return core.OpenDiskANNIndexWithMmap(ctx, path, cacheCapacity, workers, useMmap)
-		}
 		return core.OpenScalarQuantizedDiskANNIndexWithMmap(ctx, path, cacheCapacity, workers, kind, reformer, candidates, useMmap)
 	default:
 		return nil, fmt.Errorf("unsupported persisted dense collection index %s", spec.indexType)
@@ -1978,6 +1983,21 @@ func collectionDenseCandidates(ctx context.Context, field FieldSchema, documents
 		candidates = append(candidates, core.Candidate{Key: document.DocID, Vector: vector})
 	}
 	return candidates, nil
+}
+
+func collectionDenseCandidateCount(ctx context.Context, field FieldSchema, documents []Document) (int, error) {
+	count := 0
+	for position, document := range documents {
+		if position&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+		}
+		if value, found := document.Fields[field.Name]; found && value != nil {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func toCoreQuantization(value QuantizeType) (core.Quantization, error) {
