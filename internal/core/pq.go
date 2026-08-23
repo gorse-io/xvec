@@ -251,12 +251,41 @@ func trainPQL2Chunk(
 			}
 			vector := training[sample*width : (sample+1)*width]
 			bestLabel := 0
-			bestScore := pqL2SquaredSmall(vector, centroids[:width])
-			for centroid := 1; centroid < clusters; centroid++ {
-				offset := centroid * width
-				score := pqL2SquaredSmall(vector, centroids[offset:offset+width])
-				if score < bestScore {
-					bestLabel, bestScore = centroid, score
+			var bestScore float32
+			switch width {
+			case 1:
+				value := vector[0]
+				difference := value - centroids[0]
+				bestScore = difference * difference
+				for centroid := 1; centroid < clusters; centroid++ {
+					difference = value - centroids[centroid]
+					score := difference * difference
+					if score < bestScore {
+						bestLabel, bestScore = centroid, score
+					}
+				}
+			case 2:
+				first, second := vector[0], vector[1]
+				firstDifference := first - centroids[0]
+				secondDifference := second - centroids[1]
+				bestScore = firstDifference*firstDifference + secondDifference*secondDifference
+				for centroid := 1; centroid < clusters; centroid++ {
+					offset := centroid * 2
+					firstDifference = first - centroids[offset]
+					secondDifference = second - centroids[offset+1]
+					score := firstDifference*firstDifference + secondDifference*secondDifference
+					if score < bestScore {
+						bestLabel, bestScore = centroid, score
+					}
+				}
+			default:
+				bestScore = pqL2SquaredSmall(vector, centroids[:width])
+				for centroid := 1; centroid < clusters; centroid++ {
+					offset := centroid * width
+					score := pqL2SquaredSmall(vector, centroids[offset:offset+width])
+					if score < bestScore {
+						bestLabel, bestScore = centroid, score
+					}
 				}
 			}
 			scores[sample] = bestScore
@@ -339,10 +368,27 @@ func initializePQL2KMC2(
 		for candidate, sample := range indices {
 			vector := training[sample*width : (sample+1)*width]
 			best := float32(math.MaxFloat32)
-			for centroid := 0; centroid < selectedCount; centroid++ {
-				offset := centroid * width
-				score := pqL2SquaredSmall(vector, centroids[offset:offset+width])
-				best = min(best, score)
+			switch width {
+			case 1:
+				value := vector[0]
+				for centroid := 0; centroid < selectedCount; centroid++ {
+					difference := value - centroids[centroid]
+					best = min(best, difference*difference)
+				}
+			case 2:
+				first, second := vector[0], vector[1]
+				for centroid := 0; centroid < selectedCount; centroid++ {
+					offset := centroid * 2
+					firstDifference := first - centroids[offset]
+					secondDifference := second - centroids[offset+1]
+					best = min(best, firstDifference*firstDifference+secondDifference*secondDifference)
+				}
+			default:
+				for centroid := 0; centroid < selectedCount; centroid++ {
+					offset := centroid * width
+					score := pqL2SquaredSmall(vector, centroids[offset:offset+width])
+					best = min(best, score)
+				}
 			}
 			scores[candidate] = best
 		}
@@ -361,22 +407,12 @@ func initializePQL2KMC2(
 }
 
 func pqL2SquaredSmall(left, right []float32) float32 {
-	switch len(left) {
-	case 1:
-		difference := left[0] - right[0]
-		return difference * difference
-	case 2:
-		first := left[0] - right[0]
-		second := left[1] - right[1]
-		return first*first + second*second
-	default:
-		var score float32
-		for coordinate, value := range left {
-			difference := value - right[coordinate]
-			score += difference * difference
-		}
-		return score
+	var score float32
+	for coordinate, value := range left {
+		difference := value - right[coordinate]
+		score += difference * difference
 	}
+	return score
 }
 
 // RestorePQModel validates and clones a complete portable model snapshot.
