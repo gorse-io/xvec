@@ -549,6 +549,10 @@ func (i *DiskANNIndex) searchDiskANN(
 }
 
 func (i *DiskANNIndex) searchDiskANNLinear(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {
+	distance, err := i.metric.PrevalidatedDistance()
+	if err != nil {
+		return nil, err
+	}
 	collector := newDiskANNResultCollector(i.metric, options)
 	batchSize := i.diskANNReadBatchSize()
 	for start := 0; start < len(i.keys); start += batchSize {
@@ -565,7 +569,7 @@ func (i *DiskANNIndex) searchDiskANNLinear(ctx context.Context, query []float32,
 			return nil, fmt.Errorf("core: linear DiskANN node read: %w", err)
 		}
 		for _, node := range nodes {
-			score, err := i.metric.Compute(query, node.Vector)
+			score, err := distance(query, node.Vector)
 			if err != nil {
 				return nil, err
 			}
@@ -588,6 +592,10 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 	table, err := i.pq.DistanceTable(prepared)
 	if err != nil {
 		return nil, fmt.Errorf("core: build DiskANN PQ distance table: %w", err)
+	}
+	distance, err := i.metric.PrevalidatedDistance()
+	if err != nil {
+		return nil, err
 	}
 	queryNorm := diskANNVectorNormSquared(prepared)
 	capacity := min(len(i.keys), max(options.TopK, options.ListSize))
@@ -640,7 +648,7 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 			return nil, fmt.Errorf("core: DiskANN graph node read: %w", err)
 		}
 		for _, node := range nodes {
-			exact, err := i.metric.Compute(query, node.Vector)
+			exact, err := distance(query, node.Vector)
 			if err != nil {
 				return nil, fmt.Errorf("core: score DiskANN node %d: %w", node.ID, err)
 			}
