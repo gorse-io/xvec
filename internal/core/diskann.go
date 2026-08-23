@@ -267,11 +267,8 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 				return nil, err
 			}
 		}
-		codes = nil
 	}
 	preparedBytes := len(preparedStorage) * 4
-	prepared, preparedStorage = nil, nil
-	graphStorage = nil
 	graph.vectors = nil
 	if preparedBytes >= 16<<20 {
 		// The node artifact is another dimension-sized allocation. Reclaim the
