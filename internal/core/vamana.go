@@ -27,6 +27,7 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/gorse-io/xvec/internal/ailego/io"
+	mathutil "github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
@@ -167,9 +168,14 @@ func (b *VamanaBuilder) build(ctx context.Context, workers int) (*VamanaIndex, e
 	if b.built {
 		return nil, ErrBuilderClosed
 	}
+	distance, err := b.options.Metric.PrevalidatedDistance()
+	if err != nil {
+		return nil, err
+	}
 	index := &VamanaIndex{
 		dimension: b.dimension, options: b.options,
-		keys: b.keys, vectors: b.vectors, positions: b.positions,
+		distance: distance,
+		keys:     b.keys, vectors: b.vectors, positions: b.positions,
 		neighbors: make([][]int, len(b.keys)), neighborDistances: make([][]float32, len(b.keys)),
 		entryPoint: -1,
 	}
@@ -244,6 +250,7 @@ type VamanaIndex struct {
 	mu                sync.RWMutex
 	dimension         int
 	options           VamanaBuildOptions
+	distance          mathutil.DenseDistance
 	keys              []uint64
 	vectors           []float32
 	positions         map[uint64]int
@@ -514,7 +521,15 @@ func (i *VamanaIndex) setVamanaNeighbors(owner int, selected []vamanaDistanceNod
 }
 
 func (i *VamanaIndex) graphDistance(left, right []float32) (float32, error) {
-	score, err := i.options.Metric.Compute(left, right)
+	distance := i.distance
+	if distance == nil {
+		var err error
+		distance, err = i.options.Metric.PrevalidatedDistance()
+		if err != nil {
+			return 0, err
+		}
+	}
+	score, err := distance(left, right)
 	if err != nil {
 		return 0, err
 	}
@@ -593,7 +608,8 @@ func cloneVamanaIndex(ctx context.Context, source *VamanaIndex) (*VamanaIndex, e
 	}
 	clone := &VamanaIndex{
 		dimension: source.dimension, options: source.options,
-		keys: slices.Clone(source.keys), vectors: slices.Clone(source.vectors),
+		distance: source.distance,
+		keys:     slices.Clone(source.keys), vectors: slices.Clone(source.vectors),
 		positions: cloneUint64Positions(source.positions), entryPoint: source.entryPoint,
 		neighbors: make([][]int, len(source.neighbors)), neighborDistances: make([][]float32, len(source.neighborDistances)),
 	}
@@ -1159,6 +1175,10 @@ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error
 		dimension: dimension, options: options, keys: make([]uint64, count),
 		vectors: make([]float32, count*dimension), positions: make(map[uint64]int, count),
 		neighbors: make([][]int, count), neighborDistances: make([][]float32, count), entryPoint: entry,
+	}
+	index.distance, err = options.Metric.PrevalidatedDistance()
+	if err != nil {
+		return nil, err
 	}
 	offset := 0
 	for position := range index.keys {
