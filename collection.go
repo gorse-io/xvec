@@ -694,9 +694,14 @@ func buildCollectionRuntimeIndexes(
 					return fail(err)
 				}
 				indexes.denseExact[field.Name] = exact
-				flat, err := buildCollectionDenseFlat(ctx, schema.Name, field, documents, spec)
-				if err != nil {
-					return fail(err)
+				var flat collectionDenseIndex
+				if spec.quantize == QuantizeTypeUndefined || spec.indexType == IndexTypeHNSWRaBitQ {
+					flat = exact
+				} else {
+					flat, err = buildCollectionDenseFlat(ctx, schema.Name, field, documents, spec)
+					if err != nil {
+						return fail(err)
+					}
 				}
 				indexes.denseFlat[field.Name] = flat
 				if spec.indexType == IndexTypeFlat {

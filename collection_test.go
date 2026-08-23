@@ -596,6 +596,27 @@ func TestCollectionScalarQuantizedDiskANNDirectSchema(t *testing.T) {
 	}
 }
 
+func TestBuildCollectionRuntimeIndexesSharesUnquantizedDenseFlat(t *testing.T) {
+	ctx := context.Background()
+	schema := NewCollectionSchema("shared_flat", FieldSchema{
+		Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2,
+		Index: NewFlatIndexParams(MetricTypeL2),
+	})
+	documents := []Document{
+		{DocID: 1, PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{1, 0}}},
+		{DocID: 2, PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{0, 1}}},
+	}
+
+	indexes, err := buildCollectionRuntimeIndexes(ctx, schema, documents, 1, 0, false, nil)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, indexes.Close()) }()
+
+	flat, ok := indexes.denseFlat["embedding"].(*core.DenseFlatIndex)
+	require.True(t, ok)
+	require.Same(t, indexes.denseExact["embedding"], flat)
+	require.Same(t, flat, indexes.denseNative["embedding"])
+}
+
 func TestCollectionReplaysPublicDocumentPayloadWithoutFlush(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "recovery")
