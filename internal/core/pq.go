@@ -722,6 +722,28 @@ func pqUniformSampleIndicesInto(
 	random *splitMix64,
 ) ([]int, error) {
 	result = slices.Grow(result[:0], sample)
+	if sample*4 < count {
+		// KMC2 repeatedly draws a short chain (32 by default) from a much
+		// larger training set. Floyd sampling keeps the same uniform
+		// without-replacement distribution while doing work proportional to
+		// the chain instead of scanning every training row. The chain is
+		// sorted to retain the ordering contract of the linear sampler.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		for index := count - sample; index < count; index++ {
+			candidate := random.intn(index + 1)
+			for _, selected := range result {
+				if selected == candidate {
+					candidate = index
+					break
+				}
+			}
+			result = append(result, candidate)
+		}
+		slices.Sort(result)
+		return result, nil
+	}
 	remaining := sample
 	for index := 0; index < count && remaining > 0; index++ {
 		if index&1023 == 0 {
