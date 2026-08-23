@@ -109,6 +109,27 @@ func TestParseConfigCustomAndValidation(t *testing.T) {
 	require.ErrorContains(t, err, "unsupported backend")
 }
 
+func TestParseConfigDiskANN(t *testing.T) {
+	config, err := parseConfig([]string{
+		backendXvec, "--path", t.TempDir(), "--index-type", indexDiskANN,
+		"--diskann-max-degree", "64", "--diskann-build-list", "128",
+		"--diskann-pq-chunks", "32", "--diskann-query-list", "200",
+		"--optimize-concurrency", "4",
+	}, &bytes.Buffer{})
+	require.NoError(t, err)
+	require.Equal(t, indexDiskANN, config.IndexType)
+	require.Equal(t, 64, config.DiskANNMaxDegree)
+	require.Equal(t, 128, config.DiskANNBuildList)
+	require.Equal(t, 32, config.DiskANNPQChunks)
+	require.Equal(t, 200, config.DiskANNQueryList)
+	require.Equal(t, 4, config.OptimizeConcurrency)
+
+	_, err = parseConfig([]string{backendXvec, "--path", t.TempDir(), "--index-type", "bad"}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "unsupported index-type")
+	_, err = parseConfig([]string{backendXvec, "--path", t.TempDir(), "--index-type", indexDiskANN, "--diskann-query-list", "0"}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "DiskANN parameters")
+}
+
 func TestParseFlexibleDuration(t *testing.T) {
 	duration, err := parseFlexibleDuration("0.25")
 	require.NoError(t, err)

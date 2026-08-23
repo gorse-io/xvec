@@ -22,9 +22,9 @@ import (
 	"github.com/gorse-io/xvec"
 )
 
-func initializeBenchmarkBackend(backend string) (func(), error) {
-	if backend == backendZvec {
-		return initializeZvecBackend()
+func initializeBenchmarkBackend(config benchConfig) (func(), error) {
+	if config.Backend == backendZvec {
+		return initializeZvecBackend(config)
 	}
 	return func() {}, nil
 }

@@ -42,7 +42,11 @@ func TestVectorDBBenchEndToEndCustomDataset(t *testing.T) {
 	testVectorDBBenchEndToEndCustomDataset(t, backendXvec)
 }
 
-func testVectorDBBenchEndToEndCustomDataset(t *testing.T, backend string) {
+func TestVectorDBBenchDiskANNEndToEndCustomDataset(t *testing.T) {
+	testVectorDBBenchEndToEndCustomDataset(t, backendXvec, "--index-type", indexDiskANN)
+}
+
+func testVectorDBBenchEndToEndCustomDataset(t *testing.T, backend string, extraArgs ...string) {
 	t.Helper()
 	directory := t.TempDir()
 	datasetDir := filepath.Join(directory, "dataset")
@@ -66,7 +70,7 @@ func testVectorDBBenchEndToEndCustomDataset(t *testing.T, backend string) {
 	require.NoError(t, parquet.WriteFile(filepath.Join(datasetDir, neighborsFileName), neighbors))
 
 	var stdout, stderr bytes.Buffer
-	err := runCLI(context.Background(), []string{
+	args := []string{
 		backend,
 		"--path", filepath.Join(directory, "collection"),
 		"--case-type", caseCustom,
@@ -84,7 +88,9 @@ func testVectorDBBenchEndToEndCustomDataset(t *testing.T, backend string) {
 		"--concurrency-duration", "50ms",
 		"--warmup-queries", "2",
 		"--max-docs-per-segment", "1000",
-	}, &stdout, &stderr)
+	}
+	args = append(args, extraArgs...)
+	err := runCLI(context.Background(), args, &stdout, &stderr)
 	require.NoError(t, err, stderr.String())
 	var report benchmarkReport
 	require.NoError(t, json.Unmarshal(stdout.Bytes(), &report), fmt.Sprintf("stdout: %s", stdout.String()))

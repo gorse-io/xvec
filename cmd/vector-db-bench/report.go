@@ -30,9 +30,14 @@ type reportConfig struct {
 	Backend             string `json:"backend"`
 	Path                string `json:"path"`
 	DBLabel             string `json:"db_label"`
+	IndexType           string `json:"index_type"`
 	M                   int    `json:"m"`
 	EFConstruction      int    `json:"ef_construction"`
 	EFSearch            int    `json:"ef_search"`
+	DiskANNMaxDegree    int    `json:"diskann_max_degree"`
+	DiskANNBuildList    int    `json:"diskann_build_list"`
+	DiskANNPQChunks     int    `json:"diskann_pq_chunks"`
+	DiskANNQueryList    int    `json:"diskann_query_list"`
 	QuantizeType        string `json:"quantize_type"`
 	UseRefiner          bool   `json:"use_refiner"`
 	K                   int    `json:"k"`
@@ -42,6 +47,7 @@ type reportConfig struct {
 	ConcurrencyDuration string `json:"concurrency_duration"`
 	SerialCooldown      string `json:"serial_cooldown"`
 	NumConcurrency      []int  `json:"num_concurrency"`
+	OptimizeConcurrency int    `json:"optimize_concurrency"`
 	MaxDocsPerSegment   uint64 `json:"max_docs_per_segment"`
 	EnableMmap          bool   `json:"enable_mmap"`
 }
@@ -125,11 +131,14 @@ func newBenchmarkReport(config benchConfig) benchmarkReport {
 		Note:          config.Note,
 		Config: reportConfig{
 			Backend: config.Backend, Path: config.Path, DBLabel: config.DBLabel,
-			M: config.M, EFConstruction: config.EFConstruction, EFSearch: config.EFSearch,
+			IndexType: config.IndexType,
+			M:         config.M, EFConstruction: config.EFConstruction, EFSearch: config.EFSearch,
+			DiskANNMaxDegree: config.DiskANNMaxDegree, DiskANNBuildList: config.DiskANNBuildList,
+			DiskANNPQChunks: config.DiskANNPQChunks, DiskANNQueryList: config.DiskANNQueryList,
 			QuantizeType: quantize, UseRefiner: config.UseRefiner, K: config.K,
 			BatchSize: config.BatchSize, LoadLimit: config.LoadLimit, QueryLimit: config.QueryLimit,
 			ConcurrencyDuration: config.ConcurrencyDuration.String(), SerialCooldown: config.SerialCooldown.String(),
-			NumConcurrency:    config.concurrency,
+			NumConcurrency: config.concurrency, OptimizeConcurrency: config.OptimizeConcurrency,
 			MaxDocsPerSegment: config.MaxDocsPerSegment, EnableMmap: config.EnableMmap,
 		},
 		System: systemInfo{

@@ -31,7 +31,7 @@ import (
 
 func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (benchmarkReport, error) {
 	report := newBenchmarkReport(config)
-	shutdown, err := initializeBenchmarkBackend(config.Backend)
+	shutdown, err := initializeBenchmarkBackend(config)
 	if err != nil {
 		return report, err
 	}
@@ -195,14 +195,30 @@ func writableBenchmarkCollection(ctx context.Context, config benchConfig) (*xvec
 	if err != nil {
 		return nil, err
 	}
-	index := xvec.NewHNSWIndexParams(metric)
-	index.M = config.M
-	index.EFConstruction = config.EFConstruction
-	index.Quantize, err = parseQuantization(config.Quantize)
+	quantize, err := parseQuantization(config.Quantize)
 	if err != nil {
 		return nil, err
 	}
-	index.Quantizer.EnableRotate = index.Quantize == xvec.QuantizeTypeInt8 || index.Quantize == xvec.QuantizeTypeInt4
+	var index xvec.IndexParams
+	switch strings.ToLower(config.IndexType) {
+	case indexHNSW:
+		params := xvec.NewHNSWIndexParams(metric)
+		params.M = config.M
+		params.EFConstruction = config.EFConstruction
+		params.Quantize = quantize
+		params.Quantizer.EnableRotate = quantize == xvec.QuantizeTypeInt8 || quantize == xvec.QuantizeTypeInt4
+		index = params
+	case indexDiskANN:
+		params := xvec.NewDiskANNIndexParams(metric)
+		params.MaxDegree = config.DiskANNMaxDegree
+		params.ListSize = config.DiskANNBuildList
+		params.PQChunks = config.DiskANNPQChunks
+		params.Quantize = quantize
+		params.Quantizer.EnableRotate = quantize == xvec.QuantizeTypeInt8 || quantize == xvec.QuantizeTypeInt4
+		index = params
+	default:
+		return nil, fmt.Errorf("unsupported index type %q", config.IndexType)
+	}
 	schema := xvec.NewCollectionSchema("vector_bench_test",
 		xvec.FieldSchema{Name: "id", DataType: xvec.DataTypeInt64, Index: xvec.NewInvertIndexParams()},
 		xvec.FieldSchema{
@@ -251,14 +267,23 @@ type benchmarkQueryEngine interface {
 
 type xvecQueryEngine struct {
 	collection *xvec.Collection
-	params     xvec.HNSWQueryParams
+	params     xvec.QueryParams
 	k          int
 }
 
 func newXvecQueryEngine(collection *xvec.Collection, config benchConfig) xvecQueryEngine {
-	params := xvec.NewHNSWQueryParams()
-	params.EF = config.EFSearch
-	params.UseRefiner = config.UseRefiner
+	var params xvec.QueryParams
+	if strings.EqualFold(config.IndexType, indexDiskANN) {
+		diskANN := xvec.NewDiskANNQueryParams()
+		diskANN.ListSize = config.DiskANNQueryList
+		diskANN.UseRefiner = config.UseRefiner
+		params = diskANN
+	} else {
+		hnsw := xvec.NewHNSWQueryParams()
+		hnsw.EF = config.EFSearch
+		hnsw.UseRefiner = config.UseRefiner
+		params = hnsw
+	}
 	return xvecQueryEngine{collection: collection, params: params, k: config.K}
 }
 

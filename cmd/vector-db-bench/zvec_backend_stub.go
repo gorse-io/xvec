@@ -24,7 +24,7 @@ import (
 
 var errZvecBackendUnavailable = errors.New("zvec backend requires a pure-Go benchmark build: CGO_ENABLED=0 go build -o vector-db-bench ./cmd/vector-db-bench")
 
-func initializeZvecBackend() (func(), error) {
+func initializeZvecBackend(benchConfig) (func(), error) {
 	return nil, errZvecBackendUnavailable
 }
 

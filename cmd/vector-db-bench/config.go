@@ -27,8 +27,10 @@ import (
 )
 
 const (
-	backendXvec = "xvec"
-	backendZvec = "zvec"
+	backendXvec  = "xvec"
+	backendZvec  = "zvec"
+	indexHNSW    = "hnsw"
+	indexDiskANN = "diskann"
 
 	casePerformance768D100K  = "Performance768D100K"
 	casePerformance768D1M    = "Performance768D1M"
@@ -68,6 +70,11 @@ type benchConfig struct {
 	M                    int
 	EFConstruction       int
 	EFSearch             int
+	IndexType            string
+	DiskANNMaxDegree     int
+	DiskANNBuildList     int
+	DiskANNPQChunks      int
+	DiskANNQueryList     int
 	Quantize             string
 	UseRefiner           bool
 	NumConcurrency       string
@@ -118,7 +125,12 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	flags.IntVar(&config.M, "m", 50, "HNSW M")
 	flags.IntVar(&config.EFConstruction, "ef-construction", 500, "HNSW construction EF")
 	flags.IntVar(&config.EFSearch, "ef-search", 300, "HNSW search EF")
-	flags.StringVar(&config.Quantize, "quantize-type", "", "HNSW quantization: fp16, int8, int4, or empty")
+	flags.StringVar(&config.IndexType, "index-type", indexHNSW, "vector index: hnsw or diskann")
+	flags.IntVar(&config.DiskANNMaxDegree, "diskann-max-degree", 100, "DiskANN graph maximum degree")
+	flags.IntVar(&config.DiskANNBuildList, "diskann-build-list", 50, "DiskANN construction candidate list size")
+	flags.IntVar(&config.DiskANNPQChunks, "diskann-pq-chunks", 0, "DiskANN PQ chunks; zero uses the backend automatic value")
+	flags.IntVar(&config.DiskANNQueryList, "diskann-query-list", 300, "DiskANN search candidate list size")
+	flags.StringVar(&config.Quantize, "quantize-type", "", "vector scalar quantization: fp16, int8, int4, or empty")
 	flags.BoolVar(&config.UseRefiner, "is-using-refiner", false, "refine quantized candidates with original vectors")
 	flags.StringVar(&config.NumConcurrency, "num-concurrency", "12,14,16,18,20", "comma-separated concurrent search worker counts")
 	concurrencyDuration := flags.String("concurrency-duration", "30s", "duration per concurrency level, for example 30s or 30")
@@ -191,8 +203,17 @@ func (c benchConfig) validate() error {
 	if c.LoadLimit < 0 || c.QueryLimit < 0 {
 		return errors.New("load-limit and query-limit cannot be negative")
 	}
-	if c.M <= 0 || c.EFConstruction < c.M || c.EFSearch <= 0 {
-		return errors.New("HNSW parameters require m > 0, ef-construction >= m, and ef-search > 0")
+	switch strings.ToLower(c.IndexType) {
+	case indexHNSW:
+		if c.M <= 0 || c.EFConstruction < c.M || c.EFSearch <= 0 {
+			return errors.New("HNSW parameters require m > 0, ef-construction >= m, and ef-search > 0")
+		}
+	case indexDiskANN:
+		if c.DiskANNMaxDegree <= 0 || c.DiskANNBuildList <= 0 || c.DiskANNPQChunks < 0 || c.DiskANNQueryList <= 0 {
+			return errors.New("DiskANN parameters require positive max-degree, build-list, and query-list, and non-negative pq-chunks")
+		}
+	default:
+		return fmt.Errorf("unsupported index-type %q: use hnsw or diskann", c.IndexType)
 	}
 	if c.OptimizeConcurrency < 0 {
 		return errors.New("optimize-concurrency cannot be negative")

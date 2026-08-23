@@ -26,12 +26,12 @@ import (
 )
 
 func TestBenchmarkBackendDispatchAndZvecStub(t *testing.T) {
-	shutdown, err := initializeBenchmarkBackend(backendXvec)
+	shutdown, err := initializeBenchmarkBackend(benchConfig{Backend: backendXvec})
 	require.NoError(t, err)
 	require.NotNil(t, shutdown)
 	shutdown()
 
-	_, err = initializeBenchmarkBackend(backendZvec)
+	_, err = initializeBenchmarkBackend(benchConfig{Backend: backendZvec})
 	require.ErrorIs(t, err, errZvecBackendUnavailable)
 
 	config := benchConfig{Backend: backendZvec}

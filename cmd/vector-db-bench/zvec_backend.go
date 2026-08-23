@@ -29,8 +29,21 @@ import (
 	zvec "github.com/zvec-ai/zvec-go"
 )
 
-func initializeZvecBackend() (func(), error) {
-	if err := zvec.Initialize(nil); err != nil {
+func initializeZvecBackend(config benchConfig) (func(), error) {
+	options := zvec.NewConfigData()
+	if options == nil {
+		return nil, errors.New("create zvec global configuration")
+	}
+	defer options.Destroy()
+	if config.OptimizeConcurrency > 0 {
+		if err := options.SetOptimizeThreadCount(uint32(config.OptimizeConcurrency)); err != nil {
+			return nil, fmt.Errorf("set zvec optimize concurrency: %w", err)
+		}
+		if err := options.SetQueryThreadCount(uint32(config.OptimizeConcurrency)); err != nil {
+			return nil, fmt.Errorf("set zvec query concurrency: %w", err)
+		}
+	}
+	if err := zvec.Initialize(options); err != nil {
 		return nil, fmt.Errorf("initialize zvec: %w", err)
 	}
 	return func() { _ = zvec.Shutdown() }, nil
@@ -150,9 +163,20 @@ func writableZvecBenchmarkCollection(config benchConfig) (*zvec.Collection, erro
 	if err != nil {
 		return nil, err
 	}
-	index, err := zvec.NewHNSWIndexParams(metric, config.M, config.EFConstruction)
-	if err != nil {
-		return nil, fmt.Errorf("create zvec HNSW index params: %w", err)
+	var index *zvec.IndexParams
+	switch strings.ToLower(config.IndexType) {
+	case indexHNSW:
+		index, err = zvec.NewHNSWIndexParams(metric, config.M, config.EFConstruction)
+		if err != nil {
+			return nil, fmt.Errorf("create zvec HNSW index params: %w", err)
+		}
+	case indexDiskANN:
+		index, err = zvec.NewDiskANNIndexParams(metric, config.DiskANNMaxDegree, config.DiskANNBuildList, config.DiskANNPQChunks)
+		if err != nil {
+			return nil, fmt.Errorf("create zvec DiskANN index params: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported index type %q", config.IndexType)
 	}
 	defer index.Destroy()
 	quantize, err := parseZvecQuantization(config.Quantize)
@@ -246,10 +270,12 @@ func parseZvecQuantization(value string) (zvec.QuantizeType, error) {
 }
 
 type zvecQueryEngine struct {
-	collection *zvec.Collection
-	ef         int
-	useRefiner bool
-	k          int
+	collection  *zvec.Collection
+	indexType   string
+	ef          int
+	diskANNList int
+	useRefiner  bool
+	k           int
 }
 
 func openZvecQueryEngine(config benchConfig) (benchmarkQueryEngine, io.Closer, error) {
@@ -262,7 +288,10 @@ func openZvecQueryEngine(config benchConfig) (benchmarkQueryEngine, io.Closer, e
 	if err != nil {
 		return nil, nil, fmt.Errorf("open zvec benchmark collection for search: %w", err)
 	}
-	return zvecQueryEngine{collection: collection, ef: config.EFSearch, useRefiner: config.UseRefiner, k: config.K}, collection, nil
+	return zvecQueryEngine{
+		collection: collection, indexType: config.IndexType, ef: config.EFSearch,
+		diskANNList: config.DiskANNQueryList, useRefiner: config.UseRefiner, k: config.K,
+	}, collection, nil
 }
 
 func (e zvecQueryEngine) search(ctx context.Context, vector []float32) ([]int64, error) {
@@ -289,13 +318,27 @@ func (e zvecQueryEngine) search(ctx context.Context, vector []float32) ([]int64,
 	if err := query.SetIncludeDocID(false); err != nil {
 		return nil, fmt.Errorf("set zvec query document ID projection: %w", err)
 	}
-	params := zvec.NewHNSWQueryParams(e.ef, -1, false, e.useRefiner)
-	if params == nil {
-		return nil, errors.New("create zvec HNSW query params")
-	}
-	defer params.Destroy()
-	if err := query.SetHNSWParams(params); err != nil {
-		return nil, fmt.Errorf("set zvec HNSW query params: %w", err)
+	if strings.EqualFold(e.indexType, indexDiskANN) {
+		params := zvec.NewDiskANNQueryParams(e.diskANNList)
+		if params == nil {
+			return nil, errors.New("create zvec DiskANN query params")
+		}
+		defer params.Destroy()
+		if err := params.SetIsUsingRefiner(e.useRefiner); err != nil {
+			return nil, fmt.Errorf("set zvec DiskANN refiner: %w", err)
+		}
+		if err := query.SetDiskANNParams(params); err != nil {
+			return nil, fmt.Errorf("set zvec DiskANN query params: %w", err)
+		}
+	} else {
+		params := zvec.NewHNSWQueryParams(e.ef, -1, false, e.useRefiner)
+		if params == nil {
+			return nil, errors.New("create zvec HNSW query params")
+		}
+		defer params.Destroy()
+		if err := query.SetHNSWParams(params); err != nil {
+			return nil, fmt.Errorf("set zvec HNSW query params: %w", err)
+		}
 	}
 	results, err := e.collection.Query(query)
 	if err != nil {

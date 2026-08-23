@@ -6,7 +6,7 @@
 vector search performance workloads:
 
 - Cohere, LAION, BioASQ, and OpenAI Parquet datasets;
-- HNSW loading and optimization;
+- HNSW or DiskANN loading and optimization;
 - serial Recall@K, QPS, and latency percentiles;
 - sustained concurrent QPS and latency at multiple worker counts;
 - JSON results containing the run configuration and host information.
@@ -121,6 +121,30 @@ VectorDBBench, concurrent search runs before serial recall/latency measurement;
 `--load-limit` and `--query-limit` are useful for smoke tests; do not use them
 for comparable published results. Use `--dry-run` to validate and print the
 resolved configuration without downloading data.
+
+## DiskANN comparison
+
+Select DiskANN explicitly and pass the same construction and search parameters
+to both backends. For example:
+
+```bash
+GOMAXPROCS=4 taskset -c 0-3 ./vector-db-bench xvec \
+  --path ./Performance1536D50K-xvec-diskann \
+  --case-type Performance1536D50K \
+  --index-type diskann \
+  --diskann-max-degree 100 \
+  --diskann-build-list 50 \
+  --diskann-pq-chunks 0 \
+  --diskann-query-list 300 \
+  --optimize-concurrency 4 \
+  --num-concurrency 1,2,4 \
+  --output result-xvec-openai-50k-diskann.json
+```
+
+Use the same command for `zvec`, changing only the backend, collection path,
+and output path. When `--optimize-concurrency` is positive, it also pins zvec's
+global query and optimize thread pools to that value. `taskset` and
+`GOMAXPROCS` should still be identical for both processes.
 
 ## Dataset compatibility
 
