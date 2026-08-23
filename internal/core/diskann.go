@@ -220,7 +220,10 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 				return nil, err
 			}
 		}
-		nodes[position] = DiskANNNode{ID: uint32(position), Vector: slices.Clone(vectors[position])}
+		// encodeDiskANNNodeFile consumes nodes synchronously before Build returns,
+		// so the immutable builder storage can be borrowed instead of duplicating
+		// every full-precision vector in a second temporary matrix.
+		nodes[position] = DiskANNNode{ID: uint32(position), Vector: vectors[position]}
 		nodes[position].Neighbors = make([]uint32, len(graph.neighbors[position]))
 		for offset, neighbor := range graph.neighbors[position] {
 			nodes[position].Neighbors[offset] = uint32(neighbor)
