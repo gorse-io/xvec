@@ -533,8 +533,16 @@ func (i *VamanaIndex) addReverseEdge(ctx context.Context, node, owner int, dista
 }
 
 func (i *VamanaIndex) setVamanaNeighbors(owner int, selected []vamanaDistanceNode) {
-	i.neighbors[owner] = make([]int, len(selected))
-	i.neighborDistances[owner] = make([]float32, len(selected))
+	if cap(i.neighbors[owner]) < len(selected) {
+		i.neighbors[owner] = make([]int, len(selected))
+	} else {
+		i.neighbors[owner] = i.neighbors[owner][:len(selected)]
+	}
+	if cap(i.neighborDistances[owner]) < len(selected) {
+		i.neighborDistances[owner] = make([]float32, len(selected))
+	} else {
+		i.neighborDistances[owner] = i.neighborDistances[owner][:len(selected)]
+	}
 	for offset, candidate := range selected {
 		i.neighbors[owner][offset] = candidate.position
 		i.neighborDistances[owner][offset] = candidate.distance
