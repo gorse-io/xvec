@@ -622,6 +622,8 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 	visited[entry], retainedMember[entry] = true, true
 	collector := newDiskANNResultCollector(i.metric, options.SearchOptions)
 	beam := i.diskANNReadBatchSize()
+	neighborIDs := make([]uint32, 0, i.options.MaxDegree)
+	neighborScores := make([]float32, i.options.MaxDegree)
 
 	for frontier.Len() != 0 {
 		if err := ctx.Err(); err != nil {
@@ -653,16 +655,20 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 				return nil, fmt.Errorf("core: score DiskANN node %d: %w", node.ID, err)
 			}
 			collector.Add(Result{Key: i.keys[node.ID], Score: exact})
+			neighborIDs = neighborIDs[:0]
 			for _, neighbor := range node.Neighbors {
 				if visited[neighbor] {
 					continue
 				}
 				visited[neighbor] = true
-				score, err := i.diskANNApproximateScore(table, neighbor, queryNorm)
-				if err != nil {
-					return nil, fmt.Errorf("core: score DiskANN PQ node %d: %w", neighbor, err)
-				}
-				candidate := diskANNQueueNode{id: neighbor, score: score}
+				neighborIDs = append(neighborIDs, neighbor)
+			}
+			scores := neighborScores[:len(neighborIDs)]
+			if err := i.diskANNApproximateScores(table, neighborIDs, queryNorm, scores); err != nil {
+				return nil, fmt.Errorf("core: score DiskANN PQ neighbors of node %d: %w", node.ID, err)
+			}
+			for position, neighbor := range neighborIDs {
+				candidate := diskANNQueueNode{id: neighbor, score: scores[position]}
 				if retained.Len() < capacity {
 					retained.Push(candidate)
 					retainedMember[neighbor] = true
@@ -704,6 +710,57 @@ func (i *DiskANNIndex) diskANNApproximateScore(table *PQDistanceTable, id uint32
 		return 0, ErrPQScoreOverflow
 	}
 	return float32(converted), nil
+}
+
+func (i *DiskANNIndex) diskANNApproximateScores(
+	table *PQDistanceTable,
+	ids []uint32,
+	queryNorm float64,
+	scores []float32,
+) error {
+	chunks := i.pq.Chunks()
+	if len(scores) != len(ids) {
+		return errors.New("core: invalid DiskANN PQ score buffer")
+	}
+	// The table and codes already passed the index-open boundary. Score a full
+	// neighbor batch without rebuilding and validating a public PQCode for every
+	// edge. Independent accumulators hide table-lookup latency on wide PQ models.
+	for index, id := range ids {
+		start := int(id) * chunks
+		code := i.codes[start : start+chunks]
+		var sum0, sum1, sum2, sum3 float32
+		chunk := 0
+		for ; chunk+3 < chunks; chunk += 4 {
+			base := chunk * PQCentroidCount
+			sum0 += table.values[base+int(code[chunk])]
+			sum1 += table.values[base+PQCentroidCount+int(code[chunk+1])]
+			sum2 += table.values[base+2*PQCentroidCount+int(code[chunk+2])]
+			sum3 += table.values[base+3*PQCentroidCount+int(code[chunk+3])]
+		}
+		score := (sum0 + sum1) + (sum2 + sum3)
+		for ; chunk < chunks; chunk++ {
+			score += table.values[chunk*PQCentroidCount+int(code[chunk])]
+		}
+		if math.IsNaN(float64(score)) || math.IsInf(float64(score), 0) {
+			return ErrPQScoreOverflow
+		}
+		if i.metric == MetricMIPSL2 {
+			candidateNorm := float64(i.codeNorms[ids[index]])
+			inner := (queryNorm + candidateNorm - float64(score)) / 2
+			denominator := max(queryNorm, candidateNorm)
+			if denominator == 0 {
+				scores[index] = 0
+				continue
+			}
+			converted := 2 - 2*inner/denominator
+			if math.IsNaN(converted) || math.IsInf(converted, 0) || converted > math.MaxFloat32 || converted < -math.MaxFloat32 {
+				return ErrPQScoreOverflow
+			}
+			score = float32(converted)
+		}
+		scores[index] = score
+	}
+	return nil
 }
 
 func diskANNVectorNormSquared(vector []float32) float64 {

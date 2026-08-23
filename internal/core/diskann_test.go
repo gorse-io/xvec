@@ -694,6 +694,49 @@ func BenchmarkDiskANNSearchWarmCache(b *testing.B) {
 	}
 }
 
+func BenchmarkDiskANNPQNeighborScores1536D(b *testing.B) {
+	const chunks = 768
+	const dimension = 1536
+	const nodeCount = 4096
+	const neighborCount = 100
+	model, err := RestorePQModel(PQModelState{
+		Dimension:    dimension,
+		Metric:       MetricL2,
+		ChunkOffsets: pqChunkOffsets(dimension, chunks),
+		Pivots:       make([]float32, PQCentroidCount*dimension),
+	})
+	if err != nil {
+		require.NoError(b, err)
+	}
+	tableValues := make([]float32, chunks*PQCentroidCount)
+	for index := range tableValues {
+		tableValues[index] = float32((index*17)%997) / 997
+	}
+	table := &PQDistanceTable{
+		modelFingerprint: model.fingerprint,
+		metric:           MetricL2,
+		chunks:           chunks,
+		values:           tableValues,
+	}
+	codes := make([]byte, nodeCount*chunks)
+	for index := range codes {
+		codes[index] = byte(index * 31)
+	}
+	index := &DiskANNIndex{metric: MetricL2, traversalMetric: MetricL2, pq: model, codes: codes}
+	ids := make([]uint32, neighborCount)
+	for position := range ids {
+		ids[position] = uint32((position * 37) % nodeCount)
+	}
+	scores := make([]float32, neighborCount)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if err := index.diskANNApproximateScores(table, ids, 0, scores); err != nil {
+			require.NoError(b, err)
+		}
+	}
+}
+
 const (
 	diskANNSaveCrashHelperEnv = "ZVEC_DISKANN_SAVE_CRASH_HELPER"
 	diskANNSaveSourceEnv      = "ZVEC_DISKANN_SAVE_SOURCE"
