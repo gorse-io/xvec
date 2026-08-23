@@ -395,9 +395,9 @@ type ftsTermDocumentIterator struct {
 	blockMaxDecoded        []bool
 }
 
-func newFTSTermDocumentIterator(posting *FTSPostingList, scorer *BM25Scorer, idf, boost float32) *ftsTermDocumentIterator {
+func newFTSTermDocumentIterator(posting *FTSPostingList, scorer *BM25Scorer, idf, boost float32, decodePositions bool) *ftsTermDocumentIterator {
 	return &ftsTermDocumentIterator{
-		posting: posting.Iterator(), scorer: scorer, idf: idf, boost: boost,
+		posting: posting.iterator(decodePositions), scorer: scorer, idf: idf, boost: boost,
 		blockMaxNormalizations: posting.cachedBlockMaxNormalizations(scorer),
 	}
 }
@@ -453,7 +453,7 @@ func (i *ftsTermDocumentIterator) blockMaxInfo(target uint32) ftsBlockMaxInfo {
 		i.blockMaxDecoded = make([]bool, len(blocks))
 	}
 	if !i.blockMaxDecoded[blockIndex] {
-		probe := i.posting.list.Iterator()
+		probe := i.posting.list.scoringIterator()
 		probe.loadBlock(blockIndex)
 		var maximum float32
 		for index := range probe.termFrequencies {
@@ -519,6 +519,9 @@ func (i *ftsTermDocumentIterator) score(ctx context.Context) (float32, error) {
 func (i *ftsTermDocumentIterator) positions(ctx context.Context) ([]uint32, error) {
 	if i == nil || i.posting == nil || !i.posting.Valid() {
 		return nil, nil
+	}
+	if !i.posting.decodePositions {
+		return nil, fmt.Errorf("%w: posting positions were not requested", ErrInvalidFTSPosting)
 	}
 	start := uint64(i.posting.list.positionsOffset) + uint64(i.posting.positionOffsets[i.posting.indexInBlock])
 	end := start + uint64(i.posting.positionLengths[i.posting.indexInBlock])
@@ -1003,7 +1006,7 @@ func buildFTSDocumentIterator(ctx context.Context, dictionary *FTSTermDictionary
 		if !found {
 			return nil, nil
 		}
-		return newFTSTermDocumentIterator(posting, scorer, ftsTermIDF(scorer, typed.Term), typed.Flags.Boost), nil
+		return newFTSTermDocumentIterator(posting, scorer, ftsTermIDF(scorer, typed.Term), typed.Flags.Boost, false), nil
 	case *FTSPhraseQueryNode:
 		if len(typed.Terms) == 0 {
 			return nil, nil
@@ -1020,7 +1023,7 @@ func buildFTSDocumentIterator(ctx context.Context, dictionary *FTSTermDictionary
 			if !found {
 				return nil, nil
 			}
-			iterator := newFTSTermDocumentIterator(posting, scorer, ftsTermIDF(scorer, term), typed.Flags.Boost)
+			iterator := newFTSTermDocumentIterator(posting, scorer, ftsTermIDF(scorer, term), typed.Flags.Boost, true)
 			terms[index] = ftsPhraseTermIterator{term: term, iterator: iterator}
 			must[index] = iterator
 		}

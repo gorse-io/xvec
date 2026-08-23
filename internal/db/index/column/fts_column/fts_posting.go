@@ -414,7 +414,7 @@ func (l *FTSPostingList) prepareBlockMaxNormalizations(ctx context.Context, scor
 	}
 	maximums := make([]float32, len(l.blocks))
 	var maximumTF uint32
-	iterator := l.Iterator()
+	iterator := l.scoringIterator()
 	work := 0
 	for iterator.Next() {
 		if work&4095 == 0 {
@@ -450,7 +450,15 @@ func (l *FTSPostingList) cachedBlockMaxNormalizations(scorer *BM25Scorer) []floa
 // Iterator returns a new independent iterator positioned before the first
 // posting.
 func (l *FTSPostingList) Iterator() *FTSPostingIterator {
-	return &FTSPostingIterator{list: l, blockIndex: -1, indexInBlock: -1}
+	return l.iterator(true)
+}
+
+func (l *FTSPostingList) scoringIterator() *FTSPostingIterator {
+	return l.iterator(false)
+}
+
+func (l *FTSPostingList) iterator(decodePositions bool) *FTSPostingIterator {
+	return &FTSPostingIterator{list: l, blockIndex: -1, indexInBlock: -1, decodePositions: decodePositions}
 }
 
 // FTSPostingIterator decodes one 128-document block at a time and supports
@@ -461,6 +469,7 @@ type FTSPostingIterator struct {
 	indexInBlock    int
 	globalIndex     uint32
 	valid           bool
+	decodePositions bool
 	documentIDs     []uint32
 	termFrequencies []uint32
 	documentLengths []uint32
@@ -567,23 +576,34 @@ func (i *FTSPostingIterator) loadBlock(blockIndex int) {
 	i.documentIDs = resizeFTSUint32(i.documentIDs, countInt)
 	i.termFrequencies = resizeFTSUint32(i.termFrequencies, countInt)
 	i.documentLengths = resizeFTSUint32(i.documentLengths, countInt)
-	i.positionLengths = resizeFTSUint32(i.positionLengths, countInt)
-	i.positionOffsets = resizeFTSUint32(i.positionOffsets, countInt)
-	arrays := [4][]uint32{i.documentIDs, i.termFrequencies, i.documentLengths, i.positionLengths}
-	for arrayIndex, width := range widths {
+	arrays := [3][]uint32{i.documentIDs, i.termFrequencies, i.documentLengths}
+	for arrayIndex, width := range widths[:3] {
 		length := ftsPackedByteSize(width, uint32(count))
 		unpackFTSUint32Into(i.list.data[cursor:cursor+length], width, arrays[arrayIndex])
 		cursor += length
 	}
-	positionOffset := metadata.positionOffset
+	if i.decodePositions {
+		i.positionLengths = resizeFTSUint32(i.positionLengths, countInt)
+		i.positionOffsets = resizeFTSUint32(i.positionOffsets, countInt)
+		length := ftsPackedByteSize(widths[3], uint32(count))
+		unpackFTSUint32Into(i.list.data[cursor:cursor+length], widths[3], i.positionLengths)
+	} else {
+		i.positionLengths = nil
+		i.positionOffsets = nil
+	}
 	documentID := minimumDocumentID
 	for index := range i.documentIDs {
 		if index > 0 {
 			documentID += i.documentIDs[index]
 		}
 		i.documentIDs[index] = documentID
-		i.positionOffsets[index] = positionOffset
-		positionOffset += i.positionLengths[index]
+	}
+	if i.decodePositions {
+		positionOffset := metadata.positionOffset
+		for index := range i.positionOffsets {
+			i.positionOffsets[index] = positionOffset
+			positionOffset += i.positionLengths[index]
+		}
 	}
 	i.blockIndex = blockIndex
 	i.indexInBlock = -1
@@ -620,7 +640,7 @@ func (i *FTSPostingIterator) DocumentLength() uint32 {
 
 // Positions decodes and returns an owned copy of the current position list.
 func (i *FTSPostingIterator) Positions() []uint32 {
-	if !i.Valid() {
+	if !i.Valid() || !i.decodePositions {
 		return nil
 	}
 	start := uint64(i.list.positionsOffset) + uint64(i.positionOffsets[i.indexInBlock])

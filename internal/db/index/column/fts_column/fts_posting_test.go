@@ -315,6 +315,21 @@ func TestFTSPostingIteratorReusesBlockBuffers(t *testing.T) {
 	require.Same(t, positionLengths, &iterator.positionLengths[0])
 }
 
+func TestFTSScoringIteratorSkipsPositionPayload(t *testing.T) {
+	list, err := BuildFTSPostingList(context.Background(), makeFTSPostingTestData(300))
+	require.NoError(t, err)
+	iterator := list.scoringIterator()
+	require.True(t, iterator.Next())
+	require.NotZero(t, iterator.TermFrequency())
+	require.NotZero(t, iterator.DocumentLength())
+	require.Nil(t, iterator.positionOffsets)
+	require.Nil(t, iterator.positionLengths)
+	require.Nil(t, iterator.Positions())
+	require.True(t, iterator.Advance(500))
+	require.Nil(t, iterator.positionOffsets)
+	require.Nil(t, iterator.positionLengths)
+}
+
 func makeFTSPostingTestData(count int) []FTSPosting {
 	postings := make([]FTSPosting, count)
 	documentID := uint32(0)

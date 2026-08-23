@@ -124,7 +124,7 @@ func AggregateFTSCorpusStats(ctx context.Context, segments []FTSSegmentView) (FT
 			}
 			work++
 			var liveFrequency uint64
-			iterator := segment.Dictionary.postings[termIndex].Iterator()
+			iterator := segment.Dictionary.postings[termIndex].scoringIterator()
 			for iterator.Next() {
 				if work&4095 == 0 {
 					if err := ctx.Err(); err != nil {
