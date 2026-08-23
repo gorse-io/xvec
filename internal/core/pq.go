@@ -137,34 +137,38 @@ func TrainPQ(ctx context.Context, vectors [][]float32, options PQOptions) (*PQMo
 	offsets := pqChunkOffsets(dimension, chunks)
 	sampleCount := min(len(vectors), options.MaxTrainSamples)
 	pivots := make([]float32, PQCentroidCount*dimension)
-	for chunk := 0; chunk < chunks; chunk++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	trainingContext := ctx
+	err := parallel.ParallelFor(ctx, chunks, options.Workers, func(workerContext context.Context, chunk int) error {
+		if err := workerContext.Err(); err != nil {
+			return err
+		}
+		if err := trainingContext.Err(); err != nil {
+			return err
 		}
 		start, end := offsets[chunk], offsets[chunk+1]
 		training := make([][]float32, sampleCount)
 		for sample := range training {
 			if sample&1023 == 0 {
-				if err := ctx.Err(); err != nil {
-					return nil, err
+				if err := trainingContext.Err(); err != nil {
+					return err
 				}
 			}
 			training[sample] = slices.Clone(vectors[sample][start:end])
 		}
 		kmeans := DefaultKMeansOptions(PQCentroidCount, options.Metric)
 		kmeans.MaxIterations = options.MaxIterations
-		kmeans.Workers = options.Workers
+		kmeans.Workers = 1
 		kmeans.Seed = options.Seed ^ (0x70716b6d00000000 + uint64(chunk))
 		initialCentroids, err := initializePQKMC2(
-			ctx, training, min(PQCentroidCount, len(training)), options.Metric, kmeans.Seed,
+			workerContext, training, min(PQCentroidCount, len(training)), options.Metric, kmeans.Seed,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("core: initialize PQ chunk %d: %w", chunk, err)
+			return fmt.Errorf("core: initialize PQ chunk %d: %w", chunk, err)
 		}
 		kmeans.InitialCentroids = initialCentroids
-		model, err := TrainKMeans(ctx, training, kmeans)
+		model, err := TrainKMeans(workerContext, training, kmeans)
 		if err != nil {
-			return nil, fmt.Errorf("core: train PQ chunk %d: %w", chunk, err)
+			return fmt.Errorf("core: train PQ chunk %d: %w", chunk, err)
 		}
 		centroids := model.Centroids()
 		for centroid := 0; centroid < PQCentroidCount; centroid++ {
@@ -174,6 +178,10 @@ func TrainPQ(ctx context.Context, vectors [][]float32, options PQOptions) (*PQMo
 			}
 			copy(pivots[centroid*dimension+start:centroid*dimension+end], source)
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return RestorePQModel(PQModelState{
 		Dimension: dimension, Metric: options.Metric,
