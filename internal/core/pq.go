@@ -244,58 +244,50 @@ func trainPQL2Chunk(
 		clear(counts)
 		clear(sums)
 		cost := float64(0)
-		for sample := 0; sample < sampleCount; sample++ {
-			if sample&1023 == 0 {
-				if err := ctx.Err(); err != nil {
-					return nil, err
-				}
+		if width == 2 {
+			cost, err = assignPQL2Width2(ctx, training, centroids, counts, sums, scores)
+			if err != nil {
+				return nil, err
 			}
-			vector := training[sample*width : (sample+1)*width]
-			bestLabel := 0
-			var bestScore float32
-			switch width {
-			case 1:
-				value := vector[0]
-				difference := value - centroids[0]
-				bestScore = difference * difference
-				for centroid := 1; centroid < clusters; centroid++ {
-					difference = value - centroids[centroid]
-					score := difference * difference
-					if score < bestScore {
-						bestLabel, bestScore = centroid, score
+		} else {
+			for sample := 0; sample < sampleCount; sample++ {
+				if sample&1023 == 0 {
+					if err := ctx.Err(); err != nil {
+						return nil, err
 					}
 				}
-			case 2:
-				first, second := vector[0], vector[1]
-				firstDifference := first - centroids[0]
-				secondDifference := second - centroids[1]
-				bestScore = firstDifference*firstDifference + secondDifference*secondDifference
-				for centroid := 1; centroid < clusters; centroid++ {
-					offset := centroid * 2
-					firstDifference = first - centroids[offset]
-					secondDifference = second - centroids[offset+1]
-					score := firstDifference*firstDifference + secondDifference*secondDifference
-					if score < bestScore {
-						bestLabel, bestScore = centroid, score
+				vector := training[sample*width : (sample+1)*width]
+				bestLabel := 0
+				var bestScore float32
+				if width == 1 {
+					value := vector[0]
+					difference := value - centroids[0]
+					bestScore = difference * difference
+					for centroid := 1; centroid < clusters; centroid++ {
+						difference = value - centroids[centroid]
+						score := difference * difference
+						if score < bestScore {
+							bestLabel, bestScore = centroid, score
+						}
+					}
+				} else {
+					bestScore = pqL2SquaredSmall(vector, centroids[:width])
+					for centroid := 1; centroid < clusters; centroid++ {
+						offset := centroid * width
+						score := pqL2SquaredSmall(vector, centroids[offset:offset+width])
+						if score < bestScore {
+							bestLabel, bestScore = centroid, score
+						}
 					}
 				}
-			default:
-				bestScore = pqL2SquaredSmall(vector, centroids[:width])
-				for centroid := 1; centroid < clusters; centroid++ {
-					offset := centroid * width
-					score := pqL2SquaredSmall(vector, centroids[offset:offset+width])
-					if score < bestScore {
-						bestLabel, bestScore = centroid, score
-					}
+				scores[sample] = bestScore
+				counts[bestLabel]++
+				sum := sums[bestLabel*width : (bestLabel+1)*width]
+				for coordinate, value := range vector {
+					sum[coordinate] += float64(value)
 				}
+				cost += float64(bestScore)
 			}
-			scores[sample] = bestScore
-			counts[bestLabel]++
-			sum := sums[bestLabel*width : (bestLabel+1)*width]
-			for coordinate, value := range vector {
-				sum[coordinate] += float64(value)
-			}
-			cost += float64(bestScore)
 		}
 
 		copy(next, centroids)
@@ -340,6 +332,97 @@ func trainPQL2Chunk(
 		previousCost = cost
 	}
 	return centroids, nil
+}
+
+func assignPQL2Width2(
+	ctx context.Context,
+	training, centroids []float32,
+	counts []int,
+	sums []float64,
+	scores []float32,
+) (float64, error) {
+	clusters := len(centroids) / 2
+	sampleCount := len(training) / 2
+	cost := float64(0)
+	sample := 0
+	for ; sample+4 <= sampleCount; sample += 4 {
+		if sample&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+		}
+		offset := sample * 2
+		first0, second0 := training[offset], training[offset+1]
+		first1, second1 := training[offset+2], training[offset+3]
+		first2, second2 := training[offset+4], training[offset+5]
+		first3, second3 := training[offset+6], training[offset+7]
+		centroidFirst, centroidSecond := centroids[0], centroids[1]
+		firstDifference0, secondDifference0 := first0-centroidFirst, second0-centroidSecond
+		firstDifference1, secondDifference1 := first1-centroidFirst, second1-centroidSecond
+		firstDifference2, secondDifference2 := first2-centroidFirst, second2-centroidSecond
+		firstDifference3, secondDifference3 := first3-centroidFirst, second3-centroidSecond
+		bestScore0 := firstDifference0*firstDifference0 + secondDifference0*secondDifference0
+		bestScore1 := firstDifference1*firstDifference1 + secondDifference1*secondDifference1
+		bestScore2 := firstDifference2*firstDifference2 + secondDifference2*secondDifference2
+		bestScore3 := firstDifference3*firstDifference3 + secondDifference3*secondDifference3
+		bestLabel0, bestLabel1, bestLabel2, bestLabel3 := 0, 0, 0, 0
+		for centroid := 1; centroid < clusters; centroid++ {
+			centroidFirst, centroidSecond = centroids[centroid*2], centroids[centroid*2+1]
+			firstDifference0, secondDifference0 = first0-centroidFirst, second0-centroidSecond
+			firstDifference1, secondDifference1 = first1-centroidFirst, second1-centroidSecond
+			firstDifference2, secondDifference2 = first2-centroidFirst, second2-centroidSecond
+			firstDifference3, secondDifference3 = first3-centroidFirst, second3-centroidSecond
+			score0 := firstDifference0*firstDifference0 + secondDifference0*secondDifference0
+			score1 := firstDifference1*firstDifference1 + secondDifference1*secondDifference1
+			score2 := firstDifference2*firstDifference2 + secondDifference2*secondDifference2
+			score3 := firstDifference3*firstDifference3 + secondDifference3*secondDifference3
+			if score0 < bestScore0 {
+				bestLabel0, bestScore0 = centroid, score0
+			}
+			if score1 < bestScore1 {
+				bestLabel1, bestScore1 = centroid, score1
+			}
+			if score2 < bestScore2 {
+				bestLabel2, bestScore2 = centroid, score2
+			}
+			if score3 < bestScore3 {
+				bestLabel3, bestScore3 = centroid, score3
+			}
+		}
+		labels := [4]int{bestLabel0, bestLabel1, bestLabel2, bestLabel3}
+		bestScores := [4]float32{bestScore0, bestScore1, bestScore2, bestScore3}
+		firsts := [4]float32{first0, first1, first2, first3}
+		seconds := [4]float32{second0, second1, second2, second3}
+		for lane, label := range labels {
+			scores[sample+lane] = bestScores[lane]
+			counts[label]++
+			sums[label*2] += float64(firsts[lane])
+			sums[label*2+1] += float64(seconds[lane])
+			cost += float64(bestScores[lane])
+		}
+	}
+	for ; sample < sampleCount; sample++ {
+		first, second := training[sample*2], training[sample*2+1]
+		firstDifference := first - centroids[0]
+		secondDifference := second - centroids[1]
+		bestScore := firstDifference*firstDifference + secondDifference*secondDifference
+		bestLabel := 0
+		for centroid := 1; centroid < clusters; centroid++ {
+			offset := centroid * 2
+			firstDifference = first - centroids[offset]
+			secondDifference = second - centroids[offset+1]
+			score := firstDifference*firstDifference + secondDifference*secondDifference
+			if score < bestScore {
+				bestLabel, bestScore = centroid, score
+			}
+		}
+		scores[sample] = bestScore
+		counts[bestLabel]++
+		sums[bestLabel*2] += float64(first)
+		sums[bestLabel*2+1] += float64(second)
+		cost += float64(bestScore)
+	}
+	return cost, nil
 }
 
 func initializePQL2KMC2(
