@@ -269,6 +269,7 @@ func vamanaBuildWorkers(workers, count int) int {
 type VamanaIndex struct {
 	streamMu          sync.Mutex
 	mu                sync.RWMutex
+	pruneScratch      sync.Pool
 	dimension         int
 	options           VamanaBuildOptions
 	distance          mathutil.DenseDistance
@@ -380,6 +381,13 @@ type vamanaDistanceNode struct {
 	distance float32
 }
 
+type vamanaPruneScratch struct {
+	deduplicated []vamanaDistanceNode
+	seen         map[int]struct{}
+	factors      []float32
+	consumed     []bool
+}
+
 func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32, entry, capacity int) ([]vamanaDistanceNode, error) {
 	limit := min(capacity, len(i.keys))
 	if limit <= 0 {
@@ -434,24 +442,35 @@ func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32
 
 func (i *VamanaIndex) robustPrune(ctx context.Context, owner int, candidates []vamanaDistanceNode) ([]vamanaDistanceNode, error) {
 	slices.SortFunc(candidates, compareVamanaDistanceNodes)
-	deduplicated := make([]vamanaDistanceNode, 0, len(candidates))
-	seen := make(map[int]struct{}, len(candidates))
+	value := i.pruneScratch.Get()
+	var scratch *vamanaPruneScratch
+	if value == nil {
+		scratch = &vamanaPruneScratch{seen: make(map[int]struct{}, len(candidates))}
+	} else {
+		scratch = value.(*vamanaPruneScratch)
+	}
+	scratch.deduplicated = scratch.deduplicated[:0]
+	clear(scratch.seen)
+	defer i.pruneScratch.Put(scratch)
 	for _, candidate := range candidates {
 		if candidate.position == owner {
 			continue
 		}
-		if _, found := seen[candidate.position]; found {
+		if _, found := scratch.seen[candidate.position]; found {
 			continue
 		}
-		seen[candidate.position] = struct{}{}
-		deduplicated = append(deduplicated, candidate)
-		if len(deduplicated) == i.options.MaxOcclusionSize {
+		scratch.seen[candidate.position] = struct{}{}
+		scratch.deduplicated = append(scratch.deduplicated, candidate)
+		if len(scratch.deduplicated) == i.options.MaxOcclusionSize {
 			break
 		}
 	}
-	candidates = deduplicated
-	factors := make([]float32, len(candidates))
-	consumed := make([]bool, len(candidates))
+	candidates = scratch.deduplicated
+	scratch.factors = slices.Grow(scratch.factors[:0], len(candidates))[:len(candidates)]
+	scratch.consumed = slices.Grow(scratch.consumed[:0], len(candidates))[:len(candidates)]
+	clear(scratch.factors)
+	clear(scratch.consumed)
+	factors, consumed := scratch.factors, scratch.consumed
 	selected := make([]vamanaDistanceNode, 0, min(i.options.MaxDegree, len(candidates)))
 	for alpha := float32(1); alpha <= i.options.Alpha+1e-6 && len(selected) < i.options.MaxDegree; {
 		for candidateIndex, candidate := range candidates {
@@ -491,17 +510,12 @@ func (i *VamanaIndex) robustPrune(ctx context.Context, owner int, candidates []v
 		alpha = nextAlpha
 	}
 	if i.options.SaturateGraph && i.options.Alpha > 1 {
-		selectedSet := make(map[int]struct{}, len(selected))
-		for _, candidate := range selected {
-			selectedSet[candidate.position] = struct{}{}
-		}
-		for _, candidate := range candidates {
+		for index, candidate := range candidates {
 			if len(selected) == i.options.MaxDegree {
 				break
 			}
-			if _, found := selectedSet[candidate.position]; !found {
+			if !consumed[index] {
 				selected = append(selected, candidate)
-				selectedSet[candidate.position] = struct{}{}
 			}
 		}
 	}
