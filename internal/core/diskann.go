@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"runtime"
 	"slices"
 	"sync"
 
@@ -232,41 +233,9 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 		return nil, fmt.Errorf("core: build DiskANN graph: %w", err)
 	}
 
-	layout, err := NewDiskANNLayout(b.options.Metric, len(b.keys), b.dimension, b.options.MaxDegree)
-	if err != nil {
-		return nil, err
-	}
-	nodes := make([]DiskANNNode, len(b.keys))
-	for position := range nodes {
-		if position&255 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-		}
-		// encodeDiskANNNodeFile consumes nodes synchronously before Build returns,
-		// so the immutable builder storage can be borrowed instead of duplicating
-		// every full-precision vector in a second temporary matrix.
-		nodes[position] = DiskANNNode{ID: uint32(position), Vector: vectors[position]}
-		nodes[position].Neighbors = make([]uint32, len(graph.neighbors[position]))
-		for offset, neighbor := range graph.neighbors[position] {
-			nodes[position].Neighbors[offset] = uint32(neighbor)
-		}
-	}
-	nodeArtifact, err := encodeDiskANNNodeFile(ctx, layout, nodes)
-	if err != nil {
-		return nil, err
-	}
-	nodeReader, err := OpenDiskANNNodeReader(
-		ctx, bytes.NewReader(nodeArtifact), int64(len(nodeArtifact)), b.options.CacheCapacity, b.options.Workers,
-	)
-	if err != nil {
-		return nil, err
-	}
-
 	index := &DiskANNIndex{
 		dimension: b.dimension, metric: b.options.Metric, options: b.options,
 		keys: slices.Clone(b.keys), positions: cloneUint64Positions(b.positions), entryPoint: graph.entryPoint,
-		nodes: nodeReader,
 	}
 	index.traversalMetric = traversalMetric
 	if len(vectors) != 0 {
@@ -297,7 +266,50 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 				return nil, err
 			}
 		}
+		codes = nil
 	}
+	preparedBytes := len(preparedStorage) * 4
+	prepared, preparedStorage = nil, nil
+	graphStorage = nil
+	graph.vectors = nil
+	if preparedBytes >= 16<<20 {
+		// The node artifact is another dimension-sized allocation. Reclaim the
+		// normalized graph/PQ matrix before allocating it so large builds do not
+		// overlap both matrices and fall into swap on memory-constrained hosts.
+		runtime.GC()
+	}
+
+	layout, err := NewDiskANNLayout(b.options.Metric, len(b.keys), b.dimension, b.options.MaxDegree)
+	if err != nil {
+		return nil, err
+	}
+	nodes := make([]DiskANNNode, len(b.keys))
+	for position := range nodes {
+		if position&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		// encodeDiskANNNodeFile consumes nodes synchronously before Build returns,
+		// so the immutable builder storage can be borrowed instead of duplicating
+		// every full-precision vector in a second temporary matrix.
+		nodes[position] = DiskANNNode{ID: uint32(position), Vector: vectors[position]}
+		nodes[position].Neighbors = make([]uint32, len(graph.neighbors[position]))
+		for offset, neighbor := range graph.neighbors[position] {
+			nodes[position].Neighbors[offset] = uint32(neighbor)
+		}
+	}
+	nodeArtifact, err := encodeDiskANNNodeFile(ctx, layout, nodes)
+	if err != nil {
+		return nil, err
+	}
+	nodeReader, err := OpenDiskANNNodeReader(
+		ctx, bytes.NewReader(nodeArtifact), int64(len(nodeArtifact)), b.options.CacheCapacity, b.options.Workers,
+	)
+	if err != nil {
+		return nil, err
+	}
+	index.nodes = nodeReader
 	if err := validateDiskANNIndex(ctx, index); err != nil {
 		return nil, err
 	}
