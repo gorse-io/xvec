@@ -270,6 +270,7 @@ type VamanaIndex struct {
 	streamMu          sync.Mutex
 	mu                sync.RWMutex
 	pruneScratch      sync.Pool
+	searchScratch     sync.Pool
 	dimension         int
 	options           VamanaBuildOptions
 	distance          mathutil.DenseDistance
@@ -388,6 +389,11 @@ type vamanaPruneScratch struct {
 	consumed     []bool
 }
 
+type vamanaSearchScratch struct {
+	visited    []uint32
+	generation uint32
+}
+
 func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32, entry, capacity int) ([]vamanaDistanceNode, error) {
 	limit := min(capacity, len(i.keys))
 	if limit <= 0 {
@@ -397,13 +403,31 @@ func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32
 	worse := func(left, right vamanaDistanceNode) bool { return vamanaDistanceBetter(right, left) }
 	frontier := container.NewHeap(better)
 	retained := container.NewHeap(worse)
-	visited := make([]bool, len(i.keys))
+	value := i.searchScratch.Get()
+	var scratch *vamanaSearchScratch
+	if value == nil {
+		scratch = &vamanaSearchScratch{}
+	} else {
+		scratch = value.(*vamanaSearchScratch)
+	}
+	if cap(scratch.visited) < len(i.keys) {
+		scratch.visited = make([]uint32, len(i.keys))
+	} else {
+		scratch.visited = scratch.visited[:len(i.keys)]
+	}
+	scratch.generation++
+	if scratch.generation == 0 {
+		clear(scratch.visited)
+		scratch.generation = 1
+	}
+	defer i.searchScratch.Put(scratch)
+	visited, generation := scratch.visited, scratch.generation
 	distance, err := i.graphDistance(query, i.vectorAt(entry))
 	if err != nil {
 		return nil, err
 	}
 	start := vamanaDistanceNode{position: entry, distance: distance}
-	visited[entry] = true
+	visited[entry] = generation
 	frontier.Push(start)
 	retained.Push(start)
 	for frontier.Len() != 0 {
@@ -416,10 +440,10 @@ func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32
 			break
 		}
 		for _, neighbor := range i.neighbors[current.position] {
-			if visited[neighbor] {
+			if visited[neighbor] == generation {
 				continue
 			}
-			visited[neighbor] = true
+			visited[neighbor] = generation
 			distance, err := i.graphDistance(query, i.vectorAt(neighbor))
 			if err != nil {
 				return nil, err
