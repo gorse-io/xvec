@@ -128,7 +128,15 @@ type collectionRuntimeIndexes struct {
 	sparseNative map[string]core.SparseQuerySearcher
 	sparseExact  map[string]*core.SparseFlatIndex
 	fts          map[string]*collectionFTSRuntime
+	scalarMu     sync.Mutex
 	scalar       sqlengine.IndexSet
+	lazyScalar   map[string]collectionLazyScalarIndex
+}
+
+type collectionLazyScalarIndex struct {
+	path       string
+	definition sqlengine.Field
+	rowCount   uint64
 }
 
 type collectionSegmentDocuments struct {
@@ -645,7 +653,10 @@ func (c *Collection) writeSegmentRuntimeArtifacts(ctx context.Context, segmentID
 			continue
 		}
 		if field.IndexType() == IndexTypeInvert {
-			index := indexes.scalar[field.Name]
+			index, err := indexes.scalarIndex(ctx, field.Name)
+			if err != nil {
+				return fail(fmt.Errorf("open INVERT index %q for persistence: %w", field.Name, err))
+			}
 			if index == nil {
 				return fail(fmt.Errorf("INVERT index %q cannot be persisted", field.Name))
 			}
@@ -674,6 +685,7 @@ func buildCollectionRuntimeIndexes(
 		sparseFlat: make(map[string]core.SparseQuerySearcher), sparseNative: make(map[string]core.SparseQuerySearcher),
 		sparseExact: make(map[string]*core.SparseFlatIndex),
 		fts:         make(map[string]*collectionFTSRuntime), scalar: make(sqlengine.IndexSet),
+		lazyScalar: make(map[string]collectionLazyScalarIndex),
 	}
 	fail := func(err error) (*collectionRuntimeIndexes, error) {
 		_ = indexes.Close()
@@ -802,14 +814,9 @@ func buildCollectionRuntimeIndexes(
 			Indexed: true, RangeOptimized: rangeOptimized, ExtendedWildcard: extendedWildcard,
 		}
 		if artifact := artifacts[collectionIndexArtifactKey(field.Name, collectionInvertArtifactKind)]; artifact != "" {
-			index, err := sqlengine.OpenInvertedIndex(ctx, artifact)
-			if err != nil {
-				return fail(fmt.Errorf("open INVERT artifact for field %q: %w", field.Name, err))
+			indexes.lazyScalar[field.Name] = collectionLazyScalarIndex{
+				path: artifact, definition: definition, rowCount: uint64(len(documents)),
 			}
-			if index.Field() != definition || index.RowCount() != uint64(len(documents)) {
-				return fail(fmt.Errorf("INVERT artifact for field %q does not match the collection snapshot", field.Name))
-			}
-			indexes.scalar[field.Name] = index
 			continue
 		}
 		index, err := sqlengine.NewInvertedIndex(definition)
@@ -830,6 +837,48 @@ func buildCollectionRuntimeIndexes(
 			return fail(err)
 		}
 		indexes.scalar[field.Name] = index
+	}
+	return indexes, nil
+}
+
+func (i *collectionRuntimeIndexes) scalarIndex(ctx context.Context, name string) (*sqlengine.InvertedIndex, error) {
+	if i == nil {
+		return nil, nil
+	}
+	i.scalarMu.Lock()
+	defer i.scalarMu.Unlock()
+	if index := i.scalar[name]; index != nil {
+		return index, nil
+	}
+	artifact, found := i.lazyScalar[name]
+	if !found {
+		return nil, nil
+	}
+	index, err := sqlengine.OpenInvertedIndex(ctx, artifact.path)
+	if err != nil {
+		return nil, fmt.Errorf("open INVERT artifact for field %q: %w", name, err)
+	}
+	if index.Field() != artifact.definition || index.RowCount() != artifact.rowCount {
+		return nil, fmt.Errorf("INVERT artifact for field %q does not match the collection snapshot", name)
+	}
+	i.scalar[name] = index
+	delete(i.lazyScalar, name)
+	return index, nil
+}
+
+func (i *collectionRuntimeIndexes) scalarIndexesForFields(ctx context.Context, fields []sqlengine.Field) (sqlengine.IndexSet, error) {
+	indexes := make(sqlengine.IndexSet, len(fields))
+	for _, field := range fields {
+		if _, found := indexes[field.Name]; found {
+			continue
+		}
+		index, err := i.scalarIndex(ctx, field.Name)
+		if err != nil {
+			return nil, err
+		}
+		if index != nil {
+			indexes[field.Name] = index
+		}
 	}
 	return indexes, nil
 }
@@ -2943,7 +2992,11 @@ func evaluateSegmentFilters(
 		}
 		var cached sqlengine.IndexSet
 		if runtime := runtimeByID[segment.metadata.ID]; runtime != nil {
-			cached = runtime.indexes.scalar
+			var err error
+			cached, err = runtime.indexes.scalarIndexesForFields(ctx, plan.Fields())
+			if err != nil {
+				return evaluatedSegmentFilters{}, err
+			}
 		}
 		local, err := evaluateFilterDocuments(ctx, plan, segment.documents, invertToForwardRatio, cached)
 		if err != nil {
