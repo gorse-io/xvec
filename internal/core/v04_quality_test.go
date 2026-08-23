@@ -314,3 +314,30 @@ func BenchmarkV04DiskANNBuild(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkV04DiskANNCosineBuild(b *testing.B) {
+	const dimension = 256
+	candidates := diskANNIndexCandidates(1024, dimension)
+	options := DefaultDiskANNBuildOptions(MetricCosine)
+	options.MaxDegree, options.ListSize, options.PQChunks = 32, 100, 16
+	options.Workers = 4
+	b.ReportAllocs()
+	for b.Loop() {
+		builder, err := NewDiskANNBuilder(dimension, options)
+		if err != nil {
+			require.NoError(b, err)
+		}
+		for _, candidate := range candidates {
+			if err := builder.Add(context.Background(), candidate.Key, candidate.Vector); err != nil {
+				require.NoError(b, err)
+			}
+		}
+		index, err := builder.Build(context.Background())
+		if err != nil {
+			require.NoError(b, err)
+		}
+		if err := index.Close(); err != nil {
+			require.NoError(b, err)
+		}
+	}
+}

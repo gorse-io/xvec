@@ -161,16 +161,8 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 		return nil, ErrBuilderClosed
 	}
 
-	graphOptions := DefaultVamanaBuildOptions(b.options.Metric)
-	graphOptions.MaxDegree = b.options.MaxDegree
-	graphOptions.SearchListSize = max(b.options.ListSize, b.options.MaxDegree)
-	graphOptions.MaxOcclusionSize = DefaultDiskANNMaxOcclusion
-	graphBuilder, err := NewVamanaBuilder(b.dimension, graphOptions)
-	if err != nil {
-		return nil, err
-	}
 	vectors := make([][]float32, len(b.keys))
-	for position, key := range b.keys {
+	for position := range b.keys {
 		if position&255 == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -178,7 +170,37 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 		}
 		start := position * b.dimension
 		vectors[position] = b.vectors[start : start+b.dimension]
-		if err := graphBuilder.Add(ctx, key, vectors[position]); err != nil {
+	}
+	traversalMetric := diskANNTraversalMetric(b.options.Metric)
+	var prepared [][]float32
+	var err error
+	graphMetric, graphVectors := b.options.Metric, vectors
+	if b.options.Metric == MetricCosine {
+		prepared, traversalMetric, err = prepareDiskANNPQVectors(ctx, vectors, b.options.Metric)
+		if err != nil {
+			return nil, err
+		}
+		// Unit-vector squared L2 is exactly twice cosine distance. Building the
+		// transient graph in this representation preserves ordering and RobustPrune
+		// ratios while avoiding two repeated norm calculations per comparison.
+		graphMetric, graphVectors = traversalMetric, prepared
+	}
+
+	graphOptions := DefaultVamanaBuildOptions(graphMetric)
+	graphOptions.MaxDegree = b.options.MaxDegree
+	graphOptions.SearchListSize = max(b.options.ListSize, b.options.MaxDegree)
+	graphOptions.MaxOcclusionSize = DefaultDiskANNMaxOcclusion
+	graphBuilder, err := NewVamanaBuilder(b.dimension, graphOptions)
+	if err != nil {
+		return nil, err
+	}
+	for position, key := range b.keys {
+		if position&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		if err := graphBuilder.Add(ctx, key, graphVectors[position]); err != nil {
 			return nil, fmt.Errorf("core: add DiskANN graph vector %d: %w", position, err)
 		}
 	}
@@ -220,11 +242,13 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 		keys: slices.Clone(b.keys), positions: cloneUint64Positions(b.positions), entryPoint: graph.entryPoint,
 		nodes: nodeReader,
 	}
-	index.traversalMetric = diskANNTraversalMetric(b.options.Metric)
+	index.traversalMetric = traversalMetric
 	if len(vectors) != 0 {
-		prepared, traversalMetric, err := prepareDiskANNPQVectors(ctx, vectors, b.options.Metric)
-		if err != nil {
-			return nil, err
+		if prepared == nil {
+			prepared, traversalMetric, err = prepareDiskANNPQVectors(ctx, vectors, b.options.Metric)
+			if err != nil {
+				return nil, err
+			}
 		}
 		pqOptions := DefaultPQOptions(traversalMetric)
 		pqOptions.Chunks, pqOptions.Workers = b.options.PQChunks, b.options.Workers
