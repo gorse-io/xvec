@@ -563,17 +563,18 @@ func (i *FTSPostingIterator) loadBlock(blockIndex int) {
 	count := binary.LittleEndian.Uint16(header[4:6])
 	widths := [4]uint8{header[6], header[7], header[8], header[9]}
 	cursor := uint64(metadata.blockOffset) + ftsPostingBlockHeaderSize
-	arrays := make([][]uint32, 4)
+	countInt := int(count)
+	i.documentIDs = resizeFTSUint32(i.documentIDs, countInt)
+	i.termFrequencies = resizeFTSUint32(i.termFrequencies, countInt)
+	i.documentLengths = resizeFTSUint32(i.documentLengths, countInt)
+	i.positionLengths = resizeFTSUint32(i.positionLengths, countInt)
+	i.positionOffsets = resizeFTSUint32(i.positionOffsets, countInt)
+	arrays := [4][]uint32{i.documentIDs, i.termFrequencies, i.documentLengths, i.positionLengths}
 	for arrayIndex, width := range widths {
 		length := ftsPackedByteSize(width, uint32(count))
-		arrays[arrayIndex] = unpackFTSUint32(i.list.data[cursor:cursor+length], width, uint32(count))
+		unpackFTSUint32Into(i.list.data[cursor:cursor+length], width, arrays[arrayIndex])
 		cursor += length
 	}
-	i.documentIDs = arrays[0]
-	i.termFrequencies = arrays[1]
-	i.documentLengths = arrays[2]
-	i.positionLengths = arrays[3]
-	i.positionOffsets = make([]uint32, count)
 	positionOffset := metadata.positionOffset
 	documentID := minimumDocumentID
 	for index := range i.documentIDs {
@@ -712,8 +713,14 @@ func packFTSUint32(values []uint32, width uint8) []byte {
 
 func unpackFTSUint32(data []byte, width uint8, count uint32) []uint32 {
 	output := make([]uint32, count)
+	unpackFTSUint32Into(data, width, output)
+	return output
+}
+
+func unpackFTSUint32Into(data []byte, width uint8, output []uint32) {
+	clear(output)
 	if width == 0 {
-		return output
+		return
 	}
 	bitOffset := uint64(0)
 	for index := range output {
@@ -730,7 +737,13 @@ func unpackFTSUint32(data []byte, width uint8, count uint32) []uint32 {
 			bitOffset += uint64(take)
 		}
 	}
-	return output
+}
+
+func resizeFTSUint32(values []uint32, count int) []uint32 {
+	if cap(values) < count {
+		return make([]uint32, count)
+	}
+	return values[:count]
 }
 
 func maxUint32Slice(values []uint32) uint32 {
