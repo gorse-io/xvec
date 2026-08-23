@@ -61,10 +61,14 @@ type ftsPostingBlock struct {
 // FTSPostingList is an immutable, checksummed sequence of block-bitpacked
 // document IDs, term frequencies, document lengths, and delta-varint positions.
 type FTSPostingList struct {
-	data            []byte
-	count           uint32
-	positionsOffset uint32
-	blocks          []ftsPostingBlock
+	data                   []byte
+	count                  uint32
+	positionsOffset        uint32
+	blocks                 []ftsPostingBlock
+	blockMaxNormalizations []float32
+	blockMaxParams         BM25Params
+	blockMaxTotalDocuments uint64
+	blockMaxTotalTokens    uint64
 }
 
 // BuildFTSPostingList validates and encodes postings in strictly increasing
@@ -399,6 +403,48 @@ func (l *FTSPostingList) DocumentFrequency() uint32 {
 		return 0
 	}
 	return l.count
+}
+
+func (l *FTSPostingList) prepareBlockMaxNormalizations(ctx context.Context, scorer *BM25Scorer, documentLengths []uint32) (uint32, error) {
+	if ctx == nil || l == nil || scorer == nil {
+		return 0, fmt.Errorf("%w: posting list, scorer, and context are required", ErrInvalidFTSPosting)
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	maximums := make([]float32, len(l.blocks))
+	var maximumTF uint32
+	iterator := l.Iterator()
+	work := 0
+	for iterator.Next() {
+		if work&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+		}
+		work++
+		documentID := iterator.DocumentID()
+		if documentLengths != nil && (uint64(documentID) >= uint64(len(documentLengths)) || iterator.DocumentLength() != documentLengths[documentID]) {
+			return 0, fmt.Errorf("%w: posting has inconsistent document metadata", ErrInvalidFTSPosting)
+		}
+		maximumTF = max(maximumTF, iterator.TermFrequency())
+		normalization := scorer.termNormalization(iterator.TermFrequency(), iterator.DocumentLength())
+		maximums[iterator.blockIndex] = max(maximums[iterator.blockIndex], normalization)
+	}
+	l.blockMaxNormalizations = maximums
+	l.blockMaxParams = scorer.params
+	l.blockMaxTotalDocuments = scorer.stats.TotalDocuments
+	l.blockMaxTotalTokens = scorer.stats.TotalTokens
+	return maximumTF, nil
+}
+
+func (l *FTSPostingList) cachedBlockMaxNormalizations(scorer *BM25Scorer) []float32 {
+	if l == nil || scorer == nil || len(l.blockMaxNormalizations) != len(l.blocks) ||
+		l.blockMaxParams != scorer.params || l.blockMaxTotalDocuments != scorer.stats.TotalDocuments ||
+		l.blockMaxTotalTokens != scorer.stats.TotalTokens {
+		return nil
+	}
+	return l.blockMaxNormalizations
 }
 
 // Iterator returns a new independent iterator positioned before the first

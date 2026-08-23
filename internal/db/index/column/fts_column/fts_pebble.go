@@ -155,6 +155,13 @@ func OpenFTSTermDictionary(ctx context.Context, path string) (*FTSTermDictionary
 	if computedTokens != stats.TotalTokens {
 		return nil, ftsDictionaryCorruption("total token count mismatch", nil)
 	}
+	normalizationScorer, err := NewBM25Scorer(DefaultBM25Params(), FTSCorpusStats{
+		TotalDocuments: stats.TotalDocuments,
+		TotalTokens:    stats.TotalTokens,
+	})
+	if err != nil {
+		return nil, ftsDictionaryCorruption("invalid normalization scorer", err)
+	}
 	dictionary := &FTSTermDictionary{documentLengths: documentLengths, stats: stats}
 	terms, err := store.NewPrefixIterator([]byte{'t'})
 	if err != nil {
@@ -197,15 +204,13 @@ func OpenFTSTermDictionary(ctx context.Context, path string) (*FTSTermDictionary
 			_ = terms.Close()
 			return nil, ftsDictionaryCorruption("term has an empty posting", nil)
 		}
-		var computedMaximumTF uint32
-		iterator := postingList.Iterator()
-		for iterator.Next() {
-			documentID := iterator.DocumentID()
-			if uint64(documentID) >= uint64(len(documentLengths)) || iterator.DocumentLength() != documentLengths[documentID] {
-				_ = terms.Close()
-				return nil, ftsDictionaryCorruption("posting has inconsistent document metadata", nil)
+		computedMaximumTF, postingErr := postingList.prepareBlockMaxNormalizations(ctx, normalizationScorer, documentLengths)
+		if postingErr != nil {
+			_ = terms.Close()
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
 			}
-			computedMaximumTF = max(computedMaximumTF, iterator.TermFrequency())
+			return nil, ftsDictionaryCorruption("posting has inconsistent document metadata", postingErr)
 		}
 		if computedMaximumTF != maximumTF {
 			_ = terms.Close()

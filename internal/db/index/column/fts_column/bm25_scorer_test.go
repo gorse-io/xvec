@@ -295,6 +295,37 @@ func TestSearchFTSBlockMaxDoesNotHideNonFiniteScores(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidFTSSearch)
 }
 
+func TestFTSTermIteratorUsesPreparedBlockMaximums(t *testing.T) {
+	documents := make([][]tokenizer.Token, 256)
+	for documentID := range documents {
+		documents[documentID] = repeatedFTSTestTokens("common", documentID%8+1)
+	}
+	dictionary := buildFTSTestDictionary(t, documents)
+	stats, err := AggregateFTSCorpusStats(context.Background(), []FTSSegmentView{{Dictionary: dictionary}})
+	require.NoError(t, err)
+	scorer, err := NewBM25Scorer(DefaultBM25Params(), stats)
+	require.NoError(t, err)
+	node := &FTSTermQueryNode{Flags: defaultFTSQueryModifier(), Term: "common"}
+
+	iterator, err := buildFTSDocumentIterator(context.Background(), dictionary, node, scorer)
+	require.NoError(t, err)
+	term := iterator.(*ftsTermDocumentIterator)
+	require.Len(t, term.blockMaxNormalizations, 2)
+	require.Positive(t, term.blockMaxInfo(0).score)
+	require.Empty(t, term.blockMaxScores, "prepared maximums should avoid the query-local fallback cache")
+
+	mismatchedStats := stats
+	mismatchedStats.TotalTokens++
+	mismatchedScorer, err := NewBM25Scorer(DefaultBM25Params(), mismatchedStats)
+	require.NoError(t, err)
+	iterator, err = buildFTSDocumentIterator(context.Background(), dictionary, node, mismatchedScorer)
+	require.NoError(t, err)
+	term = iterator.(*ftsTermDocumentIterator)
+	require.Empty(t, term.blockMaxNormalizations)
+	require.Positive(t, term.blockMaxInfo(0).score)
+	require.Len(t, term.blockMaxScores, 2, "mismatched statistics should use the safe fallback cache")
+}
+
 func TestSearchFTSWANDSkipsCandidatesBeforePivot(t *testing.T) {
 	documents := make([][]tokenizer.Token, 201)
 	documents[0] = repeatedFTSTestTokens("winner", 16)

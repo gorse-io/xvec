@@ -159,6 +159,13 @@ func (b *FTSFieldBuilder) Build(ctx context.Context) (*FTSTermDictionary, error)
 			TotalTokens:    b.totalTokens,
 		},
 	}
+	normalizationScorer, err := NewBM25Scorer(DefaultBM25Params(), FTSCorpusStats{
+		TotalDocuments: dictionary.stats.TotalDocuments,
+		TotalTokens:    dictionary.stats.TotalTokens,
+	})
+	if err != nil {
+		return nil, err
+	}
 	for index, term := range terms {
 		if index&4095 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -172,9 +179,9 @@ func (b *FTSFieldBuilder) Build(ctx context.Context) (*FTSTermDictionary, error)
 			}
 			return nil, fmt.Errorf("%w: term %q: %v", ErrInvalidFTSDictionary, term, err)
 		}
-		var maximumTF uint32
-		for _, posting := range b.postings[term] {
-			maximumTF = max(maximumTF, posting.TermFrequency)
+		maximumTF, err := postingList.prepareBlockMaxNormalizations(ctx, normalizationScorer, dictionary.documentLengths)
+		if err != nil {
+			return nil, fmt.Errorf("%w: term %q block maximums: %v", ErrInvalidFTSDictionary, term, err)
 		}
 		dictionary.terms[index] = strings.Clone(term)
 		dictionary.postings[index] = postingList

@@ -141,6 +141,13 @@ func (s *BM25Scorer) ScoreWithIDFAndBoost(idf float32, termFrequency, documentLe
 	if s == nil || s.stats.TotalDocuments == 0 || s.stats.TotalTokens == 0 || idf <= 0 || termFrequency == 0 || boost == 0 {
 		return 0
 	}
+	return boost * idf * s.termNormalization(termFrequency, documentLength)
+}
+
+func (s *BM25Scorer) termNormalization(termFrequency, documentLength uint32) float32 {
+	if s == nil || s.stats.TotalDocuments == 0 || s.stats.TotalTokens == 0 || termFrequency == 0 {
+		return 0
+	}
 	termFrequency32 := float32(termFrequency)
 	documentLength32 := float32(documentLength)
 	averageDocumentLength := float32(s.stats.TotalTokens) / float32(s.stats.TotalDocuments)
@@ -148,6 +155,5 @@ func (s *BM25Scorer) ScoreWithIDFAndBoost(idf float32, termFrequency, documentLe
 	if denominator == 0 {
 		return 0
 	}
-	termNormalization := termFrequency32 * (s.params.K1 + 1) / denominator
-	return boost * idf * termNormalization
+	return termFrequency32 * (s.params.K1 + 1) / denominator
 }
