@@ -109,6 +109,28 @@ func TestParseConfigCustomAndValidation(t *testing.T) {
 	require.ErrorContains(t, err, "unsupported backend")
 }
 
+func TestResolveVectorDBBenchFTSCases(t *testing.T) {
+	testCases := []struct {
+		label, dataset, folder string
+		size                   int64
+	}{
+		{ftsMSMarcoSmall, "msmarco", "msmarco_small_100k", 100_000},
+		{ftsMSMarcoMedium, "msmarco", "msmarco_medium_1m", 1_000_000},
+		{ftsMSMarcoLarge, "msmarco", "msmarco_large_8.8m", 8_841_823},
+		{ftsHotpotSmall, "hotpotqa", "hotpotqa_small_100k", 100_000},
+		{ftsHotpotMedium, "hotpotqa", "hotpotqa_medium_1m", 1_000_000},
+		{ftsHotpotLarge, "hotpotqa", "hotpotqa_large_5.2m", 5_233_329},
+	}
+	for _, testCase := range testCases {
+		resolved, err := resolveBenchmarkCase(benchConfig{CaseType: caseFTSBm25Performance, DatasetWithSizeType: testCase.label})
+		require.NoError(t, err)
+		require.Equal(t, workloadFullText, resolved.Workload)
+		require.Equal(t, testCase.dataset, resolved.DatasetName)
+		require.Equal(t, testCase.folder, resolved.DatasetFolder)
+		require.Equal(t, testCase.size, resolved.Size)
+	}
+}
+
 func TestParseConfigDiskANN(t *testing.T) {
 	config, err := parseConfig([]string{
 		backendXvec, "--path", t.TempDir(), "--index-type", indexDiskANN,

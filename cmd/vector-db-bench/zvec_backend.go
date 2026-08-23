@@ -65,9 +65,9 @@ func loadZvecDataset(ctx context.Context, config benchConfig, log io.Writer) (lo
 	insertStarted := loadStarted
 	inserted := int64(0)
 	nextProgress := int64(100_000)
-	rows, err := forEachTrainingBatch(
-		ctx, config.DatasetDir, config.caseSpec.TrainFiles, config.BatchSize, config.LoadLimit,
-		func(rows []vectorParquetRow) error {
+	var rows int64
+	if config.caseSpec.Workload == workloadFullText {
+		rows, err = forEachFTSDocumentBatch(ctx, config, config.BatchSize, config.LoadLimit, func(rows []ftsDocumentRow) error {
 			documents := make([]*zvec.Doc, len(rows))
 			defer func() {
 				for _, document := range documents {
@@ -77,37 +77,78 @@ func loadZvecDataset(ctx context.Context, config benchConfig, log io.Writer) (lo
 				}
 			}()
 			for index, row := range rows {
-				if len(row.Embedding) != config.caseSpec.Dimension {
-					return fmt.Errorf("training vector %d has dimension %d, want %d", row.ID, len(row.Embedding), config.caseSpec.Dimension)
-				}
 				document := zvec.NewDoc()
 				if document == nil {
-					return errors.New("create zvec document")
+					return errors.New("create zvec FTS document")
 				}
 				documents[index] = document
-				document.SetPK(strconv.FormatInt(row.ID, 10))
-				if err := document.AddInt64Field("id", row.ID); err != nil {
-					return fmt.Errorf("set zvec document id %d: %w", row.ID, err)
+				document.SetPK(row.ID)
+				if err := document.AddStringField("text", row.Text); err != nil {
+					return fmt.Errorf("set zvec FTS document %s: %w", row.ID, err)
 				}
-				if err := document.AddVectorFP32Field("dense", row.Embedding); err != nil {
-					return fmt.Errorf("set zvec document vector %d: %w", row.ID, err)
+				if err := document.AddInt64Field("filter_id", row.FilterID); err != nil {
+					return fmt.Errorf("set zvec FTS filter ID %s: %w", row.ID, err)
 				}
 			}
-			result, err := collection.Insert(documents)
-			if err != nil {
-				return fmt.Errorf("insert zvec batch at row %d: %w", inserted, err)
+			result, insertErr := collection.Insert(documents)
+			if insertErr != nil {
+				return fmt.Errorf("insert zvec FTS batch at row %d: %w", inserted, insertErr)
 			}
 			if result.ErrorCount != 0 || result.SuccessCount != uint64(len(documents)) {
-				return fmt.Errorf("insert zvec batch at row %d: %d succeeded, %d failed", inserted, result.SuccessCount, result.ErrorCount)
+				return fmt.Errorf("insert zvec FTS batch at row %d: %d succeeded, %d failed", inserted, result.SuccessCount, result.ErrorCount)
 			}
 			inserted += int64(len(documents))
 			if inserted >= nextProgress {
-				_, _ = fmt.Fprintf(log, "inserted %d vectors (%.1f rows/s)\n", inserted, float64(inserted)/time.Since(insertStarted).Seconds())
+				_, _ = fmt.Fprintf(log, "inserted %d documents (%.1f rows/s)\n", inserted, float64(inserted)/time.Since(insertStarted).Seconds())
 				nextProgress = (inserted/100_000 + 1) * 100_000
 			}
 			return nil
-		},
-	)
+		})
+	} else {
+		rows, err = forEachTrainingBatch(
+			ctx, config.DatasetDir, config.caseSpec.TrainFiles, config.BatchSize, config.LoadLimit,
+			func(rows []vectorParquetRow) error {
+				documents := make([]*zvec.Doc, len(rows))
+				defer func() {
+					for _, document := range documents {
+						if document != nil {
+							document.Destroy()
+						}
+					}
+				}()
+				for index, row := range rows {
+					if len(row.Embedding) != config.caseSpec.Dimension {
+						return fmt.Errorf("training vector %d has dimension %d, want %d", row.ID, len(row.Embedding), config.caseSpec.Dimension)
+					}
+					document := zvec.NewDoc()
+					if document == nil {
+						return errors.New("create zvec document")
+					}
+					documents[index] = document
+					document.SetPK(strconv.FormatInt(row.ID, 10))
+					if err := document.AddInt64Field("id", row.ID); err != nil {
+						return fmt.Errorf("set zvec document id %d: %w", row.ID, err)
+					}
+					if err := document.AddVectorFP32Field("dense", row.Embedding); err != nil {
+						return fmt.Errorf("set zvec document vector %d: %w", row.ID, err)
+					}
+				}
+				result, err := collection.Insert(documents)
+				if err != nil {
+					return fmt.Errorf("insert zvec batch at row %d: %w", inserted, err)
+				}
+				if result.ErrorCount != 0 || result.SuccessCount != uint64(len(documents)) {
+					return fmt.Errorf("insert zvec batch at row %d: %d succeeded, %d failed", inserted, result.SuccessCount, result.ErrorCount)
+				}
+				inserted += int64(len(documents))
+				if inserted >= nextProgress {
+					_, _ = fmt.Fprintf(log, "inserted %d vectors (%.1f rows/s)\n", inserted, float64(inserted)/time.Since(insertStarted).Seconds())
+					nextProgress = (inserted/100_000 + 1) * 100_000
+				}
+				return nil
+			},
+		)
+	}
 	if err != nil {
 		return loadMetrics{}, err
 	}
@@ -159,6 +200,57 @@ func writableZvecBenchmarkCollection(config benchConfig) (*zvec.Collection, erro
 		return nil, fmt.Errorf("stat zvec benchmark collection: %w", err)
 	}
 
+	if config.caseSpec.Workload == workloadFullText {
+		schema := zvec.NewCollectionSchema("fts_bench_test")
+		if schema == nil {
+			return nil, errors.New("create zvec FTS collection schema")
+		}
+		defer schema.Destroy()
+		if err := schema.SetMaxDocCountPerSegment(config.MaxDocsPerSegment); err != nil {
+			return nil, fmt.Errorf("set zvec maximum documents per segment: %w", err)
+		}
+		textField := zvec.NewFieldSchema("text", zvec.DataTypeString, false, 0)
+		if textField == nil {
+			return nil, errors.New("create zvec FTS text field")
+		}
+		defer textField.Destroy()
+		tokenizer := strings.ToLower(config.FTSTokenizer)
+		if tokenizer == "standard" {
+			tokenizer = "default"
+		}
+		index, err := zvec.NewFTSIndexParams(tokenizer, splitNonEmpty(strings.ToLower(config.FTSTokenFilters)), config.FTSExtraParams)
+		if err != nil {
+			return nil, fmt.Errorf("create zvec FTS index params: %w", err)
+		}
+		defer index.Destroy()
+		if err := textField.SetIndexParams(index); err != nil {
+			return nil, fmt.Errorf("set zvec FTS index: %w", err)
+		}
+		if err := schema.AddField(textField); err != nil {
+			return nil, fmt.Errorf("add zvec FTS field: %w", err)
+		}
+		filterField := zvec.NewFieldSchema("filter_id", zvec.DataTypeInt64, false, 0)
+		if filterField == nil {
+			return nil, errors.New("create zvec FTS filter field")
+		}
+		defer filterField.Destroy()
+		filterIndex, err := zvec.NewInvertIndexParams(false, false)
+		if err != nil {
+			return nil, fmt.Errorf("create zvec FTS filter index: %w", err)
+		}
+		defer filterIndex.Destroy()
+		if err := filterField.SetIndexParams(filterIndex); err != nil {
+			return nil, fmt.Errorf("set zvec FTS filter index: %w", err)
+		}
+		if err := schema.AddField(filterField); err != nil {
+			return nil, fmt.Errorf("add zvec FTS filter field: %w", err)
+		}
+		collection, err := zvec.CreateAndOpen(config.Path, schema, options)
+		if err != nil {
+			return nil, fmt.Errorf("create zvec FTS benchmark collection: %w", err)
+		}
+		return collection, nil
+	}
 	metric, err := parseZvecMetric(config.caseSpec.Metric)
 	if err != nil {
 		return nil, err
@@ -276,6 +368,9 @@ type zvecQueryEngine struct {
 	diskANNList int
 	useRefiner  bool
 	k           int
+	fullText    bool
+	returnText  bool
+	ftsOperator string
 }
 
 func openZvecQueryEngine(config benchConfig) (benchmarkQueryEngine, io.Closer, error) {
@@ -291,10 +386,12 @@ func openZvecQueryEngine(config benchConfig) (benchmarkQueryEngine, io.Closer, e
 	return zvecQueryEngine{
 		collection: collection, indexType: config.IndexType, ef: config.EFSearch,
 		diskANNList: config.DiskANNQueryList, useRefiner: config.UseRefiner, k: config.K,
+		fullText:   config.caseSpec.Workload == workloadFullText,
+		returnText: config.caseSpec.Workload == workloadFullText && strings.EqualFold(config.PayloadProfile, "text"), ftsOperator: strings.ToUpper(config.FTSDefaultOperator),
 	}, collection, nil
 }
 
-func (e zvecQueryEngine) search(ctx context.Context, vector []float32) ([]int64, error) {
+func (e zvecQueryEngine) search(ctx context.Context, benchmarkQuery benchmarkQuery) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -303,10 +400,34 @@ func (e zvecQueryEngine) search(ctx context.Context, vector []float32) ([]int64,
 		return nil, errors.New("create zvec search query")
 	}
 	defer query.Destroy()
-	if err := query.SetFieldName("dense"); err != nil {
+	field := "dense"
+	if e.fullText {
+		field = "text"
+	}
+	if err := query.SetFieldName(field); err != nil {
 		return nil, fmt.Errorf("set zvec query field: %w", err)
 	}
-	if err := query.SetQueryVector(vector); err != nil {
+	if e.fullText {
+		fts := zvec.NewFTS()
+		if fts == nil {
+			return nil, errors.New("create zvec FTS query")
+		}
+		defer fts.Destroy()
+		if err := fts.SetMatchString(benchmarkQuery.Text); err != nil {
+			return nil, fmt.Errorf("set zvec FTS match: %w", err)
+		}
+		if err := query.SetFTS(fts); err != nil {
+			return nil, fmt.Errorf("attach zvec FTS query: %w", err)
+		}
+		params := zvec.NewFTSQueryParams(e.ftsOperator)
+		if params == nil {
+			return nil, errors.New("create zvec FTS query params")
+		}
+		defer params.Destroy()
+		if err := query.SetFTSParams(params); err != nil {
+			return nil, fmt.Errorf("set zvec FTS query params: %w", err)
+		}
+	} else if err := query.SetQueryVector(benchmarkQuery.Vector); err != nil {
 		return nil, fmt.Errorf("set zvec query vector: %w", err)
 	}
 	if err := query.SetTopK(e.k); err != nil {
@@ -318,7 +439,14 @@ func (e zvecQueryEngine) search(ctx context.Context, vector []float32) ([]int64,
 	if err := query.SetIncludeDocID(false); err != nil {
 		return nil, fmt.Errorf("set zvec query document ID projection: %w", err)
 	}
-	if strings.EqualFold(e.indexType, indexDiskANN) {
+	if e.returnText {
+		if err := query.SetOutputFields([]string{"text"}); err != nil {
+			return nil, fmt.Errorf("set zvec text payload: %w", err)
+		}
+	}
+	if e.fullText {
+		// FTS query parameters are attached above.
+	} else if strings.EqualFold(e.indexType, indexDiskANN) {
 		params := zvec.NewDiskANNQueryParams(e.diskANNList)
 		if params == nil {
 			return nil, errors.New("create zvec DiskANN query params")
@@ -345,12 +473,9 @@ func (e zvecQueryEngine) search(ctx context.Context, vector []float32) ([]int64,
 		return nil, err
 	}
 	defer zvec.FreeDocs(results)
-	ids := make([]int64, len(results))
+	ids := make([]string, len(results))
 	for index, result := range results {
-		ids[index], err = strconv.ParseInt(result.GetPK(), 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("parse zvec result primary key %q: %w", result.GetPK(), err)
-		}
+		ids[index] = result.GetPK()
 	}
 	return ids, ctx.Err()
 }

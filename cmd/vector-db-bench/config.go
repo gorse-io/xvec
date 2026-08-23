@@ -27,10 +27,12 @@ import (
 )
 
 const (
-	backendXvec  = "xvec"
-	backendZvec  = "zvec"
-	indexHNSW    = "hnsw"
-	indexDiskANN = "diskann"
+	backendXvec      = "xvec"
+	backendZvec      = "zvec"
+	indexHNSW        = "hnsw"
+	indexDiskANN     = "diskann"
+	workloadVector   = "vector"
+	workloadFullText = "full_text"
 
 	casePerformance768D100K  = "Performance768D100K"
 	casePerformance768D1M    = "Performance768D1M"
@@ -41,11 +43,20 @@ const (
 	casePerformance1536D50K  = "Performance1536D50K"
 	casePerformance1536D500K = "Performance1536D500K"
 	casePerformance1536D5M   = "Performance1536D5M"
+	caseFTSBm25Performance   = "FTSBm25Performance"
 	caseCustom               = "Custom"
+
+	ftsMSMarcoSmall  = "MS MARCO Small (100K documents)"
+	ftsMSMarcoMedium = "MS MARCO Medium (1M documents)"
+	ftsMSMarcoLarge  = "MS MARCO Large (8.8M documents)"
+	ftsHotpotSmall   = "HotpotQA Small (100K documents)"
+	ftsHotpotMedium  = "HotpotQA Medium (1M documents)"
+	ftsHotpotLarge   = "HotpotQA Large (5.2M documents)"
 )
 
 type benchmarkCase struct {
 	Name          string   `json:"name"`
+	Workload      string   `json:"workload"`
 	DatasetName   string   `json:"dataset_name"`
 	DatasetFolder string   `json:"dataset_folder"`
 	Size          int64    `json:"size"`
@@ -58,11 +69,17 @@ type benchConfig struct {
 	Backend              string
 	Path                 string
 	CaseType             string
+	DatasetWithSizeType  string
 	DatasetDir           string
 	DatasetBaseURL       string
 	Dimension            int
 	Metric               string
 	TrainFiles           string
+	FTSTokenizer         string
+	FTSTokenFilters      string
+	FTSExtraParams       string
+	FTSDefaultOperator   string
+	PayloadProfile       string
 	K                    int
 	BatchSize            int
 	LoadLimit            int64
@@ -113,11 +130,17 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	flags.SetOutput(stderr)
 	flags.StringVar(&config.Path, "path", "", "collection path (required)")
 	flags.StringVar(&config.CaseType, "case-type", casePerformance768D1M, "VectorDBBench dataset case or Custom; see README for available cases")
+	flags.StringVar(&config.DatasetWithSizeType, "dataset-with-size-type", ftsMSMarcoSmall, "VectorDBBench FTS dataset preset")
 	flags.StringVar(&config.DatasetDir, "dataset-dir", "", "local VectorDBBench dataset directory")
 	flags.StringVar(&config.DatasetBaseURL, "dataset-base-url", "https://assets.zilliz.com/benchmark", "VectorDBBench dataset base URL")
 	flags.IntVar(&config.Dimension, "dimension", 0, "vector dimension for Custom case")
 	flags.StringVar(&config.Metric, "metric", "cosine", "vector metric for Custom case: cosine, l2, or ip")
 	flags.StringVar(&config.TrainFiles, "train-files", "", "comma-separated Parquet train files for Custom case")
+	flags.StringVar(&config.FTSTokenizer, "fts-tokenizer", "standard", "FTS tokenizer: standard, whitespace, ngram, or jieba")
+	flags.StringVar(&config.FTSTokenFilters, "fts-token-filters", "lowercase", "comma-separated FTS token filters")
+	flags.StringVar(&config.FTSExtraParams, "fts-extra-params", "", "FTS analyzer extra parameters as JSON")
+	flags.StringVar(&config.FTSDefaultOperator, "fts-default-operator", "or", "FTS match default operator: or or and")
+	flags.StringVar(&config.PayloadProfile, "payload-profile", "ids_only", "search result payload: ids_only or text")
 	flags.IntVar(&config.K, "k", 100, "number of nearest neighbors")
 	flags.IntVar(&config.BatchSize, "batch-size", 100, "documents per insert batch")
 	flags.Int64Var(&config.LoadLimit, "load-limit", 0, "maximum training rows to load; zero means all")
@@ -179,7 +202,11 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 		return benchConfig{}, err
 	}
 	if config.DatasetDir == "" {
-		config.DatasetDir = filepath.Join("/tmp/vectordb_bench/dataset", config.caseSpec.DatasetName, config.caseSpec.DatasetFolder)
+		if config.caseSpec.Workload == workloadFullText {
+			config.DatasetDir = filepath.Join("/tmp/vectordb_bench/dataset", config.caseSpec.DatasetName)
+		} else {
+			config.DatasetDir = filepath.Join("/tmp/vectordb_bench/dataset", config.caseSpec.DatasetName, config.caseSpec.DatasetFolder)
+		}
 	}
 	if err := config.validate(); err != nil {
 		return benchConfig{}, err
@@ -203,17 +230,35 @@ func (c benchConfig) validate() error {
 	if c.LoadLimit < 0 || c.QueryLimit < 0 {
 		return errors.New("load-limit and query-limit cannot be negative")
 	}
-	switch strings.ToLower(c.IndexType) {
-	case indexHNSW:
-		if c.M <= 0 || c.EFConstruction < c.M || c.EFSearch <= 0 {
-			return errors.New("HNSW parameters require m > 0, ef-construction >= m, and ef-search > 0")
+	if c.caseSpec.Workload == workloadVector {
+		switch strings.ToLower(c.IndexType) {
+		case indexHNSW:
+			if c.M <= 0 || c.EFConstruction < c.M || c.EFSearch <= 0 {
+				return errors.New("HNSW parameters require m > 0, ef-construction >= m, and ef-search > 0")
+			}
+		case indexDiskANN:
+			if c.DiskANNMaxDegree <= 0 || c.DiskANNBuildList <= 0 || c.DiskANNPQChunks < 0 || c.DiskANNQueryList <= 0 {
+				return errors.New("DiskANN parameters require positive max-degree, build-list, and query-list, and non-negative pq-chunks")
+			}
+		default:
+			return fmt.Errorf("unsupported index-type %q: use hnsw or diskann", c.IndexType)
 		}
-	case indexDiskANN:
-		if c.DiskANNMaxDegree <= 0 || c.DiskANNBuildList <= 0 || c.DiskANNPQChunks < 0 || c.DiskANNQueryList <= 0 {
-			return errors.New("DiskANN parameters require positive max-degree, build-list, and query-list, and non-negative pq-chunks")
+	} else {
+		switch strings.ToLower(c.FTSTokenizer) {
+		case "standard", "whitespace", "ngram", "jieba":
+		default:
+			return fmt.Errorf("unsupported fts-tokenizer %q", c.FTSTokenizer)
 		}
+		switch strings.ToLower(c.FTSDefaultOperator) {
+		case "or", "and":
+		default:
+			return fmt.Errorf("unsupported fts-default-operator %q", c.FTSDefaultOperator)
+		}
+	}
+	switch strings.ToLower(c.PayloadProfile) {
+	case "ids_only", "text":
 	default:
-		return fmt.Errorf("unsupported index-type %q: use hnsw or diskann", c.IndexType)
+		return fmt.Errorf("unsupported payload-profile %q", c.PayloadProfile)
 	}
 	if c.OptimizeConcurrency < 0 {
 		return errors.New("optimize-concurrency cannot be negative")
@@ -251,47 +296,47 @@ func resolveBenchmarkCase(config benchConfig) (benchmarkCase, error) {
 	switch strings.ToLower(config.CaseType) {
 	case strings.ToLower(casePerformance768D100K):
 		return benchmarkCase{
-			Name: casePerformance768D100K, DatasetName: "cohere", DatasetFolder: "cohere_small_100k",
+			Name: casePerformance768D100K, Workload: workloadVector, DatasetName: "cohere", DatasetFolder: "cohere_small_100k",
 			Size: 100_000, Dimension: 768, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1),
 		}, nil
 	case strings.ToLower(casePerformance768D1M):
 		return benchmarkCase{
-			Name: casePerformance768D1M, DatasetName: "cohere", DatasetFolder: "cohere_medium_1m",
+			Name: casePerformance768D1M, Workload: workloadVector, DatasetName: "cohere", DatasetFolder: "cohere_medium_1m",
 			Size: 1_000_000, Dimension: 768, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1),
 		}, nil
 	case strings.ToLower(casePerformance768D10M):
 		return benchmarkCase{
-			Name: casePerformance768D10M, DatasetName: "cohere", DatasetFolder: "cohere_large_10m",
+			Name: casePerformance768D10M, Workload: workloadVector, DatasetName: "cohere", DatasetFolder: "cohere_large_10m",
 			Size: 10_000_000, Dimension: 768, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 10),
 		}, nil
 	case strings.ToLower(casePerformance768D100M):
 		return benchmarkCase{
-			Name: casePerformance768D100M, DatasetName: "laion", DatasetFolder: "laion_large_100m",
+			Name: casePerformance768D100M, Workload: workloadVector, DatasetName: "laion", DatasetFolder: "laion_large_100m",
 			Size: 100_000_000, Dimension: 768, Metric: "l2", TrainFiles: vectorDBBenchTrainFiles(false, 100),
 		}, nil
 	case strings.ToLower(casePerformance1024D1M):
 		return benchmarkCase{
-			Name: casePerformance1024D1M, DatasetName: "bioasq", DatasetFolder: "bioasq_medium_1m",
+			Name: casePerformance1024D1M, Workload: workloadVector, DatasetName: "bioasq", DatasetFolder: "bioasq_medium_1m",
 			Size: 1_000_000, Dimension: 1024, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1),
 		}, nil
 	case strings.ToLower(casePerformance1024D10M):
 		return benchmarkCase{
-			Name: casePerformance1024D10M, DatasetName: "bioasq", DatasetFolder: "bioasq_large_10m",
+			Name: casePerformance1024D10M, Workload: workloadVector, DatasetName: "bioasq", DatasetFolder: "bioasq_large_10m",
 			Size: 10_000_000, Dimension: 1024, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 10),
 		}, nil
 	case strings.ToLower(casePerformance1536D50K):
 		return benchmarkCase{
-			Name: casePerformance1536D50K, DatasetName: "openai", DatasetFolder: "openai_small_50k",
+			Name: casePerformance1536D50K, Workload: workloadVector, DatasetName: "openai", DatasetFolder: "openai_small_50k",
 			Size: 50_000, Dimension: 1536, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1),
 		}, nil
 	case strings.ToLower(casePerformance1536D500K):
 		return benchmarkCase{
-			Name: casePerformance1536D500K, DatasetName: "openai", DatasetFolder: "openai_medium_500k",
+			Name: casePerformance1536D500K, Workload: workloadVector, DatasetName: "openai", DatasetFolder: "openai_medium_500k",
 			Size: 500_000, Dimension: 1536, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1),
 		}, nil
 	case strings.ToLower(casePerformance1536D5M):
 		return benchmarkCase{
-			Name: casePerformance1536D5M, DatasetName: "openai", DatasetFolder: "openai_large_5m",
+			Name: casePerformance1536D5M, Workload: workloadVector, DatasetName: "openai", DatasetFolder: "openai_large_5m",
 			Size: 5_000_000, Dimension: 1536, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 10),
 		}, nil
 	case strings.ToLower(caseCustom):
@@ -304,12 +349,39 @@ func resolveBenchmarkCase(config benchConfig) (benchmarkCase, error) {
 			return benchmarkCase{}, fmt.Errorf("unsupported Custom metric %q", config.Metric)
 		}
 		return benchmarkCase{
-			Name: caseCustom, DatasetName: "custom", DatasetFolder: filepath.Base(config.DatasetDir),
+			Name: caseCustom, Workload: workloadVector, DatasetName: "custom", DatasetFolder: filepath.Base(config.DatasetDir),
 			Dimension: config.Dimension, Metric: metric, TrainFiles: files,
 		}, nil
+	case strings.ToLower(caseFTSBm25Performance):
+		return resolveFTSBenchmarkCase(config.DatasetWithSizeType)
 	default:
 		return benchmarkCase{}, fmt.Errorf("unsupported case-type %q", config.CaseType)
 	}
+}
+
+func resolveFTSBenchmarkCase(datasetWithSizeType string) (benchmarkCase, error) {
+	type preset struct {
+		label, dataset, folder, source string
+		size                           int64
+	}
+	presets := []preset{
+		{ftsMSMarcoSmall, "msmarco", "msmarco_small_100k", msMarcoArchiveName, 100_000},
+		{ftsMSMarcoMedium, "msmarco", "msmarco_medium_1m", msMarcoArchiveName, 1_000_000},
+		{ftsMSMarcoLarge, "msmarco", "msmarco_large_8.8m", msMarcoArchiveName, 8_841_823},
+		{ftsHotpotSmall, "hotpotqa", "hotpotqa_small_100k", hotpotArchiveName, 100_000},
+		{ftsHotpotMedium, "hotpotqa", "hotpotqa_medium_1m", hotpotArchiveName, 1_000_000},
+		{ftsHotpotLarge, "hotpotqa", "hotpotqa_large_5.2m", hotpotArchiveName, 5_233_329},
+	}
+	for _, value := range presets {
+		if strings.EqualFold(datasetWithSizeType, value.label) {
+			return benchmarkCase{
+				Name: caseFTSBm25Performance, Workload: workloadFullText,
+				DatasetName: value.dataset, DatasetFolder: value.folder,
+				Size: value.size, Metric: "bm25", TrainFiles: []string{value.source},
+			}, nil
+		}
+	}
+	return benchmarkCase{}, fmt.Errorf("unsupported FTS dataset-with-size-type %q", datasetWithSizeType)
 }
 
 func vectorDBBenchTrainFiles(shuffled bool, count int) []string {

@@ -27,29 +27,34 @@ import (
 const reportSchemaVersion = "vector-db-bench/v1"
 
 type reportConfig struct {
-	Backend             string `json:"backend"`
-	Path                string `json:"path"`
-	DBLabel             string `json:"db_label"`
-	IndexType           string `json:"index_type"`
-	M                   int    `json:"m"`
-	EFConstruction      int    `json:"ef_construction"`
-	EFSearch            int    `json:"ef_search"`
-	DiskANNMaxDegree    int    `json:"diskann_max_degree"`
-	DiskANNBuildList    int    `json:"diskann_build_list"`
-	DiskANNPQChunks     int    `json:"diskann_pq_chunks"`
-	DiskANNQueryList    int    `json:"diskann_query_list"`
-	QuantizeType        string `json:"quantize_type"`
-	UseRefiner          bool   `json:"use_refiner"`
-	K                   int    `json:"k"`
-	BatchSize           int    `json:"batch_size"`
-	LoadLimit           int64  `json:"load_limit,omitempty"`
-	QueryLimit          int    `json:"query_limit,omitempty"`
-	ConcurrencyDuration string `json:"concurrency_duration"`
-	SerialCooldown      string `json:"serial_cooldown"`
-	NumConcurrency      []int  `json:"num_concurrency"`
-	OptimizeConcurrency int    `json:"optimize_concurrency"`
-	MaxDocsPerSegment   uint64 `json:"max_docs_per_segment"`
-	EnableMmap          bool   `json:"enable_mmap"`
+	Backend             string   `json:"backend"`
+	Path                string   `json:"path"`
+	DBLabel             string   `json:"db_label"`
+	IndexType           string   `json:"index_type"`
+	M                   int      `json:"m"`
+	EFConstruction      int      `json:"ef_construction"`
+	EFSearch            int      `json:"ef_search"`
+	DiskANNMaxDegree    int      `json:"diskann_max_degree"`
+	DiskANNBuildList    int      `json:"diskann_build_list"`
+	DiskANNPQChunks     int      `json:"diskann_pq_chunks"`
+	DiskANNQueryList    int      `json:"diskann_query_list"`
+	QuantizeType        string   `json:"quantize_type"`
+	UseRefiner          bool     `json:"use_refiner"`
+	K                   int      `json:"k"`
+	BatchSize           int      `json:"batch_size"`
+	LoadLimit           int64    `json:"load_limit,omitempty"`
+	QueryLimit          int      `json:"query_limit,omitempty"`
+	ConcurrencyDuration string   `json:"concurrency_duration"`
+	SerialCooldown      string   `json:"serial_cooldown"`
+	NumConcurrency      []int    `json:"num_concurrency"`
+	OptimizeConcurrency int      `json:"optimize_concurrency"`
+	MaxDocsPerSegment   uint64   `json:"max_docs_per_segment"`
+	EnableMmap          bool     `json:"enable_mmap"`
+	FTSTokenizer        string   `json:"fts_tokenizer,omitempty"`
+	FTSTokenFilters     []string `json:"fts_token_filters,omitempty"`
+	FTSExtraParams      string   `json:"fts_extra_params,omitempty"`
+	FTSDefaultOperator  string   `json:"fts_default_operator,omitempty"`
+	PayloadProfile      string   `json:"payload_profile"`
 }
 
 type loadMetrics struct {
@@ -66,6 +71,8 @@ type searchMetrics struct {
 	Queries      int     `json:"queries"`
 	QPS          float64 `json:"qps"`
 	Recall       float64 `json:"recall,omitempty"`
+	MRR          float64 `json:"mrr,omitempty"`
+	NDCG         float64 `json:"ndcg,omitempty"`
 	LatencyAvgMS float64 `json:"latency_avg_ms"`
 	LatencyP95MS float64 `json:"latency_p95_ms"`
 	LatencyP99MS float64 `json:"latency_p99_ms"`
@@ -100,6 +107,9 @@ type vectorDBBenchMetric struct {
 	LoadDuration          float64   `json:"load_duration"`
 	QPS                   float64   `json:"qps"`
 	Recall                float64   `json:"recall"`
+	MRR                   float64   `json:"mrr"`
+	NDCG                  float64   `json:"ndcg"`
+	PayloadProfile        string    `json:"payload_profile"`
 	SerialLatencyP99      float64   `json:"serial_latency_p99"`
 	SerialLatencyP95      float64   `json:"serial_latency_p95"`
 	Concurrency           []int     `json:"conc_num_list"`
@@ -122,7 +132,7 @@ func newBenchmarkReport(config benchConfig) benchmarkReport {
 	if quantize == "" {
 		quantize = "none"
 	}
-	return benchmarkReport{
+	report := benchmarkReport{
 		SchemaVersion: reportSchemaVersion,
 		Tool:          "xvec/cmd/vector-db-bench",
 		Timestamp:     time.Now().UTC(),
@@ -140,16 +150,24 @@ func newBenchmarkReport(config benchConfig) benchmarkReport {
 			ConcurrencyDuration: config.ConcurrencyDuration.String(), SerialCooldown: config.SerialCooldown.String(),
 			NumConcurrency: config.concurrency, OptimizeConcurrency: config.OptimizeConcurrency,
 			MaxDocsPerSegment: config.MaxDocsPerSegment, EnableMmap: config.EnableMmap,
+			PayloadProfile: config.PayloadProfile,
 		},
 		System: systemInfo{
 			GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Go: runtime.Version(),
 			NumCPU: runtime.NumCPU(), Compiler: runtime.Compiler,
 		},
 	}
+	if config.caseSpec.Workload == workloadFullText {
+		report.Config.FTSTokenizer = config.FTSTokenizer
+		report.Config.FTSTokenFilters = splitNonEmpty(config.FTSTokenFilters)
+		report.Config.FTSExtraParams = config.FTSExtraParams
+		report.Config.FTSDefaultOperator = config.FTSDefaultOperator
+	}
+	return report
 }
 
 func (r *benchmarkReport) populateVectorDBBenchMetric() {
-	metric := &vectorDBBenchMetric{}
+	metric := &vectorDBBenchMetric{PayloadProfile: r.Config.PayloadProfile}
 	if r.Load != nil {
 		metric.InsertedCount = r.Load.Rows
 		metric.InsertDuration = r.Load.InsertDurationSec
@@ -159,6 +177,8 @@ func (r *benchmarkReport) populateVectorDBBenchMetric() {
 	if r.Serial != nil {
 		metric.QPS = r.Serial.QPS
 		metric.Recall = r.Serial.Recall
+		metric.MRR = r.Serial.MRR
+		metric.NDCG = r.Serial.NDCG
 		metric.SerialLatencyP99 = r.Serial.LatencyP99MS / 1000
 		metric.SerialLatencyP95 = r.Serial.LatencyP95MS / 1000
 	}
@@ -211,8 +231,8 @@ func printSummary(report benchmarkReport, writer io.Writer) {
 			report.Load.OptimizeDurationSec, report.Load.RowsPerSecond)
 	}
 	if report.Serial != nil {
-		_, _ = fmt.Fprintf(writer, "serial queries=%d qps=%.2f recall=%.4f avg=%.3fms p95=%.3fms p99=%.3fms\n",
-			report.Serial.Queries, report.Serial.QPS, report.Serial.Recall,
+		_, _ = fmt.Fprintf(writer, "serial queries=%d qps=%.2f recall=%.4f mrr=%.4f ndcg=%.4f avg=%.3fms p95=%.3fms p99=%.3fms\n",
+			report.Serial.Queries, report.Serial.QPS, report.Serial.Recall, report.Serial.MRR, report.Serial.NDCG,
 			report.Serial.LatencyAvgMS, report.Serial.LatencyP95MS, report.Serial.LatencyP99MS)
 	}
 	for _, result := range report.Concurrent {

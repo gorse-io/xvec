@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"os"
 	"sort"
@@ -54,7 +55,12 @@ func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (bench
 		return report, nil
 	}
 
-	data, err := readQueryData(ctx, config.DatasetDir, config.caseSpec.Dimension, config.QueryLimit)
+	var data queryData
+	if config.caseSpec.Workload == workloadFullText {
+		data, err = readFTSQueryData(ctx, config, config.QueryLimit)
+	} else {
+		data, err = readQueryData(ctx, config.DatasetDir, config.caseSpec.Dimension, config.QueryLimit)
+	}
 	if err != nil {
 		return report, err
 	}
@@ -86,7 +92,7 @@ func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (bench
 			case <-timer.C:
 			}
 		}
-		metrics, err := runSerialSearch(ctx, engine, data, config.K)
+		metrics, err := runSerialSearch(ctx, engine, data, config.K, config.caseSpec.Workload == workloadFullText)
 		if err != nil {
 			return report, err
 		}
@@ -112,24 +118,18 @@ func loadXvecDataset(ctx context.Context, config benchConfig, log io.Writer) (lo
 	insertStarted := loadStarted
 	inserted := int64(0)
 	nextProgress := int64(100_000)
-	rows, err := forEachTrainingBatch(
-		ctx, config.DatasetDir, config.caseSpec.TrainFiles, config.BatchSize, config.LoadLimit,
-		func(rows []vectorParquetRow) error {
+	var rows int64
+	if config.caseSpec.Workload == workloadFullText {
+		rows, err = forEachFTSDocumentBatch(ctx, config, config.BatchSize, config.LoadLimit, func(rows []ftsDocumentRow) error {
 			documents := make([]xvec.Document, len(rows))
 			for index, row := range rows {
-				if len(row.Embedding) != config.caseSpec.Dimension {
-					return fmt.Errorf("training vector %d has dimension %d, want %d", row.ID, len(row.Embedding), config.caseSpec.Dimension)
-				}
-				documents[index] = xvec.Document{
-					PrimaryKey: strconv.FormatInt(row.ID, 10),
-					Fields: map[string]any{
-						"id": row.ID, "dense": xvec.VectorFP32(row.Embedding),
-					},
-				}
+				documents[index] = xvec.Document{PrimaryKey: row.ID, Fields: map[string]any{
+					"text": row.Text, "filter_id": row.FilterID,
+				}}
 			}
-			results, err := collection.Insert(ctx, documents)
-			if err != nil {
-				return fmt.Errorf("insert batch at row %d: %w", inserted, err)
+			results, insertErr := collection.Insert(ctx, documents)
+			if insertErr != nil {
+				return fmt.Errorf("insert FTS batch at row %d: %w", inserted, insertErr)
 			}
 			for _, result := range results {
 				if result.Err != nil {
@@ -138,12 +138,45 @@ func loadXvecDataset(ctx context.Context, config benchConfig, log io.Writer) (lo
 			}
 			inserted += int64(len(documents))
 			if inserted >= nextProgress {
-				_, _ = fmt.Fprintf(log, "inserted %d vectors (%.1f rows/s)\n", inserted, float64(inserted)/time.Since(insertStarted).Seconds())
+				_, _ = fmt.Fprintf(log, "inserted %d documents (%.1f rows/s)\n", inserted, float64(inserted)/time.Since(insertStarted).Seconds())
 				nextProgress = (inserted/100_000 + 1) * 100_000
 			}
 			return nil
-		},
-	)
+		})
+	} else {
+		rows, err = forEachTrainingBatch(
+			ctx, config.DatasetDir, config.caseSpec.TrainFiles, config.BatchSize, config.LoadLimit,
+			func(rows []vectorParquetRow) error {
+				documents := make([]xvec.Document, len(rows))
+				for index, row := range rows {
+					if len(row.Embedding) != config.caseSpec.Dimension {
+						return fmt.Errorf("training vector %d has dimension %d, want %d", row.ID, len(row.Embedding), config.caseSpec.Dimension)
+					}
+					documents[index] = xvec.Document{
+						PrimaryKey: strconv.FormatInt(row.ID, 10),
+						Fields: map[string]any{
+							"id": row.ID, "dense": xvec.VectorFP32(row.Embedding),
+						},
+					}
+				}
+				results, err := collection.Insert(ctx, documents)
+				if err != nil {
+					return fmt.Errorf("insert batch at row %d: %w", inserted, err)
+				}
+				for _, result := range results {
+					if result.Err != nil {
+						return fmt.Errorf("insert document %s: %w", result.PrimaryKey, result.Err)
+					}
+				}
+				inserted += int64(len(documents))
+				if inserted >= nextProgress {
+					_, _ = fmt.Fprintf(log, "inserted %d vectors (%.1f rows/s)\n", inserted, float64(inserted)/time.Since(insertStarted).Seconds())
+					nextProgress = (inserted/100_000 + 1) * 100_000
+				}
+				return nil
+			},
+		)
+	}
 	if err != nil {
 		return loadMetrics{}, err
 	}
@@ -190,6 +223,22 @@ func writableBenchmarkCollection(ctx context.Context, config benchConfig) (*xvec
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("stat benchmark collection: %w", err)
+	}
+	if config.caseSpec.Workload == workloadFullText {
+		params := xvec.FTSIndexParams{
+			Tokenizer: strings.ToLower(config.FTSTokenizer), Filters: splitNonEmpty(strings.ToLower(config.FTSTokenFilters)),
+			ExtraParams: config.FTSExtraParams,
+		}
+		schema := xvec.NewCollectionSchema("fts_bench_test",
+			xvec.FieldSchema{Name: "text", DataType: xvec.DataTypeString, Index: params},
+			xvec.FieldSchema{Name: "filter_id", DataType: xvec.DataTypeInt64, Index: xvec.NewInvertIndexParams()},
+		)
+		schema.MaxDocsPerSegment = config.MaxDocsPerSegment
+		collection, err := xvec.CreateAndOpen(ctx, config.Path, schema, options)
+		if err != nil {
+			return nil, fmt.Errorf("create FTS benchmark collection: %w", err)
+		}
+		return collection, nil
 	}
 	metric, err := parseMetric(config.caseSpec.Metric)
 	if err != nil {
@@ -262,13 +311,21 @@ func parseQuantization(value string) (xvec.QuantizeType, error) {
 }
 
 type benchmarkQueryEngine interface {
-	search(context.Context, []float32) ([]int64, error)
+	search(context.Context, benchmarkQuery) ([]string, error)
+}
+
+type benchmarkQuery struct {
+	Vector []float32
+	Text   string
 }
 
 type xvecQueryEngine struct {
 	collection *xvec.Collection
 	params     xvec.QueryParams
 	k          int
+	fullText   bool
+	returnText bool
+	ftsParams  xvec.FTSQueryParams
 }
 
 func newXvecQueryEngine(collection *xvec.Collection, config benchConfig) xvecQueryEngine {
@@ -284,55 +341,78 @@ func newXvecQueryEngine(collection *xvec.Collection, config benchConfig) xvecQue
 		hnsw.UseRefiner = config.UseRefiner
 		params = hnsw
 	}
-	return xvecQueryEngine{collection: collection, params: params, k: config.K}
+	ftsParams := xvec.NewFTSQueryParams()
+	ftsParams.DefaultOperator = strings.ToUpper(config.FTSDefaultOperator)
+	return xvecQueryEngine{
+		collection: collection, params: params, k: config.K,
+		fullText:   config.caseSpec.Workload == workloadFullText,
+		returnText: config.caseSpec.Workload == workloadFullText && strings.EqualFold(config.PayloadProfile, "text"), ftsParams: ftsParams,
+	}
 }
 
-func (e xvecQueryEngine) search(ctx context.Context, vector []float32) ([]int64, error) {
-	results, err := e.collection.Query(ctx, xvec.VectorQuery{
-		Field: "dense", DenseVector: xvec.VectorFP32(vector), TopK: e.k, Params: e.params,
-		Projection: xvec.Projection{OutputFields: []string{}},
-	})
+func (e xvecQueryEngine) search(ctx context.Context, query benchmarkQuery) ([]string, error) {
+	projection := xvec.Projection{OutputFields: []string{}}
+	if e.returnText {
+		projection.OutputFields = []string{"text"}
+	}
+	request := xvec.VectorQuery{
+		Field: "dense", DenseVector: xvec.VectorFP32(query.Vector), TopK: e.k, Params: e.params, Projection: projection,
+	}
+	if e.fullText {
+		request.Field = "text"
+		request.DenseVector = nil
+		request.FTS = &xvec.FTSClause{Match: query.Text}
+		request.Params = e.ftsParams
+	}
+	results, err := e.collection.Query(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]int64, len(results))
+	ids := make([]string, len(results))
 	for index, result := range results {
-		ids[index], err = strconv.ParseInt(result.PrimaryKey, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("parse result primary key %q: %w", result.PrimaryKey, err)
-		}
+		ids[index] = result.PrimaryKey
 	}
 	return ids, nil
 }
 
 func warmupSearch(ctx context.Context, engine benchmarkQueryEngine, data queryData, count int) error {
-	if count > len(data.Vectors) {
-		count = len(data.Vectors)
+	if count > len(data.IDs) {
+		count = len(data.IDs)
 	}
 	for index := 0; index < count; index++ {
-		if _, err := engine.search(ctx, data.Vectors[index]); err != nil {
-			return fmt.Errorf("warmup query %d: %w", data.IDs[index], err)
+		if _, err := engine.search(ctx, data.query(index)); err != nil {
+			return fmt.Errorf("warmup query %s: %w", data.IDs[index], err)
 		}
 	}
 	return nil
 }
 
-func runSerialSearch(ctx context.Context, engine benchmarkQueryEngine, data queryData, k int) (searchMetrics, error) {
-	latencies := make([]float64, len(data.Vectors))
-	var recall float64
+func runSerialSearch(ctx context.Context, engine benchmarkQueryEngine, data queryData, k int, fullText bool) (searchMetrics, error) {
+	latencies := make([]float64, len(data.IDs))
+	var recall, mrr, ndcg float64
 	started := time.Now()
-	for index, vector := range data.Vectors {
+	for index := range data.IDs {
 		queryStarted := time.Now()
-		ids, err := engine.search(ctx, vector)
+		ids, err := engine.search(ctx, data.query(index))
 		if err != nil {
-			return searchMetrics{}, fmt.Errorf("serial query %d: %w", data.IDs[index], err)
+			return searchMetrics{}, fmt.Errorf("serial query %s: %w", data.IDs[index], err)
 		}
 		latencies[index] = float64(time.Since(queryStarted)) / float64(time.Millisecond)
-		recall += recallAtK(k, data.GroundTruth[index], ids)
+		if fullText {
+			recall += recallFTSAtK(k, data.GroundTruth[index], ids)
+			mrr += mrrFTSAtK(k, data.GroundTruth[index], ids)
+			ndcg += ndcgFTSAtK(k, data.GroundTruth[index], ids)
+		} else {
+			recall += recallAtK(k, data.GroundTruth[index], ids)
+		}
 	}
 	elapsed := time.Since(started)
 	metrics := summarizeSearch(latencies, elapsed)
-	metrics.Recall = recall / float64(len(data.Vectors))
+	metrics.Recall = recall / float64(len(data.IDs))
+	if fullText {
+		metrics.MRR = mrr / float64(len(data.IDs))
+		metrics.NDCG = ndcg / float64(len(data.IDs))
+	}
 	return metrics, nil
 }
 
@@ -358,14 +438,14 @@ func runConcurrentSearch(
 			random := rand.New(rand.NewSource(seed + int64(worker)))
 			latencies := make([]float64, 0, 1024)
 			for runContext.Err() == nil {
-				index := random.Intn(len(data.Vectors))
+				index := random.Intn(len(data.IDs))
 				queryStarted := time.Now()
-				_, err := engine.search(runContext, data.Vectors[index])
+				_, err := engine.search(runContext, data.query(index))
 				if err != nil {
 					if runContext.Err() != nil {
 						break
 					}
-					results <- concurrentWorkerResult{err: fmt.Errorf("worker %d query %d: %w", worker, data.IDs[index], err)}
+					results <- concurrentWorkerResult{err: fmt.Errorf("worker %d query %s: %w", worker, data.IDs[index], err)}
 					cancel()
 					return
 				}
@@ -396,17 +476,42 @@ func runConcurrentSearch(
 	return summarizeSearch(latencies, elapsed), nil
 }
 
-func recallAtK(k int, groundTruth, got []int64) float64 {
+func (d queryData) query(index int) benchmarkQuery {
+	query := benchmarkQuery{}
+	if index < len(d.Vectors) {
+		query.Vector = d.Vectors[index]
+	}
+	if index < len(d.Texts) {
+		query.Text = d.Texts[index]
+	}
+	return query
+}
+
+func recallAtK(k int, groundTruth map[string]int, got []string) float64 {
 	denominator := min(k, len(groundTruth))
 	if denominator == 0 {
 		return 0
 	}
-	relevant := make(map[int64]struct{}, denominator)
-	for _, id := range groundTruth[:denominator] {
-		relevant[id] = struct{}{}
+	type relevantDocument struct {
+		id        string
+		relevance int
+	}
+	ranked := make([]relevantDocument, 0, len(groundTruth))
+	for id, relevance := range groundTruth {
+		ranked = append(ranked, relevantDocument{id: id, relevance: relevance})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].relevance == ranked[j].relevance {
+			return ranked[i].id < ranked[j].id
+		}
+		return ranked[i].relevance > ranked[j].relevance
+	})
+	relevant := make(map[string]struct{}, denominator)
+	for _, document := range ranked[:denominator] {
+		relevant[document.id] = struct{}{}
 	}
 	hits := 0
-	seen := make(map[int64]struct{}, min(k, len(got)))
+	seen := make(map[string]struct{}, min(k, len(got)))
 	for _, id := range got[:min(k, len(got))] {
 		if _, duplicate := seen[id]; duplicate {
 			continue
@@ -417,6 +522,65 @@ func recallAtK(k int, groundTruth, got []int64) float64 {
 		}
 	}
 	return float64(hits) / float64(denominator)
+}
+
+func recallFTSAtK(k int, groundTruth map[string]int, got []string) float64 {
+	if k <= 0 || len(groundTruth) == 0 {
+		return 0
+	}
+	hits := 0
+	seen := make(map[string]struct{}, min(k, len(got)))
+	for _, id := range got[:min(k, len(got))] {
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		if groundTruth[id] > 0 {
+			hits++
+		}
+	}
+	return float64(hits) / float64(len(groundTruth))
+}
+
+func mrrFTSAtK(k int, groundTruth map[string]int, got []string) float64 {
+	for rank, id := range got[:min(k, len(got))] {
+		if groundTruth[id] > 0 {
+			return 1 / float64(rank+1)
+		}
+	}
+	return 0
+}
+
+func ndcgFTSAtK(k int, groundTruth map[string]int, got []string) float64 {
+	if k <= 0 || len(groundTruth) == 0 {
+		return 0
+	}
+	var dcg float64
+	seen := make(map[string]struct{}, min(k, len(got)))
+	for rank, id := range got[:min(k, len(got))] {
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		if relevance := groundTruth[id]; relevance > 0 {
+			dcg += float64(relevance) / math.Log2(float64(rank+2))
+		}
+	}
+	relevances := make([]int, 0, len(groundTruth))
+	for _, relevance := range groundTruth {
+		if relevance > 0 {
+			relevances = append(relevances, relevance)
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(relevances)))
+	var ideal float64
+	for rank, relevance := range relevances[:min(k, len(relevances))] {
+		ideal += float64(relevance) / math.Log2(float64(rank+2))
+	}
+	if ideal == 0 {
+		return 0
+	}
+	return dcg / ideal
 }
 
 func summarizeSearch(latencies []float64, elapsed time.Duration) searchMetrics {

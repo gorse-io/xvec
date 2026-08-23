@@ -15,7 +15,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,8 +33,11 @@ import (
 )
 
 const (
-	testFileName      = "test.parquet"
-	neighborsFileName = "neighbors.parquet"
+	testFileName         = "test.parquet"
+	neighborsFileName    = "neighbors.parquet"
+	ftsDocumentsFileName = "documents.jsonl"
+	ftsQueriesFileName   = "queries.jsonl"
+	ftsQrelsFileName     = "qrels.jsonl"
 )
 
 type vectorParquetRow struct {
@@ -45,12 +51,16 @@ type neighborParquetRow struct {
 }
 
 type queryData struct {
-	IDs         []int64
+	IDs         []string
 	Vectors     [][]float32
-	GroundTruth [][]int64
+	Texts       []string
+	GroundTruth []map[string]int
 }
 
 func prepareDataset(ctx context.Context, config benchConfig, includeTrain bool, log io.Writer) error {
+	if config.caseSpec.Workload == workloadFullText {
+		return prepareFTSDataset(ctx, config, includeTrain, log)
+	}
 	files := []string{testFileName, neighborsFileName}
 	if includeTrain {
 		files = append(files, config.caseSpec.TrainFiles...)
@@ -181,7 +191,7 @@ func readQueryData(ctx context.Context, datasetDir string, dimension, limit int)
 		return queryData{}, fmt.Errorf("test and ground-truth row counts differ: %d and %d", len(queries), len(neighbors))
 	}
 	data := queryData{
-		IDs: make([]int64, len(queries)), Vectors: make([][]float32, len(queries)), GroundTruth: make([][]int64, len(queries)),
+		IDs: make([]string, len(queries)), Vectors: make([][]float32, len(queries)), GroundTruth: make([]map[string]int, len(queries)),
 	}
 	for index := range queries {
 		if err := ctx.Err(); err != nil {
@@ -196,9 +206,121 @@ func readQueryData(ctx context.Context, datasetDir string, dimension, limit int)
 		if len(neighbors[index].Neighbors) == 0 {
 			return queryData{}, fmt.Errorf("query %d has empty ground truth", queries[index].ID)
 		}
-		data.IDs[index] = queries[index].ID
+		data.IDs[index] = strconv.FormatInt(queries[index].ID, 10)
 		data.Vectors[index] = queries[index].Embedding
-		data.GroundTruth[index] = neighbors[index].Neighbors
+		data.GroundTruth[index] = make(map[string]int, len(neighbors[index].Neighbors))
+		for neighborIndex, neighbor := range neighbors[index].Neighbors {
+			data.GroundTruth[index][strconv.FormatInt(neighbor, 10)] = len(neighbors[index].Neighbors) - neighborIndex
+		}
+	}
+	return data, nil
+}
+
+type ftsDocumentRow struct {
+	ID       string `json:"id"`
+	Text     string `json:"text"`
+	FilterID int64  `json:"filter_id,omitempty"`
+}
+
+type ftsQueryRow struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
+
+type ftsQrelRow struct {
+	QueryID    string `json:"query_id"`
+	DocumentID string `json:"doc_id"`
+	Relevance  int    `json:"relevance"`
+}
+
+func forEachJSONL[T any](ctx context.Context, path string, limit int64, consume func(T) error) (count int64, err error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	decoder := json.NewDecoder(bufio.NewReaderSize(file, 1<<20))
+	for limit == 0 || count < limit {
+		if err := ctx.Err(); err != nil {
+			return count, err
+		}
+		var row T
+		if err := decoder.Decode(&row); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return count, fmt.Errorf("decode row %d: %w", count+1, err)
+		}
+		if err := consume(row); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+func forEachFTSDocumentJSONLBatch(ctx context.Context, datasetDir string, batchSize int, limit int64, consume func([]ftsDocumentRow) error) (int64, error) {
+	buffer := make([]ftsDocumentRow, 0, batchSize)
+	count, err := forEachJSONL[ftsDocumentRow](ctx, filepath.Join(datasetDir, ftsDocumentsFileName), limit, func(row ftsDocumentRow) error {
+		if row.ID == "" || row.Text == "" {
+			return errors.New("FTS document requires non-empty id and text")
+		}
+		buffer = append(buffer, row)
+		if len(buffer) == batchSize {
+			if err := consume(buffer); err != nil {
+				return err
+			}
+			buffer = buffer[:0]
+		}
+		return nil
+	})
+	if err != nil {
+		return count, fmt.Errorf("read FTS documents: %w", err)
+	}
+	if len(buffer) > 0 {
+		if err := consume(buffer); err != nil {
+			return count, err
+		}
+	}
+	return count, nil
+}
+
+func readFTSJSONLQueryData(ctx context.Context, datasetDir string, limit int) (queryData, error) {
+	qrels := make(map[string]map[string]int)
+	_, err := forEachJSONL[ftsQrelRow](ctx, filepath.Join(datasetDir, ftsQrelsFileName), 0, func(row ftsQrelRow) error {
+		if row.QueryID == "" || row.DocumentID == "" {
+			return errors.New("FTS qrel requires non-empty query_id and doc_id")
+		}
+		if row.Relevance <= 0 {
+			return nil
+		}
+		if qrels[row.QueryID] == nil {
+			qrels[row.QueryID] = make(map[string]int)
+		}
+		qrels[row.QueryID][row.DocumentID] = max(qrels[row.QueryID][row.DocumentID], row.Relevance)
+		return nil
+	})
+	if err != nil {
+		return queryData{}, fmt.Errorf("read FTS qrels: %w", err)
+	}
+	data := queryData{}
+	_, err = forEachJSONL[ftsQueryRow](ctx, filepath.Join(datasetDir, ftsQueriesFileName), 0, func(row ftsQueryRow) error {
+		if limit > 0 && len(data.IDs) >= limit {
+			return nil
+		}
+		groundTruth := qrels[row.ID]
+		if row.ID == "" || row.Text == "" || len(groundTruth) == 0 {
+			return nil
+		}
+		data.IDs = append(data.IDs, row.ID)
+		data.Texts = append(data.Texts, row.Text)
+		data.GroundTruth = append(data.GroundTruth, groundTruth)
+		return nil
+	})
+	if err != nil {
+		return queryData{}, fmt.Errorf("read FTS queries: %w", err)
+	}
+	if len(data.IDs) == 0 {
+		return queryData{}, errors.New("FTS dataset has no queries with positive qrels")
 	}
 	return data, nil
 }

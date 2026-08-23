@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,8 +30,13 @@ import (
 )
 
 func TestRecallPercentileAndSearchSummary(t *testing.T) {
-	require.InDelta(t, 0.5, recallAtK(2, []int64{1, 2}, []int64{2, 3}), 1e-12)
-	require.InDelta(t, 0.5, recallAtK(2, []int64{1, 2}, []int64{1, 1}), 1e-12)
+	require.InDelta(t, 0.5, recallAtK(2, map[string]int{"1": 2, "2": 1}, []string{"2", "3"}), 1e-12)
+	require.InDelta(t, 0.5, recallAtK(2, map[string]int{"1": 2, "2": 1}, []string{"1", "1"}), 1e-12)
+	require.InDelta(t, 1, recallAtK(1, map[string]int{"1": 2, "2": 1}, []string{"1"}), 1e-12)
+	require.Zero(t, recallAtK(1, map[string]int{"1": 2, "2": 1}, []string{"2"}))
+	require.InDelta(t, 0.5, recallFTSAtK(10, map[string]int{"a": 2, "b": 1}, []string{"a", "x"}), 1e-12)
+	require.InDelta(t, 0.5, mrrFTSAtK(10, map[string]int{"a": 1}, []string{"x", "a"}), 1e-12)
+	require.InDelta(t, 1, ndcgFTSAtK(10, map[string]int{"a": 2, "b": 1}, []string{"a", "b"}), 1e-12)
 	require.InDelta(t, 2.5, percentile([]float64{1, 2, 3}, 0.75), 1e-12)
 	metrics := summarizeSearch([]float64{1, 2, 3}, 3*time.Second)
 	require.Equal(t, 3, metrics.Queries)
@@ -44,6 +50,47 @@ func TestVectorDBBenchEndToEndCustomDataset(t *testing.T) {
 
 func TestVectorDBBenchDiskANNEndToEndCustomDataset(t *testing.T) {
 	testVectorDBBenchEndToEndCustomDataset(t, backendXvec, "--index-type", indexDiskANN)
+}
+
+func TestVectorDBBenchEndToEndFTSDataset(t *testing.T) {
+	directory := t.TempDir()
+	datasetDir := filepath.Join(directory, "dataset")
+	require.NoError(t, mkdir(datasetDir))
+	writeJSONL := func(name string, rows ...string) {
+		require.NoError(t, os.WriteFile(filepath.Join(datasetDir, name), []byte(strings.Join(rows, "\n")+"\n"), 0o600))
+	}
+	writeJSONL(ftsDocumentsFileName,
+		`{"id":"a","text":"alpha alpha beta"}`,
+		`{"id":"b","text":"beta gamma"}`,
+		`{"id":"c","text":"delta"}`,
+	)
+	writeJSONL(ftsQueriesFileName,
+		`{"id":"q1","text":"alpha"}`,
+		`{"id":"q2","text":"gamma"}`,
+	)
+	writeJSONL(ftsQrelsFileName,
+		`{"query_id":"q1","doc_id":"a","relevance":2}`,
+		`{"query_id":"q2","doc_id":"b","relevance":1}`,
+	)
+
+	var stdout, stderr bytes.Buffer
+	err := runCLI(context.Background(), []string{
+		backendXvec, "--path", filepath.Join(directory, "collection"),
+		"--case-type", caseFTSBm25Performance,
+		"--dataset-with-size-type", ftsMSMarcoSmall,
+		"--dataset-dir", datasetDir,
+		"--k", "2", "--batch-size", "2", "--num-concurrency", "1",
+		"--concurrency-duration", "25ms", "--warmup-queries", "1",
+		"--max-docs-per-segment", "1000",
+	}, &stdout, &stderr)
+	require.NoError(t, err, stderr.String())
+	var report benchmarkReport
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &report))
+	require.Equal(t, workloadFullText, report.Case.Workload)
+	require.Equal(t, int64(3), report.Load.Rows)
+	require.InDelta(t, 1, report.Serial.Recall, 1e-12)
+	require.InDelta(t, 1, report.Serial.MRR, 1e-12)
+	require.InDelta(t, 1, report.Serial.NDCG, 1e-12)
 }
 
 func testVectorDBBenchEndToEndCustomDataset(t *testing.T, backend string, extraArgs ...string) {

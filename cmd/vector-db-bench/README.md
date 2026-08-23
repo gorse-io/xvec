@@ -3,11 +3,13 @@
 `vector-db-bench` is a native Go benchmark driver for comparing
 [xvec](https://github.com/gorse-io/xvec) and
 [zvec-go](https://github.com/zvec-ai/zvec-go). It follows the VectorDBBench
-vector search performance workloads:
+vector and full-text search performance workloads:
 
 - Cohere, LAION, BioASQ, and OpenAI Parquet datasets;
+- MS MARCO and HotpotQA BM25 datasets with semantic qrels;
 - HNSW or DiskANN loading and optimization;
 - serial Recall@K, QPS, and latency percentiles;
+- FTS Recall@K, MRR@K, and NDCG@K;
 - sustained concurrent QPS and latency at multiple worker counts;
 - JSON results containing the run configuration and host information.
 
@@ -54,6 +56,45 @@ presets:
 
 Pass one of these names to `--case-type`. The dataset directory, dimensions,
 metric, and training shards are resolved automatically.
+
+## Full-text search benchmark
+
+The `FTSBm25Performance` case mirrors VectorDBBench's June 2026 full-text
+search workload. It supports the same six dataset presets:
+
+| Dataset preset | Documents |
+| --- | ---: |
+| `MS MARCO Small (100K documents)` | 100K |
+| `MS MARCO Medium (1M documents)` | 1M |
+| `MS MARCO Large (8.8M documents)` | 8,841,823 |
+| `HotpotQA Small (100K documents)` | 100K |
+| `HotpotQA Medium (1M documents)` | 1M |
+| `HotpotQA Large (5.2M documents)` | 5,233,329 |
+
+VectorDBBench obtains these corpora and semantic qrels through `ir_datasets`
+rather than `assets.zilliz.com`. This Go driver downloads and prepares the same
+published source archives directly: `collectionandqueries.tar.gz` for MS MARCO
+and the BEIR `hotpotqa.zip` archive for HotpotQA. Downloads are verified against
+the dataset publishers' MD5 checksums; Python and `ir_datasets` are not needed.
+
+Run the corpus against either backend:
+
+```bash
+./vector-db-bench xvec \
+  --path ./fts-msmarco-xvec \
+  --case-type FTSBm25Performance \
+  --dataset-with-size-type "MS MARCO Small (100K documents)" \
+  --dataset-dir ./dataset/msmarco_small_100k \
+  --payload-profile ids_only \
+  --num-concurrency 40,80 \
+  --output result-fts-msmarco-xvec.json
+```
+
+`--payload-profile text` includes the indexed text field in each result so its
+materialization cost is measured. Analyzer settings are controlled by
+`--fts-tokenizer`, `--fts-token-filters`, `--fts-extra-params`, and
+`--fts-default-operator`. The default is standard tokenization plus lowercase,
+with adjacent query terms combined by OR.
 
 ## Cohere 1M example
 
@@ -155,6 +196,12 @@ The built-in cases use the VectorDBBench schema:
 | `shuffle_train*.parquet` | `id` (`INT64`), `emb` (`LIST<FLOAT>`) |
 | `test.parquet` | `id` (`INT64`), `emb` (`LIST<FLOAT>`) |
 | `neighbors.parquet` | `id` (`INT64`), `neighbors_id` (`LIST<INT64>`) |
+
+For offline or preprocessed runs, `--skip-download` accepts either the original
+archive in `--dataset-dir` or three exported files: `documents.jsonl` (`id`,
+`text`, `filter_id`), `queries.jsonl` (`id`, `text`), and `qrels.jsonl`
+(`query_id`, `doc_id`, `relevance`). Positive graded qrels are retained exactly
+for Recall, MRR, and NDCG calculations.
 
 A local custom dataset can be exercised without downloads:
 

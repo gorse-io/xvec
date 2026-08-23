@@ -71,8 +71,8 @@ func TestReadVectorDBBenchParquetDataAndTrainingBatches(t *testing.T) {
 
 	data, err := readQueryData(context.Background(), directory, 2, 1)
 	require.NoError(t, err)
-	require.Equal(t, []int64{10}, data.IDs)
-	require.Equal(t, [][]int64{{0, 1}}, data.GroundTruth)
+	require.Equal(t, []string{"10"}, data.IDs)
+	require.Equal(t, []map[string]int{{"0": 2, "1": 1}}, data.GroundTruth)
 
 	var batches [][]int64
 	count, err := forEachTrainingBatch(
@@ -104,9 +104,9 @@ func TestReadVectorDBBenchItemListEncoding(t *testing.T) {
 
 	data, err := readQueryData(context.Background(), directory, 2, 0)
 	require.NoError(t, err)
-	require.Equal(t, []int64{7}, data.IDs)
+	require.Equal(t, []string{"7"}, data.IDs)
 	require.Equal(t, [][]float32{{1.25, -2.5}}, data.Vectors)
-	require.Equal(t, [][]int64{{11, 22}}, data.GroundTruth)
+	require.Equal(t, []map[string]int{{"11": 2, "22": 1}}, data.GroundTruth)
 }
 
 func TestDatasetFileNameAndURL(t *testing.T) {
