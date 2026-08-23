@@ -220,7 +220,7 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 
 	graphOptions := DefaultVamanaBuildOptions(graphMetric)
 	graphOptions.MaxDegree = b.options.MaxDegree
-	graphOptions.SearchListSize = max(b.options.ListSize, b.options.MaxDegree)
+	graphOptions.SearchListSize = b.options.ListSize
 	graphOptions.MaxOcclusionSize = DefaultDiskANNMaxOcclusion
 	graphBuilder, err := newBorrowedVamanaBuilder(
 		b.dimension, graphOptions, b.keys, graphStorage, b.positions,

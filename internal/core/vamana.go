@@ -73,8 +73,8 @@ func (o VamanaBuildOptions) Validate() error {
 	if o.MaxDegree <= 0 || o.MaxDegree > MaxVamanaDegree {
 		return fmt.Errorf("%w: MaxDegree must be in [1,%d]", ErrInvalidVamanaOptions, MaxVamanaDegree)
 	}
-	if o.SearchListSize < o.MaxDegree {
-		return fmt.Errorf("%w: SearchListSize must be at least MaxDegree", ErrInvalidVamanaOptions)
+	if o.SearchListSize <= 0 {
+		return fmt.Errorf("%w: SearchListSize must be positive", ErrInvalidVamanaOptions)
 	}
 	if uint64(o.SearchListSize) > math.MaxUint32 {
 		return fmt.Errorf("%w: SearchListSize exceeds format capacity", ErrInvalidVamanaOptions)

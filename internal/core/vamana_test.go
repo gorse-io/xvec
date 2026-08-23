@@ -43,7 +43,7 @@ func TestVamanaBuildOptionsGraphDeterminismAndOwnership(t *testing.T) {
 		{},
 		func() VamanaBuildOptions { value := valid; value.MaxDegree = 0; return value }(),
 		func() VamanaBuildOptions { value := valid; value.MaxDegree = MaxVamanaDegree + 1; return value }(),
-		func() VamanaBuildOptions { value := valid; value.SearchListSize = value.MaxDegree - 1; return value }(),
+		func() VamanaBuildOptions { value := valid; value.SearchListSize = 0; return value }(),
 		func() VamanaBuildOptions { value := valid; value.Alpha = float32(math.NaN()); return value }(),
 		func() VamanaBuildOptions { value := valid; value.MaxOcclusionSize = 0; return value }(),
 	}
