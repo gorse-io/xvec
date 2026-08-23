@@ -617,6 +617,32 @@ func TestBuildCollectionRuntimeIndexesSharesUnquantizedDenseFlat(t *testing.T) {
 	require.Same(t, flat, indexes.denseNative["embedding"])
 }
 
+func TestBuildCollectionRuntimeIndexesDefersDiskANNFlat(t *testing.T) {
+	ctx := context.Background()
+	params := NewDiskANNIndexParams(MetricTypeL2)
+	params.MaxDegree, params.ListSize, params.PQChunks = 4, 8, 2
+	schema := NewCollectionSchema("lazy_diskann", FieldSchema{
+		Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Index: params,
+	})
+	documents := annDenseDocuments(48)
+	for index := range documents {
+		documents[index].DocID = uint64(index + 1)
+	}
+
+	indexes, err := buildCollectionRuntimeIndexes(ctx, schema, documents, 2, 0, false, nil)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, indexes.Close()) }()
+
+	lazy, ok := indexes.denseFlat["embedding"].(*lazyCollectionDenseFlatIndex)
+	require.True(t, ok)
+	require.Nil(t, lazy.index)
+	require.Same(t, indexes.denseExact["embedding"], lazy)
+	results, err := lazy.SearchWithOptions(ctx, documents[7].Fields["embedding"].(VectorFP32), core.SearchOptions{TopK: 3})
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+	require.NotNil(t, lazy.index)
+}
+
 func TestCollectionReplaysPublicDocumentPayloadWithoutFlush(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "recovery")

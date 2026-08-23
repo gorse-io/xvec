@@ -123,7 +123,7 @@ type collectionRuntimeIndexes struct {
 	key          collectionRuntimeKey
 	denseFlat    map[string]collectionDenseIndex
 	denseNative  map[string]collectionDenseIndex
-	denseExact   map[string]*core.DenseFlatIndex
+	denseExact   map[string]collectionDenseIndex
 	sparseFlat   map[string]core.SparseQuerySearcher
 	sparseNative map[string]core.SparseQuerySearcher
 	sparseExact  map[string]*core.SparseFlatIndex
@@ -670,7 +670,7 @@ func buildCollectionRuntimeIndexes(
 ) (*collectionRuntimeIndexes, error) {
 	indexes := &collectionRuntimeIndexes{
 		denseFlat: make(map[string]collectionDenseIndex), denseNative: make(map[string]collectionDenseIndex),
-		denseExact: make(map[string]*core.DenseFlatIndex),
+		denseExact: make(map[string]collectionDenseIndex),
 		sparseFlat: make(map[string]core.SparseQuerySearcher), sparseNative: make(map[string]core.SparseQuerySearcher),
 		sparseExact: make(map[string]*core.SparseFlatIndex),
 		fts:         make(map[string]*collectionFTSRuntime), scalar: make(sqlengine.IndexSet),
@@ -689,9 +689,18 @@ func buildCollectionRuntimeIndexes(
 				return fail(err)
 			}
 			if field.DataType.IsDenseVector() {
-				exact, err := buildDenseFlatIndex(ctx, field, spec.metric, documents)
-				if err != nil {
-					return fail(err)
+				var exact collectionDenseIndex
+				if spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined && field.DataType == DataTypeVectorFP32 {
+					candidates, candidateErr := collectionDenseBorrowedCandidates(ctx, field, documents)
+					if candidateErr != nil {
+						return fail(candidateErr)
+					}
+					exact = newLazyCollectionDenseFlatIndex(int(field.Dimension), spec.metric, candidates)
+				} else {
+					exact, err = buildDenseFlatIndex(ctx, field, spec.metric, documents)
+					if err != nil {
+						return fail(err)
+					}
 				}
 				indexes.denseExact[field.Name] = exact
 				var flat collectionDenseIndex
@@ -1513,6 +1522,85 @@ type collectionDenseIndex interface {
 	core.DenseQuerySearcher
 }
 
+type lazyCollectionDenseFlatIndex struct {
+	dimension  int
+	metric     core.Metric
+	candidates []core.Candidate
+	mu         sync.Mutex
+	index      *core.DenseFlatIndex
+}
+
+func newLazyCollectionDenseFlatIndex(dimension int, metric core.Metric, candidates []core.Candidate) *lazyCollectionDenseFlatIndex {
+	return &lazyCollectionDenseFlatIndex{dimension: dimension, metric: metric, candidates: candidates}
+}
+
+func (i *lazyCollectionDenseFlatIndex) Dimension() int      { return i.dimension }
+func (i *lazyCollectionDenseFlatIndex) Metric() core.Metric { return i.metric }
+func (i *lazyCollectionDenseFlatIndex) Len() int            { return len(i.candidates) }
+
+func (i *lazyCollectionDenseFlatIndex) Vector(key uint64) ([]float32, bool) {
+	i.mu.Lock()
+	index := i.index
+	i.mu.Unlock()
+	if index != nil {
+		return index.Vector(key)
+	}
+	for _, candidate := range i.candidates {
+		if candidate.Key == key {
+			return slices.Clone(candidate.Vector), true
+		}
+	}
+	return nil, false
+}
+
+func (i *lazyCollectionDenseFlatIndex) SearchWithOptions(
+	ctx context.Context,
+	query []float32,
+	options core.SearchOptions,
+) ([]core.Result, error) {
+	index, err := i.ensure(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return index.SearchWithOptions(ctx, query, options)
+}
+
+func (i *lazyCollectionDenseFlatIndex) SearchGroups(
+	ctx context.Context,
+	query []float32,
+	options core.GroupByOptions,
+) ([]core.GroupResult, error) {
+	index, err := i.ensure(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return index.SearchGroups(ctx, query, options)
+}
+
+func (i *lazyCollectionDenseFlatIndex) ensure(ctx context.Context) (*core.DenseFlatIndex, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.index != nil {
+		return i.index, nil
+	}
+	index, err := core.NewDenseFlatIndex(i.dimension, i.metric)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range i.candidates {
+		if err := index.Add(ctx, candidate.Key, candidate.Vector); err != nil {
+			return nil, err
+		}
+	}
+	i.index = index
+	return index, nil
+}
+
+var (
+	_ collectionDenseIndex    = (*lazyCollectionDenseFlatIndex)(nil)
+	_ core.DenseGroupSearcher = (*lazyCollectionDenseFlatIndex)(nil)
+)
+
 type collectionHNSWIndex interface {
 	collectionDenseIndex
 	SearchHNSW(ctx context.Context, query []float32, options core.HNSWSearchOptions) ([]core.Result, error)
@@ -1982,6 +2070,25 @@ func collectionDenseCandidates(ctx context.Context, field FieldSchema, documents
 			continue
 		}
 		vector, err := denseValueToFloat32(value)
+		if err != nil {
+			return nil, fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, err)
+		}
+		candidates = append(candidates, core.Candidate{Key: document.DocID, Vector: vector})
+	}
+	return candidates, nil
+}
+
+func collectionDenseBorrowedCandidates(ctx context.Context, field FieldSchema, documents []Document) ([]core.Candidate, error) {
+	candidates := make([]core.Candidate, 0, len(documents))
+	for _, document := range documents {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		value, found := document.Fields[field.Name]
+		if !found || value == nil {
+			continue
+		}
+		vector, err := denseValueToFloat32Borrowed(value)
 		if err != nil {
 			return nil, fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, err)
 		}
@@ -4456,7 +4563,11 @@ func (c *Collection) searchGroupSegment(
 			if index == nil {
 				err = fmt.Errorf("dense runtime refiner index is incompatible")
 			} else {
-				searcher = index
+				var compatible bool
+				searcher, compatible = index.(core.DenseGroupSearcher)
+				if !compatible {
+					err = fmt.Errorf("dense runtime refiner index is incompatible")
+				}
 			}
 		} else if vectorIndex.indexType == IndexTypeHNSWRaBitQ {
 			index, compatible := indexes.denseNative[field.Name].(*core.HNSWRaBitQIndex)
