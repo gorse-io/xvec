@@ -110,6 +110,27 @@ func NewVamanaBuilder(dimension int, options VamanaBuildOptions) (*VamanaBuilder
 	return &VamanaBuilder{dimension: dimension, options: options, positions: make(map[uint64]int)}, nil
 }
 
+// newBorrowedVamanaBuilder constructs an internal one-shot builder over
+// storage owned by its caller. The caller must keep keys, vectors, and
+// positions immutable until build returns.
+func newBorrowedVamanaBuilder(
+	dimension int,
+	options VamanaBuildOptions,
+	keys []uint64,
+	vectors []float32,
+	positions map[uint64]int,
+) (*VamanaBuilder, error) {
+	builder, err := NewVamanaBuilder(dimension, options)
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) > maxPlatformInt()/dimension || len(vectors) != len(keys)*dimension || len(positions) != len(keys) {
+		return nil, errors.New("core: inconsistent borrowed Vamana storage")
+	}
+	builder.keys, builder.vectors, builder.positions = keys, vectors, positions
+	return builder, nil
+}
+
 // Add validates and clones one unique vector while the builder is open.
 func (b *VamanaBuilder) Add(ctx context.Context, key uint64, vector []float32) error {
 	if b == nil {
