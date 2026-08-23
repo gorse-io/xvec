@@ -146,6 +146,26 @@ func TrainPQ(ctx context.Context, vectors [][]float32, options PQOptions) (*PQMo
 			return err
 		}
 		start, end := offsets[chunk], offsets[chunk+1]
+		if options.Metric == MetricL2 {
+			centroids, err := trainPQL2Chunk(
+				workerContext, vectors, sampleCount, start, end,
+				min(PQCentroidCount, sampleCount), options.MaxIterations,
+				options.Seed^(0x70716b6d00000000+uint64(chunk)),
+			)
+			if err != nil {
+				return fmt.Errorf("core: train PQ chunk %d: %w", chunk, err)
+			}
+			width := end - start
+			centroidCount := len(centroids) / width
+			for centroid := 0; centroid < PQCentroidCount; centroid++ {
+				source := 0
+				if centroid < centroidCount {
+					source = centroid * width
+				}
+				copy(pivots[centroid*dimension+start:centroid*dimension+end], centroids[source:source+width])
+			}
+			return nil
+		}
 		training := make([][]float32, sampleCount)
 		for sample := range training {
 			if sample&1023 == 0 {
@@ -187,6 +207,176 @@ func TrainPQ(ctx context.Context, vectors [][]float32, options PQOptions) (*PQMo
 		Dimension: dimension, Metric: options.Metric,
 		ChunkOffsets: offsets, Pivots: pivots,
 	})
+}
+
+// trainPQL2Chunk mirrors zvec's NumericalKmeans layout: one compact feature
+// matrix per chunk, one worker per chunk, and direct squared-L2 scoring. It
+// avoids millions of tiny subvector slices and generic distance dispatches.
+func trainPQL2Chunk(
+	ctx context.Context,
+	vectors [][]float32,
+	sampleCount, start, end, clusters, maxIterations int,
+	seed uint64,
+) ([]float32, error) {
+	width := end - start
+	training := make([]float32, sampleCount*width)
+	for sample := 0; sample < sampleCount; sample++ {
+		if sample&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		copy(training[sample*width:(sample+1)*width], vectors[sample][start:end])
+	}
+	centroids, err := initializePQL2KMC2(ctx, training, sampleCount, width, clusters, seed)
+	if err != nil {
+		return nil, err
+	}
+	scores := make([]float32, sampleCount)
+	counts := make([]int, clusters)
+	sums := make([]float64, clusters*width)
+	next := make([]float32, len(centroids))
+	empty := make([]int, 0, clusters)
+	used := make([]bool, sampleCount)
+	previousCost := float64(0)
+	for iteration := 0; iteration < maxIterations; iteration++ {
+		clear(counts)
+		clear(sums)
+		cost := float64(0)
+		for sample := 0; sample < sampleCount; sample++ {
+			if sample&1023 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
+			vector := training[sample*width : (sample+1)*width]
+			bestLabel := 0
+			bestScore := pqL2SquaredSmall(vector, centroids[:width])
+			for centroid := 1; centroid < clusters; centroid++ {
+				offset := centroid * width
+				score := pqL2SquaredSmall(vector, centroids[offset:offset+width])
+				if score < bestScore {
+					bestLabel, bestScore = centroid, score
+				}
+			}
+			scores[sample] = bestScore
+			counts[bestLabel]++
+			sum := sums[bestLabel*width : (bestLabel+1)*width]
+			for coordinate, value := range vector {
+				sum[coordinate] += float64(value)
+			}
+			cost += float64(bestScore)
+		}
+
+		copy(next, centroids)
+		empty = empty[:0]
+		for centroid, count := range counts {
+			if count == 0 {
+				empty = append(empty, centroid)
+				continue
+			}
+			sum := sums[centroid*width : (centroid+1)*width]
+			destination := next[centroid*width : (centroid+1)*width]
+			for coordinate := range destination {
+				destination[coordinate] = float32(sum[coordinate] / float64(count))
+			}
+		}
+		changed := len(empty) != 0
+		if changed {
+			clear(used)
+			for _, centroid := range empty {
+				selected := -1
+				for sample, score := range scores {
+					if sample&1023 == 0 {
+						if err := ctx.Err(); err != nil {
+							return nil, err
+						}
+					}
+					if !used[sample] && (selected < 0 || scores[selected] < score) {
+						selected = sample
+					}
+				}
+				if selected < 0 {
+					break
+				}
+				used[selected] = true
+				copy(next[centroid*width:(centroid+1)*width], training[selected*width:(selected+1)*width])
+			}
+		}
+		centroids, next = next, centroids
+		if !changed && math.Abs(cost-previousCost) < DefaultKMeansTolerance {
+			break
+		}
+		previousCost = cost
+	}
+	return centroids, nil
+}
+
+func initializePQL2KMC2(
+	ctx context.Context,
+	training []float32,
+	sampleCount, width, clusters int,
+	seed uint64,
+) ([]float32, error) {
+	random := splitMix64{state: seed}
+	indices, err := pqUniformSampleIndicesInto(ctx, nil, sampleCount, 1, &random)
+	if err != nil {
+		return nil, err
+	}
+	centroids := make([]float32, clusters*width)
+	copy(centroids[:width], training[indices[0]*width:(indices[0]+1)*width])
+	scores := make([]float32, min(DefaultPQKMC2ChainLength, sampleCount))
+	for selectedCount := 1; selectedCount < clusters; selectedCount++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		indices, err = pqUniformSampleIndicesInto(
+			ctx, indices[:0], sampleCount, min(DefaultPQKMC2ChainLength, sampleCount), &random,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for candidate, sample := range indices {
+			vector := training[sample*width : (sample+1)*width]
+			best := float32(math.MaxFloat32)
+			for centroid := 0; centroid < selectedCount; centroid++ {
+				offset := centroid * width
+				score := pqL2SquaredSmall(vector, centroids[offset:offset+width])
+				best = min(best, score)
+			}
+			scores[candidate] = best
+		}
+		selectedScore, selected := scores[0], 0
+		for candidate := 1; candidate < len(indices); candidate++ {
+			if selectedScore == 0 || selectedScore*float32(random.float64()) < scores[candidate] {
+				selectedScore, selected = scores[candidate], candidate
+			}
+		}
+		copy(
+			centroids[selectedCount*width:(selectedCount+1)*width],
+			training[indices[selected]*width:(indices[selected]+1)*width],
+		)
+	}
+	return centroids, nil
+}
+
+func pqL2SquaredSmall(left, right []float32) float32 {
+	switch len(left) {
+	case 1:
+		difference := left[0] - right[0]
+		return difference * difference
+	case 2:
+		first := left[0] - right[0]
+		second := left[1] - right[1]
+		return first*first + second*second
+	default:
+		var score float32
+		for coordinate, value := range left {
+			difference := value - right[coordinate]
+			score += difference * difference
+		}
+		return score
+	}
 }
 
 // RestorePQModel validates and clones a complete portable model snapshot.
@@ -486,7 +676,16 @@ func initializePQKMC2(ctx context.Context, vectors [][]float32, clusters int, me
 }
 
 func pqUniformSampleIndices(ctx context.Context, count, sample int, random *splitMix64) ([]int, error) {
-	result := make([]int, 0, sample)
+	return pqUniformSampleIndicesInto(ctx, nil, count, sample, random)
+}
+
+func pqUniformSampleIndicesInto(
+	ctx context.Context,
+	result []int,
+	count, sample int,
+	random *splitMix64,
+) ([]int, error) {
+	result = slices.Grow(result[:0], sample)
 	remaining := sample
 	for index := 0; index < count && remaining > 0; index++ {
 		if index&1023 == 0 {
