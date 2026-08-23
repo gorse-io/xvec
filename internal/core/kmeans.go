@@ -388,13 +388,17 @@ func assignKMeans(
 	if metric == MetricCosine {
 		return assignKMeansCosine(ctx, vectors, centroids, workers)
 	}
+	distance, err := metric.PrevalidatedDistance()
+	if err != nil {
+		return nil, nil, err
+	}
 	labels := make([]int, len(vectors))
 	scores := make([]float32, len(vectors))
-	err := parallel.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
+	err = parallel.ParallelFor(ctx, len(vectors), workers, func(ctx context.Context, index int) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		label, score, err := nearestCentroidContext(ctx, metric, centroids, vectors[index])
+		label, score, err := nearestCentroidPrevalidatedContext(ctx, metric, distance, centroids, vectors[index])
 		if err != nil {
 			return fmt.Errorf("core: assign k-means vector %d: %w", index, err)
 		}
@@ -483,11 +487,25 @@ func nearestCentroid(metric Metric, centroids [][]float32, vector []float32) (in
 }
 
 func nearestCentroidContext(ctx context.Context, metric Metric, centroids [][]float32, vector []float32) (int, float32, error) {
+	distance, err := metric.PrevalidatedDistance()
+	if err != nil {
+		return 0, 0, err
+	}
+	return nearestCentroidPrevalidatedContext(ctx, metric, distance, centroids, vector)
+}
+
+func nearestCentroidPrevalidatedContext(
+	ctx context.Context,
+	metric Metric,
+	distance mathutil.DenseDistance,
+	centroids [][]float32,
+	vector []float32,
+) (int, float32, error) {
 	if len(centroids) == 0 {
 		return 0, 0, ErrInvalidCentroid
 	}
 	bestIndex := 0
-	bestScore, err := metric.Compute(centroids[0], vector)
+	bestScore, err := distance(centroids[0], vector)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -497,7 +515,7 @@ func nearestCentroidContext(ctx context.Context, metric Metric, centroids [][]fl
 				return 0, 0, err
 			}
 		}
-		score, err := metric.Compute(centroids[index], vector)
+		score, err := distance(centroids[index], vector)
 		if err != nil {
 			return 0, 0, err
 		}

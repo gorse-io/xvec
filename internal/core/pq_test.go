@@ -478,6 +478,21 @@ func BenchmarkPQDistanceLookup(b *testing.B) {
 	}
 }
 
+func BenchmarkPQTrain(b *testing.B) {
+	vectors := pqTrainingVectors(2048, 64)
+	options := DefaultPQOptions(MetricL2)
+	options.Chunks = 32
+	options.MaxTrainSamples = len(vectors)
+	options.MaxIterations = 4
+	options.Workers = 4
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := TrainPQ(context.Background(), vectors, options); err != nil {
+			require.NoError(b, err)
+		}
+	}
+}
+
 func pqFixtureModel(t testing.TB, metric Metric) *PQModel {
 	t.Helper()
 	pivots := make([]float32, PQCentroidCount*4)

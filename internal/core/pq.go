@@ -411,6 +411,10 @@ func initializePQKMC2(ctx context.Context, vectors [][]float32, clusters int, me
 	if clusters <= 0 || clusters > len(vectors) {
 		return nil, ErrInvalidCentroid
 	}
+	distance, err := metric.PrevalidatedDistance()
+	if err != nil {
+		return nil, err
+	}
 	random := splitMix64{state: seed}
 	first, err := pqUniformSampleIndices(ctx, len(vectors), 1, &random)
 	if err != nil {
@@ -434,7 +438,7 @@ func initializePQKMC2(ctx context.Context, vectors [][]float32, clusters int, me
 						return nil, err
 					}
 				}
-				score, err := metric.Compute(centroid, vectors[vectorIndex])
+				score, err := distance(centroid, vectors[vectorIndex])
 				if err != nil {
 					return nil, err
 				}
