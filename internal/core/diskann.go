@@ -222,13 +222,14 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 	graphOptions.MaxDegree = b.options.MaxDegree
 	graphOptions.SearchListSize = b.options.ListSize
 	graphOptions.MaxOcclusionSize = DefaultDiskANNMaxOcclusion
+	graphOptions.SaturateGraph = true
 	graphBuilder, err := newBorrowedVamanaBuilder(
 		b.dimension, graphOptions, b.keys, graphStorage, b.positions,
 	)
 	if err != nil {
 		return nil, err
 	}
-	graph, err := graphBuilder.build(ctx, b.options.Workers)
+	graph, err := graphBuilder.buildInterleaved(ctx, b.options.Workers)
 	if err != nil {
 		return nil, fmt.Errorf("core: build DiskANN graph: %w", err)
 	}

@@ -37,6 +37,8 @@ const (
 	DefaultVamanaMaxOcclusionSize = 750
 	DefaultVamanaAlpha            = float32(1.2)
 	defaultVamanaBuildWorkers     = 8
+	vamanaBuildLockStripes        = 1 << 16
+	vamanaGraphSlackFactor        = float32(1.3)
 	MaxVamanaDegree               = 65_535
 )
 
@@ -254,6 +256,86 @@ func (b *VamanaBuilder) build(ctx context.Context, workers int) (*VamanaIndex, e
 	return index, nil
 }
 
+// buildInterleaved constructs a DiskANN graph using the same strided insertion
+// schedule as zvec: worker w inserts w, w+workers, ... while other workers can
+// observe and update the graph. Node-striped locks protect adjacency snapshots
+// and publications; a final parallel prune restores the persisted degree bound.
+func (b *VamanaBuilder) buildInterleaved(ctx context.Context, workers int) (*VamanaIndex, error) {
+	if b == nil {
+		return nil, errors.New("core: nil Vamana builder")
+	}
+	if ctx == nil {
+		return nil, errors.New("core: nil Vamana build context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.built {
+		return nil, ErrBuilderClosed
+	}
+	distance, err := b.options.Metric.PrevalidatedDistance()
+	if err != nil {
+		return nil, err
+	}
+	index := &VamanaIndex{
+		dimension: b.dimension, options: b.options,
+		distance: distance,
+		keys:     b.keys, vectors: b.vectors, positions: b.positions,
+		neighbors: make([][]int, len(b.keys)), neighborDistances: make([][]float32, len(b.keys)),
+		entryPoint: -1,
+	}
+	index.entryPoint, err = index.calculateMedoid(ctx)
+	if err != nil {
+		return nil, err
+	}
+	workers = vamanaBuildWorkers(workers, len(index.keys))
+	if len(index.keys) != 0 {
+		locks := newVamanaBuildLocks(len(index.keys))
+		err = parallel.ParallelFor(ctx, workers, workers, func(ctx context.Context, worker int) error {
+			for position := worker; position < len(index.keys); position += workers {
+				// The medoid starts as the shared empty entry node. Inserting it
+				// concurrently could overwrite reverse links published by another
+				// worker and leave the graph unreachable from its entry point.
+				if position == index.entryPoint {
+					continue
+				}
+				if err := index.insertNodeInterleaved(ctx, position, locks); err != nil {
+					return fmt.Errorf("node %d: %w", position, err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("core: construct interleaved Vamana graph: %w", err)
+		}
+		err = parallel.ParallelFor(ctx, len(index.keys), workers, func(ctx context.Context, position int) error {
+			if len(index.neighbors[position]) <= index.options.MaxDegree {
+				return nil
+			}
+			candidates := index.vamanaNeighborCandidates(position, -1, 0)
+			selected, err := index.robustPrune(ctx, position, candidates)
+			if err != nil {
+				return err
+			}
+			index.setVamanaNeighbors(position, selected)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("core: final prune interleaved Vamana graph: %w", err)
+		}
+	}
+	if err := validateVamanaIndex(ctx, index); err != nil {
+		return nil, err
+	}
+	b.built = true
+	b.keys = nil
+	b.vectors = nil
+	b.positions = nil
+	return index, nil
+}
+
 func vamanaBuildWorkers(workers, count int) int {
 	if workers <= 0 {
 		// The worker count also defines the immutable graph-generation batch.
@@ -392,6 +474,7 @@ type vamanaPruneScratch struct {
 type vamanaSearchScratch struct {
 	visited    []uint32
 	generation uint32
+	neighbors  []int
 }
 
 func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32, entry, capacity int) ([]vamanaDistanceNode, error) {
@@ -403,24 +486,8 @@ func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32
 	worse := func(left, right vamanaDistanceNode) bool { return vamanaDistanceBetter(right, left) }
 	frontier := container.NewHeap(better)
 	retained := container.NewHeap(worse)
-	value := i.searchScratch.Get()
-	var scratch *vamanaSearchScratch
-	if value == nil {
-		scratch = &vamanaSearchScratch{}
-	} else {
-		scratch = value.(*vamanaSearchScratch)
-	}
-	if cap(scratch.visited) < len(i.keys) {
-		scratch.visited = make([]uint32, len(i.keys))
-	} else {
-		scratch.visited = scratch.visited[:len(i.keys)]
-	}
-	scratch.generation++
-	if scratch.generation == 0 {
-		clear(scratch.visited)
-		scratch.generation = 1
-	}
-	defer i.searchScratch.Put(scratch)
+	scratch := i.acquireVamanaSearchScratch()
+	defer i.releaseVamanaSearchScratch(scratch)
 	visited, generation := scratch.visited, scratch.generation
 	distance, err := i.graphDistance(query, i.vectorAt(entry))
 	if err != nil {
@@ -462,6 +529,94 @@ func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32
 	result := retained.Values()
 	slices.SortFunc(result, compareVamanaDistanceNodes)
 	return result, nil
+}
+
+func (i *VamanaIndex) searchBuildCandidatesInterleaved(
+	ctx context.Context,
+	query []float32,
+	entry, capacity int,
+	locks *vamanaBuildLocks,
+) ([]vamanaDistanceNode, error) {
+	limit := min(capacity, len(i.keys))
+	if limit <= 0 {
+		return []vamanaDistanceNode{}, nil
+	}
+	better := func(left, right vamanaDistanceNode) bool { return vamanaDistanceBetter(left, right) }
+	worse := func(left, right vamanaDistanceNode) bool { return vamanaDistanceBetter(right, left) }
+	frontier := container.NewHeap(better)
+	retained := container.NewHeap(worse)
+	scratch := i.acquireVamanaSearchScratch()
+	defer i.releaseVamanaSearchScratch(scratch)
+	visited, generation := scratch.visited, scratch.generation
+	distance, err := i.graphDistance(query, i.vectorAt(entry))
+	if err != nil {
+		return nil, err
+	}
+	start := vamanaDistanceNode{position: entry, distance: distance}
+	visited[entry] = generation
+	frontier.Push(start)
+	retained.Push(start)
+	for frontier.Len() != 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		current, _ := frontier.Pop()
+		worst, hasWorst := retained.Peek()
+		if retained.Len() >= limit && hasWorst && worst.distance < current.distance {
+			break
+		}
+		lock := locks.forPosition(current.position)
+		lock.RLock()
+		scratch.neighbors = append(scratch.neighbors[:0], i.neighbors[current.position]...)
+		lock.RUnlock()
+		for _, neighbor := range scratch.neighbors {
+			if visited[neighbor] == generation {
+				continue
+			}
+			visited[neighbor] = generation
+			distance, err := i.graphDistance(query, i.vectorAt(neighbor))
+			if err != nil {
+				return nil, err
+			}
+			node := vamanaDistanceNode{position: neighbor, distance: distance}
+			worst, hasWorst = retained.Peek()
+			if retained.Len() < limit || !hasWorst || vamanaDistanceBetter(node, worst) {
+				frontier.Push(node)
+				retained.Push(node)
+				if retained.Len() > limit {
+					_, _ = retained.Pop()
+				}
+			}
+		}
+	}
+	result := retained.Values()
+	slices.SortFunc(result, compareVamanaDistanceNodes)
+	return result, nil
+}
+
+func (i *VamanaIndex) acquireVamanaSearchScratch() *vamanaSearchScratch {
+	value := i.searchScratch.Get()
+	var scratch *vamanaSearchScratch
+	if value == nil {
+		scratch = &vamanaSearchScratch{}
+	} else {
+		scratch = value.(*vamanaSearchScratch)
+	}
+	if cap(scratch.visited) < len(i.keys) {
+		scratch.visited = make([]uint32, len(i.keys))
+	} else {
+		scratch.visited = scratch.visited[:len(i.keys)]
+	}
+	scratch.generation++
+	if scratch.generation == 0 {
+		clear(scratch.visited)
+		scratch.generation = 1
+	}
+	return scratch
+}
+
+func (i *VamanaIndex) releaseVamanaSearchScratch(scratch *vamanaSearchScratch) {
+	i.searchScratch.Put(scratch)
 }
 
 func (i *VamanaIndex) robustPrune(ctx context.Context, owner int, candidates []vamanaDistanceNode) ([]vamanaDistanceNode, error) {
@@ -568,6 +723,92 @@ func (i *VamanaIndex) addReverseEdge(ctx context.Context, node, owner int, dista
 	}
 	i.setVamanaNeighbors(owner, selected)
 	return nil
+}
+
+type vamanaBuildLocks struct {
+	stripes []sync.RWMutex
+}
+
+func newVamanaBuildLocks(count int) *vamanaBuildLocks {
+	return &vamanaBuildLocks{stripes: make([]sync.RWMutex, min(count, vamanaBuildLockStripes))}
+}
+
+func (l *vamanaBuildLocks) forPosition(position int) *sync.RWMutex {
+	return &l.stripes[position%len(l.stripes)]
+}
+
+func (i *VamanaIndex) insertNodeInterleaved(ctx context.Context, position int, locks *vamanaBuildLocks) error {
+	candidates, err := i.searchBuildCandidatesInterleaved(
+		ctx, i.vectorAt(position), i.entryPoint, i.options.SearchListSize, locks,
+	)
+	if err != nil {
+		return err
+	}
+	selected, err := i.robustPrune(ctx, position, candidates)
+	if err != nil {
+		return err
+	}
+	lock := locks.forPosition(position)
+	lock.Lock()
+	i.setVamanaNeighbors(position, selected)
+	lock.Unlock()
+	for _, neighbor := range selected {
+		if err := i.addReverseEdgeInterleaved(ctx, position, neighbor.position, neighbor.distance, locks); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (i *VamanaIndex) addReverseEdgeInterleaved(
+	ctx context.Context,
+	node, owner int,
+	distance float32,
+	locks *vamanaBuildLocks,
+) error {
+	lock := locks.forPosition(owner)
+	lock.Lock()
+	for _, existing := range i.neighbors[owner] {
+		if existing == node {
+			lock.Unlock()
+			return nil
+		}
+	}
+	maxBuildDegree := max(i.options.MaxDegree, int(vamanaGraphSlackFactor*float32(i.options.MaxDegree)))
+	if len(i.neighbors[owner]) < maxBuildDegree {
+		i.neighbors[owner] = append(i.neighbors[owner], node)
+		i.neighborDistances[owner] = append(i.neighborDistances[owner], distance)
+		lock.Unlock()
+		return nil
+	}
+	candidates := i.vamanaNeighborCandidates(owner, node, distance)
+	lock.Unlock()
+	selected, err := i.robustPrune(ctx, owner, candidates)
+	if err != nil {
+		return err
+	}
+	lock.Lock()
+	i.setVamanaNeighbors(owner, selected)
+	lock.Unlock()
+	return nil
+}
+
+func (i *VamanaIndex) vamanaNeighborCandidates(owner, extra int, distance float32) []vamanaDistanceNode {
+	extraCapacity := 0
+	if extra >= 0 {
+		extraCapacity = 1
+	}
+	candidates := make([]vamanaDistanceNode, 0, len(i.neighbors[owner])+extraCapacity)
+	for offset, neighbor := range i.neighbors[owner] {
+		candidates = append(candidates, vamanaDistanceNode{
+			position: neighbor,
+			distance: i.neighborDistances[owner][offset],
+		})
+	}
+	if extra >= 0 {
+		candidates = append(candidates, vamanaDistanceNode{position: extra, distance: distance})
+	}
+	return candidates
 }
 
 func (i *VamanaIndex) setVamanaNeighbors(owner int, selected []vamanaDistanceNode) {

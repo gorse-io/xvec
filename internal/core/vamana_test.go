@@ -131,6 +131,35 @@ func TestVamanaParallelBuildIsDeterministic(t *testing.T) {
 	require.Equal(t, first.entryPoint, second.entryPoint)
 }
 
+func TestVamanaInterleavedBuildInvariants(t *testing.T) {
+	inputs := diskANNIndexCandidates(320, 24)
+	options := DefaultVamanaBuildOptions(MetricL2)
+	options.MaxDegree = 16
+	options.SearchListSize = 64
+	options.MaxOcclusionSize = 80
+	options.SaturateGraph = true
+	builder, err := NewVamanaBuilder(24, options)
+	require.NoError(t, err)
+	for _, input := range inputs {
+		require.NoError(t, builder.Add(context.Background(), input.Key, input.Vector))
+	}
+	index, err := builder.buildInterleaved(context.Background(), 4)
+	require.NoError(t, err)
+	assertVamanaGraphInvariants(t, index)
+	for _, neighbors := range index.neighbors {
+		require.LessOrEqual(t, len(neighbors), options.MaxDegree)
+	}
+
+	smallBuilder, err := NewVamanaBuilder(24, options)
+	require.NoError(t, err)
+	for _, input := range inputs[:2] {
+		require.NoError(t, smallBuilder.Add(context.Background(), input.Key, input.Vector))
+	}
+	small, err := smallBuilder.buildInterleaved(context.Background(), 2)
+	require.NoError(t, err)
+	require.NotEmpty(t, small.neighbors[small.entryPoint])
+}
+
 func TestVamanaDefaultBuildWorkersAreTopologyStable(t *testing.T) {
 	require.Equal(t, 1, vamanaBuildWorkers(0, 1))
 	require.Equal(t, defaultVamanaBuildWorkers, vamanaBuildWorkers(0, 320))
