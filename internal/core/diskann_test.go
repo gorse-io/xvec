@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"os/exec"
@@ -144,6 +145,14 @@ func TestDiskANNBuilderEmptyValidationCancellationAndClose(t *testing.T) {
 	builder, err := NewDiskANNBuilder(4, defaults)
 	require.NoError(t, err)
 	{
+		err := builder.Reserve(8)
+		require.NoError(t, err)
+	}
+	{
+		err := builder.Reserve(-1)
+		require.ErrorIs(t, err, ErrDiskANNCapacity)
+	}
+	{
 		err := builder.Add(context.Background(), 7, []float32{1, 2, 3, 4})
 		require.NoError(t, err)
 	}
@@ -176,6 +185,10 @@ func TestDiskANNBuilderEmptyValidationCancellationAndClose(t *testing.T) {
 	}
 	{
 		err := builder.Add(context.Background(), 8, []float32{1, 2, 3, 4})
+		require.ErrorIs(t, err, ErrBuilderClosed)
+	}
+	{
+		err := builder.Reserve(16)
 		require.ErrorIs(t, err, ErrBuilderClosed)
 	}
 	{
@@ -691,6 +704,34 @@ func BenchmarkDiskANNSearchWarmCache(b *testing.B) {
 				require.NoError(b, err)
 			}
 		}
+	}
+}
+
+func BenchmarkDiskANNBuilderReserve1536D(b *testing.B) {
+	const count = 1024
+	const dimension = 1536
+	vector := make([]float32, dimension)
+	options := DefaultDiskANNBuildOptions(MetricCosine)
+	for _, reserve := range []bool{false, true} {
+		b.Run(fmt.Sprintf("reserve=%t", reserve), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				builder, err := NewDiskANNBuilder(dimension, options)
+				if err != nil {
+					require.NoError(b, err)
+				}
+				if reserve {
+					if err := builder.Reserve(count); err != nil {
+						require.NoError(b, err)
+					}
+				}
+				for index := range count {
+					if err := builder.Add(context.Background(), uint64(index), vector); err != nil {
+						require.NoError(b, err)
+					}
+				}
+			}
+		})
 	}
 }
 

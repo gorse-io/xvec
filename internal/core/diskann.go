@@ -108,6 +108,35 @@ func NewDiskANNBuilder(dimension int, options DiskANNBuildOptions) (*DiskANNBuil
 	return &DiskANNBuilder{dimension: dimension, options: options, positions: make(map[uint64]int)}, nil
 }
 
+// Reserve preallocates storage for at least count total vectors. It does not
+// change the builder length or the ownership guarantees of Add.
+func (b *DiskANNBuilder) Reserve(count int) error {
+	if b == nil {
+		return errors.New("core: nil DiskANN builder")
+	}
+	if count < 0 || uint64(count) >= math.MaxUint32 || (count > 0 && count > maxPlatformInt()/b.dimension) {
+		return ErrDiskANNCapacity
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.built {
+		return ErrBuilderClosed
+	}
+	if count <= cap(b.keys) && count*b.dimension <= cap(b.vectors) {
+		return nil
+	}
+	reservedKeys := make([]uint64, len(b.keys), max(count, len(b.keys)))
+	copy(reservedKeys, b.keys)
+	reservedVectors := make([]float32, len(b.vectors), max(count*b.dimension, len(b.vectors)))
+	copy(reservedVectors, b.vectors)
+	reservedPositions := make(map[uint64]int, max(count, len(b.positions)))
+	for key, position := range b.positions {
+		reservedPositions[key] = position
+	}
+	b.keys, b.vectors, b.positions = reservedKeys, reservedVectors, reservedPositions
+	return nil
+}
+
 // Add validates and clones one unique original vector.
 func (b *DiskANNBuilder) Add(ctx context.Context, key uint64, vector []float32) error {
 	if b == nil {

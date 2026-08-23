@@ -1835,17 +1835,18 @@ func buildCollectionDenseDiskANN(
 	workers int,
 	maxBufferSize uint32,
 ) (collectionDiskANNIndex, error) {
-	candidates, err := collectionDenseCandidates(ctx, field, documents)
-	if err != nil {
-		return nil, err
-	}
 	options := core.DefaultDiskANNBuildOptions(spec.metric)
 	options.MaxDegree = spec.diskann.MaxDegree
 	options.ListSize = spec.diskann.ListSize
 	options.PQChunks = spec.diskann.PQChunks
 	options.Workers = workers
-	options.CacheCapacity = collectionDiskANNCacheCapacity(maxBufferSize, len(candidates))
+	options.CacheCapacity = collectionDiskANNCacheCapacity(maxBufferSize, len(documents))
 	if spec.quantize != QuantizeTypeUndefined {
+		candidates, err := collectionDenseCandidates(ctx, field, documents)
+		if err != nil {
+			return nil, err
+		}
+		options.CacheCapacity = collectionDiskANNCacheCapacity(maxBufferSize, len(candidates))
 		kind, err := toCoreQuantization(spec.quantize)
 		if err != nil {
 			return nil, err
@@ -1860,8 +1861,22 @@ func buildCollectionDenseDiskANN(
 	if err != nil {
 		return nil, err
 	}
-	for _, candidate := range candidates {
-		if err := builder.Add(ctx, candidate.Key, candidate.Vector); err != nil {
+	if err := builder.Reserve(len(documents)); err != nil {
+		return nil, err
+	}
+	for _, document := range documents {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		value, found := document.Fields[field.Name]
+		if !found || value == nil {
+			continue
+		}
+		vector, err := denseValueToFloat32Borrowed(value)
+		if err != nil {
+			return nil, fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, err)
+		}
+		if err := builder.Add(ctx, document.DocID, vector); err != nil {
 			return nil, err
 		}
 	}
@@ -4623,6 +4638,13 @@ func denseValueToFloat32(value any) ([]float32, error) {
 	default:
 		return nil, fmt.Errorf("unsupported Flat dense vector type %T", value)
 	}
+}
+
+func denseValueToFloat32Borrowed(value any) ([]float32, error) {
+	if value, ok := value.(VectorFP32); ok {
+		return []float32(value), nil
+	}
+	return denseValueToFloat32(value)
 }
 
 func sparseValueToCore(value any) (core.SparseVector, error) {
