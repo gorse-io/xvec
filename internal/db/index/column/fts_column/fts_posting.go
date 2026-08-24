@@ -574,14 +574,13 @@ func (i *FTSPostingIterator) loadBlock(blockIndex int) {
 	cursor := uint64(metadata.blockOffset) + ftsPostingBlockHeaderSize
 	countInt := int(count)
 	i.documentIDs = resizeFTSUint32(i.documentIDs, countInt)
-	i.termFrequencies = resizeFTSUint32(i.termFrequencies, countInt)
-	i.documentLengths = resizeFTSUint32(i.documentLengths, countInt)
-	arrays := [3][]uint32{i.documentIDs, i.termFrequencies, i.documentLengths}
-	for arrayIndex, width := range widths[:3] {
-		length := ftsPackedByteSize(width, uint32(count))
-		unpackFTSUint32Into(i.list.data[cursor:cursor+length], width, arrays[arrayIndex])
-		cursor += length
-	}
+	documentIDBytes := ftsPackedByteSize(widths[0], uint32(count))
+	unpackFTSUint32Into(i.list.data[cursor:cursor+documentIDBytes], widths[0], i.documentIDs)
+	cursor += documentIDBytes
+	cursor += ftsPackedByteSize(widths[1], uint32(count))
+	cursor += ftsPackedByteSize(widths[2], uint32(count))
+	i.termFrequencies = i.termFrequencies[:0]
+	i.documentLengths = i.documentLengths[:0]
 	if i.decodePositions {
 		i.positionLengths = resizeFTSUint32(i.positionLengths, countInt)
 		i.positionOffsets = resizeFTSUint32(i.positionOffsets, countInt)
@@ -610,6 +609,39 @@ func (i *FTSPostingIterator) loadBlock(blockIndex int) {
 	i.valid = false
 }
 
+func (i *FTSPostingIterator) decodeTermFrequencies() {
+	if i == nil || len(i.termFrequencies) == len(i.documentIDs) {
+		return
+	}
+	count := len(i.documentIDs)
+	i.termFrequencies = resizeFTSUint32(i.termFrequencies, count)
+	offset, width := i.packedBlockArray(1)
+	length := ftsPackedByteSize(width, uint32(count))
+	unpackFTSUint32Into(i.list.data[offset:offset+length], width, i.termFrequencies)
+}
+
+func (i *FTSPostingIterator) decodeDocumentLengths() {
+	if i == nil || len(i.documentLengths) == len(i.documentIDs) {
+		return
+	}
+	count := len(i.documentIDs)
+	i.documentLengths = resizeFTSUint32(i.documentLengths, count)
+	offset, width := i.packedBlockArray(2)
+	length := ftsPackedByteSize(width, uint32(count))
+	unpackFTSUint32Into(i.list.data[offset:offset+length], width, i.documentLengths)
+}
+
+func (i *FTSPostingIterator) packedBlockArray(arrayIndex int) (uint64, uint8) {
+	metadata := i.list.blocks[i.blockIndex]
+	header := i.list.data[metadata.blockOffset : metadata.blockOffset+ftsPostingBlockHeaderSize]
+	count := uint32(binary.LittleEndian.Uint16(header[4:6]))
+	offset := uint64(metadata.blockOffset) + ftsPostingBlockHeaderSize
+	for index := 0; index < arrayIndex; index++ {
+		offset += ftsPackedByteSize(header[6+index], count)
+	}
+	return offset, header[6+arrayIndex]
+}
+
 // Valid reports whether the iterator addresses a posting.
 func (i *FTSPostingIterator) Valid() bool { return i != nil && i.valid }
 
@@ -626,6 +658,7 @@ func (i *FTSPostingIterator) TermFrequency() uint32 {
 	if !i.Valid() {
 		return 0
 	}
+	i.decodeTermFrequencies()
 	return i.termFrequencies[i.indexInBlock]
 }
 
@@ -635,6 +668,7 @@ func (i *FTSPostingIterator) DocumentLength() uint32 {
 	if !i.Valid() {
 		return 0
 	}
+	i.decodeDocumentLengths()
 	return i.documentLengths[i.indexInBlock]
 }
 

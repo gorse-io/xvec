@@ -455,6 +455,8 @@ func (i *ftsTermDocumentIterator) blockMaxInfo(target uint32) ftsBlockMaxInfo {
 	if !i.blockMaxDecoded[blockIndex] {
 		probe := i.posting.list.scoringIterator()
 		probe.loadBlock(blockIndex)
+		probe.decodeTermFrequencies()
+		probe.decodeDocumentLengths()
 		var maximum float32
 		for index := range probe.termFrequencies {
 			score := i.scorer.ScoreWithIDFAndBoost(i.idf, probe.termFrequencies[index], probe.documentLengths[index], i.boost)

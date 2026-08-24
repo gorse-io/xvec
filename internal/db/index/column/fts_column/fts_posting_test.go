@@ -301,6 +301,8 @@ func TestFTSPostingIteratorReusesBlockBuffers(t *testing.T) {
 	require.NoError(t, err)
 	iterator := list.Iterator()
 	iterator.loadBlock(0)
+	iterator.decodeTermFrequencies()
+	iterator.decodeDocumentLengths()
 	documentIDs := &iterator.documentIDs[0]
 	termFrequencies := &iterator.termFrequencies[0]
 	documentLengths := &iterator.documentLengths[0]
@@ -308,11 +310,32 @@ func TestFTSPostingIteratorReusesBlockBuffers(t *testing.T) {
 	positionLengths := &iterator.positionLengths[0]
 
 	iterator.loadBlock(1)
+	iterator.decodeTermFrequencies()
+	iterator.decodeDocumentLengths()
 	require.Same(t, documentIDs, &iterator.documentIDs[0])
 	require.Same(t, termFrequencies, &iterator.termFrequencies[0])
 	require.Same(t, documentLengths, &iterator.documentLengths[0])
 	require.Same(t, positionOffsets, &iterator.positionOffsets[0])
 	require.Same(t, positionLengths, &iterator.positionLengths[0])
+}
+
+func TestFTSPostingIteratorDecodesScoringPayloadLazily(t *testing.T) {
+	list, err := BuildFTSPostingList(context.Background(), makeFTSPostingTestData(300))
+	require.NoError(t, err)
+	iterator := list.scoringIterator()
+	require.True(t, iterator.Next())
+	require.Empty(t, iterator.termFrequencies)
+	require.Empty(t, iterator.documentLengths)
+
+	require.NotZero(t, iterator.TermFrequency())
+	require.NotEmpty(t, iterator.termFrequencies)
+	require.Empty(t, iterator.documentLengths)
+	require.NotZero(t, iterator.DocumentLength())
+	require.NotEmpty(t, iterator.documentLengths)
+
+	require.True(t, iterator.Advance(list.blocks[0].maxDocumentID+1))
+	require.Empty(t, iterator.termFrequencies)
+	require.Empty(t, iterator.documentLengths)
 }
 
 func TestFTSScoringIteratorSkipsPositionPayload(t *testing.T) {
