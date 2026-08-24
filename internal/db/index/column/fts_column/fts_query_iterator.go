@@ -674,7 +674,7 @@ type ftsOrDocumentIterator struct {
 	currentDocument uint32
 	valid           bool
 	wandPostings    []ftsWANDPosting
-	wandMaxScores   []float32
+	wandInitialized bool
 }
 
 type ftsWANDPosting struct {
@@ -684,6 +684,7 @@ type ftsWANDPosting struct {
 }
 
 func (i *ftsOrDocumentIterator) next(ctx context.Context) (uint32, bool, error) {
+	i.wandInitialized = false
 	if !i.started {
 		i.started = true
 		for _, child := range i.children {
@@ -707,6 +708,7 @@ func (i *ftsOrDocumentIterator) advance(ctx context.Context, target uint32) (uin
 	if i.valid && i.currentDocument >= target {
 		return i.currentDocument, true, nil
 	}
+	i.wandInitialized = false
 	i.started = true
 	for _, child := range i.children {
 		documentID, ok := child.current()
@@ -732,37 +734,18 @@ func (i *ftsOrDocumentIterator) advanceCompetitive(ctx context.Context, target u
 		return i.currentDocument, true, 0, nil
 	}
 	i.started, i.valid = true, false
-	if i.wandMaxScores == nil {
-		i.wandMaxScores = make([]float32, len(i.children))
-		for index, child := range i.children {
-			i.wandMaxScores[index] = ftsIteratorMaxScore(child)
-		}
-	}
 	var skips uint64
 	for {
 		if err := ctx.Err(); err != nil {
 			return 0, false, skips, err
 		}
-		i.wandPostings = i.wandPostings[:0]
-		for index, child := range i.children {
-			documentID, ok := child.current()
-			if !ok || documentID < target {
-				var err error
-				documentID, ok, err = child.advance(ctx, target)
-				if err != nil {
-					return 0, false, skips, err
-				}
-			}
-			if ok {
-				i.wandPostings = append(i.wandPostings, ftsWANDPosting{
-					iterator: child, documentID: documentID, maxScore: i.wandMaxScores[index],
-				})
-			}
+		found, err := i.prepareWANDPostings(ctx, target)
+		if err != nil {
+			return 0, false, skips, err
 		}
-		if len(i.wandPostings) == 0 {
+		if !found {
 			return 0, false, skips, nil
 		}
-		sortFTSWANDPostings(i.wandPostings)
 
 		partialMaxScore := float32(0)
 		pivotIndex := -1
@@ -778,8 +761,18 @@ func (i *ftsOrDocumentIterator) advanceCompetitive(ctx context.Context, target u
 		}
 		pivotDocument := i.wandPostings[pivotIndex].documentID
 		if i.wandPostings[0].documentID < pivotDocument {
-			if _, _, err := i.wandPostings[0].iterator.advance(ctx, pivotDocument); err != nil {
+			posting := i.wandPostings[0]
+			documentID, ok, err := posting.iterator.advance(ctx, pivotDocument)
+			if err != nil {
 				return 0, false, skips, err
+			}
+			if ok {
+				posting.documentID = documentID
+				i.wandPostings[0] = posting
+				siftFTSWANDPostingForward(i.wandPostings, 0)
+			} else {
+				copy(i.wandPostings, i.wandPostings[1:])
+				i.wandPostings = i.wandPostings[:len(i.wandPostings)-1]
 			}
 			skips++
 			continue
@@ -799,6 +792,54 @@ func (i *ftsOrDocumentIterator) advanceCompetitive(ctx context.Context, target u
 	}
 }
 
+func (i *ftsOrDocumentIterator) prepareWANDPostings(ctx context.Context, target uint32) (bool, error) {
+	if !i.wandInitialized {
+		i.wandPostings = i.wandPostings[:0]
+		for _, child := range i.children {
+			documentID, ok := child.current()
+			if !ok || documentID < target {
+				var err error
+				documentID, ok, err = child.advance(ctx, target)
+				if err != nil {
+					return false, err
+				}
+			}
+			if ok {
+				i.wandPostings = append(i.wandPostings, ftsWANDPosting{
+					iterator: child, documentID: documentID, maxScore: ftsIteratorMaxScore(child),
+				})
+			}
+		}
+		sortFTSWANDPostings(i.wandPostings)
+		i.wandInitialized = true
+		return len(i.wandPostings) != 0, nil
+	}
+
+	changed := false
+	write := 0
+	for read := range i.wandPostings {
+		posting := i.wandPostings[read]
+		if posting.documentID < target {
+			documentID, ok, err := posting.iterator.advance(ctx, target)
+			if err != nil {
+				return false, err
+			}
+			changed = true
+			if !ok {
+				continue
+			}
+			posting.documentID = documentID
+		}
+		i.wandPostings[write] = posting
+		write++
+	}
+	i.wandPostings = i.wandPostings[:write]
+	if changed {
+		sortFTSWANDPostings(i.wandPostings)
+	}
+	return len(i.wandPostings) != 0, nil
+}
+
 func sortFTSWANDPostings(postings []ftsWANDPosting) {
 	for index := 1; index < len(postings); index++ {
 		posting := postings[index]
@@ -809,6 +850,16 @@ func sortFTSWANDPostings(postings []ftsWANDPosting) {
 		}
 		postings[position] = posting
 	}
+}
+
+func siftFTSWANDPostingForward(postings []ftsWANDPosting, index int) {
+	posting := postings[index]
+	position := index
+	for position+1 < len(postings) && postings[position+1].documentID < posting.documentID {
+		postings[position] = postings[position+1]
+		position++
+	}
+	postings[position] = posting
 }
 
 func (i *ftsOrDocumentIterator) minimum(ctx context.Context) (uint32, bool, error) {
