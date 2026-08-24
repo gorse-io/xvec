@@ -778,7 +778,13 @@ func (i *ftsOrDocumentIterator) advanceCompetitive(ctx context.Context, target u
 			continue
 		}
 
-		block := ftsIteratorBlockMaxInfo(i, pivotDocument)
+		block := ftsBlockMaxInfo{lastDoc: math.MaxUint32}
+		for index := 0; index <= pivotIndex; index++ {
+			block = addFTSBlockMaxInfo(block, ftsIteratorBlockMaxInfo(i.wandPostings[index].iterator, pivotDocument))
+		}
+		for index := pivotIndex + 1; index < len(i.wandPostings) && block.score < minScore; index++ {
+			block = addFTSBlockMaxInfo(block, ftsIteratorBlockMaxInfo(i.wandPostings[index].iterator, pivotDocument))
+		}
 		if block.score < minScore {
 			skips++
 			if block.lastDoc == math.MaxUint32 {
