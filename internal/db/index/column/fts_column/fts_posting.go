@@ -538,7 +538,10 @@ func (i *FTSPostingIterator) Advance(target uint32) bool {
 		i.blockIndex = len(i.list.blocks)
 		return false
 	}
-	targetBlock := searchFTSPostingBlock(i.list.blocks, startBlock, target)
+	targetBlock := startBlock
+	if !i.valid || startBlock != i.blockIndex {
+		targetBlock = searchFTSPostingBlock(i.list.blocks, startBlock, target)
+	}
 	if targetBlock == len(i.list.blocks) {
 		i.valid = false
 		i.blockIndex = len(i.list.blocks)
