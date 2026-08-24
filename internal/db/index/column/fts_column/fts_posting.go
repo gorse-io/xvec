@@ -792,24 +792,34 @@ func unpackFTSUint32(data []byte, width uint8, count uint32) []uint32 {
 }
 
 func unpackFTSUint32Into(data []byte, width uint8, output []uint32) {
-	clear(output)
 	if width == 0 {
+		clear(output)
 		return
 	}
-	bitOffset := uint64(0)
+	mask := uint64(math.MaxUint32)
+	if width < 32 {
+		mask = 1<<width - 1
+	}
+	var reservoir uint64
+	var available uint8
+	input := 0
 	for index := range output {
-		remaining := width
-		shiftOut := uint8(0)
-		for remaining > 0 {
-			byteIndex := bitOffset >> 3
-			shiftIn := uint8(bitOffset & 7)
-			take := min(remaining, 8-shiftIn)
-			mask := byte(0xff >> (8 - take))
-			output[index] |= uint32((data[byteIndex]>>shiftIn)&mask) << shiftOut
-			remaining -= take
-			shiftOut += take
-			bitOffset += uint64(take)
+		if available < width {
+			if len(data)-input >= 4 {
+				reservoir |= uint64(binary.LittleEndian.Uint32(data[input:])) << available
+				input += 4
+				available += 32
+			} else {
+				for available < width {
+					reservoir |= uint64(data[input]) << available
+					input++
+					available += 8
+				}
+			}
 		}
+		output[index] = uint32(reservoir & mask)
+		reservoir >>= width
+		available -= width
 	}
 }
 
