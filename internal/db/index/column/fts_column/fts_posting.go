@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
-	"sort"
 
 	"github.com/gorse-io/xvec/internal/ailego/hash"
 )
@@ -539,22 +538,17 @@ func (i *FTSPostingIterator) Advance(target uint32) bool {
 		i.blockIndex = len(i.list.blocks)
 		return false
 	}
-	blockOffset := sort.Search(len(i.list.blocks)-startBlock, func(offset int) bool {
-		return i.list.blocks[startBlock+offset].maxDocumentID >= target
-	})
-	if blockOffset == len(i.list.blocks)-startBlock {
+	targetBlock := searchFTSPostingBlock(i.list.blocks, startBlock, target)
+	if targetBlock == len(i.list.blocks) {
 		i.valid = false
 		i.blockIndex = len(i.list.blocks)
 		return false
 	}
-	targetBlock := startBlock + blockOffset
 	if targetBlock != i.blockIndex {
 		i.loadBlock(targetBlock)
 		startIndex = 0
 	}
-	position := startIndex + sort.Search(len(i.documentIDs)-startIndex, func(offset int) bool {
-		return i.documentIDs[startIndex+offset] >= target
-	})
+	position := searchFTSDocumentID(i.documentIDs, startIndex, target)
 	if position >= len(i.documentIDs) {
 		i.valid = false
 		return i.Advance(target)
@@ -563,6 +557,32 @@ func (i *FTSPostingIterator) Advance(target uint32) bool {
 	i.globalIndex = uint32(targetBlock)*uint32(ftsPostingDocumentsBlock) + uint32(position)
 	i.valid = true
 	return true
+}
+
+func searchFTSPostingBlock(blocks []ftsPostingBlock, start int, target uint32) int {
+	low, high := start, len(blocks)
+	for low < high {
+		middle := int(uint(low+high) >> 1)
+		if blocks[middle].maxDocumentID < target {
+			low = middle + 1
+		} else {
+			high = middle
+		}
+	}
+	return low
+}
+
+func searchFTSDocumentID(documentIDs []uint32, start int, target uint32) int {
+	low, high := start, len(documentIDs)
+	for low < high {
+		middle := int(uint(low+high) >> 1)
+		if documentIDs[middle] < target {
+			low = middle + 1
+		} else {
+			high = middle
+		}
+	}
+	return low
 }
 
 func (i *FTSPostingIterator) loadBlock(blockIndex int) {

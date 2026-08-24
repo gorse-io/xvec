@@ -435,7 +435,7 @@ func (i *ftsTermDocumentIterator) blockMaxInfo(target uint32) ftsBlockMaxInfo {
 		return ftsBlockMaxInfo{lastDoc: math.MaxUint32}
 	}
 	blocks := i.posting.list.blocks
-	blockIndex := sort.Search(len(blocks), func(index int) bool { return blocks[index].maxDocumentID >= target })
+	blockIndex := searchFTSPostingBlock(blocks, 0, target)
 	if blockIndex == len(blocks) {
 		return ftsBlockMaxInfo{lastDoc: math.MaxUint32}
 	}
