@@ -6,14 +6,15 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/gorse-io/xvec)](go.mod)
 [![License](https://img.shields.io/github/license/gorse-io/xvec)](LICENSE)
 
-xvec is a pure-Go reimplementation of [Alibaba zvec](https://github.com/alibaba/zvec),
-providing an embedded vector database with durable local storage. It runs inside
-your application without CGO, a separate database server, or prebuilt native
-libraries.
+xvec is an embedded vector database vibe-coded with reference to
+[Alibaba zvec](https://github.com/alibaba/zvec). It provides durable local
+storage and runs inside your application without CGO, a separate database
+server, or prebuilt native libraries.
 
 > [!WARNING]
-> xvec is an experimental project created through vibe coding. Unless you
-> specifically need a pure-Go implementation, please use [zvec-go](https://github.com/zvec-ai/zvec-go).
+> xvec is experimental and is not compatible with zvec's API or disk format.
+> Unless you specifically need a pure-Go implementation, please use
+> [zvec-go](https://github.com/zvec-ai/zvec-go).
 
 ## Features
 
@@ -38,7 +39,7 @@ Then import it in your application:
 import "github.com/gorse-io/xvec"
 ```
 
-## Vector storage tutorial
+## Usage
 
 The following program creates a local collection, stores vectors with metadata,
 and returns the two nearest documents.
@@ -177,12 +178,6 @@ projections, ANN parameters, grouping, and refinement.
 - [Runtime configuration](docs/runtime-config.md)
 - [Native Go disk format](docs/disk-format.md)
 - [VectorDBBench-compatible Go benchmark](cmd/vector-db-bench/README.md)
-
-## Compatibility
-
-The root `xvec` package is the public API. xvec uses native Go disk format v2
-and does not read C++ zvec collection files. Version 1 collections are rejected;
-there is no compatibility, migration, fallback, or dual-write path.
 
 ## License
 
