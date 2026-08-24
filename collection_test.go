@@ -5559,7 +5559,7 @@ func FuzzMultiQueryTargetKind(f *testing.F) {
 	})
 }
 
-func BenchmarkV05HybridMultiQuery(b *testing.B) {
+func BenchmarkHybridMultiQuery(b *testing.B) {
 	ctx := context.Background()
 	schema := testMultiQuerySchema()
 	collection, err := CreateAndOpen(ctx, filepath.Join(b.TempDir(), "benchmark"), schema, NewCollectionOptions())
@@ -6557,4 +6557,92 @@ func waitForRuntimeCounter(t *testing.T, read func() uint64, want uint64) {
 		runtime.Gosched()
 	}
 	require.Equal(t, want, read())
+}
+
+// TestCollectionHybridRerankersReopen covers all three retrieval sources and
+// every public fusion strategy. Results must remain value-identical after the
+// durable collection is reopened read-only.
+func TestCollectionHybridRerankersReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "hybrid-rerankers")
+	collection, err := CreateAndOpen(ctx, path, testMultiQuerySchema(), NewCollectionOptions())
+	require.NoError(t, err)
+	{
+		_, err := collection.Insert(ctx, testMultiQueryDocuments())
+		require.NoError(t, err)
+	}
+	{
+		err := collection.Flush(ctx)
+		require.NoError(t, err)
+	}
+
+	queries := []struct {
+		name     string
+		reranker Reranker
+	}{
+		{name: "default RRF"},
+		{name: "explicit RRF", reranker: NewRRFReranker()},
+		{name: "weighted", reranker: NewWeightedReranker(0.4, 0.2, 0.4)},
+		{name: "callback", reranker: NewCallbackReranker(func(_ context.Context, batches []RerankBatch, topK int) ([]Document, error) {
+			return firstDistinctDocuments(batches, topK), nil
+		})},
+	}
+	makeQuery := func(reranker Reranker) MultiQuery {
+		return MultiQuery{
+			Queries: []SubQuery{
+				{Field: "embedding", DenseVector: VectorFP32{1, 0}, NumCandidates: 4},
+				{Field: "sparse", SparseVector: SparseVectorFP32{Indices: []uint32{2}, Values: []float32{1}}, NumCandidates: 4},
+				{Field: "title", FTS: &FTSClause{Query: `go AND (database OR search)`}, NumCandidates: 4},
+			},
+			TopK: 2, Filter: "category = 'keep'",
+			Projection: Projection{OutputFields: []string{"title"}},
+			Reranker:   reranker,
+		}
+	}
+	run := func(handle *Collection) map[string][]Document {
+		t.Helper()
+		results := make(map[string][]Document, len(queries))
+		for _, testCase := range queries {
+			documents, queryErr := handle.MultiQuery(ctx, makeQuery(testCase.reranker))
+			require.NoError(t, queryErr)
+			require.Len(t, documents, 2)
+
+			for _, document := range documents {
+				require.False(t, document.PrimaryKey == "c")
+				require.Len(t, document.Fields, 1)
+				{
+					score := float64(document.Score)
+					require.False(t, math.IsNaN(score))
+					require.False(t, math.IsInf(score, 0))
+				}
+			}
+			results[testCase.name] = documents
+		}
+		require.Equal(t, results["explicit RRF"], results["default RRF"])
+
+		return results
+	}
+
+	writableResults := run(collection)
+	stats := collection.Stats()
+	require.True(t, stats.DocumentCount == 4)
+	require.True(t, stats.ImmutableSegments == 1)
+	require.True(t, stats.MutableDocuments == 0)
+	require.False(t, stats.StorageMemoryBytes == 0)
+	require.True(t, stats.IndexCompleteness["title"] == 1)
+	{
+		err := collection.Close()
+		require.NoError(t, err)
+	}
+
+	options := NewCollectionOptions()
+	options.ReadOnly = true
+	reopened, err := Open(ctx, path, options)
+	require.NoError(t, err)
+
+	defer func() { require.NoError(t, reopened.Close()) }()
+	{
+		reopenedResults := run(reopened)
+		require.Equal(t, writableResults, reopenedResults)
+	}
 }

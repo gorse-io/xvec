@@ -182,3 +182,17 @@ func TestBatchTopK(t *testing.T) {
 		require.ErrorIs(t, err, context.Canceled)
 	}
 }
+
+func resultOverlap(got, want []Result) int {
+	keys := make(map[uint64]struct{}, len(want))
+	for _, result := range want {
+		keys[result.Key] = struct{}{}
+	}
+	var matched int
+	for _, result := range got {
+		if _, found := keys[result.Key]; found {
+			matched++
+		}
+	}
+	return matched
+}
