@@ -5326,6 +5326,8 @@ func TestCollectionQuerySnapshotPublishesOnceUntilInvalidated(t *testing.T) {
 	require.Equal(t, uint64(len(first.documents)), first.liveFilter.global.matched)
 	require.Equal(t, uint64(len(first.documents)), first.liveFilter.global.total)
 	require.Len(t, first.liveFilter.local, len(first.segments))
+	require.Contains(t, first.ftsScorers, "title")
+	require.Same(t, first.runtimes[0].indexes.fts["title"].scorer, first.ftsScorers["title"])
 
 	collection.mu.Lock()
 	collection.invalidateQuerySnapshotLocked()
@@ -5336,6 +5338,45 @@ func TestCollectionQuerySnapshotPublishesOnceUntilInvalidated(t *testing.T) {
 	require.NoError(t, err)
 	require.NotSame(t, first, third)
 	require.Equal(t, uint64(2), collection.querySnapshotBuildCount.Load())
+}
+
+func TestBuildCollectionFTSSnapshotScorersTracksLiveDocuments(t *testing.T) {
+	ctx := context.Background()
+	schema := testMultiQuerySchema()
+	field, found := schema.Field("title")
+	require.True(t, found)
+	documents := testMultiQueryDocuments()
+	for index := range documents {
+		documents[index].DocID = uint64(index + 10)
+	}
+	first, err := buildCollectionFTSRuntime(ctx, field, documents[:2], nil)
+	require.NoError(t, err)
+	second, err := buildCollectionFTSRuntime(ctx, field, documents[2:], nil)
+	require.NoError(t, err)
+	runtimes := []*collectionSegmentRuntime{
+		{segmentID: 1, indexes: &collectionRuntimeIndexes{fts: map[string]*collectionFTSRuntime{"title": first}}},
+		{segmentID: 2, indexes: &collectionRuntimeIndexes{fts: map[string]*collectionFTSRuntime{"title": second}}},
+	}
+	liveFilter := evaluatedSegmentFilters{local: map[uint64]evaluatedFilter{
+		1: {
+			matched: 1, total: 2,
+			predicate: func(documentID uint64) bool { return documentID == documents[0].DocID },
+		},
+		2: {matched: 2, total: 2},
+	}}
+
+	scorers, err := buildCollectionFTSSnapshotScorers(ctx, schema, runtimes, liveFilter)
+	require.NoError(t, err)
+	scorer := scorers["title"]
+	require.NotNil(t, scorer)
+	require.NotSame(t, first.scorer, scorer)
+	require.NotSame(t, second.scorer, scorer)
+	stats := scorer.Stats()
+	require.Equal(t, uint64(3), stats.TotalDocuments)
+	require.Equal(t, uint64(5), stats.TotalTokens)
+	require.Equal(t, uint64(2), stats.DocumentFrequency("go"))
+	require.Equal(t, uint64(2), stats.DocumentFrequency("database"))
+	require.Equal(t, uint64(1), stats.DocumentFrequency("search"))
 }
 
 func TestCollectionQuerySnapshotConcurrentColdBuildPublishesOnce(t *testing.T) {

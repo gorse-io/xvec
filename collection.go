@@ -157,6 +157,7 @@ type collectionQuerySnapshot struct {
 	segments         []collectionSegmentDocuments
 	runtimes         []*collectionSegmentRuntime
 	liveFilter       evaluatedSegmentFilters
+	ftsScorers       map[string]*ftscolumn.BM25Scorer
 }
 
 func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQuerySnapshot, error) {
@@ -184,13 +185,72 @@ func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQueryS
 	if err != nil {
 		return nil, err
 	}
+	ftsScorers, err := buildCollectionFTSSnapshotScorers(ctx, c.schema, runtimes, liveFilter)
+	if err != nil {
+		return nil, err
+	}
 	snapshot := &collectionQuerySnapshot{
 		documents: documents, documentOrdinals: indexDocumentOrdinals(documents),
-		segments: segments, runtimes: runtimes, liveFilter: liveFilter,
+		segments: segments, runtimes: runtimes, liveFilter: liveFilter, ftsScorers: ftsScorers,
 	}
 	c.querySnapshot.Store(snapshot)
 	c.querySnapshotBuildCount.Add(1)
 	return snapshot, nil
+}
+
+func buildCollectionFTSSnapshotScorers(
+	ctx context.Context,
+	schema CollectionSchema,
+	runtimes []*collectionSegmentRuntime,
+	liveFilter evaluatedSegmentFilters,
+) (map[string]*ftscolumn.BM25Scorer, error) {
+	scorers := make(map[string]*ftscolumn.BM25Scorer)
+	for _, field := range schema.Fields {
+		if field.IndexType() != IndexTypeFTS {
+			continue
+		}
+		views := make([]ftscolumn.FTSSegmentView, len(runtimes))
+		for index, segment := range runtimes {
+			base := segment.indexes.fts[field.Name]
+			if base == nil || base.dictionary == nil || base.scorer == nil {
+				return nil, fmt.Errorf("field %q has no FTS runtime for segment %d", field.Name, segment.segmentID)
+			}
+			local, found := liveFilter.local[segment.segmentID]
+			if !found {
+				return nil, fmt.Errorf("live filter for segment %d is missing", segment.segmentID)
+			}
+			var deleted *container.Bitmap
+			if local.matched < local.total {
+				if local.predicate == nil {
+					return nil, fmt.Errorf("live filter for segment %d has no predicate", segment.segmentID)
+				}
+				deleted = container.NewBitmap(uint64(len(base.documentIDs)))
+				for ordinal, documentID := range base.documentIDs {
+					if !local.predicate(documentID) {
+						deleted.Set(uint64(ordinal))
+					}
+				}
+			}
+			views[index] = ftscolumn.FTSSegmentView{Dictionary: base.dictionary, DeletedDocuments: deleted}
+		}
+		if len(views) == 0 {
+			continue
+		}
+		if len(views) == 1 && views[0].DeletedDocuments == nil {
+			scorers[field.Name] = runtimes[0].indexes.fts[field.Name].scorer
+			continue
+		}
+		stats, err := ftscolumn.AggregateFTSCorpusStats(ctx, views)
+		if err != nil {
+			return nil, err
+		}
+		scorer, err := ftscolumn.NewBM25Scorer(ftscolumn.DefaultBM25Params(), stats)
+		if err != nil {
+			return nil, err
+		}
+		scorers[field.Name] = scorer
+	}
+	return scorers, nil
 }
 
 func (c *Collection) invalidateQuerySnapshotLocked() {
@@ -3326,22 +3386,18 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 	if err != nil {
 		return nil, invalidArgument(op, "invalid filter: %v", err)
 	}
-	documents, err := c.liveDocumentsLocked(ctx)
+	snapshot, err := c.querySnapshotLocked(ctx)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
-	segments, err := c.segmentDocumentsLocked(ctx)
-	if err != nil {
-		return nil, wrapCollectionError(op, c.path, err)
-	}
-	runtimes, err := c.segmentRuntimeIndexesLocked(ctx, segments)
-	if err != nil {
-		return nil, wrapCollectionError(op, c.path, err)
-	}
+	documents, segments, runtimes := snapshot.documents, snapshot.segments, snapshot.runtimes
 	runtimeConfig := c.runtimeConfig()
-	filters, err := evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
-	if err != nil {
-		return nil, wrapFilterEvaluationError(op, c.path, err)
+	filters := snapshot.liveFilter
+	if filterPlan != nil {
+		filters, err = evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
+		if err != nil {
+			return nil, wrapFilterEvaluationError(op, c.path, err)
+		}
 	}
 	batches := make([]RerankBatch, len(query.Queries))
 	candidateIDs := make(map[uint64]struct{})
@@ -3384,7 +3440,8 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 			)
 		case multiQueryTargetFTS:
 			results, err = c.searchFTSSegments(
-				ctx, op, field, subQuery.FTS, subQuery.Params, candidateCount, documents, runtimes, filters,
+				ctx, op, field, subQuery.FTS, subQuery.Params, candidateCount,
+				runtimes, filters, snapshot.ftsScorers[field.Name],
 			)
 		}
 		if err != nil {
@@ -4085,7 +4142,10 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 		if !found {
 			return nil, invalidArgument(op, "FTS field %q does not exist", query.Field)
 		}
-		results, err = c.searchFTSSegments(ctx, op, field, query.FTS, query.Params, query.TopK, documents, runtimes, filters)
+		results, err = c.searchFTSSegments(
+			ctx, op, field, query.FTS, query.Params, query.TopK,
+			runtimes, filters, snapshot.ftsScorers[field.Name],
+		)
 	case singleQueryTargetDense, singleQueryTargetSparse, singleQueryTargetPrimaryKey:
 		field, found := c.schema.Field(query.Field)
 		if !found || !field.DataType.IsVector() {
@@ -4273,48 +4333,31 @@ func (c *Collection) searchFTSSegments(
 	clause *FTSClause,
 	queryParams QueryParams,
 	topK int,
-	liveDocuments []Document,
 	runtimes []*collectionSegmentRuntime,
 	filters evaluatedSegmentFilters,
+	scorer *ftscolumn.BM25Scorer,
 ) ([]core.Result, error) {
-	live := make(map[uint64]struct{}, len(liveDocuments))
-	for _, document := range liveDocuments {
-		live[document.DocID] = struct{}{}
+	if field.DataType != DataTypeString || field.IndexType() != IndexTypeFTS {
+		return nil, invalidArgument(op, "field %q is not an FTS-indexed STRING field", field.Name)
 	}
-	views := make([]ftscolumn.FTSSegmentView, len(runtimes))
-	for index, segment := range runtimes {
-		runtime := segment.indexes.fts[field.Name]
-		if runtime == nil {
-			return nil, invalidArgument(op, "field %q is not an FTS-indexed STRING field", field.Name)
-		}
-		deleted := container.NewBitmap(uint64(len(runtime.documentIDs)))
-		for ordinal, documentID := range runtime.documentIDs {
-			if _, found := live[documentID]; !found {
-				deleted.Set(uint64(ordinal))
-			}
-		}
-		views[index] = ftscolumn.FTSSegmentView{Dictionary: runtime.dictionary, DeletedDocuments: deleted}
-	}
-	if len(views) == 0 {
+	if len(runtimes) == 0 {
 		return []core.Result{}, nil
 	}
-	stats, err := ftscolumn.AggregateFTSCorpusStats(ctx, views)
-	if err != nil {
-		return nil, err
-	}
-	scorer, err := ftscolumn.NewBM25Scorer(ftscolumn.DefaultBM25Params(), stats)
-	if err != nil {
-		return nil, err
+	if scorer == nil {
+		return nil, fmt.Errorf("FTS scorer for field %q is missing from the query snapshot", field.Name)
 	}
 	batches := make([][]core.Result, len(runtimes))
 	runtimeConfig := c.runtimeConfig()
-	err = parallel.ParallelFor(ctx, len(runtimes), c.queryWorkers(), func(ctx context.Context, index int) error {
+	err := parallel.ParallelFor(ctx, len(runtimes), c.queryWorkers(), func(ctx context.Context, index int) error {
 		segment := runtimes[index]
 		local, found := filters.local[segment.segmentID]
 		if !found {
 			return fmt.Errorf("candidate filter for segment %d is missing", segment.segmentID)
 		}
 		base := segment.indexes.fts[field.Name]
+		if base == nil {
+			return invalidArgument(op, "field %q is not an FTS-indexed STRING field", field.Name)
+		}
 		runtime := *base
 		runtime.scorer = scorer
 		filtered := runtime.withFilter(local.predicate)
