@@ -32,7 +32,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/gorse-io/xvec/internal/ailego/math"
-	"github.com/gorse-io/xvec/internal/core"
+	"github.com/gorse-io/xvec/internal/core/algorithm"
 	"github.com/gorse-io/xvec/internal/db"
 	"github.com/gorse-io/xvec/internal/db/index/column/fts_column/tokenizer"
 	"github.com/gorse-io/xvec/internal/db/index/common"

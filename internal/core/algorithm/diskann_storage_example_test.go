@@ -15,37 +15,16 @@
 package core_test
 
 import (
-	"context"
 	"fmt"
 
-	"github.com/gorse-io/xvec/internal/core"
+	"github.com/gorse-io/xvec/internal/core/algorithm"
 )
 
-func ExampleTrainPQ() {
-	vectors := [][]float32{
-		{0, 0, 10, 10},
-		{0, 1, 10, 11},
-		{5, 5, 20, 20},
-		{5, 6, 20, 21},
-	}
-	options := core.DefaultPQOptions(core.MetricL2)
-	options.Chunks = 2
-	model, err := core.TrainPQ(context.Background(), vectors, options)
+func ExampleNewDiskANNLayout() {
+	layout, err := core.NewDiskANNLayout(core.MetricL2, 1000, 128, 64)
 	if err != nil {
 		panic(err)
 	}
-	code, err := model.Encode(vectors[0])
-	if err != nil {
-		panic(err)
-	}
-	table, err := model.DistanceTable(vectors[0])
-	if err != nil {
-		panic(err)
-	}
-	score, err := table.Lookup(code)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(model.Chunks(), len(code.Bytes()), score)
-	// Output: 2 2 0
+	fmt.Println(layout.RecordSize(), layout.NodesPerSector(), layout.SectorsPerNode(), layout.DataLength())
+	// Output: 776 5 1 819200
 }

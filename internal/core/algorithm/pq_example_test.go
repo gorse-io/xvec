@@ -18,24 +18,19 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gorse-io/xvec/internal/core"
+	"github.com/gorse-io/xvec/internal/core/algorithm"
 )
 
-func ExampleTrainRaBitQ() {
-	vectors := make([][]float32, 8)
-	for row := range vectors {
-		vectors[row] = make([]float32, 64)
-		for column := range vectors[row] {
-			vectors[row][column] = float32((row+1)*(column%7-3)) / 8
-		}
+func ExampleTrainPQ() {
+	vectors := [][]float32{
+		{0, 0, 10, 10},
+		{0, 1, 10, 11},
+		{5, 5, 20, 20},
+		{5, 6, 20, 21},
 	}
-
-	options := core.DefaultRaBitQOptions(core.MetricL2)
-	options.TotalBits = 3
-	options.Clusters = 1
-	options.MaxIterations = 2
-	options.Seed = 42
-	model, err := core.TrainRaBitQ(context.Background(), vectors, options)
+	options := core.DefaultPQOptions(core.MetricL2)
+	options.Chunks = 2
+	model, err := core.TrainPQ(context.Background(), vectors, options)
 	if err != nil {
 		panic(err)
 	}
@@ -43,20 +38,14 @@ func ExampleTrainRaBitQ() {
 	if err != nil {
 		panic(err)
 	}
-	query, err := model.PrepareQuery(vectors[1])
+	table, err := model.DistanceTable(vectors[0])
 	if err != nil {
 		panic(err)
 	}
-	estimate, err := query.Estimate(code)
+	score, err := table.Lookup(code)
 	if err != nil {
 		panic(err)
 	}
-
-	fmt.Println(model.Dimension(), model.PaddedDimension(), model.TotalBits())
-	fmt.Println(code.Cluster(), len(code.BinaryCode()), len(code.ExtraCode()))
-	fmt.Println(estimate.LowerBound <= estimate.UpperBound)
-	// Output:
-	// 64 64 3
-	// 0 8 16
-	// true
+	fmt.Println(model.Chunks(), len(code.Bytes()), score)
+	// Output: 2 2 0
 }

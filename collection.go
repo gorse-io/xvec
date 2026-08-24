@@ -38,7 +38,7 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/io"
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
 	"github.com/gorse-io/xvec/internal/ailego/utility"
-	"github.com/gorse-io/xvec/internal/core"
+	"github.com/gorse-io/xvec/internal/core/algorithm"
 	"github.com/gorse-io/xvec/internal/db"
 	"github.com/gorse-io/xvec/internal/db/index/column/fts_column"
 	"github.com/gorse-io/xvec/internal/db/index/column/fts_column/tokenizer"
