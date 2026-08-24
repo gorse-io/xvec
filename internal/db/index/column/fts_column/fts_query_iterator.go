@@ -815,28 +815,33 @@ func (i *ftsOrDocumentIterator) prepareWANDPostings(ctx context.Context, target 
 		return len(i.wandPostings) != 0, nil
 	}
 
-	changed := false
+	prefixEnd := 0
+	for prefixEnd < len(i.wandPostings) && i.wandPostings[prefixEnd].documentID < target {
+		prefixEnd++
+	}
+	if prefixEnd == 0 {
+		return len(i.wandPostings) != 0, nil
+	}
+
 	write := 0
-	for read := range i.wandPostings {
+	for read := 0; read < prefixEnd; read++ {
 		posting := i.wandPostings[read]
-		if posting.documentID < target {
-			documentID, ok, err := posting.iterator.advance(ctx, target)
-			if err != nil {
-				return false, err
-			}
-			changed = true
-			if !ok {
-				continue
-			}
-			posting.documentID = documentID
+		documentID, ok, err := posting.iterator.advance(ctx, target)
+		if err != nil {
+			return false, err
 		}
+		if !ok {
+			continue
+		}
+		posting.documentID = documentID
 		i.wandPostings[write] = posting
 		write++
 	}
-	i.wandPostings = i.wandPostings[:write]
-	if changed {
-		sortFTSWANDPostings(i.wandPostings)
+	if write != prefixEnd {
+		copy(i.wandPostings[write:], i.wandPostings[prefixEnd:])
+		i.wandPostings = i.wandPostings[:len(i.wandPostings)-(prefixEnd-write)]
 	}
+	sortFTSWANDPostings(i.wandPostings)
 	return len(i.wandPostings) != 0, nil
 }
 
