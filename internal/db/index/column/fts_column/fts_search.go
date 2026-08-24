@@ -79,12 +79,13 @@ func searchFTSWithStats(ctx context.Context, dictionary *FTSTermDictionary, node
 	if err != nil {
 		return nil, stats, err
 	}
+	_, wandRoot := iterator.root.(*ftsOrDocumentIterator)
 	results := make(ftsResultHeap, 0, min(options.TopK, 64))
 	heap.Init(&results)
 	target := uint32(0)
 	for {
 		exhausted := false
-		if len(results) == options.TopK {
+		if len(results) == options.TopK && !wandRoot {
 			for {
 				block := ftsIteratorBlockMaxInfo(iterator.root, target)
 				if block.lastDoc < target || !(block.score < results[0].Score) {
