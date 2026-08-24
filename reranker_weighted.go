@@ -18,7 +18,7 @@ import (
 	"context"
 	"math"
 
-	"github.com/gorse-io/xvec/internal/core"
+	"github.com/gorse-io/xvec/internal/core/algorithm"
 )
 
 // WeightedReranker normalizes each branch score according to its field metric,
