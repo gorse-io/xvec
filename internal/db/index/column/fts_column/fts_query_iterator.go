@@ -747,11 +747,11 @@ func (i *ftsOrDocumentIterator) advanceCompetitive(ctx context.Context, target u
 			return 0, false, skips, nil
 		}
 
-		partialMaxScore := float32(0)
+		partialMaxScore := float64(0)
 		pivotIndex := -1
 		for index := range i.wandPostings {
-			partialMaxScore = addFTSScoreBounds(partialMaxScore, i.wandPostings[index].maxScore)
-			if partialMaxScore >= minScore {
+			partialMaxScore += float64(i.wandPostings[index].maxScore)
+			if partialMaxScore >= float64(minScore) {
 				pivotIndex = index
 				break
 			}
