@@ -9,7 +9,7 @@ require (
 	github.com/gofrs/flock v0.13.0
 	github.com/parquet-go/parquet-go v0.30.1
 	github.com/stretchr/testify v1.11.1
-	github.com/zvec-ai/zvec-go v0.6.1-0.20260721023313-9199195b29da
+	github.com/zvec-ai/zvec-go v0.7.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
 )
