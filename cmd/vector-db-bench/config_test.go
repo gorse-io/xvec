@@ -152,6 +152,27 @@ func TestParseConfigDiskANN(t *testing.T) {
 	require.ErrorContains(t, err, "DiskANN parameters")
 }
 
+func TestParseConfigVamana(t *testing.T) {
+	config, err := parseConfig([]string{
+		backendXvec, "--path", t.TempDir(), "--index-type", indexVamana,
+	}, &bytes.Buffer{})
+	require.NoError(t, err)
+	require.Equal(t, indexVamana, config.IndexType)
+	require.Equal(t, defaultVamanaEFSearch, config.EFSearch)
+
+	_, err = parseConfig([]string{
+		backendZvec, "--path", t.TempDir(), "--index-type", indexVamana,
+		"--ef-search", "300",
+	}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "zvec Vamana requires")
+
+	_, err = parseConfig([]string{
+		backendXvec, "--path", t.TempDir(), "--index-type", indexVamana,
+		"--ef-search", "0",
+	}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "Vamana parameters")
+}
+
 func TestParseFlexibleDuration(t *testing.T) {
 	duration, err := parseFlexibleDuration("0.25")
 	require.NoError(t, err)

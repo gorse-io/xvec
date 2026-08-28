@@ -35,6 +35,14 @@ func TestVectorDBBenchZvecDiskANNEndToEndCustomDataset(t *testing.T) {
 	testVectorDBBenchEndToEndCustomDataset(t, backendZvec, "--index-type", indexDiskANN)
 }
 
+func TestVectorDBBenchZvecVamanaEndToEndCustomDataset(t *testing.T) {
+	if os.Getenv("ZVEC_LIBRARY_PATH") == "" {
+		t.Skip("ZVEC_LIBRARY_PATH is not set")
+	}
+	testVectorDBBenchEndToEndCustomDataset(t, backendZvec,
+		"--index-type", indexVamana, "--ef-search", "200")
+}
+
 func TestVectorDBBenchZvecEndToEndFTSDataset(t *testing.T) {
 	if os.Getenv("ZVEC_LIBRARY_PATH") == "" {
 		t.Skip("ZVEC_LIBRARY_PATH is not set")

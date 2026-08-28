@@ -31,8 +31,11 @@ const (
 	backendZvec      = "zvec"
 	indexHNSW        = "hnsw"
 	indexDiskANN     = "diskann"
+	indexVamana      = "vamana"
 	workloadVector   = "vector"
 	workloadFullText = "full_text"
+
+	defaultVamanaEFSearch = 200
 
 	casePerformance768D100K  = "Performance768D100K"
 	casePerformance768D1M    = "Performance768D1M"
@@ -148,7 +151,7 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	flags.IntVar(&config.M, "m", 50, "HNSW M")
 	flags.IntVar(&config.EFConstruction, "ef-construction", 500, "HNSW construction EF")
 	flags.IntVar(&config.EFSearch, "ef-search", 300, "HNSW search EF")
-	flags.StringVar(&config.IndexType, "index-type", indexHNSW, "vector index: hnsw or diskann")
+	flags.StringVar(&config.IndexType, "index-type", indexHNSW, "vector index: hnsw, diskann, or vamana")
 	flags.IntVar(&config.DiskANNMaxDegree, "diskann-max-degree", 100, "DiskANN graph maximum degree")
 	flags.IntVar(&config.DiskANNBuildList, "diskann-build-list", 50, "DiskANN construction candidate list size")
 	flags.IntVar(&config.DiskANNPQChunks, "diskann-pq-chunks", 0, "DiskANN PQ chunks; zero uses the backend automatic value")
@@ -179,6 +182,15 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	}
 	if flags.NArg() != 0 {
 		return benchConfig{}, fmt.Errorf("unexpected positional arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	efSearchSet := false
+	flags.Visit(func(value *flag.Flag) {
+		if value.Name == "ef-search" {
+			efSearchSet = true
+		}
+	})
+	if strings.EqualFold(config.IndexType, indexVamana) && !efSearchSet {
+		config.EFSearch = defaultVamanaEFSearch
 	}
 	var err error
 	config.ConcurrencyDuration, err = parseFlexibleDuration(*concurrencyDuration)
@@ -240,8 +252,18 @@ func (c benchConfig) validate() error {
 			if c.DiskANNMaxDegree <= 0 || c.DiskANNBuildList <= 0 || c.DiskANNPQChunks < 0 || c.DiskANNQueryList <= 0 {
 				return errors.New("DiskANN parameters require positive max-degree, build-list, and query-list, and non-negative pq-chunks")
 			}
+		case indexVamana:
+			if c.EFSearch <= 0 {
+				return errors.New("Vamana parameters require positive ef-search")
+			}
+			// zvec-go v0.7 exposes the native Vamana index type but not its
+			// query-parameter wrapper yet, so only the native defaults can be
+			// selected without silently benchmarking a different search width.
+			if c.Backend == backendZvec && (c.EFSearch != defaultVamanaEFSearch || c.UseRefiner) {
+				return fmt.Errorf("zvec Vamana requires ef-search %d and refiner disabled", defaultVamanaEFSearch)
+			}
 		default:
-			return fmt.Errorf("unsupported index-type %q: use hnsw or diskann", c.IndexType)
+			return fmt.Errorf("unsupported index-type %q: use hnsw, diskann, or vamana", c.IndexType)
 		}
 	} else {
 		switch strings.ToLower(c.FTSTokenizer) {

@@ -264,6 +264,19 @@ func writableZvecBenchmarkCollection(config benchConfig) (*zvec.Collection, erro
 		if err != nil {
 			return nil, fmt.Errorf("create zvec DiskANN index params: %w", err)
 		}
+	case indexVamana:
+		index = zvec.NewIndexParams(zvec.IndexTypeVamana)
+		if index == nil {
+			return nil, errors.New("create zvec Vamana index params")
+		}
+		if err := index.SetMetricType(metric); err != nil {
+			index.Destroy()
+			return nil, fmt.Errorf("set zvec Vamana metric: %w", err)
+		}
+		if err := index.SetVamanaTwoPassBuild(false); err != nil {
+			index.Destroy()
+			return nil, fmt.Errorf("set zvec Vamana two-pass build: %w", err)
+		}
 	default:
 		return nil, fmt.Errorf("unsupported index type %q", config.IndexType)
 	}
@@ -455,6 +468,10 @@ func (e zvecQueryEngine) search(ctx context.Context, benchmarkQuery benchmarkQue
 		if err := query.SetDiskANNParams(params); err != nil {
 			return nil, fmt.Errorf("set zvec DiskANN query params: %w", err)
 		}
+	} else if strings.EqualFold(e.indexType, indexVamana) {
+		// zvec-go v0.7 exposes IndexTypeVamana but not VamanaQueryParams.
+		// Leaving params unset selects zvec's native defaults (EF search 200,
+		// refiner disabled), which parseConfig pins for comparable runs.
 	} else {
 		params := zvec.NewHNSWQueryParams(e.ef, -1, false, e.useRefiner)
 		if params == nil {

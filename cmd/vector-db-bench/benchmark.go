@@ -265,6 +265,11 @@ func writableBenchmarkCollection(ctx context.Context, config benchConfig) (*xvec
 		params.Quantize = quantize
 		params.Quantizer.EnableRotate = quantize == xvec.QuantizeTypeInt8 || quantize == xvec.QuantizeTypeInt4
 		index = params
+	case indexVamana:
+		params := xvec.NewVamanaIndexParams(metric)
+		params.Quantize = quantize
+		params.Quantizer.EnableRotate = quantize == xvec.QuantizeTypeInt8 || quantize == xvec.QuantizeTypeInt4
+		index = params
 	default:
 		return nil, fmt.Errorf("unsupported index type %q", config.IndexType)
 	}
@@ -335,6 +340,11 @@ func newXvecQueryEngine(collection *xvec.Collection, config benchConfig) xvecQue
 		diskANN.ListSize = config.DiskANNQueryList
 		diskANN.UseRefiner = config.UseRefiner
 		params = diskANN
+	} else if strings.EqualFold(config.IndexType, indexVamana) {
+		vamana := xvec.NewVamanaQueryParams()
+		vamana.EFSearch = config.EFSearch
+		vamana.UseRefiner = config.UseRefiner
+		params = vamana
 	} else {
 		hnsw := xvec.NewHNSWQueryParams()
 		hnsw.EF = config.EFSearch

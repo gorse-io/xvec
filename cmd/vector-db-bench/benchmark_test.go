@@ -52,6 +52,10 @@ func TestVectorDBBenchDiskANNEndToEndCustomDataset(t *testing.T) {
 	testVectorDBBenchEndToEndCustomDataset(t, backendXvec, "--index-type", indexDiskANN)
 }
 
+func TestVectorDBBenchVamanaEndToEndCustomDataset(t *testing.T) {
+	testVectorDBBenchEndToEndCustomDataset(t, backendXvec, "--index-type", indexVamana)
+}
+
 func TestVectorDBBenchEndToEndFTSDataset(t *testing.T) {
 	testVectorDBBenchEndToEndFTSDataset(t, backendXvec)
 }

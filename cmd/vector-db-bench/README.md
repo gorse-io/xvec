@@ -7,7 +7,7 @@ vector and full-text search performance workloads:
 
 - Cohere, LAION, BioASQ, and OpenAI Parquet datasets;
 - MS MARCO and HotpotQA BM25 datasets with semantic qrels;
-- HNSW or DiskANN loading and optimization;
+- HNSW, DiskANN, or Vamana loading and optimization;
 - serial Recall@K, QPS, and latency percentiles;
 - FTS Recall@K, MRR@K, and NDCG@K;
 - sustained concurrent QPS and latency at multiple worker counts;
@@ -186,6 +186,29 @@ Use the same command for `zvec`, changing only the backend, collection path,
 and output path. When `--optimize-concurrency` is positive, it also pins zvec's
 global query and optimize thread pools to that value. `taskset` and
 `GOMAXPROCS` should still be identical for both processes.
+
+## Vamana comparison
+
+zvec-go v0.7 exposes zvec's native Vamana index. Select it independently from
+DiskANN with `--index-type vamana`. The benchmark pins the shared native
+defaults for both backends: maximum degree 64, construction list size 100,
+alpha 1.2, graph saturation disabled, two-pass construction disabled, and
+search EF 200. zvec-go does not yet expose the Vamana query-parameter wrapper,
+so non-default EF or refiner settings are rejected for zvec instead of silently
+running different workloads.
+
+```powershell
+./vector-db-bench.exe zvec `
+  --path ./.bench/collections/openai-50k-zvec-vamana `
+  --case-type Performance1536D50K `
+  --index-type vamana `
+  --ef-search 200 `
+  --num-concurrency 8 `
+  --output ./.bench/zvec-vamana.json
+```
+
+Run xvec after zvec with the same arguments, changing only the backend,
+collection path, and output path.
 
 ## Dataset compatibility
 
