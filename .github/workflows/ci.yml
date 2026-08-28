@@ -81,3 +81,23 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  simd:
+    name: Test SIMD architectures
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user
+      - name: Test RISC-V RVV
+        run: make -C internal/floats test-rvv
+      - name: Test LoongArch LASX
+        run: make -C internal/floats test-lasx
