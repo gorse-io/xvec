@@ -2016,7 +2016,7 @@ func buildCollectionDenseVamana(
 			return nil, err
 		}
 	}
-	base, err := builder.BuildWithWorkers(ctx, workers)
+	base, err := builder.BuildInterleavedWithWorkers(ctx, workers)
 	if err != nil {
 		return nil, err
 	}

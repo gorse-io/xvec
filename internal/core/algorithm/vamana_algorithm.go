@@ -184,6 +184,16 @@ func (b *VamanaBuilder) BuildWithWorkers(ctx context.Context, workers int) (*Vam
 	return b.build(ctx, workers)
 }
 
+// BuildInterleavedWithWorkers constructs the graph with zvec-style strided
+// concurrent insertion. Callers that require reproducible topology should use
+// BuildWithWorkers instead.
+func (b *VamanaBuilder) BuildInterleavedWithWorkers(ctx context.Context, workers int) (*VamanaIndex, error) {
+	if workers <= 0 {
+		return nil, ErrInvalidVamanaWorkers
+	}
+	return b.buildInterleaved(ctx, workers)
+}
+
 // build constructs a deterministic graph with batched parallel candidate
 // discovery. Each batch reads an immutable graph generation, then publishes
 // forward and reverse edges in input order so scheduling cannot affect output.
@@ -270,8 +280,8 @@ func (b *VamanaBuilder) build(ctx context.Context, workers int) (*VamanaIndex, e
 	return index, nil
 }
 
-// buildInterleaved constructs a DiskANN graph using the same strided insertion
-// schedule as zvec: worker w inserts w, w+workers, ... while other workers can
+// buildInterleaved constructs a graph using the same strided insertion schedule
+// as zvec: worker w inserts w, w+workers, ... while other workers can
 // observe and update the graph. Node-striped locks protect adjacency snapshots
 // and publications; a final parallel prune restores the persisted degree bound.
 func (b *VamanaBuilder) buildInterleaved(ctx context.Context, workers int) (*VamanaIndex, error) {

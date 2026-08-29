@@ -156,7 +156,7 @@ func TestVamanaInterleavedBuildInvariants(t *testing.T) {
 	for _, input := range inputs {
 		require.NoError(t, builder.Add(context.Background(), input.Key, input.Vector))
 	}
-	index, err := builder.buildInterleaved(context.Background(), 4)
+	index, err := builder.BuildInterleavedWithWorkers(context.Background(), 4)
 	require.NoError(t, err)
 	assertVamanaGraphInvariants(t, index)
 	for _, neighbors := range index.neighbors {
@@ -168,7 +168,9 @@ func TestVamanaInterleavedBuildInvariants(t *testing.T) {
 	for _, input := range inputs[:2] {
 		require.NoError(t, smallBuilder.Add(context.Background(), input.Key, input.Vector))
 	}
-	small, err := smallBuilder.buildInterleaved(context.Background(), 2)
+	_, err = smallBuilder.BuildInterleavedWithWorkers(context.Background(), 0)
+	require.ErrorIs(t, err, ErrInvalidVamanaWorkers)
+	small, err := smallBuilder.BuildInterleavedWithWorkers(context.Background(), 2)
 	require.NoError(t, err)
 	require.NotEmpty(t, small.neighbors[small.entryPoint])
 }
