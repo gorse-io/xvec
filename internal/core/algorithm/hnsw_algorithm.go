@@ -1421,6 +1421,8 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 		return fmt.Errorf("%w: invalid graph entry point", ErrInvalidHNSWFile)
 	}
 	derivedMaxLevel := -1
+	seenNeighbors := make([]uint32, count)
+	var seenGeneration uint32
 	for position, key := range index.keys {
 		if position&255 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -1449,15 +1451,19 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 			if len(neighbors) > degreeLimit {
 				return fmt.Errorf("%w: node degree exceeds limit", ErrInvalidHNSWFile)
 			}
-			seen := make(map[int]struct{}, len(neighbors))
+			seenGeneration++
+			if seenGeneration == 0 {
+				clear(seenNeighbors)
+				seenGeneration = 1
+			}
 			for _, neighbor := range neighbors {
 				if neighbor < 0 || neighbor >= count || neighbor == position || index.levels[neighbor] < currentLevel {
 					return fmt.Errorf("%w: invalid neighbor reference", ErrInvalidHNSWFile)
 				}
-				if _, duplicate := seen[neighbor]; duplicate {
+				if seenNeighbors[neighbor] == seenGeneration {
 					return fmt.Errorf("%w: duplicate neighbor reference", ErrInvalidHNSWFile)
 				}
-				seen[neighbor] = struct{}{}
+				seenNeighbors[neighbor] = seenGeneration
 			}
 		}
 	}
