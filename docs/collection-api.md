@@ -34,6 +34,17 @@ Its `Projection` separates scalar selection from vector inclusion: nil output
 fields select all scalar fields, an empty non-nil slice selects none, and
 `IncludeVectors` controls all vector fields.
 
+`CreateIterator` captures an isolated snapshot of all live documents and
+returns them through `DocumentIterator.Next`; iteration ends with `io.EOF`.
+The snapshot uses a detached IDMap checkpoint and reads and projects document
+payloads lazily, so opening an iterator does not retain every document payload
+in memory. `NewIteratorOptions` includes all scalar and vector fields by
+default, while its `Projection` supports the same field selection as Fetch and
+Query. Later writes and deletions do not change an open iterator. Call `Close`
+when finished; Optimize, schema/index changes, collection Close, and Destroy
+return `ErrFailedPrecondition` while any iterator remains open. Ordinary writes
+and Flush remain available.
+
 `Query` is the unified single-branch API. It accepts an explicit dense or
 sparse vector, resolves a vector from `PrimaryKey`, executes one `FTS` clause,
 or performs a filter-only query when no target and no field are supplied.

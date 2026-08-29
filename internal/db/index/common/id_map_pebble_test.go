@@ -165,6 +165,74 @@ func TestPrimaryKeyMapReadOnlyOverlayDoesNotChangeCheckpoint(t *testing.T) {
 	require.Equal(t, before, snapshotFileTree(t, checkpoint))
 }
 
+func TestPrimaryKeyMapDetachedSnapshotIsIsolated(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	primary, err := CreatePrimaryKeyMap(ctx, filepath.Join(root, "source.pebble"))
+	require.NoError(t, err)
+	_, _, err = primary.Put(ctx, "alpha", 10)
+	require.NoError(t, err)
+	_, _, err = primary.Put(ctx, "beta", 20)
+	require.NoError(t, err)
+
+	detached, err := primary.CreateDetachedSnapshot(ctx, filepath.Join(root, "snapshot.pebble"), filepath.Join(root, "snapshot-working.pebble"))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, detached.Close()) }()
+	_, _, err = primary.Put(ctx, "alpha", 11)
+	require.NoError(t, err)
+	_, _, err = primary.Delete(ctx, "beta")
+	require.NoError(t, err)
+
+	iterator, err := detached.NewSnapshotIterator()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, iterator.Close()) }()
+	actual := make(map[string]uint64)
+	for {
+		key, docID, found, err := iterator.Next()
+		require.NoError(t, err)
+		if !found {
+			break
+		}
+		actual[key] = docID
+	}
+	require.Equal(t, map[string]uint64{"alpha": 10, "beta": 20}, actual)
+	require.NoError(t, primary.Close())
+}
+
+func TestPrimaryKeyMapDetachedSnapshotIncludesReadOnlyOverlay(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	primary, err := CreatePrimaryKeyMap(ctx, filepath.Join(root, "source.pebble"))
+	require.NoError(t, err)
+	_, _, err = primary.Put(ctx, "alpha", 10)
+	require.NoError(t, err)
+	_, _, err = primary.Put(ctx, "beta", 20)
+	require.NoError(t, err)
+	checkpoint := filepath.Join(root, "checkpoint.pebble")
+	require.NoError(t, primary.Checkpoint(ctx, checkpoint))
+	require.NoError(t, primary.Close())
+
+	readOnly, err := OpenPrimaryKeyMapReadOnly(ctx, checkpoint)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, readOnly.Close()) }()
+	_, _, err = readOnly.Put(ctx, "alpha", 11)
+	require.NoError(t, err)
+	_, _, err = readOnly.Delete(ctx, "beta")
+	require.NoError(t, err)
+	_, _, err = readOnly.Put(ctx, "gamma", 30)
+	require.NoError(t, err)
+
+	detached, err := readOnly.CreateDetachedSnapshot(ctx, filepath.Join(root, "detached.pebble"), filepath.Join(root, "detached-working.pebble"))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, detached.Close()) }()
+	actual := make(map[string]uint64)
+	require.NoError(t, detached.ForEach(ctx, func(key string, docID uint64) error {
+		actual[key] = docID
+		return nil
+	}))
+	require.Equal(t, map[string]uint64{"alpha": 11, "gamma": 30}, actual)
+}
+
 func TestPrimaryKeyMapRejectsMalformedPebbleValue(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

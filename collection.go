@@ -103,6 +103,9 @@ type Collection struct {
 	options CollectionOptions
 	runtime *runtimeResources
 	closed  bool
+	// activeIterators is guarded by mu. Maintenance operations that can
+	// invalidate iterator snapshots are rejected until it reaches zero.
+	activeIterators int
 
 	indexMu         sync.RWMutex
 	segmentIndexes  map[uint64]*collectionSegmentRuntime
@@ -1143,6 +1146,9 @@ func (c *Collection) Close() error {
 	if c.closed {
 		return nil
 	}
+	if err := c.requireNoActiveIteratorsLocked("close collection"); err != nil {
+		return err
+	}
 	c.closed = true
 	c.indexMu.Lock()
 	segmentIndexes := c.segmentIndexes
@@ -1171,6 +1177,9 @@ func (c *Collection) Destroy(ctx context.Context) error {
 	defer c.mu.Unlock()
 	if c.closed || c.store == nil {
 		return &Error{Code: ErrorCodeFailedPrecondition, Op: "destroy collection", Path: c.path, Message: "collection is closed"}
+	}
+	if err := c.requireNoActiveIteratorsLocked("destroy collection"); err != nil {
+		return err
 	}
 	if c.options.ReadOnly {
 		return &Error{Code: ErrorCodePermissionDenied, Op: "destroy collection", Path: c.path, Message: "read-only collection cannot be destroyed"}
@@ -1202,6 +1211,16 @@ func closeCollectionSegmentRuntimes(runtimes map[uint64]*collectionSegmentRuntim
 func (c *Collection) requireOpenLocked(op string) error {
 	if c.closed || c.store == nil {
 		return &Error{Code: ErrorCodeFailedPrecondition, Op: op, Path: c.path, Message: "collection is closed"}
+	}
+	return nil
+}
+
+func (c *Collection) requireNoActiveIteratorsLocked(op string) error {
+	if c.activeIterators > 0 {
+		return &Error{
+			Code: ErrorCodeFailedPrecondition, Op: op, Path: c.path,
+			Message: "operation is not allowed while iterators are open; close all iterators first",
+		}
 	}
 	return nil
 }
@@ -1238,6 +1257,9 @@ func (c *Collection) AddColumn(ctx context.Context, field FieldSchema, expressio
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {
+		return err
+	}
+	if err := c.requireNoActiveIteratorsLocked(op); err != nil {
 		return err
 	}
 	if c.options.ReadOnly {
@@ -1318,6 +1340,9 @@ func (c *Collection) AlterColumn(ctx context.Context, column, rename string, fie
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {
+		return err
+	}
+	if err := c.requireNoActiveIteratorsLocked(op); err != nil {
 		return err
 	}
 	if c.options.ReadOnly {
@@ -2355,6 +2380,9 @@ func (c *Collection) CreateIndex(ctx context.Context, column string, index Index
 	if err := c.requireOpenLocked(op); err != nil {
 		return err
 	}
+	if err := c.requireNoActiveIteratorsLocked(op); err != nil {
+		return err
+	}
 	if c.options.ReadOnly {
 		return &Error{Code: ErrorCodePermissionDenied, Op: op, Path: c.path, Message: "collection is read-only"}
 	}
@@ -2426,6 +2454,9 @@ func (c *Collection) DropIndex(ctx context.Context, column string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {
+		return err
+	}
+	if err := c.requireNoActiveIteratorsLocked(op); err != nil {
 		return err
 	}
 	if c.options.ReadOnly {
@@ -2664,6 +2695,9 @@ func (c *Collection) DropColumn(ctx context.Context, column string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {
+		return err
+	}
+	if err := c.requireNoActiveIteratorsLocked(op); err != nil {
 		return err
 	}
 	if c.options.ReadOnly {
@@ -3971,6 +4005,9 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {
+		return err
+	}
+	if err := c.requireNoActiveIteratorsLocked(op); err != nil {
 		return err
 	}
 	if c.options.ReadOnly {

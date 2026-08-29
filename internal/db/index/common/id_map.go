@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"unicode/utf8"
 
@@ -36,6 +37,19 @@ var ErrIDMapCorrupt = errors.New("db: corrupt IDMap")
 type primaryKeyDelta struct {
 	docID   uint64
 	deleted bool
+}
+
+// PrimaryKeySnapshotIterator lazily traverses an isolated IDMap snapshot.
+// Writable maps use Pebble's constant-time snapshot; read-only replay overlays
+// require only the overlay keys to be copied and sorted.
+type PrimaryKeySnapshotIterator struct {
+	snapshot    *pebble.Snapshot
+	iterator    *pebble.Iterator
+	baseValid   bool
+	overlay     map[string]primaryKeyDelta
+	overlayKeys []string
+	overlayPos  int
+	closed      bool
 }
 
 // PrimaryKeyMap is the collection IDMap: a Pebble point map from a primary key
@@ -403,6 +417,157 @@ func (m *PrimaryKeyMap) Checkpoint(ctx context.Context, target string) error {
 		return fmt.Errorf("db: sync IDMap checkpoint parent: %w", err)
 	}
 	return nil
+}
+
+// CreateDetachedSnapshot materializes the current mapping in an independent
+// Pebble working copy. Writable maps use a hard-linked checkpoint; read-only
+// replay overlays are streamed into the checkpoint without retaining all keys.
+func (m *PrimaryKeyMap) CreateDetachedSnapshot(ctx context.Context, checkpoint, working string) (*PrimaryKeyMap, error) {
+	if m == nil {
+		return nil, errors.New("db: nil IDMap")
+	}
+	if ctx == nil {
+		return nil, errors.New("db: nil detached IDMap snapshot context")
+	}
+	m.mu.RLock()
+	hasOverlay := m.overlay != nil
+	m.mu.RUnlock()
+	if !hasOverlay {
+		if err := m.Checkpoint(ctx, checkpoint); err != nil {
+			return nil, err
+		}
+	} else {
+		copyMap, err := CreatePrimaryKeyMap(ctx, checkpoint)
+		if err != nil {
+			return nil, err
+		}
+		copyErr := m.ForEach(ctx, func(primaryKey string, docID uint64) error {
+			_, _, err := copyMap.Put(ctx, primaryKey, docID)
+			return err
+		})
+		copyMap.mu.Lock()
+		flushErr := copyMap.db.Flush()
+		copyMap.mu.Unlock()
+		closeErr := copyMap.Close()
+		if err := errors.Join(copyErr, flushErr, closeErr); err != nil {
+			return nil, err
+		}
+	}
+	return OpenPrimaryKeyMap(ctx, checkpoint, working)
+}
+
+// NewSnapshotIterator captures the current key-to-document mapping and returns
+// a lazy iterator over that stable view.
+func (m *PrimaryKeyMap) NewSnapshotIterator() (*PrimaryKeySnapshotIterator, error) {
+	if m == nil {
+		return nil, errors.New("db: nil IDMap")
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.db == nil {
+		return nil, errors.New("db: closed IDMap")
+	}
+	snapshot := m.db.NewSnapshot()
+	iterator, err := snapshot.NewIter(nil)
+	if err != nil {
+		_ = snapshot.Close()
+		return nil, fmt.Errorf("db: create IDMap snapshot iterator: %w", err)
+	}
+	overlay := make(map[string]primaryKeyDelta, len(m.overlay))
+	overlayKeys := make([]string, 0, len(m.overlay))
+	for key, delta := range m.overlay {
+		overlay[key] = delta
+		overlayKeys = append(overlayKeys, key)
+	}
+	sort.Strings(overlayKeys)
+	result := &PrimaryKeySnapshotIterator{
+		snapshot: snapshot, iterator: iterator, overlay: overlay, overlayKeys: overlayKeys,
+	}
+	result.baseValid = iterator.First()
+	if !result.baseValid && iterator.Error() != nil {
+		err := iterator.Error()
+		_ = result.Close()
+		return nil, fmt.Errorf("db: position IDMap snapshot iterator: %w", err)
+	}
+	return result, nil
+}
+
+// Next returns the next primary-key mapping. found is false at exhaustion.
+func (i *PrimaryKeySnapshotIterator) Next() (primaryKey string, docID uint64, found bool, err error) {
+	if i == nil || i.closed {
+		return "", 0, false, nil
+	}
+	for i.baseValid || i.overlayPos < len(i.overlayKeys) {
+		var baseKey string
+		if i.baseValid {
+			baseKey = string(i.iterator.Key())
+		}
+		var overlayKey string
+		if i.overlayPos < len(i.overlayKeys) {
+			overlayKey = i.overlayKeys[i.overlayPos]
+		}
+
+		useBase := i.baseValid && (overlayKey == "" || baseKey < overlayKey)
+		useOverlay := overlayKey != "" && (!i.baseValid || overlayKey < baseKey)
+		if useBase {
+			value := i.iterator.Value()
+			if err := ValidatePrimaryKey(baseKey); err != nil {
+				return "", 0, false, fmt.Errorf("%w: invalid primary key: %v", ErrIDMapCorrupt, err)
+			}
+			if len(value) != 8 {
+				return "", 0, false, fmt.Errorf("%w: document ID value has %d bytes", ErrIDMapCorrupt, len(value))
+			}
+			docID = binary.BigEndian.Uint64(value)
+			if err := i.advanceBase(); err != nil {
+				return "", 0, false, err
+			}
+			return baseKey, docID, true, nil
+		}
+
+		delta := i.overlay[overlayKey]
+		i.overlayPos++
+		if !useOverlay {
+			if err := i.advanceBase(); err != nil {
+				return "", 0, false, err
+			}
+		}
+		if delta.deleted {
+			continue
+		}
+		if err := ValidatePrimaryKey(overlayKey); err != nil {
+			return "", 0, false, fmt.Errorf("%w: invalid primary key: %v", ErrIDMapCorrupt, err)
+		}
+		return overlayKey, delta.docID, true, nil
+	}
+	return "", 0, false, nil
+}
+
+func (i *PrimaryKeySnapshotIterator) advanceBase() error {
+	i.baseValid = i.iterator.Next()
+	if !i.baseValid && i.iterator.Error() != nil {
+		return fmt.Errorf("db: iterate IDMap snapshot: %w", i.iterator.Error())
+	}
+	return nil
+}
+
+// Close releases the Pebble iterator and snapshot. It is idempotent.
+func (i *PrimaryKeySnapshotIterator) Close() error {
+	if i == nil || i.closed {
+		return nil
+	}
+	i.closed = true
+	var iteratorErr, snapshotErr error
+	if i.iterator != nil {
+		iteratorErr = i.iterator.Close()
+		i.iterator = nil
+	}
+	if i.snapshot != nil {
+		snapshotErr = i.snapshot.Close()
+		i.snapshot = nil
+	}
+	i.overlay = nil
+	i.overlayKeys = nil
+	return errors.Join(iteratorErr, snapshotErr)
 }
 
 // Close releases Pebble resources. It is idempotent.

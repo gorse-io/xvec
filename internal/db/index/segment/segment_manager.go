@@ -270,6 +270,16 @@ func (m *SegmentManager) Document(docID uint64) (StoredDocument, bool) {
 	if m == nil || m.deletes.IsDeleted(docID) {
 		return StoredDocument{}, false
 	}
+	return m.RetainedDocument(docID)
+}
+
+// RetainedDocument returns a stored version by global ID without consulting
+// the current logical-deletion set. Snapshot iterators use it to keep versions
+// that were live when the iterator was created visible after later writes.
+func (m *SegmentManager) RetainedDocument(docID uint64) (StoredDocument, bool) {
+	if m == nil {
+		return StoredDocument{}, false
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	writing := m.writing
