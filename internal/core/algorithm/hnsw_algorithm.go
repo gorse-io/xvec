@@ -107,6 +107,35 @@ func NewHNSWBuilder(dimension int, options HNSWBuildOptions) (*HNSWBuilder, erro
 	}, nil
 }
 
+// Reserve preallocates storage for at least count total vectors. It does not
+// change the builder length or the ownership guarantees of Add.
+func (b *HNSWBuilder) Reserve(count int) error {
+	if b == nil {
+		return errors.New("core: nil HNSW builder")
+	}
+	if count < 0 || uint64(count) >= math.MaxUint32 || (count > 0 && count > maxPlatformInt()/b.dimension) {
+		return ErrHNSWCapacity
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.built {
+		return ErrBuilderClosed
+	}
+	if count <= cap(b.keys) && count*b.dimension <= cap(b.vectors) {
+		return nil
+	}
+	reservedKeys := make([]uint64, len(b.keys), max(count, len(b.keys)))
+	copy(reservedKeys, b.keys)
+	reservedVectors := make([]float32, len(b.vectors), max(count*b.dimension, len(b.vectors)))
+	copy(reservedVectors, b.vectors)
+	reservedPositions := make(map[uint64]int, max(count, len(b.positions)))
+	for key, position := range b.positions {
+		reservedPositions[key] = position
+	}
+	b.keys, b.vectors, b.positions = reservedKeys, reservedVectors, reservedPositions
+	return nil
+}
+
 // Add validates and clones one unique vector while the builder is open.
 func (b *HNSWBuilder) Add(ctx context.Context, key uint64, vector []float32) error {
 	if b == nil {

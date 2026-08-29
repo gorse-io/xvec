@@ -307,6 +307,12 @@ func TestHNSWBuilderLifecycleAndErrors(t *testing.T) {
 	options.EFConstruction = 8
 	builder, _ := NewHNSWBuilder(2, options)
 	{
+		err := builder.Reserve(8)
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, cap(builder.keys), 8)
+		require.GreaterOrEqual(t, cap(builder.vectors), 16)
+	}
+	{
 		err := builder.Add(nil, 1, []float32{1, 2})
 		require.Error(t, err,
 			"nil add context succeeded")
@@ -356,6 +362,10 @@ func TestHNSWBuilderLifecycleAndErrors(t *testing.T) {
 		err := nilBuilder.Add(context.Background(), 1, []float32{1})
 		require.Error(t, err,
 			"nil builder add succeeded")
+	}
+	{
+		err := nilBuilder.Reserve(1)
+		require.Error(t, err)
 	}
 	{
 		_, err := nilBuilder.Build(context.Background())

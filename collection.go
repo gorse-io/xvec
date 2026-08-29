@@ -1915,6 +1915,9 @@ func buildCollectionDenseHNSW(
 	if err != nil {
 		return nil, err
 	}
+	if err := builder.Reserve(len(candidates)); err != nil {
+		return nil, err
+	}
 	for _, candidate := range candidates {
 		if err := builder.Add(ctx, candidate.Key, candidate.Vector); err != nil {
 			return nil, err
