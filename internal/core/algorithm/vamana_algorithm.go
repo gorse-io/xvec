@@ -214,6 +214,9 @@ func (b *VamanaBuilder) build(ctx context.Context, workers int) (*VamanaIndex, e
 		entryPoint: -1,
 	}
 	workers = vamanaBuildWorkers(workers, len(index.keys))
+	if err := index.cacheCosineMagnitudes(ctx, workers); err != nil {
+		return nil, err
+	}
 	for batchStart := 0; batchStart < len(index.keys); batchStart += workers {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -231,7 +234,7 @@ func (b *VamanaBuilder) build(ctx context.Context, workers int) (*VamanaIndex, e
 		err := parallel.ParallelFor(ctx, len(selected), workers, func(ctx context.Context, offset int) error {
 			position := computeStart + offset
 			candidates, err := index.searchBuildCandidates(
-				ctx, index.vectorAt(position), index.entryPoint, index.options.SearchListSize,
+				ctx, position, index.entryPoint, index.options.SearchListSize,
 			)
 			if err != nil {
 				return err
@@ -297,11 +300,14 @@ func (b *VamanaBuilder) buildInterleaved(ctx context.Context, workers int) (*Vam
 		neighbors: make([][]int, len(b.keys)), neighborDistances: make([][]float32, len(b.keys)),
 		entryPoint: -1,
 	}
+	workers = vamanaBuildWorkers(workers, len(index.keys))
+	if err := index.cacheCosineMagnitudes(ctx, workers); err != nil {
+		return nil, err
+	}
 	index.entryPoint, err = index.calculateMedoid(ctx)
 	if err != nil {
 		return nil, err
 	}
-	workers = vamanaBuildWorkers(workers, len(index.keys))
 	if len(index.keys) != 0 {
 		locks := newVamanaBuildLocks(len(index.keys))
 		seedEnd := min(len(index.keys), max(1, index.options.SearchListSize))
@@ -378,6 +384,7 @@ type VamanaIndex struct {
 	distance          mathutil.DenseDistance
 	keys              []uint64
 	vectors           []float32
+	vectorMagnitudes  []float32
 	positions         map[uint64]int
 	neighbors         [][]int
 	neighborDistances [][]float32
@@ -462,7 +469,7 @@ func (i *VamanaIndex) insertNode(ctx context.Context, position int) error {
 		i.entryPoint = position
 		return nil
 	}
-	candidates, err := i.searchBuildCandidates(ctx, i.vectorAt(position), i.entryPoint, i.options.SearchListSize)
+	candidates, err := i.searchBuildCandidates(ctx, position, i.entryPoint, i.options.SearchListSize)
 	if err != nil {
 		return err
 	}
@@ -497,7 +504,7 @@ type vamanaSearchScratch struct {
 	neighbors  []int
 }
 
-func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32, entry, capacity int) ([]vamanaDistanceNode, error) {
+func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, queryPosition, entry, capacity int) ([]vamanaDistanceNode, error) {
 	limit := min(capacity, len(i.keys))
 	if limit <= 0 {
 		return []vamanaDistanceNode{}, nil
@@ -509,7 +516,7 @@ func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32
 	scratch := i.acquireVamanaSearchScratch()
 	defer i.releaseVamanaSearchScratch(scratch)
 	visited, generation := scratch.visited, scratch.generation
-	distance, err := i.graphDistance(query, i.vectorAt(entry))
+	distance, err := i.graphDistanceAt(queryPosition, entry)
 	if err != nil {
 		return nil, err
 	}
@@ -531,7 +538,7 @@ func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32
 				continue
 			}
 			visited[neighbor] = generation
-			distance, err := i.graphDistance(query, i.vectorAt(neighbor))
+			distance, err := i.graphDistanceAt(queryPosition, neighbor)
 			if err != nil {
 				return nil, err
 			}
@@ -553,7 +560,7 @@ func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, query []float32
 
 func (i *VamanaIndex) searchBuildCandidatesInterleaved(
 	ctx context.Context,
-	query []float32,
+	queryPosition int,
 	entry, capacity int,
 	locks *vamanaBuildLocks,
 ) ([]vamanaDistanceNode, error) {
@@ -568,7 +575,7 @@ func (i *VamanaIndex) searchBuildCandidatesInterleaved(
 	scratch := i.acquireVamanaSearchScratch()
 	defer i.releaseVamanaSearchScratch(scratch)
 	visited, generation := scratch.visited, scratch.generation
-	distance, err := i.graphDistance(query, i.vectorAt(entry))
+	distance, err := i.graphDistanceAt(queryPosition, entry)
 	if err != nil {
 		return nil, err
 	}
@@ -594,7 +601,7 @@ func (i *VamanaIndex) searchBuildCandidatesInterleaved(
 				continue
 			}
 			visited[neighbor] = generation
-			distance, err := i.graphDistance(query, i.vectorAt(neighbor))
+			distance, err := i.graphDistanceAt(queryPosition, neighbor)
 			if err != nil {
 				return nil, err
 			}
@@ -691,7 +698,7 @@ func (i *VamanaIndex) robustPrune(ctx context.Context, owner int, candidates []v
 						return nil, err
 					}
 				}
-				between, err := i.graphDistance(i.vectorAt(candidate.position), i.vectorAt(candidates[next].position))
+				between, err := i.graphDistanceAt(candidate.position, candidates[next].position)
 				if err != nil {
 					return nil, err
 				}
@@ -763,7 +770,7 @@ func (l *vamanaBuildLocks) forPosition(position int) *sync.RWMutex {
 
 func (i *VamanaIndex) insertNodeInterleaved(ctx context.Context, position int, locks *vamanaBuildLocks) error {
 	candidates, err := i.searchBuildCandidatesInterleaved(
-		ctx, i.vectorAt(position), i.entryPoint, i.options.SearchListSize, locks,
+		ctx, position, i.entryPoint, i.options.SearchListSize, locks,
 	)
 	if err != nil {
 		return err
@@ -916,6 +923,43 @@ func (i *VamanaIndex) graphDistance(left, right []float32) (float32, error) {
 	return score, nil
 }
 
+func (i *VamanaIndex) graphDistanceAt(left, right int) (float32, error) {
+	if i.options.Metric == MetricCosine {
+		return mathutil.CosineDistanceWithMagnitudesPrevalidated(
+			i.vectorAt(left), i.vectorAt(right), i.vectorMagnitudes[left], i.vectorMagnitudes[right],
+		)
+	}
+	return i.graphDistance(i.vectorAt(left), i.vectorAt(right))
+}
+
+func (i *VamanaIndex) queryDistanceAt(query []float32, queryMagnitude float32, position int) (float32, error) {
+	if i.options.Metric == MetricCosine {
+		return mathutil.CosineDistanceWithMagnitudesPrevalidated(
+			query, i.vectorAt(position), queryMagnitude, i.vectorMagnitudes[position],
+		)
+	}
+	return i.distance(query, i.vectorAt(position))
+}
+
+func (i *VamanaIndex) cacheCosineMagnitudes(ctx context.Context, workers int) error {
+	if i.options.Metric != MetricCosine {
+		i.vectorMagnitudes = nil
+		return nil
+	}
+	i.vectorMagnitudes = make([]float32, len(i.keys))
+	if err := parallel.ParallelFor(ctx, len(i.keys), workers, func(_ context.Context, position int) error {
+		magnitude, err := mathutil.L2MagnitudePrevalidated(i.vectorAt(position))
+		if err != nil {
+			return fmt.Errorf("core: cache Vamana vector magnitude %d: %w", position, err)
+		}
+		i.vectorMagnitudes[position] = magnitude
+		return nil
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (i *VamanaIndex) calculateMedoid(ctx context.Context) (int, error) {
 	if len(i.keys) == 0 {
 		return -1, nil
@@ -987,7 +1031,8 @@ func cloneVamanaIndex(ctx context.Context, source *VamanaIndex) (*VamanaIndex, e
 		dimension: source.dimension, options: source.options,
 		distance: source.distance,
 		keys:     slices.Clone(source.keys), vectors: slices.Clone(source.vectors),
-		positions: cloneUint64Positions(source.positions), entryPoint: source.entryPoint,
+		vectorMagnitudes: slices.Clone(source.vectorMagnitudes),
+		positions:        cloneUint64Positions(source.positions), entryPoint: source.entryPoint,
 		neighbors: make([][]int, len(source.neighbors)), neighborDistances: make([][]float32, len(source.neighborDistances)),
 	}
 	for position := range clone.neighbors {
@@ -1019,6 +1064,10 @@ func validateVamanaIndex(ctx context.Context, index *VamanaIndex) error {
 	if count > maxPlatformInt()/index.dimension || len(index.vectors) != count*index.dimension || len(index.positions) != count ||
 		len(index.neighbors) != count || len(index.neighborDistances) != count {
 		return errors.New("core: inconsistent Vamana storage")
+	}
+	if (index.options.Metric == MetricCosine && len(index.vectorMagnitudes) != count) ||
+		(index.options.Metric != MetricCosine && len(index.vectorMagnitudes) != 0) {
+		return errors.New("core: inconsistent Vamana magnitude cache")
 	}
 	if (count == 0 && index.entryPoint != -1) || (count > 0 && (index.entryPoint < 0 || index.entryPoint >= count)) {
 		return errors.New("core: invalid Vamana entry point")
@@ -1143,13 +1192,31 @@ func (i *VamanaIndex) searchVamana(ctx context.Context, query []float32, options
 	if options.TopK == 0 || len(i.keys) == 0 {
 		return []Result{}, nil
 	}
+	queryMagnitude := float32(0)
+	if i.options.Metric == MetricCosine {
+		var err error
+		queryMagnitude, err = mathutil.L2MagnitudePrevalidated(query)
+		if err != nil {
+			return nil, fmt.Errorf("core: prepare Vamana query: %w", err)
+		}
+	}
 	if len(i.keys) <= DefaultVamanaBruteForceThreshold {
-		return topKCandidatesWithOptions(ctx, i.options.Metric, query, options.SearchOptions, len(i.keys), func(position int) Candidate {
+		var candidateMagnitude float32
+		distance := i.distance
+		if i.options.Metric == MetricCosine {
+			distance = func(candidate, query []float32) (float32, error) {
+				return mathutil.CosineDistanceWithMagnitudesPrevalidated(candidate, query, candidateMagnitude, queryMagnitude)
+			}
+		}
+		return topKPrevalidatedCandidatesWithOptions(ctx, i.options.Metric, distance, query, options.SearchOptions, len(i.keys), func(position int) Candidate {
+			if i.options.Metric == MetricCosine {
+				candidateMagnitude = i.vectorMagnitudes[position]
+			}
 			return Candidate{Key: i.keys[position], Vector: i.vectorAt(position)}
-		}, requirePositiveTopK)
+		})
 	}
 	scoreAt := func(position int) (float32, error) {
-		return i.options.Metric.Compute(query, i.vectorAt(position))
+		return i.queryDistanceAt(query, queryMagnitude, position)
 	}
 	prefetch := func(neighbors []int) {
 		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
@@ -1285,6 +1352,13 @@ func (i *VamanaIndex) Add(ctx context.Context, key uint64, vector []float32) err
 	working.positions[key] = position
 	working.keys = append(working.keys, key)
 	working.vectors = append(working.vectors, vector...)
+	if working.options.Metric == MetricCosine {
+		magnitude, err := mathutil.L2MagnitudePrevalidated(vector)
+		if err != nil {
+			return fmt.Errorf("core: cache incremental Vamana vector magnitude: %w", err)
+		}
+		working.vectorMagnitudes = append(working.vectorMagnitudes, magnitude)
+	}
 	working.neighbors = append(working.neighbors, nil)
 	working.neighborDistances = append(working.neighborDistances, nil)
 	if err := working.insertNode(ctx, position); err != nil {
@@ -1306,7 +1380,7 @@ func (i *VamanaIndex) Add(ctx context.Context, key uint64, vector []float32) err
 		i.mu.Unlock()
 		return err
 	}
-	i.keys, i.vectors, i.positions = working.keys, working.vectors, working.positions
+	i.keys, i.vectors, i.vectorMagnitudes, i.positions = working.keys, working.vectors, working.vectorMagnitudes, working.positions
 	i.neighbors, i.neighborDistances, i.entryPoint = working.neighbors, working.neighborDistances, working.entryPoint
 	i.mu.Unlock()
 	return nil
@@ -1580,6 +1654,9 @@ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error
 		index.vectors[position] = math.Float32frombits(binary.LittleEndian.Uint32(payload[offset : offset+4]))
 		offset += 4
 	}
+	if err := index.cacheCosineMagnitudes(ctx, vamanaBuildWorkers(0, count)); err != nil {
+		return nil, fmt.Errorf("%w: cache vector magnitudes: %v", ErrInvalidVamanaFile, err)
+	}
 	decodedEdges := 0
 	for position := range index.neighbors {
 		if position&255 == 0 {
@@ -1620,7 +1697,7 @@ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error
 		}
 		distances := make([]float32, len(adjacent))
 		for neighborIndex, neighbor := range adjacent {
-			distance, err := index.graphDistance(index.vectorAt(position), index.vectorAt(neighbor))
+			distance, err := index.graphDistanceAt(position, neighbor)
 			if err != nil {
 				return nil, fmt.Errorf("%w: neighbor distance: %v", ErrInvalidVamanaFile, err)
 			}

@@ -855,6 +855,9 @@ func assertSameVamanaIndex(t testing.TB, got, want *VamanaIndex) {
 	require.True(t, slices.Equal(got.vectors, want.vectors),
 
 		"Vamana indexes differ")
+	require.True(t, slices.Equal(got.vectorMagnitudes, want.vectorMagnitudes),
+
+		"Vamana indexes differ")
 	require.Equal(t, want.positions, got.positions,
 
 		"Vamana indexes differ")
