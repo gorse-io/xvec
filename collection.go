@@ -5153,6 +5153,9 @@ func (c *Collection) writeDocuments(ctx context.Context, operator Operator, docu
 	if err := c.requireOpenLocked(op); err != nil {
 		return nil, err
 	}
+	if operator == OperatorInsert {
+		return c.insertDocumentsLocked(ctx, documents)
+	}
 	results := make([]WriteResult, len(documents))
 	batchError := &BatchWriteError{}
 	for index, document := range documents {
@@ -5189,9 +5192,9 @@ func (c *Collection) writeDocuments(ctx context.Context, operator Operator, docu
 			continue
 		}
 		c.invalidateQuerySnapshotLocked()
-		dbResults, batchErr := c.callStoreWriteLocked(ctx, operator, db.WriteInput{
+		dbResults, batchErr := c.callStoreWriteLocked(ctx, operator, []db.WriteInput{{
 			PrimaryKey: prepared.PrimaryKey, Payload: payload,
-		})
+		}})
 		var itemErr error
 		if len(dbResults) == 1 {
 			results[index].DocID = dbResults[0].DocID
@@ -5204,6 +5207,78 @@ func (c *Collection) writeDocuments(ctx context.Context, operator Operator, docu
 			wrapped := wrapCollectionError(op, c.path, itemErr)
 			results[index].Err = wrapped
 			batchError.add(wrapped)
+		}
+	}
+	if batchError.Failed != 0 {
+		return results, batchError
+	}
+	return results, nil
+}
+
+func (c *Collection) insertDocumentsLocked(ctx context.Context, documents []Document) ([]WriteResult, error) {
+	const op = "INSERT"
+	results := make([]WriteResult, len(documents))
+	batchError := &BatchWriteError{}
+	inputs := make([]db.WriteInput, 0, len(documents))
+	ordinals := make([]int, 0, len(documents))
+	for index, document := range documents {
+		results[index].PrimaryKey = document.PrimaryKey
+		if err := ctx.Err(); err != nil {
+			for remaining := index; remaining < len(documents); remaining++ {
+				wrapped := wrapCollectionError(op, c.path, err)
+				results[remaining] = WriteResult{PrimaryKey: documents[remaining].PrimaryKey, Err: wrapped}
+				batchError.add(wrapped)
+			}
+			break
+		}
+		prepared, err := c.prepareWriteDocumentLocked(ctx, OperatorInsert, document)
+		if err != nil {
+			wrapped := wrapCollectionError(op, c.path, err)
+			results[index].Err = wrapped
+			batchError.add(wrapped)
+			continue
+		}
+		payload, err := marshalDocumentPayload(prepared.Fields)
+		if err != nil {
+			wrapped := wrapCollectionError(op, c.path, err)
+			results[index].Err = wrapped
+			batchError.add(wrapped)
+			continue
+		}
+		if len(payload) > segment.MaxDocumentPayloadSize {
+			wrapped := &Error{
+				Code: ErrorCodeResourceExhausted, Op: op, Path: c.path,
+				Message: fmt.Sprintf("document payload is %d bytes, maximum %d", len(payload), segment.MaxDocumentPayloadSize),
+			}
+			results[index].Err = wrapped
+			batchError.add(wrapped)
+			continue
+		}
+		inputs = append(inputs, db.WriteInput{PrimaryKey: prepared.PrimaryKey, Payload: payload})
+		ordinals = append(ordinals, index)
+	}
+	if len(inputs) != 0 {
+		// Inputs preceding cancellation were already accepted by the public
+		// batch and retain the old per-document commit semantics.
+		writeCtx := ctx
+		if ctx.Err() != nil {
+			writeCtx = context.WithoutCancel(ctx)
+		}
+		c.invalidateQuerySnapshotLocked()
+		dbResults, writeErr := c.callStoreWriteLocked(writeCtx, OperatorInsert, inputs)
+		for inputIndex, ordinal := range ordinals {
+			var itemErr error
+			if inputIndex < len(dbResults) {
+				results[ordinal].DocID = dbResults[inputIndex].DocID
+				itemErr = dbResults[inputIndex].Err
+			} else {
+				itemErr = writeErr
+			}
+			if itemErr != nil {
+				wrapped := wrapCollectionError(op, c.path, itemErr)
+				results[ordinal].Err = wrapped
+				batchError.add(wrapped)
+			}
 		}
 	}
 	if batchError.Failed != 0 {
@@ -5263,14 +5338,14 @@ func (c *Collection) prepareWriteDocumentLocked(ctx context.Context, operator Op
 	}
 }
 
-func (c *Collection) callStoreWriteLocked(ctx context.Context, operator Operator, input db.WriteInput) ([]db.WriteResult, error) {
+func (c *Collection) callStoreWriteLocked(ctx context.Context, operator Operator, inputs []db.WriteInput) ([]db.WriteResult, error) {
 	switch operator {
 	case OperatorInsert:
-		return c.store.Insert(ctx, []db.WriteInput{input})
+		return c.store.Insert(ctx, inputs)
 	case OperatorUpsert:
-		return c.store.Upsert(ctx, []db.WriteInput{input})
+		return c.store.Upsert(ctx, inputs)
 	case OperatorUpdate:
-		return c.store.Update(ctx, []db.WriteInput{input})
+		return c.store.Update(ctx, inputs)
 	default:
 		return nil, errors.New("xvec: unsupported write operator")
 	}
