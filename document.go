@@ -100,8 +100,13 @@ func (d Document) Validate(schema CollectionSchema) error {
 }
 
 func validateDocumentAgainstSchema(document Document, schema CollectionSchema, partial bool) error {
-	if _, err := document.Clone(); err != nil {
-		return err
+	if document.PrimaryKey == "" || len(document.PrimaryKey) > MaxPrimaryKeyBytes || !utf8.ValidString(document.PrimaryKey) {
+		return invalidArgument("clone document", "primary key must be valid UTF-8 with 1 to %d bytes", MaxPrimaryKeyBytes)
+	}
+	for name := range document.Fields {
+		if !fieldNamePattern.MatchString(name) {
+			return invalidArgument("clone document", "field name %q must match %s", name, fieldNamePattern)
+		}
 	}
 	if err := schema.Validate(); err != nil {
 		return err
@@ -125,7 +130,7 @@ func validateDocumentAgainstSchema(document Document, schema CollectionSchema, p
 			}
 			continue
 		}
-		_, dataType, err := cloneDocumentValue(value)
+		dataType, err := validateDocumentValue(value)
 		if err != nil {
 			return invalidArgument("validate document", "field %q: %v", field.Name, err)
 		}
@@ -144,6 +149,49 @@ func validateDocumentAgainstSchema(document Document, schema CollectionSchema, p
 		}
 	}
 	return nil
+}
+
+// validateDocumentValue checks common immutable/scalar and FP32 ingestion
+// values without cloning them. Less common composite representations retain
+// cloneDocumentValue's canonicalization and validation behavior.
+func validateDocumentValue(value any) (DataType, error) {
+	switch value := value.(type) {
+	case nil:
+		return DataTypeUndefined, nil
+	case string:
+		if !utf8.ValidString(value) {
+			return 0, invalidArgument("clone value", "string is not valid UTF-8")
+		}
+		return DataTypeString, nil
+	case bool:
+		return DataTypeBool, nil
+	case int32:
+		return DataTypeInt32, nil
+	case int64:
+		return DataTypeInt64, nil
+	case uint32:
+		return DataTypeUint32, nil
+	case uint64:
+		return DataTypeUint64, nil
+	case float32:
+		if !finiteDocumentFloat(float64(value)) {
+			return 0, invalidArgument("clone value", "FLOAT is not finite")
+		}
+		return DataTypeFloat, nil
+	case float64:
+		if !finiteDocumentFloat(value) {
+			return 0, invalidArgument("clone value", "DOUBLE is not finite")
+		}
+		return DataTypeDouble, nil
+	case VectorFP32:
+		if err := validateFiniteFloat32s(value); err != nil {
+			return 0, err
+		}
+		return DataTypeVectorFP32, nil
+	default:
+		_, dataType, err := cloneDocumentValue(value)
+		return dataType, err
+	}
 }
 
 // Projection describes result shaping. A nil OutputFields slice selects every
