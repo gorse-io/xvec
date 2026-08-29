@@ -82,6 +82,22 @@ func TestDenseFlatProviderAndInputOwnership(t *testing.T) {
 	require.True(t, index.Len() == 1)
 }
 
+func TestDenseFlatReserve(t *testing.T) {
+	index, err := NewDenseFlatIndex(3, MetricL2)
+	require.NoError(t, err)
+	require.NoError(t, index.Reserve(64))
+	require.Zero(t, index.Len())
+	require.GreaterOrEqual(t, cap(index.keys), 64)
+	require.GreaterOrEqual(t, cap(index.vectors), 64*3)
+	require.ErrorIs(t, index.Reserve(-1), ErrDenseCapacity)
+
+	require.NoError(t, index.Add(context.Background(), 7, []float32{1, 2, 3}))
+	require.NoError(t, index.Reserve(96))
+	vector, ok := index.Vector(7)
+	require.True(t, ok)
+	require.Equal(t, []float32{1, 2, 3}, vector)
+}
+
 func TestDenseFlatValidation(t *testing.T) {
 	{
 		_, err := NewDenseFlatIndex(0, MetricL2)

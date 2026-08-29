@@ -4858,6 +4858,9 @@ func buildDenseFlatIndex(ctx context.Context, field FieldSchema, metric core.Met
 	if err != nil {
 		return nil, err
 	}
+	if err := index.Reserve(len(documents)); err != nil {
+		return nil, err
+	}
 	for _, document := range documents {
 		value, found := document.Fields[field.Name]
 		if !found || value == nil {

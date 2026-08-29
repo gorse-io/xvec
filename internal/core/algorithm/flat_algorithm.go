@@ -31,6 +31,7 @@ var (
 	ErrInvalidDimension = errors.New("core: invalid vector dimension")
 	ErrDuplicateKey     = errors.New("core: duplicate vector key")
 	ErrBuilderClosed    = errors.New("core: builder is closed")
+	ErrDenseCapacity    = errors.New("core: dense index capacity exceeded")
 )
 
 // DenseProvider exposes vectors without prescribing their storage layout.
@@ -89,6 +90,32 @@ func NewDenseFlatIndex(dimension int, metric Metric) (*DenseFlatIndex, error) {
 		metric:    metric,
 		positions: make(map[uint64]int),
 	}, nil
+}
+
+// Reserve preallocates storage for at least count total vectors without
+// changing the index length.
+func (i *DenseFlatIndex) Reserve(count int) error {
+	if i == nil {
+		return errors.New("core: nil dense Flat index")
+	}
+	if count < 0 || (count > 0 && count > maxPlatformInt()/i.dimension) {
+		return ErrDenseCapacity
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if count <= cap(i.keys) && count*i.dimension <= cap(i.vectors) {
+		return nil
+	}
+	keys := make([]uint64, len(i.keys), max(count, len(i.keys)))
+	copy(keys, i.keys)
+	vectors := make([]float32, len(i.vectors), max(count*i.dimension, len(i.vectors)))
+	copy(vectors, i.vectors)
+	positions := make(map[uint64]int, max(count, len(i.positions)))
+	for key, position := range i.positions {
+		positions[key] = position
+	}
+	i.keys, i.vectors, i.positions = keys, vectors, positions
+	return nil
 }
 
 // Dimension returns the fixed vector dimension.
