@@ -486,6 +486,58 @@ func BenchmarkHNSWSave768D(b *testing.B) {
 	}
 }
 
+func BenchmarkHNSWSearch768DCosine(b *testing.B) {
+	const (
+		count     = 25_000
+		dimension = 768
+		m         = 15
+	)
+	options := DefaultHNSWBuildOptions(MetricCosine)
+	options.M = m
+	distance, err := options.Metric.PrevalidatedDistance()
+	if err != nil {
+		b.Fatal(err)
+	}
+	index := &HNSWIndex{
+		dimension:  dimension,
+		options:    options,
+		distance:   distance,
+		keys:       make([]uint64, count),
+		vectors:    make([]float32, count*dimension),
+		positions:  make(map[uint64]int, count),
+		levels:     make([]int, count),
+		neighbors:  make([][][]int, count),
+		entryPoint: 0,
+		maxLevel:   0,
+	}
+	for position := range count {
+		index.keys[position] = uint64(position)
+		index.positions[uint64(position)] = position
+		vector := index.vectorAt(position)
+		for component := range vector {
+			vector[component] = float32((position*31+component*17)%257-128) / 128
+		}
+		index.neighbors[position] = make([][]int, 1)
+		neighbors := make([]int, 0, m*2)
+		for offset := 1; offset <= m; offset++ {
+			neighbors = append(neighbors, (position+offset)%count, (position-offset+count)%count)
+		}
+		index.neighbors[position][0] = neighbors
+	}
+	if err := index.cacheCosineMagnitudes(context.Background(), 8); err != nil {
+		b.Fatal(err)
+	}
+	query := slices.Clone(index.vectorAt(count / 2))
+	searchOptions := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 100}, EF: 180}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := index.SearchHNSW(context.Background(), query, searchOptions); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func hnswBuildInputs(count int) []Candidate {
 	inputs := make([]Candidate, count)
 	for index := range inputs {

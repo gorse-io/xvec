@@ -31,6 +31,7 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/gorse-io/xvec/internal/ailego/io"
 	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
 const (
@@ -203,6 +204,9 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 		index.neighbors[position] = make([][]int, level+1)
 	}
 	index.levelRNGState = random.state
+	if err := index.cacheCosineMagnitudes(ctx, min(workers, max(1, len(index.keys)))); err != nil {
+		return nil, err
+	}
 	if workers == 1 {
 		for position := range index.keys {
 			if err := ctx.Err(); err != nil {
@@ -215,7 +219,7 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 	} else {
 		entryPoint, maxLevel, err := buildParallelHNSW(ctx, workers, index.options, index.levels, index.neighbors,
 			func(left, right int) (float32, error) {
-				return index.computeDistance(index.vectorAt(left), index.vectorAt(right))
+				return index.computeDistanceAt(left, right)
 			})
 		if err != nil {
 			return nil, fmt.Errorf("core: construct HNSW: %w", err)
@@ -235,19 +239,20 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 // graph. Readers share one immutable generation while additions publish a
 // complete copy-on-write generation.
 type HNSWIndex struct {
-	streamMu      sync.Mutex
-	mu            sync.RWMutex
-	dimension     int
-	options       HNSWBuildOptions
-	distance      mathutil.DenseDistance
-	keys          []uint64
-	vectors       []float32
-	positions     map[uint64]int
-	levels        []int
-	neighbors     [][][]int
-	entryPoint    int
-	maxLevel      int
-	levelRNGState uint64
+	streamMu         sync.Mutex
+	mu               sync.RWMutex
+	dimension        int
+	options          HNSWBuildOptions
+	distance         mathutil.DenseDistance
+	keys             []uint64
+	vectors          []float32
+	vectorMagnitudes []float32
+	positions        map[uint64]int
+	levels           []int
+	neighbors        [][][]int
+	entryPoint       int
+	maxLevel         int
+	levelRNGState    uint64
 }
 
 // Dimension returns the fixed dense vector dimension.
@@ -369,8 +374,9 @@ func (i *HNSWIndex) insertBuiltNode(ctx context.Context, position int) error {
 	}
 	entry := i.entryPoint
 	query := i.vectorAt(position)
+	queryMagnitude := i.magnitudeAt(position)
 	for currentLevel := i.maxLevel; currentLevel > level; currentLevel-- {
-		nearest, err := i.searchHNSWLayer(ctx, query, []int{entry}, 1, currentLevel, visited)
+		nearest, err := i.searchHNSWLayer(ctx, query, queryMagnitude, []int{entry}, 1, currentLevel, visited)
 		if err != nil {
 			return err
 		}
@@ -379,7 +385,7 @@ func (i *HNSWIndex) insertBuiltNode(ctx context.Context, position int) error {
 		}
 	}
 	for currentLevel := min(level, i.maxLevel); currentLevel >= 0; currentLevel-- {
-		candidates, err := i.searchHNSWLayer(ctx, query, []int{entry}, i.options.EFConstruction, currentLevel, visited)
+		candidates, err := i.searchHNSWLayer(ctx, query, queryMagnitude, []int{entry}, i.options.EFConstruction, currentLevel, visited)
 		if err != nil {
 			return err
 		}
@@ -409,7 +415,7 @@ type hnswScoredNode struct {
 	score    float32
 }
 
-func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, entries []int, ef, level int, visited *hnswVisited) ([]hnswScoredNode, error) {
+func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, queryMagnitude float32, entries []int, ef, level int, visited *hnswVisited) ([]hnswScoredNode, error) {
 	limit := min(ef, len(i.keys))
 	if limit <= 0 {
 		return []hnswScoredNode{}, nil
@@ -423,7 +429,7 @@ func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, entrie
 		if entry < 0 || entry >= len(i.keys) || i.levels[entry] < level || visited.seen(entry) {
 			continue
 		}
-		score, err := i.computeDistance(query, i.vectorAt(entry))
+		score, err := i.queryDistanceAt(query, queryMagnitude, entry)
 		if err != nil {
 			return nil, err
 		}
@@ -446,7 +452,7 @@ func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, entrie
 				continue
 			}
 			visited.mark(neighbor)
-			score, err := i.computeDistance(query, i.vectorAt(neighbor))
+			score, err := i.queryDistanceAt(query, queryMagnitude, neighbor)
 			if err != nil {
 				return nil, err
 			}
@@ -487,7 +493,7 @@ func (i *HNSWIndex) selectHNSWNeighbors(ctx context.Context, owner int, candidat
 		}
 		good := true
 		for _, accepted := range selected {
-			between, err := i.computeDistance(i.vectorAt(candidate.position), i.vectorAt(accepted))
+			between, err := i.computeDistanceAt(candidate.position, accepted)
 			if err != nil {
 				return nil, err
 			}
@@ -519,7 +525,7 @@ func (i *HNSWIndex) addHNSWReverseEdge(ctx context.Context, owner, neighbor, lev
 	}
 	candidates := make([]hnswScoredNode, 0, len(current)+1)
 	for _, position := range append(slices.Clone(current), neighbor) {
-		score, err := i.computeDistance(i.vectorAt(owner), i.vectorAt(position))
+		score, err := i.computeDistanceAt(owner, position)
 		if err != nil {
 			return err
 		}
@@ -566,6 +572,47 @@ func (i *HNSWIndex) computeDistance(left, right []float32) (float32, error) {
 		}
 	}
 	return distance(left, right)
+}
+
+func (i *HNSWIndex) computeDistanceAt(left, right int) (float32, error) {
+	if i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys) {
+		return mathutil.CosineDistanceWithMagnitudesPrevalidated(
+			i.vectorAt(left), i.vectorAt(right), i.vectorMagnitudes[left], i.vectorMagnitudes[right],
+		)
+	}
+	return i.computeDistance(i.vectorAt(left), i.vectorAt(right))
+}
+
+func (i *HNSWIndex) queryDistanceAt(query []float32, queryMagnitude float32, position int) (float32, error) {
+	if i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys) {
+		return mathutil.CosineDistanceWithMagnitudesPrevalidated(
+			query, i.vectorAt(position), queryMagnitude, i.vectorMagnitudes[position],
+		)
+	}
+	return i.computeDistance(query, i.vectorAt(position))
+}
+
+func (i *HNSWIndex) magnitudeAt(position int) float32 {
+	if len(i.vectorMagnitudes) == len(i.keys) {
+		return i.vectorMagnitudes[position]
+	}
+	return 0
+}
+
+func (i *HNSWIndex) cacheCosineMagnitudes(ctx context.Context, workers int) error {
+	if i.options.Metric != MetricCosine {
+		i.vectorMagnitudes = nil
+		return nil
+	}
+	i.vectorMagnitudes = make([]float32, len(i.keys))
+	return parallel.ParallelFor(ctx, len(i.keys), workers, func(_ context.Context, position int) error {
+		magnitude, err := mathutil.L2MagnitudePrevalidated(i.vectorAt(position))
+		if err != nil {
+			return err
+		}
+		i.vectorMagnitudes[position] = magnitude
+		return nil
+	})
 }
 
 func hnswNodeBetter(metric Metric, left, right hnswScoredNode) bool {
@@ -669,6 +716,14 @@ func (i *HNSWIndex) SearchHNSWGroups(
 	if _, err := i.options.Metric.Compute(query, query); err != nil {
 		return nil, fmt.Errorf("core: validate HNSW group-by query: %w", err)
 	}
+	queryMagnitude := float32(0)
+	if i.options.Metric == MetricCosine {
+		var err error
+		queryMagnitude, err = mathutil.L2MagnitudePrevalidated(query)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	i.mu.RLock()
 	defer i.mu.RUnlock()
@@ -683,7 +738,7 @@ func (i *HNSWIndex) SearchHNSWGroups(
 	visited := acquireHNSWVisited(len(i.keys))
 	defer releaseHNSWVisited(visited)
 	for level := i.maxLevel; level > 0; level-- {
-		nearest, err := i.searchHNSWLayer(ctx, query, []int{entry}, 1, level, visited)
+		nearest, err := i.searchHNSWLayer(ctx, query, queryMagnitude, []int{entry}, 1, level, visited)
 		if err != nil {
 			return nil, fmt.Errorf("core: descend HNSW group-by level %d: %w", level, err)
 		}
@@ -697,7 +752,7 @@ func (i *HNSWIndex) SearchHNSWGroups(
 		},
 		EF: options.EF, PrefetchOffset: options.PrefetchOffset, PrefetchLines: options.PrefetchLines,
 	}
-	initial, err := i.searchHNSWBase(ctx, query, entry, max(options.EF, candidateCount), searchOptions, visited)
+	initial, err := i.searchHNSWBase(ctx, query, queryMagnitude, entry, max(options.EF, candidateCount), searchOptions, visited)
 	if err != nil {
 		return nil, err
 	}
@@ -705,7 +760,7 @@ func (i *HNSWIndex) SearchHNSWGroups(
 		initial = initial[:candidateCount]
 	}
 	scoreAt := func(position int) (float32, error) {
-		return i.computeDistance(query, i.vectorAt(position))
+		return i.queryDistanceAt(query, queryMagnitude, position)
 	}
 	prefetch := func(neighbors []int) {
 		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
@@ -749,6 +804,14 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 	if _, err := i.options.Metric.Compute(query, query); err != nil {
 		return nil, fmt.Errorf("core: validate HNSW query: %w", err)
 	}
+	queryMagnitude := float32(0)
+	if i.options.Metric == MetricCosine {
+		var err error
+		queryMagnitude, err = mathutil.L2MagnitudePrevalidated(query)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if options.TopK == 0 || len(i.keys) == 0 {
 		return []Result{}, nil
 	}
@@ -762,7 +825,7 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 	visited := acquireHNSWVisited(len(i.keys))
 	defer releaseHNSWVisited(visited)
 	for level := i.maxLevel; level > 0; level-- {
-		nearest, err := i.searchHNSWLayer(ctx, query, []int{entry}, 1, level, visited)
+		nearest, err := i.searchHNSWLayer(ctx, query, queryMagnitude, []int{entry}, 1, level, visited)
 		if err != nil {
 			return nil, fmt.Errorf("core: descend HNSW level %d: %w", level, err)
 		}
@@ -771,7 +834,7 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 		}
 	}
 	capacity := max(options.EF, options.TopK)
-	candidates, err := i.searchHNSWBase(ctx, query, entry, capacity, options, visited)
+	candidates, err := i.searchHNSWBase(ctx, query, queryMagnitude, entry, capacity, options, visited)
 	if err != nil {
 		return nil, err
 	}
@@ -785,14 +848,14 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 	return results, nil
 }
 
-func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, entry, capacity int, options HNSWSearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
+func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryMagnitude float32, entry, capacity int, options HNSWSearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(i.options.Metric, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.hnswResultNodeBetter(right, left) }
 	frontier := container.NewHeap(better)
 	accepted := container.NewHeap(worse)
 	visited.reset(len(i.keys))
 
-	score, err := i.computeDistance(query, i.vectorAt(entry))
+	score, err := i.queryDistanceAt(query, queryMagnitude, entry)
 	if err != nil {
 		return nil, fmt.Errorf("core: score HNSW entry point: %w", err)
 	}
@@ -819,7 +882,7 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, entry, 
 				continue
 			}
 			visited.mark(neighbor)
-			score, err := i.computeDistance(query, i.vectorAt(neighbor))
+			score, err := i.queryDistanceAt(query, queryMagnitude, neighbor)
 			if err != nil {
 				return nil, fmt.Errorf("core: score HNSW node %d: %w", neighbor, err)
 			}
@@ -909,6 +972,13 @@ func (i *HNSWIndex) Add(ctx context.Context, key uint64, vector []float32) error
 	position := len(working.keys)
 	working.keys = append(working.keys, key)
 	working.vectors = append(working.vectors, vector...)
+	if working.options.Metric == MetricCosine {
+		magnitude, err := mathutil.L2MagnitudePrevalidated(vector)
+		if err != nil {
+			return err
+		}
+		working.vectorMagnitudes = append(working.vectorMagnitudes, magnitude)
+	}
 	working.positions[key] = position
 	working.levels = append(working.levels, level)
 	working.neighbors = append(working.neighbors, make([][]int, level+1))
@@ -927,6 +997,7 @@ func (i *HNSWIndex) Add(ctx context.Context, key uint64, vector []float32) error
 	}
 	i.keys = working.keys
 	i.vectors = working.vectors
+	i.vectorMagnitudes = working.vectorMagnitudes
 	i.positions = working.positions
 	i.levels = working.levels
 	i.neighbors = working.neighbors
@@ -950,17 +1021,18 @@ func cloneHNSWIndex(ctx context.Context, source *HNSWIndex) (*HNSWIndex, error) 
 		return nil, fmt.Errorf("%w: nil index", ErrInvalidHNSWFile)
 	}
 	clone := &HNSWIndex{
-		dimension:     source.dimension,
-		options:       source.options,
-		distance:      source.distance,
-		keys:          slices.Clone(source.keys),
-		vectors:       slices.Clone(source.vectors),
-		positions:     make(map[uint64]int, len(source.positions)),
-		levels:        slices.Clone(source.levels),
-		neighbors:     make([][][]int, len(source.neighbors)),
-		entryPoint:    source.entryPoint,
-		maxLevel:      source.maxLevel,
-		levelRNGState: source.levelRNGState,
+		dimension:        source.dimension,
+		options:          source.options,
+		distance:         source.distance,
+		keys:             slices.Clone(source.keys),
+		vectors:          slices.Clone(source.vectors),
+		vectorMagnitudes: slices.Clone(source.vectorMagnitudes),
+		positions:        make(map[uint64]int, len(source.positions)),
+		levels:           slices.Clone(source.levels),
+		neighbors:        make([][][]int, len(source.neighbors)),
+		entryPoint:       source.entryPoint,
+		maxLevel:         source.maxLevel,
+		levelRNGState:    source.levelRNGState,
 	}
 	for key, position := range source.positions {
 		clone.positions[key] = position
@@ -1362,6 +1434,9 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 	if offset != len(payload) {
 		return nil, fmt.Errorf("%w: trailing payload data", ErrInvalidHNSWFile)
 	}
+	if err := index.cacheCosineMagnitudes(ctx, min(max(1, len(index.keys)), 8)); err != nil {
+		return nil, fmt.Errorf("%w: cache vector magnitudes: %v", ErrInvalidHNSWFile, err)
+	}
 	if err := validateHNSWIndex(ctx, index); err != nil {
 		return nil, err
 	}
@@ -1410,6 +1485,10 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 		len(index.vectors) != count*index.dimension || len(index.positions) != count ||
 		len(index.levels) != count || len(index.neighbors) != count {
 		return fmt.Errorf("%w: inconsistent graph storage", ErrInvalidHNSWFile)
+	}
+	if (index.options.Metric == MetricCosine && len(index.vectorMagnitudes) != count) ||
+		(index.options.Metric != MetricCosine && len(index.vectorMagnitudes) != 0) {
+		return fmt.Errorf("%w: inconsistent magnitude storage", ErrInvalidHNSWFile)
 	}
 	if count == 0 {
 		if index.entryPoint != -1 || index.maxLevel != -1 {
