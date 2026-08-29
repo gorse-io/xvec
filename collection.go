@@ -807,7 +807,7 @@ func buildCollectionRuntimeIndexes(
 				case IndexTypeIVF:
 					native, err = buildCollectionDenseIVF(ctx, schema.Name, field, documents, spec, workers)
 				case IndexTypeVamana:
-					native, err = buildCollectionDenseVamana(ctx, schema.Name, field, documents, spec)
+					native, err = buildCollectionDenseVamana(ctx, schema.Name, field, documents, spec, workers)
 				case IndexTypeDiskANN:
 					native, err = buildCollectionDenseDiskANN(ctx, schema.Name, field, documents, spec, workers, maxBufferSize)
 				default:
@@ -1992,6 +1992,7 @@ func buildCollectionDenseVamana(
 	field FieldSchema,
 	documents []Document,
 	spec collectionVectorIndex,
+	workers int,
 ) (collectionVamanaIndex, error) {
 	candidates, err := collectionDenseCandidates(ctx, field, documents)
 	if err != nil {
@@ -2015,7 +2016,7 @@ func buildCollectionDenseVamana(
 			return nil, err
 		}
 	}
-	base, err := builder.Build(ctx)
+	base, err := builder.BuildWithWorkers(ctx, workers)
 	if err != nil {
 		return nil, err
 	}
@@ -2629,7 +2630,7 @@ func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field Fiel
 			case IndexTypeDiskANN:
 				_, err = buildCollectionDenseDiskANN(ctx, c.schema.Name, field, documents, spec, workers, c.options.MaxBufferSize)
 			case IndexTypeVamana:
-				_, err = buildCollectionDenseVamana(ctx, c.schema.Name, field, documents, spec)
+				_, err = buildCollectionDenseVamana(ctx, c.schema.Name, field, documents, spec, workers)
 			}
 			return err
 		}

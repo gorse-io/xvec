@@ -119,7 +119,7 @@ func TestVamanaParallelBuildIsDeterministic(t *testing.T) {
 		for _, input := range inputs {
 			require.NoError(t, builder.Add(context.Background(), input.Key, input.Vector))
 		}
-		index, err := builder.build(context.Background(), 8)
+		index, err := builder.BuildWithWorkers(context.Background(), 8)
 		require.NoError(t, err)
 		assertVamanaGraphInvariants(t, index)
 		return index
@@ -129,6 +129,19 @@ func TestVamanaParallelBuildIsDeterministic(t *testing.T) {
 	require.Equal(t, first.neighbors, second.neighbors)
 	require.Equal(t, first.neighborDistances, second.neighborDistances)
 	require.Equal(t, first.entryPoint, second.entryPoint)
+}
+
+func TestVamanaBuildWithWorkersValidationAndRetry(t *testing.T) {
+	options := DefaultVamanaBuildOptions(MetricL2)
+	builder, err := NewVamanaBuilder(3, options)
+	require.NoError(t, err)
+	require.NoError(t, builder.Add(context.Background(), 1, []float32{1, 2, 3}))
+
+	_, err = builder.BuildWithWorkers(context.Background(), 0)
+	require.ErrorIs(t, err, ErrInvalidVamanaWorkers)
+	index, err := builder.BuildWithWorkers(context.Background(), 2)
+	require.NoError(t, err)
+	require.Equal(t, 1, index.Len())
 }
 
 func TestVamanaInterleavedBuildInvariants(t *testing.T) {

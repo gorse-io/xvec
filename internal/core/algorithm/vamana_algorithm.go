@@ -44,6 +44,7 @@ const (
 
 var (
 	ErrInvalidVamanaOptions = errors.New("core: invalid Vamana build options")
+	ErrInvalidVamanaWorkers = errors.New("core: Vamana workers must be positive")
 	ErrVamanaKeyNotFound    = errors.New("core: Vamana key not found")
 	ErrVamanaCapacity       = errors.New("core: Vamana index capacity exceeded")
 )
@@ -171,6 +172,16 @@ func (b *VamanaBuilder) Add(ctx context.Context, key uint64, vector []float32) e
 // updates, then selects the persisted-search medoid entry point.
 func (b *VamanaBuilder) Build(ctx context.Context) (*VamanaIndex, error) {
 	return b.build(ctx, 1)
+}
+
+// BuildWithWorkers constructs the graph with batched parallel candidate
+// discovery. Each batch reads an immutable graph generation and publishes
+// edges in input order, keeping output deterministic for a fixed worker count.
+func (b *VamanaBuilder) BuildWithWorkers(ctx context.Context, workers int) (*VamanaIndex, error) {
+	if workers <= 0 {
+		return nil, ErrInvalidVamanaWorkers
+	}
+	return b.build(ctx, workers)
 }
 
 // build constructs a deterministic graph with batched parallel candidate
