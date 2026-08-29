@@ -170,7 +170,7 @@ func TestParseConfigVamana(t *testing.T) {
 		backendXvec, "--path", t.TempDir(), "--index-type", indexVamana,
 		"--ef-search", "0",
 	}, &bytes.Buffer{})
-	require.ErrorContains(t, err, "Vamana parameters")
+	require.ErrorContains(t, err, "vamana parameters")
 }
 
 func TestParseFlexibleDuration(t *testing.T) {

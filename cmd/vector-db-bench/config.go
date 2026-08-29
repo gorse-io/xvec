@@ -254,7 +254,7 @@ func (c benchConfig) validate() error {
 			}
 		case indexVamana:
 			if c.EFSearch <= 0 {
-				return errors.New("Vamana parameters require positive ef-search")
+				return errors.New("vamana parameters require positive ef-search")
 			}
 			// zvec-go v0.7 exposes the native Vamana index type but not its
 			// query-parameter wrapper yet, so only the native defaults can be
