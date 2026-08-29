@@ -204,6 +204,9 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 		index.neighbors[position] = make([][]int, level+1)
 	}
 	index.levelRNGState = random.state
+	if err := index.cacheCosineMagnitudes(ctx, min(workers, max(1, len(index.keys)))); err != nil {
+		return nil, err
+	}
 	if workers == 1 {
 		for position := range index.keys {
 			if err := ctx.Err(); err != nil {
@@ -224,10 +227,6 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 		index.entryPoint = entryPoint
 		index.maxLevel = maxLevel
 	}
-	if err := index.cacheCosineMagnitudes(ctx, min(workers, max(1, len(index.keys)))); err != nil {
-		return nil, err
-	}
-
 	b.built = true
 	b.keys = nil
 	b.vectors = nil
