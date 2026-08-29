@@ -204,9 +204,6 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 		index.neighbors[position] = make([][]int, level+1)
 	}
 	index.levelRNGState = random.state
-	if err := index.cacheCosineMagnitudes(ctx, min(workers, max(1, len(index.keys)))); err != nil {
-		return nil, err
-	}
 	if workers == 1 {
 		for position := range index.keys {
 			if err := ctx.Err(); err != nil {
@@ -226,6 +223,9 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 		}
 		index.entryPoint = entryPoint
 		index.maxLevel = maxLevel
+	}
+	if err := index.cacheCosineMagnitudes(ctx, min(workers, max(1, len(index.keys)))); err != nil {
+		return nil, err
 	}
 
 	b.built = true
@@ -967,24 +967,21 @@ func (i *HNSWIndex) Add(ctx context.Context, key uint64, vector []float32) error
 	if err != nil {
 		return err
 	}
+	working.vectorMagnitudes = nil
 	random := splitMix64{state: working.levelRNGState}
 	level := sampleHNSWLevel(&random, working.options.M)
 	position := len(working.keys)
 	working.keys = append(working.keys, key)
 	working.vectors = append(working.vectors, vector...)
-	if working.options.Metric == MetricCosine {
-		magnitude, err := mathutil.L2MagnitudePrevalidated(vector)
-		if err != nil {
-			return err
-		}
-		working.vectorMagnitudes = append(working.vectorMagnitudes, magnitude)
-	}
 	working.positions[key] = position
 	working.levels = append(working.levels, level)
 	working.neighbors = append(working.neighbors, make([][]int, level+1))
 	working.levelRNGState = random.state
 	if err := working.insertBuiltNode(ctx, position); err != nil {
 		return fmt.Errorf("core: insert incremental HNSW node %d: %w", position, err)
+	}
+	if err := working.cacheCosineMagnitudes(ctx, 1); err != nil {
+		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
