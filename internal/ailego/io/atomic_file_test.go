@@ -17,6 +17,8 @@ package ioutil
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,6 +67,37 @@ func TestWriteFileAtomicReplaceAndCancel(t *testing.T) {
 		require.Error(t, err,
 			"empty path succeeded")
 	}
+}
+
+func TestWriteFileAtomicFuncSeekAndFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "streamed")
+	require.NoError(t, WriteFileAtomic(context.Background(), path, []byte("old"), 0o600))
+	require.NoError(t, WriteFileAtomicFunc(context.Background(), path, 0o600, func(file *os.File) error {
+		_, err := file.Write([]byte("placeholder"))
+		if err != nil {
+			return err
+		}
+		_, err = file.Seek(0, io.SeekStart)
+		if err != nil {
+			return err
+		}
+		_, err = file.Write([]byte("new"))
+		return err
+	}))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, []byte("newceholder"), data)
+
+	want := errors.New("write failed")
+	err = WriteFileAtomicFunc(context.Background(), path, 0o600, func(file *os.File) error {
+		_, writeErr := file.Write([]byte("bad"))
+		require.NoError(t, writeErr)
+		return want
+	})
+	require.ErrorIs(t, err, want)
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, []byte("newceholder"), data)
 }
 
 func TestWriteFileAtomicProcessKill(t *testing.T) {

@@ -30,6 +30,25 @@ const atomicWriteChunk = 1 << 20
 // the destination directory, so publication is one atomic filesystem rename.
 // The parent directory must already exist.
 func WriteFileAtomic(ctx context.Context, path string, data []byte, perm fs.FileMode) (err error) {
+	return WriteFileAtomicFunc(ctx, path, perm, func(file *os.File) error {
+		for len(data) > 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			chunk := min(len(data), atomicWriteChunk)
+			if err := writeFull(file, data[:chunk]); err != nil {
+				return fmt.Errorf("ailego: write atomic file: %w", err)
+			}
+			data = data[chunk:]
+		}
+		return nil
+	})
+}
+
+// WriteFileAtomicFunc durably replaces path with data written by write. The
+// callback may seek within the temporary file before returning. The temporary
+// file is never published when write fails or the context is canceled.
+func WriteFileAtomicFunc(ctx context.Context, path string, perm fs.FileMode, write func(*os.File) error) (err error) {
 	if ctx == nil {
 		return errors.New("ailego: nil atomic write context")
 	}
@@ -38,6 +57,9 @@ func WriteFileAtomic(ctx context.Context, path string, data []byte, perm fs.File
 	}
 	if path == "" {
 		return errors.New("ailego: empty atomic write path")
+	}
+	if write == nil {
+		return errors.New("ailego: nil atomic write callback")
 	}
 
 	dir := filepath.Dir(path)
@@ -62,15 +84,8 @@ func WriteFileAtomic(ctx context.Context, path string, data []byte, perm fs.File
 	if err = file.Chmod(perm); err != nil {
 		return fmt.Errorf("ailego: set atomic file mode: %w", err)
 	}
-	for len(data) > 0 {
-		if err = ctx.Err(); err != nil {
-			return err
-		}
-		chunk := min(len(data), atomicWriteChunk)
-		if err = writeFull(file, data[:chunk]); err != nil {
-			return fmt.Errorf("ailego: write atomic file: %w", err)
-		}
-		data = data[chunk:]
+	if err = write(file); err != nil {
+		return err
 	}
 	if err = file.Sync(); err != nil {
 		return fmt.Errorf("ailego: sync atomic file: %w", err)

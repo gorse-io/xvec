@@ -446,6 +446,46 @@ func BenchmarkHNSWBuild(b *testing.B) {
 	}
 }
 
+func BenchmarkHNSWSave768D(b *testing.B) {
+	const (
+		count     = 25_000
+		dimension = 768
+		m         = 15
+	)
+	options := DefaultHNSWBuildOptions(MetricCosine)
+	options.M = m
+	index := &HNSWIndex{
+		dimension:  dimension,
+		options:    options,
+		keys:       make([]uint64, count),
+		vectors:    make([]float32, count*dimension),
+		positions:  make(map[uint64]int, count),
+		levels:     make([]int, count),
+		neighbors:  make([][][]int, count),
+		entryPoint: 0,
+		maxLevel:   0,
+	}
+	for position := range count {
+		index.keys[position] = uint64(position)
+		index.positions[uint64(position)] = position
+		index.neighbors[position] = make([][]int, 1)
+		neighbors := make([]int, 0, m*2)
+		for offset := 1; offset <= m*2 && offset < count; offset++ {
+			neighbors = append(neighbors, (position+offset)%count)
+		}
+		index.neighbors[position][0] = neighbors
+	}
+	path := filepath.Join(b.TempDir(), "benchmark.hnsw")
+	b.ReportAllocs()
+	b.SetBytes(int64(count * dimension * 4))
+	b.ResetTimer()
+	for range b.N {
+		if err := index.Save(context.Background(), path); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func hnswBuildInputs(count int) []Candidate {
 	inputs := make([]Candidate, count)
 	for index := range inputs {

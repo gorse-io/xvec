@@ -15,6 +15,7 @@
 package core
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -1018,18 +1019,103 @@ func (i *HNSWIndex) Save(ctx context.Context, path string) error {
 	if path == "" {
 		return fmt.Errorf("%w: empty path", ErrInvalidHNSWFile)
 	}
-	snapshot, err := i.persistenceSnapshot(ctx)
+	if i == nil {
+		return fmt.Errorf("%w: nil index", ErrInvalidHNSWFile)
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if err := validateHNSWIndex(ctx, i); err != nil {
+		return err
+	}
+	payloadSize, err := checkedHNSWPayloadSize(i)
 	if err != nil {
 		return err
 	}
-	encoded, err := encodeHNSWIndex(ctx, snapshot)
-	if err != nil {
-		return err
-	}
-	if err := ioutil.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
+	if err := ioutil.WriteFileAtomicFunc(ctx, path, 0o600, func(file *os.File) error {
+		return writeHNSWIndex(ctx, file, i, payloadSize)
+	}); err != nil {
 		return fmt.Errorf("core: save HNSW file: %w", err)
 	}
 	return nil
+}
+
+func writeHNSWIndex(ctx context.Context, file *os.File, index *HNSWIndex, payloadSize int) error {
+	header := makeHNSWHeader(index, payloadSize, 0)
+	if _, err := file.Write(header); err != nil {
+		return err
+	}
+	writer := bufio.NewWriterSize(file, hnswReadChunk)
+	node := make([]byte, 0, hnswRecordFixedBytes+index.dimension*4+(MaxHNSWLevel+1)*(hnswLevelFixedBytes+index.options.M*8))
+	var payloadCRC uint32
+	written := 0
+	for position, key := range index.keys {
+		if position&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		node = node[:0]
+		node = binary.LittleEndian.AppendUint64(node, key)
+		node = binary.LittleEndian.AppendUint32(node, uint32(index.levels[position]))
+		start := position * index.dimension
+		for _, value := range index.vectors[start : start+index.dimension] {
+			node = binary.LittleEndian.AppendUint32(node, math.Float32bits(value))
+		}
+		for _, neighbors := range index.neighbors[position] {
+			node = binary.LittleEndian.AppendUint32(node, uint32(len(neighbors)))
+			for _, neighbor := range neighbors {
+				node = binary.LittleEndian.AppendUint32(node, uint32(neighbor))
+			}
+		}
+		payloadCRC = hashutil.UpdateCRC32C(payloadCRC, node)
+		count, err := writer.Write(node)
+		if err != nil {
+			return err
+		}
+		if count != len(node) {
+			return io.ErrShortWrite
+		}
+		written += count
+	}
+	if written != payloadSize {
+		return fmt.Errorf("%w: internal payload length", ErrInvalidHNSWFile)
+	}
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+	header = makeHNSWHeader(index, payloadSize, payloadCRC)
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := file.Write(header); err != nil {
+		return err
+	}
+	return nil
+}
+
+func makeHNSWHeader(index *HNSWIndex, payloadSize int, payloadCRC uint32) []byte {
+	header := make([]byte, hnswHeaderSize)
+	copy(header[:8], hnswFileMagic[:])
+	binary.LittleEndian.PutUint16(header[8:10], hnswFileVersion)
+	binary.LittleEndian.PutUint16(header[10:12], hnswHeaderSize)
+	binary.LittleEndian.PutUint64(header[16:24], uint64(hnswHeaderSize+payloadSize))
+	binary.LittleEndian.PutUint64(header[24:32], uint64(payloadSize))
+	binary.LittleEndian.PutUint64(header[32:40], uint64(len(index.keys)))
+	binary.LittleEndian.PutUint32(header[40:44], uint32(index.dimension))
+	binary.LittleEndian.PutUint32(header[44:48], uint32(index.options.M))
+	binary.LittleEndian.PutUint32(header[48:52], uint32(index.options.EFConstruction))
+	header[52] = byte(index.options.Metric)
+	entryPoint := uint64(math.MaxUint64)
+	if index.entryPoint >= 0 {
+		entryPoint = uint64(index.entryPoint)
+	}
+	binary.LittleEndian.PutUint64(header[56:64], entryPoint)
+	binary.LittleEndian.PutUint32(header[64:68], uint32(int32(index.maxLevel)))
+	binary.LittleEndian.PutUint64(header[68:76], index.options.Seed)
+	binary.LittleEndian.PutUint64(header[76:84], index.levelRNGState)
+	binary.LittleEndian.PutUint32(header[84:88], payloadCRC)
+	binary.LittleEndian.PutUint32(header[108:112], hashutil.CRC32C(header[:108]))
+	return header
 }
 
 func (i *HNSWIndex) persistenceSnapshot(ctx context.Context) (*HNSWIndex, error) {
@@ -1105,27 +1191,7 @@ func encodeHNSWIndex(ctx context.Context, index *HNSWIndex) ([]byte, error) {
 		return nil, fmt.Errorf("%w: internal payload length", ErrInvalidHNSWFile)
 	}
 
-	header := make([]byte, hnswHeaderSize)
-	copy(header[:8], hnswFileMagic[:])
-	binary.LittleEndian.PutUint16(header[8:10], hnswFileVersion)
-	binary.LittleEndian.PutUint16(header[10:12], hnswHeaderSize)
-	binary.LittleEndian.PutUint64(header[16:24], uint64(hnswHeaderSize+payloadSize))
-	binary.LittleEndian.PutUint64(header[24:32], uint64(payloadSize))
-	binary.LittleEndian.PutUint64(header[32:40], uint64(len(index.keys)))
-	binary.LittleEndian.PutUint32(header[40:44], uint32(index.dimension))
-	binary.LittleEndian.PutUint32(header[44:48], uint32(index.options.M))
-	binary.LittleEndian.PutUint32(header[48:52], uint32(index.options.EFConstruction))
-	header[52] = byte(index.options.Metric)
-	entryPoint := uint64(math.MaxUint64)
-	if index.entryPoint >= 0 {
-		entryPoint = uint64(index.entryPoint)
-	}
-	binary.LittleEndian.PutUint64(header[56:64], entryPoint)
-	binary.LittleEndian.PutUint32(header[64:68], uint32(int32(index.maxLevel)))
-	binary.LittleEndian.PutUint64(header[68:76], index.options.Seed)
-	binary.LittleEndian.PutUint64(header[76:84], index.levelRNGState)
-	binary.LittleEndian.PutUint32(header[84:88], hashutil.CRC32C(payload))
-	binary.LittleEndian.PutUint32(header[108:112], hashutil.CRC32C(header[:108]))
+	header := makeHNSWHeader(index, payloadSize, hashutil.CRC32C(payload))
 	return append(header, payload...), nil
 }
 
