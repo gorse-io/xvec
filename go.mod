@@ -4,6 +4,7 @@ go 1.27
 
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.24.0
+	github.com/antlr4-go/antlr/v4 v4.13.1
 	github.com/blevesearch/mmap-go v1.2.0
 	github.com/cockroachdb/pebble/v2 v2.1.6
 	github.com/gofrs/flock v0.13.0
@@ -58,7 +59,7 @@ require (
 	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/twpayne/go-geom v1.6.1 // indirect
-	golang.org/x/exp v0.0.0-20230626212559-97b1e661b5df // indirect
+	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

@@ -4,3 +4,5 @@ coverage:
 
 ignore:
   - "thirdparty/snowball/**"
+  - "internal/db/sqlengine/antlr/sql_lexer.go"
+  - "internal/db/sqlengine/antlr/sql_parser.go"

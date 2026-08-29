@@ -16,8 +16,10 @@ package sqlengine
 
 import (
 	"fmt"
-	"strings"
 	"unicode/utf8"
+
+	antlrRuntime "github.com/antlr4-go/antlr/v4"
+	sqlantlr "github.com/gorse-io/xvec/internal/db/sqlengine/antlr"
 )
 
 const MaxFilterBytes = 1 << 20
@@ -153,19 +155,86 @@ type Token struct {
 	Span Span
 }
 
-var keywordTokens = map[string]TokenKind{
-	"OR": TokenOr, "AND": TokenAnd, "NOT": TokenNot, "IN": TokenIn,
-	"CONTAIN_ALL": TokenContainAll, "CONTAIN_ANY": TokenContainAny,
-	"BETWEEN": TokenBetween, "LIKE": TokenLike, "WHERE": TokenWhere,
-	"SELECT": TokenSelect, "FROM": TokenFrom, "AS": TokenAs, "BY": TokenBy,
-	"ORDER": TokenOrder, "ASC": TokenAsc, "DESC": TokenDesc,
-	"LIMIT": TokenLimit, "TRUE": TokenTrue, "FALSE": TokenFalse,
-	"IS": TokenIs, "NULL": TokenNull,
+var antlrTokenKinds = map[int]TokenKind{
+	antlrRuntime.TokenEOF:          TokenEOF,
+	sqlantlr.SQLLexerREGULAR_ID:    TokenIdentifier,
+	sqlantlr.SQLLexerINTEGER:       TokenInteger,
+	sqlantlr.SQLLexerFLOAT:         TokenFloat,
+	sqlantlr.SQLLexerSQUOTA_STRING: TokenString,
+	sqlantlr.SQLLexerDQUOTA_STRING: TokenString,
+	sqlantlr.SQLLexerTRUE_V:        TokenTrue,
+	sqlantlr.SQLLexerFALSE_V:       TokenFalse,
+	sqlantlr.SQLLexerOR:            TokenOr,
+	sqlantlr.SQLLexerAND:           TokenAnd,
+	sqlantlr.SQLLexerNOT:           TokenNot,
+	sqlantlr.SQLLexerIN:            TokenIn,
+	sqlantlr.SQLLexerCONTAIN_ALL:   TokenContainAll,
+	sqlantlr.SQLLexerCONTAIN_ANY:   TokenContainAny,
+	sqlantlr.SQLLexerBETWEEN:       TokenBetween,
+	sqlantlr.SQLLexerLIKE:          TokenLike,
+	sqlantlr.SQLLexerWHERE:         TokenWhere,
+	sqlantlr.SQLLexerSELECT:        TokenSelect,
+	sqlantlr.SQLLexerFROM:          TokenFrom,
+	sqlantlr.SQLLexerAS:            TokenAs,
+	sqlantlr.SQLLexerBY:            TokenBy,
+	sqlantlr.SQLLexerORDER:         TokenOrder,
+	sqlantlr.SQLLexerASC:           TokenAsc,
+	sqlantlr.SQLLexerDESC:          TokenDesc,
+	sqlantlr.SQLLexerLIMIT:         TokenLimit,
+	sqlantlr.SQLLexerIS:            TokenIs,
+	sqlantlr.SQLLexerNULL_V:        TokenNull,
+	sqlantlr.SQLLexerE_OP:          TokenEqual,
+	sqlantlr.SQLLexerNE_OP:         TokenNotEqual,
+	sqlantlr.SQLLexerL_OP:          TokenLess,
+	sqlantlr.SQLLexerLE_OP:         TokenLessEqual,
+	sqlantlr.SQLLexerG_OP:          TokenGreater,
+	sqlantlr.SQLLexerGE_OP:         TokenGreaterEqual,
+	sqlantlr.SQLLexerLP:            TokenLeftParen,
+	sqlantlr.SQLLexerRP:            TokenRightParen,
+	sqlantlr.SQLLexerLMP:           TokenLeftBracket,
+	sqlantlr.SQLLexerRMP:           TokenRightBracket,
+	sqlantlr.SQLLexerCOMMA:         TokenComma,
 }
 
-// Lex tokenizes one filter. Keywords are case-insensitive while token text and
-// identifiers preserve their original spelling. SQL comments are ignored.
+// Lex tokenizes one filter with the generated ANTLR lexer. Keywords are
+// case-insensitive while token text and identifiers preserve their spelling.
 func Lex(input string) ([]Token, error) {
+	positions, err := validateFilter(input)
+	if err != nil {
+		return nil, err
+	}
+
+	inputStream := antlrRuntime.NewInputStream(input)
+	lexer := sqlantlr.NewSQLLexer(inputStream)
+	errors := newSyntaxErrorListener(positions)
+	lexer.RemoveErrorListeners()
+	lexer.AddErrorListener(errors)
+
+	var tokens []Token
+	for {
+		token := lexer.NextToken()
+		if errors.err != nil {
+			return nil, errors.err
+		}
+		if token.GetChannel() != antlrRuntime.TokenDefaultChannel && token.GetTokenType() != antlrRuntime.TokenEOF {
+			continue
+		}
+		kind, ok := antlrTokenKinds[token.GetTokenType()]
+		if !ok {
+			return nil, parseError(positions.atRune(token.GetStart()), "unexpected character %q", token.GetText())
+		}
+		text := token.GetText()
+		if token.GetTokenType() == antlrRuntime.TokenEOF {
+			text = ""
+		}
+		tokens = append(tokens, Token{Kind: kind, Text: text, Span: positions.tokenSpan(token)})
+		if token.GetTokenType() == antlrRuntime.TokenEOF {
+			return tokens, nil
+		}
+	}
+}
+
+func validateFilter(input string) (*sourcePositions, error) {
 	if len(input) > MaxFilterBytes {
 		return nil, parseError(Position{Line: 1, Column: 1}, "filter is %d bytes, maximum %d", len(input), MaxFilterBytes)
 	}
@@ -173,267 +242,81 @@ func Lex(input string) ([]Token, error) {
 		offset := firstInvalidUTF8(input)
 		return nil, parseError(positionAt(input, offset), "filter is not valid UTF-8")
 	}
-	lexer := filterLexer{input: input, position: Position{Line: 1, Column: 1}}
-	return lexer.lex()
+	return newSourcePositions(input), nil
 }
 
-type filterLexer struct {
-	input    string
-	offset   int
-	position Position
-	tokens   []Token
+type sourcePositions struct {
+	positions []Position
 }
 
-func (l *filterLexer) lex() ([]Token, error) {
-	for l.offset < len(l.input) {
-		if l.skipWhitespace() || l.skipLineComment() {
-			continue
-		}
-		if strings.HasPrefix(l.input[l.offset:], "/*") {
-			if err := l.skipBlockComment(); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		start := l.position
-		startOffset := l.offset
-		if token, ok := l.lexFixedToken(); ok {
-			l.tokens = append(l.tokens, token)
-			continue
-		}
-		if l.input[l.offset] == '\'' || l.input[l.offset] == '"' {
-			token, err := l.lexString()
-			if err != nil {
-				return nil, err
-			}
-			l.tokens = append(l.tokens, token)
-			continue
-		}
-		identifierEnd := scanIdentifier(l.input, l.offset)
-		numericEnd, numericKind := scanNumber(l.input, l.offset)
-		if numericEnd > l.offset && numericEnd >= identifierEnd {
-			l.advanceTo(numericEnd)
-			l.tokens = append(l.tokens, Token{
-				Kind: numericKind, Text: l.input[startOffset:numericEnd],
-				Span: Span{Start: start, End: l.position},
-			})
-			continue
-		}
-		if identifierEnd > l.offset {
-			// The pinned lexer emits its earlier MINUS_SIGN/UNDERSCORE rules
-			// for these one-byte spellings rather than REGULAR_ID.
-			if identifierEnd == l.offset+1 && (l.input[l.offset] == '-' || l.input[l.offset] == '_') {
-				return nil, parseError(start, "unexpected character %q", l.input[l.offset:identifierEnd])
-			}
-			l.advanceTo(identifierEnd)
-			text := l.input[startOffset:identifierEnd]
-			kind := TokenIdentifier
-			if keyword, found := keywordTokens[strings.ToUpper(text)]; found {
-				kind = keyword
-			}
-			l.tokens = append(l.tokens, Token{Kind: kind, Text: text, Span: Span{Start: start, End: l.position}})
-			continue
-		}
-		_, width := utf8.DecodeRuneInString(l.input[l.offset:])
-		bad := l.input[l.offset : l.offset+width]
-		return nil, parseError(start, "unexpected character %q", bad)
-	}
-	eof := Token{Kind: TokenEOF, Span: Span{Start: l.position, End: l.position}}
-	l.tokens = append(l.tokens, eof)
-	return l.tokens, nil
-}
-
-func (l *filterLexer) lexFixedToken() (Token, bool) {
-	start := l.position
-	startOffset := l.offset
-	fixed := []struct {
-		text string
-		kind TokenKind
-	}{
-		{"<=", TokenLessEqual}, {">=", TokenGreaterEqual}, {"!=", TokenNotEqual},
-		{"=", TokenEqual}, {"<", TokenLess}, {">", TokenGreater},
-		{"(", TokenLeftParen}, {")", TokenRightParen},
-		{"[", TokenLeftBracket}, {"]", TokenRightBracket}, {",", TokenComma},
-	}
-	for _, candidate := range fixed {
-		if strings.HasPrefix(l.input[l.offset:], candidate.text) {
-			l.advanceTo(l.offset + len(candidate.text))
-			return Token{
-				Kind: candidate.kind, Text: l.input[startOffset:l.offset],
-				Span: Span{Start: start, End: l.position},
-			}, true
-		}
-	}
-	return Token{}, false
-}
-
-func (l *filterLexer) lexString() (Token, error) {
-	start := l.position
-	startOffset := l.offset
-	quote := l.input[l.offset]
-	l.advanceOne()
-	for l.offset < len(l.input) {
-		current := l.input[l.offset]
-		if current == quote {
-			l.advanceOne()
-			return Token{
-				Kind: TokenString, Text: l.input[startOffset:l.offset],
-				Span: Span{Start: start, End: l.position},
-			}, nil
-		}
-		if current == '\\' {
-			l.advanceOne()
-			if l.offset == len(l.input) {
-				return Token{}, parseError(start, "unterminated quoted string")
-			}
-			l.advanceOne()
-			continue
-		}
-		l.advanceOne()
-	}
-	return Token{}, parseError(start, "unterminated quoted string")
-}
-
-func (l *filterLexer) skipWhitespace() bool {
-	start := l.offset
-	for l.offset < len(l.input) {
-		switch l.input[l.offset] {
-		case ' ', '\t', '\r', '\n':
-			l.advanceOne()
-		default:
-			return l.offset != start
-		}
-	}
-	return l.offset != start
-}
-
-func (l *filterLexer) skipLineComment() bool {
-	if !strings.HasPrefix(l.input[l.offset:], "--") {
-		return false
-	}
-	for l.offset < len(l.input) {
-		current := l.input[l.offset]
-		l.advanceOne()
-		if current == '\n' {
-			break
-		}
-	}
-	return true
-}
-
-func (l *filterLexer) skipBlockComment() error {
-	start := l.position
-	l.advanceTo(l.offset + 2)
-	for l.offset < len(l.input) {
-		if strings.HasPrefix(l.input[l.offset:], "*/") {
-			l.advanceTo(l.offset + 2)
-			return nil
-		}
-		l.advanceOne()
-	}
-	return parseError(start, "unterminated block comment")
-}
-
-func (l *filterLexer) advanceTo(end int) {
-	for l.offset < end {
-		l.advanceOne()
-	}
-}
-
-func (l *filterLexer) advanceOne() {
-	r, width := utf8.DecodeRuneInString(l.input[l.offset:])
-	l.offset += width
-	l.position.Offset = l.offset
-	if r == '\n' {
-		l.position.Line++
-		l.position.Column = 1
-	} else {
-		l.position.Column++
-	}
-}
-
-func scanIdentifier(input string, offset int) int {
-	end := offset
-	for end < len(input) && isIdentifierByte(input[end]) {
-		end++
-	}
-	return end
-}
-
-func isIdentifierByte(value byte) bool {
-	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
-		value >= '0' && value <= '9' || value == '_' || value == '-'
-}
-
-func scanNumber(input string, offset int) (int, TokenKind) {
-	position := offset
-	if position < len(input) && input[position] == '-' {
-		position++
-	}
-	startDigits := position
-	for position < len(input) && isDigit(input[position]) {
-		position++
-	}
-	integerDigits := position - startDigits
-	hasDot := false
-	if position < len(input) && input[position] == '.' {
-		dotPosition := position
-		hasDot = true
-		position++
-		fractionStart := position
-		for position < len(input) && isDigit(input[position]) {
-			position++
-		}
-		if position == fractionStart {
-			if integerDigits != 0 {
-				return dotPosition, TokenInteger
-			}
-			return offset, TokenEOF
-		}
-	}
-	if integerDigits == 0 && !hasDot {
-		return offset, TokenEOF
-	}
-	hasExponent := false
-	if position < len(input) && (input[position] == 'e' || input[position] == 'E') {
-		exponentMarker := position
-		position++
-		if position < len(input) && (input[position] == '+' || input[position] == '-') {
-			position++
-		}
-		exponentDigitsBefore := position
-		for position < len(input) && isDigit(input[position]) {
-			position++
-		}
-		if position < len(input) && input[position] == '.' {
-			position++
-			fractionStart := position
-			for position < len(input) && isDigit(input[position]) {
-				position++
-			}
-			if position == fractionStart {
-				position = exponentMarker
-			} else {
-				hasExponent = true
-			}
-		} else if position > exponentDigitsBefore {
-			hasExponent = true
+func newSourcePositions(input string) *sourcePositions {
+	positions := make([]Position, 1, utf8.RuneCountInString(input)+1)
+	positions[0] = Position{Line: 1, Column: 1}
+	for offset := 0; offset < len(input); {
+		r, width := utf8.DecodeRuneInString(input[offset:])
+		offset += width
+		next := positions[len(positions)-1]
+		next.Offset = offset
+		if r == '\n' {
+			next.Line++
+			next.Column = 1
 		} else {
-			position = exponentMarker
+			next.Column++
 		}
+		positions = append(positions, next)
 	}
-	hasSuffix := false
-	if position < len(input) && (input[position] == 'd' || input[position] == 'D' || input[position] == 'f' || input[position] == 'F') {
-		hasSuffix = true
-		position++
-	}
-	if hasDot || hasExponent || hasSuffix {
-		return position, TokenFloat
-	}
-	return position, TokenInteger
+	return &sourcePositions{positions: positions}
 }
 
-func isDigit(value byte) bool { return value >= '0' && value <= '9' }
+func (p *sourcePositions) atRune(index int) Position {
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(p.positions) {
+		index = len(p.positions) - 1
+	}
+	return p.positions[index]
+}
+
+func (p *sourcePositions) atLineColumn(line, zeroBasedColumn int) Position {
+	column := zeroBasedColumn + 1
+	for _, position := range p.positions {
+		if position.Line == line && position.Column == column {
+			return position
+		}
+	}
+	return p.positions[len(p.positions)-1]
+}
+
+func (p *sourcePositions) tokenSpan(token antlrRuntime.Token) Span {
+	start := token.GetStart()
+	end := token.GetStop() + 1
+	if token.GetTokenType() == antlrRuntime.TokenEOF {
+		end = start
+	}
+	return Span{Start: p.atRune(start), End: p.atRune(end)}
+}
+
+type syntaxErrorListener struct {
+	*antlrRuntime.DefaultErrorListener
+	positions *sourcePositions
+	err       error
+}
+
+func newSyntaxErrorListener(positions *sourcePositions) *syntaxErrorListener {
+	return &syntaxErrorListener{DefaultErrorListener: antlrRuntime.NewDefaultErrorListener(), positions: positions}
+}
+
+func (l *syntaxErrorListener) SyntaxError(_ antlrRuntime.Recognizer, offendingSymbol interface{}, line, column int, message string, _ antlrRuntime.RecognitionException) {
+	if l.err != nil {
+		return
+	}
+	position := l.positions.atLineColumn(line, column)
+	if token, ok := offendingSymbol.(antlrRuntime.Token); ok {
+		position = l.positions.atRune(token.GetStart())
+	}
+	l.err = parseError(position, "%s", message)
+}
 
 func firstInvalidUTF8(input string) int {
 	for offset := 0; offset < len(input); {

@@ -16,375 +16,269 @@ package sqlengine
 
 import (
 	"strings"
+
+	antlrRuntime "github.com/antlr4-go/antlr/v4"
+	sqlantlr "github.com/gorse-io/xvec/internal/db/sqlengine/antlr"
 )
 
 const MaxParseDepth = 256
 
-// ParseFilter parses one complete SQL-style filter expression.
+// ParseFilter parses one complete SQL-style filter expression with the
+// generated ANTLR parser and converts its parse tree into xvec's filter AST.
 func ParseFilter(input string) (Expr, error) {
-	tokens, err := Lex(input)
+	positions, err := validateFilter(input)
 	if err != nil {
 		return nil, err
 	}
-	parser := filterParser{tokens: tokens}
-	expression, err := parser.parseOr()
-	if err != nil {
+
+	inputStream := antlrRuntime.NewInputStream(input)
+	lexer := sqlantlr.NewSQLLexer(inputStream)
+	errors := newSyntaxErrorListener(positions)
+	lexer.RemoveErrorListeners()
+	lexer.AddErrorListener(errors)
+
+	tokens := antlrRuntime.NewCommonTokenStream(lexer, antlrRuntime.TokenDefaultChannel)
+	tokens.Fill()
+	if errors.err != nil {
+		return nil, errors.err
+	}
+	if err := checkParseDepth(tokens.GetAllTokens(), positions); err != nil {
 		return nil, err
 	}
-	if parser.current().Kind != TokenEOF {
-		return nil, parser.unexpected("end of input")
+	tokens.Seek(0)
+
+	parser := sqlantlr.NewSQLParser(tokens)
+	parser.RemoveErrorListeners()
+	parser.AddErrorListener(errors)
+	tree := parser.Logic_expr_unit()
+	if errors.err != nil {
+		return nil, errors.err
 	}
-	return expression, nil
+	return buildLogicExpr(tree.Logic_expr(), positions), nil
 }
 
-type filterParser struct {
-	tokens []Token
-	index  int
-	depth  int
-}
-
-func (p *filterParser) parseOr() (Expr, error) {
-	left, err := p.parseAnd()
-	if err != nil {
-		return nil, err
-	}
-	for p.match(TokenOr) {
-		right, err := p.parseAnd()
-		if err != nil {
-			return nil, err
-		}
-		left = &LogicalExpr{
-			Operator: LogicalOr, Left: left, Right: right,
-			Range: Span{Start: left.NodeSpan().Start, End: right.NodeSpan().End},
-		}
-	}
-	return left, nil
-}
-
-func (p *filterParser) parseAnd() (Expr, error) {
-	left, err := p.parsePrimary()
-	if err != nil {
-		return nil, err
-	}
-	for p.match(TokenAnd) {
-		right, err := p.parsePrimary()
-		if err != nil {
-			return nil, err
-		}
-		left = &LogicalExpr{
-			Operator: LogicalAnd, Left: left, Right: right,
-			Range: Span{Start: left.NodeSpan().Start, End: right.NodeSpan().End},
-		}
-	}
-	return left, nil
-}
-
-func (p *filterParser) parsePrimary() (Expr, error) {
-	if p.current().Kind != TokenLeftParen {
-		return p.parsePredicate()
-	}
-	if err := p.enter(p.current().Span.Start); err != nil {
-		return nil, err
-	}
-	defer p.leave()
-	p.advance()
-	expression, err := p.parseOr()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := p.expect(TokenRightParen); err != nil {
-		return nil, err
-	}
-	return expression, nil
-}
-
-func (p *filterParser) parsePredicate() (Expr, error) {
-	left, err := p.parseRelationLeft()
-	if err != nil {
-		return nil, err
-	}
-	start := left.NodeSpan().Start
-	predicate := &PredicateExpr{Left: left}
-	if _, functionCall := left.(*CallExpr); functionCall {
-		switch p.current().Kind {
-		case TokenEqual, TokenNotEqual, TokenLessEqual, TokenGreaterEqual, TokenLess, TokenGreater:
-		default:
-			return nil, p.unexpected("comparison after function call")
-		}
-	}
-	switch p.current().Kind {
-	case TokenEqual, TokenNotEqual, TokenLessEqual, TokenGreaterEqual:
-		token := p.advance()
-		switch token.Kind {
-		case TokenEqual:
-			predicate.Operator = PredicateEQ
-		case TokenNotEqual:
-			predicate.Operator = PredicateNE
-		case TokenLessEqual:
-			predicate.Operator = PredicateLE
-		case TokenGreaterEqual:
-			predicate.Operator = PredicateGE
-		}
-		predicate.Right, err = p.parseValue(false)
-	case TokenLess, TokenGreater:
-		token := p.advance()
-		if p.match(TokenEqual) {
-			if token.Kind == TokenLess {
-				predicate.Operator = PredicateLE
-			} else {
-				predicate.Operator = PredicateGE
+func checkParseDepth(tokens []antlrRuntime.Token, positions *sourcePositions) error {
+	depth := 0
+	for _, token := range tokens {
+		switch token.GetTokenType() {
+		case sqlantlr.SQLLexerLP:
+			depth++
+			if depth > MaxParseDepth {
+				return parseError(positions.atRune(token.GetStart()), "filter nesting exceeds %d", MaxParseDepth)
 			}
-		} else if token.Kind == TokenLess {
-			predicate.Operator = PredicateLT
-		} else {
-			predicate.Operator = PredicateGT
+		case sqlantlr.SQLLexerRP:
+			if depth > 0 {
+				depth--
+			}
 		}
-		predicate.Right, err = p.parseValue(false)
-	case TokenLike:
-		p.advance()
+	}
+	return nil
+}
+
+func buildLogicExpr(context sqlantlr.ILogic_exprContext, positions *sourcePositions) Expr {
+	return buildOrExpr(context.Or_expr(), positions)
+}
+
+func buildOrExpr(context sqlantlr.IOr_exprContext, positions *sourcePositions) Expr {
+	operands := context.AllAnd_expr()
+	left := buildAndExpr(operands[0], positions)
+	for _, operand := range operands[1:] {
+		right := buildAndExpr(operand, positions)
+		left = &LogicalExpr{
+			Operator: LogicalOr,
+			Left:     left,
+			Right:    right,
+			Range:    Span{Start: left.NodeSpan().Start, End: right.NodeSpan().End},
+		}
+	}
+	return left
+}
+
+func buildAndExpr(context sqlantlr.IAnd_exprContext, positions *sourcePositions) Expr {
+	operands := context.AllPrimary_expr()
+	left := buildPrimaryExpr(operands[0], positions)
+	for _, operand := range operands[1:] {
+		right := buildPrimaryExpr(operand, positions)
+		left = &LogicalExpr{
+			Operator: LogicalAnd,
+			Left:     left,
+			Right:    right,
+			Range:    Span{Start: left.NodeSpan().Start, End: right.NodeSpan().End},
+		}
+	}
+	return left
+}
+
+func buildPrimaryExpr(context sqlantlr.IPrimary_exprContext, positions *sourcePositions) Expr {
+	if relation := context.Relation_expr(); relation != nil {
+		return buildRelationExpr(relation, positions)
+	}
+	return buildLogicExpr(context.Logic_expr(), positions)
+}
+
+func buildRelationExpr(context sqlantlr.IRelation_exprContext, positions *sourcePositions) Expr {
+	var left ValueExpr
+	if call := context.Function_call(); call != nil {
+		left = buildFunctionCall(call, positions)
+	} else {
+		left = buildIdentifier(context.Identifier(), positions)
+	}
+
+	predicate := &PredicateExpr{
+		Left:    left,
+		Negated: context.NOT() != nil,
+		Range:   ruleSpan(context, positions),
+	}
+	switch {
+	case context.Rel_oper() != nil:
+		predicate.Operator = relationOperator(context.Rel_oper().GetText())
+		predicate.Right = buildValueExpr(context.Value_expr(), positions)
+	case context.LIKE() != nil:
 		predicate.Operator = PredicateLike
-		predicate.Right, err = p.parseValue(false)
-	case TokenNot:
-		p.advance()
-		predicate.Negated = true
-		switch p.current().Kind {
-		case TokenIn:
-			p.advance()
-			predicate.Operator = PredicateIn
-			predicate.Right, err = p.parseList(false)
-		case TokenContainAll, TokenContainAny:
-			kind := p.advance().Kind
-			predicate.Operator = PredicateContainAll
-			if kind == TokenContainAny {
-				predicate.Operator = PredicateContainAny
-			}
-			predicate.Right, err = p.parseList(true)
-		default:
-			return nil, p.unexpected("IN, CONTAIN_ALL, or CONTAIN_ANY after NOT")
-		}
-	case TokenIn:
-		p.advance()
+		predicate.Right = buildValueExpr(context.Value_expr(), positions)
+	case context.IN() != nil:
 		predicate.Operator = PredicateIn
-		predicate.Right, err = p.parseList(false)
-	case TokenContainAll, TokenContainAny:
-		kind := p.advance().Kind
+		predicate.Right = buildListExpr(context, positions)
+	case context.CONTAIN_ALL() != nil:
 		predicate.Operator = PredicateContainAll
-		if kind == TokenContainAny {
-			predicate.Operator = PredicateContainAny
-		}
-		predicate.Right, err = p.parseList(true)
-	case TokenIs:
-		p.advance()
+		predicate.Right = buildListExpr(context, positions)
+	case context.CONTAIN_ANY() != nil:
+		predicate.Operator = PredicateContainAny
+		predicate.Right = buildListExpr(context, positions)
+	case context.IS() != nil:
 		predicate.Operator = PredicateIsNull
-		predicate.Negated = p.match(TokenNot)
-		if _, expectErr := p.expect(TokenNull); expectErr != nil {
-			return nil, expectErr
-		}
-		predicate.Range = Span{Start: start, End: p.previous().Span.End}
-		return predicate, nil
+	}
+	return predicate
+}
+
+func relationOperator(text string) PredicateOperator {
+	switch strings.ReplaceAll(text, " ", "") {
+	case "=":
+		return PredicateEQ
+	case "!=":
+		return PredicateNE
+	case "<":
+		return PredicateLT
+	case "<=":
+		return PredicateLE
+	case ">":
+		return PredicateGT
+	case ">=":
+		return PredicateGE
 	default:
-		return nil, p.unexpected("comparison, LIKE, [NOT] IN, [NOT] CONTAIN_ALL/ANY, or IS [NOT] NULL")
+		return 0
 	}
-	if err != nil {
-		return nil, err
-	}
-	predicate.Range = Span{Start: start, End: predicate.Right.NodeSpan().End}
-	return predicate, nil
 }
 
-func (p *filterParser) parseRelationLeft() (ValueExpr, error) {
-	identifier, err := p.parseIdentifier()
-	if err != nil {
-		return nil, err
+func buildValueExpr(context sqlantlr.IValue_exprContext, positions *sourcePositions) ValueExpr {
+	if call := context.Function_call(); call != nil {
+		return buildFunctionCall(call, positions)
 	}
-	if p.current().Kind != TokenLeftParen {
-		return identifier, nil
-	}
-	return p.parseCall(identifier)
+	return buildConstant(context.Constant(), positions)
 }
 
-func (p *filterParser) parseValue(allowIdentifier bool) (ValueExpr, error) {
-	token := p.current()
-	switch token.Kind {
-	case TokenInteger, TokenFloat, TokenString, TokenTrue, TokenFalse:
-		p.advance()
-		return literalFromToken(token), nil
-	case TokenLeftBracket:
-		return p.parseVector()
+func buildConstant(context sqlantlr.IConstantContext, positions *sourcePositions) ValueExpr {
+	switch {
+	case context.Numeric() != nil:
+		return buildNumeric(context.Numeric(), positions)
+	case context.Quoted_string() != nil:
+		return buildQuotedString(context.Quoted_string(), positions)
+	case context.Bool_value() != nil:
+		return buildBool(context.Bool_value(), positions)
 	default:
-		if !identifierTokenAllowed(token.Kind) {
-			return nil, p.unexpected("literal or function call")
-		}
-		identifier, err := p.parseIdentifier()
-		if err != nil {
-			return nil, err
-		}
-		if p.current().Kind == TokenLeftParen {
-			return p.parseCall(identifier)
-		}
-		if allowIdentifier {
-			return identifier, nil
-		}
-		return nil, parseError(identifier.Range.Start, "bare identifier %q is not a relation value", identifier.Name)
+		return buildVectorExpr(context.Vector_expr(), positions)
 	}
 }
 
-func (p *filterParser) parseIdentifier() (*IdentifierExpr, error) {
-	token := p.current()
-	if !identifierTokenAllowed(token.Kind) {
-		return nil, p.unexpected("identifier")
+func buildListExpr(context sqlantlr.IRelation_exprContext, positions *sourcePositions) *ListExpr {
+	list := &ListExpr{
+		Range: Span{
+			Start: positions.tokenSpan(context.LP().GetSymbol()).Start,
+			End:   positions.tokenSpan(context.RP().GetSymbol()).End,
+		},
 	}
-	p.advance()
-	return &IdentifierExpr{Name: token.Text, Range: token.Span}, nil
-}
-
-func (p *filterParser) parseCall(identifier *IdentifierExpr) (*CallExpr, error) {
-	if err := p.enter(identifier.Range.Start); err != nil {
-		return nil, err
-	}
-	defer p.leave()
-	if _, err := p.expect(TokenLeftParen); err != nil {
-		return nil, err
-	}
-	call := &CallExpr{Name: identifier.Name}
-	if p.current().Kind != TokenRightParen {
-		for {
-			argument, err := p.parseValue(true)
-			if err != nil {
-				return nil, err
-			}
-			call.Arguments = append(call.Arguments, argument)
-			if !p.match(TokenComma) {
-				break
+	if values := context.In_value_expr_list(); values != nil {
+		for _, value := range values.AllIn_value_expr() {
+			switch {
+			case value.Numeric() != nil:
+				list.Values = append(list.Values, buildNumeric(value.Numeric(), positions))
+			case value.Quoted_string() != nil:
+				list.Values = append(list.Values, buildQuotedString(value.Quoted_string(), positions))
+			default:
+				list.Values = append(list.Values, buildBool(value.Bool_value(), positions))
 			}
 		}
 	}
-	right, err := p.expect(TokenRightParen)
-	if err != nil {
-		return nil, err
-	}
-	call.Range = Span{Start: identifier.Range.Start, End: right.Span.End}
-	return call, nil
+	return list
 }
 
-func (p *filterParser) parseList(allowEmpty bool) (*ListExpr, error) {
-	left, err := p.expect(TokenLeftParen)
-	if err != nil {
-		return nil, err
+func buildVectorExpr(context sqlantlr.IVector_exprContext, positions *sourcePositions) *VectorExpr {
+	vectors := context.AllVector()
+	result := &VectorExpr{
+		Matrix: len(vectors) > 1 || context.LMP() != nil,
+		Range:  ruleSpan(context, positions),
 	}
-	list := &ListExpr{}
-	if p.current().Kind == TokenRightParen {
-		if !allowEmpty {
-			return nil, p.unexpected("at least one IN value")
+	for _, vector := range vectors {
+		var row []*LiteralExpr
+		for _, numeric := range vector.AllNumeric() {
+			row = append(row, buildNumeric(numeric, positions))
 		}
-		right := p.advance()
-		list.Range = Span{Start: left.Span.Start, End: right.Span.End}
-		return list, nil
+		result.Rows = append(result.Rows, row)
 	}
-	for {
-		token := p.current()
-		switch token.Kind {
-		case TokenInteger, TokenFloat, TokenString, TokenTrue, TokenFalse:
-			p.advance()
-			list.Values = append(list.Values, literalFromToken(token))
-		default:
-			return nil, p.unexpected("numeric, string, or Boolean list value")
-		}
-		if !p.match(TokenComma) {
-			break
-		}
-	}
-	right, err := p.expect(TokenRightParen)
-	if err != nil {
-		return nil, err
-	}
-	list.Range = Span{Start: left.Span.Start, End: right.Span.End}
-	return list, nil
+	return result
 }
 
-func (p *filterParser) parseVector() (*VectorExpr, error) {
-	if err := p.enter(p.current().Span.Start); err != nil {
-		return nil, err
+func buildFunctionCall(context sqlantlr.IFunction_callContext, positions *sourcePositions) *CallExpr {
+	call := &CallExpr{
+		Name:  context.Identifier().GetText(),
+		Range: ruleSpan(context, positions),
 	}
-	defer p.leave()
-	left, err := p.expect(TokenLeftBracket)
-	if err != nil {
-		return nil, err
-	}
-	vector := &VectorExpr{}
-	if p.current().Kind == TokenLeftBracket {
-		vector.Matrix = true
-		for {
-			row, _, rowErr := p.parseVectorRow()
-			if rowErr != nil {
-				return nil, rowErr
-			}
-			vector.Rows = append(vector.Rows, row)
-			if !p.match(TokenComma) {
-				break
-			}
+	for _, argument := range context.AllFunction_value_expr() {
+		if value := argument.Value_expr(); value != nil {
+			call.Arguments = append(call.Arguments, buildValueExpr(value, positions))
+		} else {
+			call.Arguments = append(call.Arguments, buildIdentifier(argument.Identifier(), positions))
 		}
-		right, expectErr := p.expect(TokenRightBracket)
-		if expectErr != nil {
-			return nil, expectErr
-		}
-		vector.Range = Span{Start: left.Span.Start, End: right.Span.End}
-		return vector, nil
 	}
-	row, right, err := p.parseVectorElements(TokenRightBracket)
-	if err != nil {
-		return nil, err
-	}
-	vector.Rows = [][]*LiteralExpr{row}
-	vector.Range = Span{Start: left.Span.Start, End: right.Span.End}
-	return vector, nil
+	return call
 }
 
-func (p *filterParser) parseVectorRow() ([]*LiteralExpr, Token, error) {
-	if _, err := p.expect(TokenLeftBracket); err != nil {
-		return nil, Token{}, err
-	}
-	return p.parseVectorElements(TokenRightBracket)
+func buildIdentifier(context sqlantlr.IIdentifierContext, positions *sourcePositions) *IdentifierExpr {
+	return &IdentifierExpr{Name: context.GetText(), Range: ruleSpan(context, positions)}
 }
 
-func (p *filterParser) parseVectorElements(end TokenKind) ([]*LiteralExpr, Token, error) {
-	if p.current().Kind == end {
-		return nil, Token{}, p.unexpected("at least one vector number")
+func buildNumeric(context sqlantlr.INumericContext, positions *sourcePositions) *LiteralExpr {
+	token := context.GetStart()
+	kind := LiteralInteger
+	if token.GetTokenType() == sqlantlr.SQLLexerFLOAT {
+		kind = LiteralFloat
 	}
-	var values []*LiteralExpr
-	for {
-		token := p.current()
-		if token.Kind != TokenInteger && token.Kind != TokenFloat {
-			return nil, Token{}, p.unexpected("numeric vector value")
-		}
-		p.advance()
-		values = append(values, literalFromToken(token))
-		if !p.match(TokenComma) {
-			break
-		}
+	return &LiteralExpr{
+		Kind:  kind,
+		Text:  token.GetText(),
+		Raw:   token.GetText(),
+		Range: positions.tokenSpan(token),
 	}
-	right, err := p.expect(end)
-	return values, right, err
 }
 
-func literalFromToken(token Token) *LiteralExpr {
-	literal := &LiteralExpr{Raw: token.Text, Text: token.Text, Range: token.Span}
-	switch token.Kind {
-	case TokenInteger:
-		literal.Kind = LiteralInteger
-	case TokenFloat:
-		literal.Kind = LiteralFloat
-	case TokenString:
-		literal.Kind = LiteralString
-		literal.Text = normalizeQuotedString(token.Text)
-	case TokenTrue:
-		literal.Kind = LiteralBool
-		literal.Text = "true"
-	case TokenFalse:
-		literal.Kind = LiteralBool
-		literal.Text = "false"
+func buildQuotedString(context sqlantlr.IQuoted_stringContext, positions *sourcePositions) *LiteralExpr {
+	token := context.GetStart()
+	return &LiteralExpr{
+		Kind:  LiteralString,
+		Text:  normalizeQuotedString(token.GetText()),
+		Raw:   token.GetText(),
+		Range: positions.tokenSpan(token),
 	}
-	return literal
+}
+
+func buildBool(context sqlantlr.IBool_valueContext, positions *sourcePositions) *LiteralExpr {
+	token := context.GetStart()
+	return &LiteralExpr{
+		Kind:  LiteralBool,
+		Text:  strings.ToLower(token.GetText()),
+		Raw:   token.GetText(),
+		Range: positions.tokenSpan(token),
+	}
 }
 
 func normalizeQuotedString(raw string) string {
@@ -395,71 +289,11 @@ func normalizeQuotedString(raw string) string {
 	return strings.ReplaceAll(raw, `\'`, `'`)
 }
 
-func identifierTokenAllowed(kind TokenKind) bool {
-	switch kind {
-	case TokenIdentifier, TokenOr, TokenAnd, TokenNot, TokenIn, TokenBetween,
-		TokenLike, TokenWhere, TokenSelect, TokenAs, TokenBy, TokenOrder,
-		TokenAsc, TokenDesc, TokenLimit:
-		return true
-	default:
-		return false
+func ruleSpan(context antlrRuntime.ParserRuleContext, positions *sourcePositions) Span {
+	return Span{
+		Start: positions.tokenSpan(context.GetStart()).Start,
+		End:   positions.tokenSpan(context.GetStop()).End,
 	}
 }
-
-func (p *filterParser) current() Token {
-	if p.index >= len(p.tokens) {
-		return p.tokens[len(p.tokens)-1]
-	}
-	return p.tokens[p.index]
-}
-
-func (p *filterParser) previous() Token {
-	if p.index == 0 {
-		return p.current()
-	}
-	return p.tokens[p.index-1]
-}
-
-func (p *filterParser) advance() Token {
-	token := p.current()
-	if token.Kind != TokenEOF {
-		p.index++
-	}
-	return token
-}
-
-func (p *filterParser) match(kind TokenKind) bool {
-	if p.current().Kind != kind {
-		return false
-	}
-	p.advance()
-	return true
-}
-
-func (p *filterParser) expect(kind TokenKind) (Token, error) {
-	if p.current().Kind != kind {
-		return Token{}, p.unexpected(kind.String())
-	}
-	return p.advance(), nil
-}
-
-func (p *filterParser) unexpected(expected string) error {
-	token := p.current()
-	if token.Kind == TokenEOF {
-		return parseError(token.Span.Start, "expected %s, found end of input", expected)
-	}
-	return parseError(token.Span.Start, "expected %s, found %s %q", expected, token.Kind, token.Text)
-}
-
-func (p *filterParser) enter(position Position) error {
-	p.depth++
-	if p.depth > MaxParseDepth {
-		p.depth--
-		return parseError(position, "filter nesting exceeds %d", MaxParseDepth)
-	}
-	return nil
-}
-
-func (p *filterParser) leave() { p.depth-- }
 
 var _ error = (*ParseError)(nil)
