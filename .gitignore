@@ -4,6 +4,10 @@
 /coverage.out
 *.test
 *.prof
+/docs/node_modules/
+/docs/.vuepress/.cache/
+/docs/.vuepress/.temp/
+/docs/.vuepress/dist/
 
 # Local databases and benchmarks
 /data/

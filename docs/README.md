@@ -1,4 +1,28 @@
-# xvec documentation
+---
+home: true
+title: xvec documentation
+heroText: xvec
+tagline: A pure-Go embedded vector database
+actions:
+  - text: Collections
+    link: /collection.html
+    type: primary
+  - text: Query guide
+    link: /query.html
+    type: secondary
+  - text: Go reference
+    link: https://pkg.go.dev/github.com/gorse-io/xvec
+    type: secondary
+features:
+  - title: Embedded and pure Go
+    details: Durable local vector storage without CGO, native libraries, or a separate database server.
+  - title: Hybrid retrieval
+    details: Dense and sparse vectors, scalar filters, BM25 full-text search, grouping, and reranking.
+  - title: Crash consistent
+    details: Checksummed WAL records, immutable manifests and segments, atomic DDL, and recovery validation.
+---
+
+# Documentation
 
 The package reference on [pkg.go.dev](https://pkg.go.dev/github.com/gorse-io/xvec)
 is the source of truth for individual exported types, functions, fields, and
@@ -27,6 +51,19 @@ important to operating and maintaining a durable collection.
 
 The maintainer guides describe the current native Go implementation. They are
 not compatibility promises for the C++ zvec API or disk format.
+
+## Local development
+
+The documentation site uses VuePress and `vuepress-theme-hope`:
+
+```bash
+cd docs
+npm install
+npm run docs:dev
+```
+
+Build the static site with `npm run docs:build`. Generated files are written to
+`docs/.vuepress/dist` and are not committed.
 
 ## Documentation policy
 
