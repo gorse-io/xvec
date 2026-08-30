@@ -143,8 +143,8 @@ func (g *parallelHNSWGraph) searchLayer(
 	}
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(g.options.Metric, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return hnswNodeBetter(g.options.Metric, right, left) }
-	candidates := container.NewHeap(better)
-	results := container.NewHeap(worse)
+	candidates := container.NewHeapWithCapacity(limit, better)
+	results := container.NewHeapWithCapacity(limit, worse)
 	visited.reset(len(g.levels))
 	for _, entry := range entries {
 		if entry < 0 || entry >= len(g.levels) || g.levels[entry] < level || visited.seen(entry) {
