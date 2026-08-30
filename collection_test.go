@@ -5958,6 +5958,47 @@ func TestOptimizeCompactsLiveDocumentsAndPrunesArtifacts(t *testing.T) {
 	require.Equal(t, uint64(len(wantIDs)), collection.Stats().DocumentCount)
 }
 
+func TestOptimizeFlushesFreshAppendOnlySegmentWithoutRewrite(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "optimize-append-only")
+	collection, err := CreateAndOpen(ctx, path, testPublicCollectionSchema(), NewCollectionOptions())
+	require.NoError(t, err)
+
+	documents := []Document{
+		testPublicDocument("a", "alpha", "low", 1, 1, []float32{1, 0}),
+		testPublicDocument("b", "bravo", "high", 2, 2, []float32{0, 1}),
+	}
+	_, err = collection.Insert(ctx, documents)
+	require.NoError(t, err)
+	initial := collection.store.Manifest()
+	require.Empty(t, initial.PersistedSegments)
+	require.NotNil(t, initial.WritingSegment)
+	writingSegmentID := initial.WritingSegment.ID
+
+	require.NoError(t, collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}))
+	optimized := collection.store.Manifest()
+	require.Len(t, optimized.PersistedSegments, 1)
+	require.Equal(t, writingSegmentID, optimized.PersistedSegments[0].ID)
+	require.Zero(t, collection.Stats().MutableDocuments)
+	assertOptimizeArtifacts(t, path, 1)
+
+	results, err := collection.Query(ctx, VectorQuery{
+		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, documentKeys(results))
+	require.NoError(t, collection.Close())
+
+	reopened, err := Open(ctx, path, NewCollectionOptions())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, reopened.Close()) }()
+	results, err = reopened.Query(ctx, VectorQuery{
+		Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, documentKeys(results))
+}
+
 func TestOptimizeFullyDeletedCollectionKeepsDocumentIDsMonotonic(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "optimize-empty")

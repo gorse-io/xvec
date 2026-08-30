@@ -4097,6 +4097,21 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 			return err
 		}
 	}
+	storage := c.store.Stats()
+	if storage.ImmutableSegmentCount == 0 && storage.MutableDocumentCount != 0 && storage.DeletedDocumentCount == 0 {
+		// A fresh append-only collection is already one canonical contiguous
+		// run. Publish that write segment directly, as zvec does, instead of
+		// decoding, re-encoding, and rewriting every payload before indexing.
+		c.invalidateQuerySnapshotLocked()
+		if err := c.store.Flush(ctx); err != nil {
+			return wrapCollectionError(op, c.path, err)
+		}
+		runtime.GC()
+		if err := c.refreshSegmentIndexArtifactsLocked(ctx, workers); err != nil {
+			return wrapCollectionError(op, c.path, err)
+		}
+		return wrapCollectionError(op, c.path, c.store.PruneObsoleteArtifacts(ctx))
+	}
 	documents, err := c.liveDocumentsLocked(ctx)
 	if err != nil {
 		return wrapCollectionError(op, c.path, err)

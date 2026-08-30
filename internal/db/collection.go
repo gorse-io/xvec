@@ -762,15 +762,15 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 		return err
 	}
 	writing := c.manager.Writing()
-	documents := writing.Documents()
-	if len(documents) == 0 {
+	writingMetadata := writing.Metadata()
+	if writingMetadata.DocCount == 0 {
 		return nil
 	}
 	current := c.versions.Current()
 	if current.NextSegmentID == math.MaxUint64 {
 		return errors.New("db: segment ID space is exhausted")
 	}
-	lastDocID := documents[len(documents)-1].DocID
+	lastDocID := writingMetadata.MaxDocID
 	if lastDocID == math.MaxUint64 {
 		return errors.New("db: document ID space is exhausted")
 	}
