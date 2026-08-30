@@ -1235,15 +1235,6 @@ func makeHNSWHeader(index *HNSWIndex, payloadSize int, payloadCRC uint32) []byte
 	return header
 }
 
-func (i *HNSWIndex) persistenceSnapshot(ctx context.Context) (*HNSWIndex, error) {
-	if i == nil {
-		return nil, fmt.Errorf("%w: nil index", ErrInvalidHNSWFile)
-	}
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-	return cloneHNSWIndex(ctx, i)
-}
-
 // OpenHNSWIndex reads and fully verifies a native Go HNSW artifact. The
 // returned graph owns all decoded memory and does not retain the source file.
 func OpenHNSWIndex(ctx context.Context, path string) (*HNSWIndex, error) {

@@ -4121,11 +4121,9 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 	}); err != nil {
 		return err
 	}
-	// Rewriting replaces the segment manager and makes both the decoded input
-	// snapshot and the old segment payloads unreachable. Collect at this phase
-	// boundary so large index builds reuse that memory instead of stacking their
-	// Flat and graph allocations on the previous generation's heap goal.
-	documents = nil
+	// Rewriting replaces the segment manager. The decoded input has no remaining
+	// uses, and the old segment payloads are unreachable, so collect at this
+	// phase boundary before large index builds raise the heap goal.
 	runtime.GC()
 	if err := c.refreshSegmentIndexArtifactsLocked(ctx, workers); err != nil {
 		return wrapCollectionError(op, c.path, err)

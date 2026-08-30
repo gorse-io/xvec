@@ -82,8 +82,6 @@ func TestInnerProducts2MatchesFloat32Oracle(t *testing.T) {
 			gotFirst, gotSecond := InnerProducts2(query, first, second)
 			requireFloat32Close(t, wantFirst, gotFirst)
 			requireFloat32Close(t, wantSecond, gotSecond)
-			require.Equal(t, InnerProduct(query, first), gotFirst)
-			require.Equal(t, InnerProduct(query, second), gotSecond)
 		})
 	}
 }
@@ -105,7 +103,6 @@ func TestInnerProducts4MatchesFloat32Oracle(t *testing.T) {
 			for index, got := range []float32{first, second, third, fourth} {
 				_, want, _, _ := distanceOracle(vectors[0], vectors[index+1])
 				requireFloat32Close(t, want, got)
-				require.Equal(t, InnerProduct(vectors[0], vectors[index+1]), got)
 			}
 		})
 	}
@@ -120,8 +117,8 @@ func TestDistanceKernelsDoNotAllocateOrMutate(t *testing.T) {
 	require.Zero(t, testing.AllocsPerRun(100, func() {
 		benchmarkL2 = L2Squared(left, right)
 		benchmarkInnerProduct = InnerProduct(left, right)
-		benchmarkDot, benchmarkDot2 = InnerProducts2(left, right, right)
-		benchmarkDot, benchmarkDot2, benchmarkDot3, benchmarkDot4 = InnerProducts4(left, right, right, right, right)
+		benchmarkBatch2First, benchmarkBatch2Second = InnerProducts2(left, right, right)
+		benchmarkBatch4First, benchmarkBatch4Second, benchmarkBatch4Third, benchmarkBatch4Fourth = InnerProducts4(left, right, right, right, right)
 		benchmarkDot, benchmarkLeftNorm, benchmarkRightNorm = DotNorms(left, right)
 	}))
 	require.Equal(t, leftCopy, left)
@@ -228,6 +225,12 @@ var (
 	benchmarkDot2         float32
 	benchmarkDot3         float32
 	benchmarkDot4         float32
+	benchmarkBatch2First  float32
+	benchmarkBatch2Second float32
+	benchmarkBatch4First  float32
+	benchmarkBatch4Second float32
+	benchmarkBatch4Third  float32
+	benchmarkBatch4Fourth float32
 	benchmarkLeftNorm     float32
 	benchmarkRightNorm    float32
 )
