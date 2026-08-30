@@ -73,7 +73,9 @@ func TestTrainKMeansReturnsFinalAssignments(t *testing.T) {
 func TestAssignKMeansCosineMatchesGenericScoring(t *testing.T) {
 	t.Parallel()
 	vectors := [][]float32{{1, 2, 3}, {0, 0, 0}, {-2, 1, 4}}
-	centroids := [][]float32{{1, 0, 0}, {0, 0, 0}, {-1, 2, 3}}
+	// Four centroids exercise both the paired SIMD path and its odd tail after
+	// the first scalar comparison.
+	centroids := [][]float32{{1, 0, 0}, {0, 0, 0}, {-1, 2, 3}, {3, -2, 1}}
 	labels, scores, err := assignKMeansCosine(context.Background(), vectors, centroids, 2)
 	require.NoError(t, err)
 	for index, vector := range vectors {
