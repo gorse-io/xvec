@@ -49,3 +49,39 @@ void xvec_avx_batch_inner_products2(float *query, float *first, float *second,
         *second_output += query[index] * second[index];
     }
 }
+
+// One-to-many inner product kernel for centroid assignment. Four accumulators
+// fit in AVX registers while amortizing every query load over four candidates.
+void xvec_avx_batch_inner_products4(float *query, float *first, float *second,
+                                    float *third, float *fourth, int64_t size,
+                                    float *first_output, float *second_output,
+                                    float *third_output, float *fourth_output) {
+    int64_t vectors = size / 8;
+    int64_t remain = size % 8;
+    __m256 first_sum = _mm256_setzero_ps();
+    __m256 second_sum = _mm256_setzero_ps();
+    __m256 third_sum = _mm256_setzero_ps();
+    __m256 fourth_sum = _mm256_setzero_ps();
+    for (int64_t index = 0; index < vectors; index++) {
+        __m256 query_value = _mm256_loadu_ps(query);
+        first_sum = _mm256_add_ps(first_sum, _mm256_mul_ps(query_value, _mm256_loadu_ps(first)));
+        second_sum = _mm256_add_ps(second_sum, _mm256_mul_ps(query_value, _mm256_loadu_ps(second)));
+        third_sum = _mm256_add_ps(third_sum, _mm256_mul_ps(query_value, _mm256_loadu_ps(third)));
+        fourth_sum = _mm256_add_ps(fourth_sum, _mm256_mul_ps(query_value, _mm256_loadu_ps(fourth)));
+        query += 8;
+        first += 8;
+        second += 8;
+        third += 8;
+        fourth += 8;
+    }
+    *first_output = reduce256(first_sum);
+    *second_output = reduce256(second_sum);
+    *third_output = reduce256(third_sum);
+    *fourth_output = reduce256(fourth_sum);
+    for (int64_t index = 0; index < remain; index++) {
+        *first_output += query[index] * first[index];
+        *second_output += query[index] * second[index];
+        *third_output += query[index] * third[index];
+        *fourth_output += query[index] * fourth[index];
+    }
+}

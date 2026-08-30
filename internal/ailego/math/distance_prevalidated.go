@@ -85,6 +85,33 @@ func CosineDistances2WithMagnitudesPrevalidated(
 	return firstDistance, secondDistance, nil
 }
 
+// CosineDistances4WithMagnitudesPrevalidated computes cosine distance from one
+// query to four candidates while sharing query loads in the SIMD dot-product
+// kernel. All vectors and magnitudes must already be validated.
+func CosineDistances4WithMagnitudesPrevalidated(
+	query, first, second, third, fourth []float32,
+	queryMagnitude, firstMagnitude, secondMagnitude, thirdMagnitude, fourthMagnitude float32,
+) (firstDistance, secondDistance, thirdDistance, fourthDistance float32, err error) {
+	firstProduct, secondProduct, thirdProduct, fourthProduct := floats.InnerProducts4(query, first, second, third, fourth)
+	firstDistance, err = cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	secondDistance, err = cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	thirdDistance, err = cosineDistanceFromProduct(thirdProduct, queryMagnitude, thirdMagnitude)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	fourthDistance, err = cosineDistanceFromProduct(fourthProduct, queryMagnitude, fourthMagnitude)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return firstDistance, secondDistance, thirdDistance, fourthDistance, nil
+}
+
 func cosineDistanceFromProduct(product, leftMagnitude, rightMagnitude float32) (float32, error) {
 	if leftMagnitude == 0 && rightMagnitude == 0 {
 		return 0, nil

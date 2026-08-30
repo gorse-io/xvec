@@ -18,17 +18,20 @@ package floats
 
 type binaryKernel func(left, right []float32) float32
 type batch2Kernel func(query, first, second []float32) (firstProduct, secondProduct float32)
+type batch4Kernel func(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32)
 type productsKernel func(left, right []float32) (dot, leftNorm, rightNorm float32)
 
 var kernels = struct {
 	l2       binaryKernel
 	dot      binaryKernel
 	dot2     batch2Kernel
+	dot4     batch4Kernel
 	products productsKernel
 }{
 	l2:       l2SquaredScalar,
 	dot:      innerProductScalar,
 	dot2:     innerProducts2Scalar,
+	dot4:     innerProducts4Scalar,
 	products: dotNormsScalar,
 }
 
@@ -47,6 +50,12 @@ func InnerProduct(left, right []float32) float32 {
 // candidates, which is the dominant HNSW one-to-many scoring pattern.
 func InnerProducts2(query, first, second []float32) (firstProduct, secondProduct float32) {
 	return kernels.dot2(query, first, second)
+}
+
+// InnerProducts4 computes the dot product of one query with four candidates
+// in one pass, amortizing each query load across four independent products.
+func InnerProducts4(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
+	return kernels.dot4(query, first, second, third, fourth)
 }
 
 // DotNorms computes the dot product and both squared norms in one pass.
@@ -73,6 +82,16 @@ func innerProducts2Scalar(query, first, second []float32) (firstProduct, secondP
 	for index, queryValue := range query {
 		firstProduct += queryValue * first[index]
 		secondProduct += queryValue * second[index]
+	}
+	return
+}
+
+func innerProducts4Scalar(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
+	for index, queryValue := range query {
+		firstProduct += queryValue * first[index]
+		secondProduct += queryValue * second[index]
+		thirdProduct += queryValue * third[index]
+		fourthProduct += queryValue * fourth[index]
 	}
 	return
 }

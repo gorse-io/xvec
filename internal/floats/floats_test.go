@@ -88,6 +88,29 @@ func TestInnerProducts2MatchesFloat32Oracle(t *testing.T) {
 	}
 }
 
+func TestInnerProducts4MatchesFloat32Oracle(t *testing.T) {
+	t.Parallel()
+	for _, dimension := range []int{1, 7, 8, 15, 16, 17, 127, 128, 129, 768, 1536} {
+		t.Run(fmt.Sprintf("dimension_%d", dimension), func(t *testing.T) {
+			random := rand.New(rand.NewSource(int64(dimension * 5)))
+			vectors := make([][]float32, 5)
+			for vector := range vectors {
+				vectors[vector] = make([]float32, dimension+1)
+				for index := 1; index <= dimension; index++ {
+					vectors[vector][index] = random.Float32()*2 - 1
+				}
+				vectors[vector] = vectors[vector][1:]
+			}
+			first, second, third, fourth := InnerProducts4(vectors[0], vectors[1], vectors[2], vectors[3], vectors[4])
+			for index, got := range []float32{first, second, third, fourth} {
+				_, want, _, _ := distanceOracle(vectors[0], vectors[index+1])
+				requireFloat32Close(t, want, got)
+				require.Equal(t, InnerProduct(vectors[0], vectors[index+1]), got)
+			}
+		})
+	}
+}
+
 func TestDistanceKernelsDoNotAllocateOrMutate(t *testing.T) {
 	left := []float32{0.2, 0.9, -0.4, 0.7}
 	right := []float32{0.3, 0.5, 0.8, -0.1}
@@ -98,6 +121,7 @@ func TestDistanceKernelsDoNotAllocateOrMutate(t *testing.T) {
 		benchmarkL2 = L2Squared(left, right)
 		benchmarkInnerProduct = InnerProduct(left, right)
 		benchmarkDot, benchmarkDot2 = InnerProducts2(left, right, right)
+		benchmarkDot, benchmarkDot2, benchmarkDot3, benchmarkDot4 = InnerProducts4(left, right, right, right, right)
 		benchmarkDot, benchmarkLeftNorm, benchmarkRightNorm = DotNorms(left, right)
 	}))
 	require.Equal(t, leftCopy, left)
@@ -131,6 +155,19 @@ func BenchmarkDistanceKernels(b *testing.B) {
 		b.Run(fmt.Sprintf("InnerProducts2/%d", dimension), func(b *testing.B) {
 			for b.Loop() {
 				benchmarkDot, benchmarkDot2 = InnerProducts2(left, right, right)
+			}
+		})
+		b.Run(fmt.Sprintf("InnerProductSequential4/%d", dimension), func(b *testing.B) {
+			for b.Loop() {
+				benchmarkDot = InnerProduct(left, right)
+				benchmarkDot2 = InnerProduct(left, right)
+				benchmarkDot3 = InnerProduct(left, right)
+				benchmarkDot4 = InnerProduct(left, right)
+			}
+		})
+		b.Run(fmt.Sprintf("InnerProducts4/%d", dimension), func(b *testing.B) {
+			for b.Loop() {
+				benchmarkDot, benchmarkDot2, benchmarkDot3, benchmarkDot4 = InnerProducts4(left, right, right, right, right)
 			}
 		})
 		b.Run(fmt.Sprintf("DotNorms/%d", dimension), func(b *testing.B) {
@@ -189,6 +226,8 @@ var (
 	benchmarkInnerProduct float32
 	benchmarkDot          float32
 	benchmarkDot2         float32
+	benchmarkDot3         float32
+	benchmarkDot4         float32
 	benchmarkLeftNorm     float32
 	benchmarkRightNorm    float32
 )

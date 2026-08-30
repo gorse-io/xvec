@@ -39,6 +39,7 @@ func init() {
 	}
 	if cpu.X86.HasAVX {
 		kernels.dot2 = innerProducts2AVXBatch
+		kernels.dot4 = innerProducts4AVXBatch
 	}
 }
 
@@ -67,6 +68,19 @@ func innerProducts2AVXBatch(query, first, second []float32) (firstProduct, secon
 	xvec_avx_batch_inner_products2(
 		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]), int64(len(query)),
 		unsafe.Pointer(&firstProduct), unsafe.Pointer(&secondProduct),
+	)
+	return
+}
+
+func innerProducts4AVXBatch(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
+	if len(query) < 8 {
+		return innerProducts4Scalar(query, first, second, third, fourth)
+	}
+	xvec_avx_batch_inner_products4(
+		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)),
+		unsafe.Pointer(&firstProduct), unsafe.Pointer(&secondProduct),
+		unsafe.Pointer(&thirdProduct), unsafe.Pointer(&fourthProduct),
 	)
 	return
 }

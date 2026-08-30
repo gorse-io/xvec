@@ -20,3 +20,6 @@ import "unsafe"
 
 //go:noescape
 func xvec_avx_batch_inner_products2(query, first, second unsafe.Pointer, size int64, firstOutput, secondOutput unsafe.Pointer)
+
+//go:noescape
+func xvec_avx_batch_inner_products4(query, first, second, third, fourth unsafe.Pointer, size int64, firstOutput, secondOutput, thirdOutput, fourthOutput unsafe.Pointer)

@@ -464,12 +464,33 @@ func nearestCosineCentroidContext(
 		return 0, 0, err
 	}
 	index := 1
-	for ; index+1 < len(centroids); index += 2 {
+	for ; index+3 < len(centroids); index += 4 {
 		if ctx != nil && (index-1)&63 == 0 {
 			if err := ctx.Err(); err != nil {
 				return 0, 0, err
 			}
 		}
+		firstScore, secondScore, thirdScore, fourthScore, err := mathutil.CosineDistances4WithMagnitudesPrevalidated(
+			vector, centroids[index], centroids[index+1], centroids[index+2], centroids[index+3],
+			vectorMagnitude, centroidMagnitudes[index], centroidMagnitudes[index+1], centroidMagnitudes[index+2], centroidMagnitudes[index+3],
+		)
+		if err != nil {
+			return 0, 0, err
+		}
+		if firstScore < bestScore {
+			bestIndex, bestScore = index, firstScore
+		}
+		if secondScore < bestScore {
+			bestIndex, bestScore = index+1, secondScore
+		}
+		if thirdScore < bestScore {
+			bestIndex, bestScore = index+2, thirdScore
+		}
+		if fourthScore < bestScore {
+			bestIndex, bestScore = index+3, fourthScore
+		}
+	}
+	if index+1 < len(centroids) {
 		firstScore, secondScore, err := mathutil.CosineDistances2WithMagnitudesPrevalidated(
 			vector, centroids[index], centroids[index+1],
 			vectorMagnitude, centroidMagnitudes[index], centroidMagnitudes[index+1],
@@ -483,6 +504,7 @@ func nearestCosineCentroidContext(
 		if secondScore < bestScore {
 			bestIndex, bestScore = index+1, secondScore
 		}
+		index += 2
 	}
 	if index < len(centroids) {
 		score, err := mathutil.CosineDistanceWithMagnitudesPrevalidated(
