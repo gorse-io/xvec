@@ -6,6 +6,7 @@ import sidebar from "./sidebar.js";
 export default hopeTheme({
   repo: "gorse-io/xvec",
   docsDir: "docs",
+  logo: "/logo.png",
   navbar,
   sidebar,
   editLink: true,

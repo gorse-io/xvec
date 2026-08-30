@@ -1,0 +1,21 @@
+@use "sass:color";
+
+$_logo-yellow: #fdcf06;
+
+$vp-c-accent: (
+  light: color.change($_logo-yellow, $lightness: 35%),
+  dark: color.change($_logo-yellow, $lightness: 55%),
+);
+$vp-c-accent-bg: (
+  light: color.change($_logo-yellow, $lightness: 45%),
+  dark: color.change($_logo-yellow, $lightness: 47.5%),
+);
+$vp-c-accent-hover: (
+  light: color.change($_logo-yellow, $lightness: 50%),
+  dark: color.change($_logo-yellow, $lightness: 45%),
+);
+$vp-c-accent-soft: (
+  light: color.change($_logo-yellow, $lightness: 40%, $saturation: 80%, $alpha: 0.14),
+  dark: color.change($_logo-yellow, $lightness: 40%, $saturation: 80%, $alpha: 0.16),
+);
+$vp-c-accent-text: #1f2328;
