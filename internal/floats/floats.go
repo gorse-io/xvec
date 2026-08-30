@@ -17,15 +17,18 @@
 package floats
 
 type binaryKernel func(left, right []float32) float32
+type batch2Kernel func(query, first, second []float32) (firstProduct, secondProduct float32)
 type productsKernel func(left, right []float32) (dot, leftNorm, rightNorm float32)
 
 var kernels = struct {
 	l2       binaryKernel
 	dot      binaryKernel
+	dot2     batch2Kernel
 	products productsKernel
 }{
 	l2:       l2SquaredScalar,
 	dot:      innerProductScalar,
+	dot2:     innerProducts2Scalar,
 	products: dotNormsScalar,
 }
 
@@ -37,6 +40,13 @@ func L2Squared(left, right []float32) float32 {
 // InnerProduct returns the dot product of left and right.
 func InnerProduct(left, right []float32) float32 {
 	return kernels.dot(left, right)
+}
+
+// InnerProducts2 computes the dot product of one query with two candidates in
+// one pass. SIMD implementations reuse each loaded query block for both
+// candidates, which is the dominant HNSW one-to-many scoring pattern.
+func InnerProducts2(query, first, second []float32) (firstProduct, secondProduct float32) {
+	return kernels.dot2(query, first, second)
 }
 
 // DotNorms computes the dot product and both squared norms in one pass.
@@ -55,6 +65,14 @@ func l2SquaredScalar(left, right []float32) (sum float32) {
 func innerProductScalar(left, right []float32) (sum float32) {
 	for index, leftValue := range left {
 		sum += leftValue * right[index]
+	}
+	return
+}
+
+func innerProducts2Scalar(query, first, second []float32) (firstProduct, secondProduct float32) {
+	for index, queryValue := range query {
+		firstProduct += queryValue * first[index]
+		secondProduct += queryValue * second[index]
 	}
 	return
 }

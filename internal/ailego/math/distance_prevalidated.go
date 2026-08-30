@@ -66,6 +66,37 @@ func CosineDistanceWithMagnitudesPrevalidated(left, right []float32, leftMagnitu
 	return finiteScore(float64(1 - cosine))
 }
 
+// CosineDistances2WithMagnitudesPrevalidated computes cosine distance from one
+// query to two candidates while sharing the query load in the SIMD dot-product
+// kernel. All vectors and magnitudes must already be validated.
+func CosineDistances2WithMagnitudesPrevalidated(
+	query, first, second []float32,
+	queryMagnitude, firstMagnitude, secondMagnitude float32,
+) (firstDistance, secondDistance float32, err error) {
+	firstProduct, secondProduct := floats.InnerProducts2(query, first, second)
+	firstDistance, err = cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude)
+	if err != nil {
+		return 0, 0, err
+	}
+	secondDistance, err = cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude)
+	if err != nil {
+		return 0, 0, err
+	}
+	return firstDistance, secondDistance, nil
+}
+
+func cosineDistanceFromProduct(product, leftMagnitude, rightMagnitude float32) (float32, error) {
+	if leftMagnitude == 0 && rightMagnitude == 0 {
+		return 0, nil
+	}
+	if leftMagnitude == 0 || rightMagnitude == 0 {
+		return 1, nil
+	}
+	cosine := product / (leftMagnitude * rightMagnitude)
+	cosine = min(1, max(-1, cosine))
+	return finiteScore(float64(1 - cosine))
+}
+
 // MIPSL2SquaredPrevalidated computes MIPS-to-L2 distance without validating inputs.
 func MIPSL2SquaredPrevalidated(left, right []float32) (float32, error) {
 	return finiteScore(float64(mipsL2Squared(left, right)))

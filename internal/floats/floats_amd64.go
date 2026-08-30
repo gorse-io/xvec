@@ -23,6 +23,7 @@ import (
 )
 
 //go:generate go tool goat src/floats_avx.c -O3 -mavx
+//go:generate go tool goat src/floats_batch_avx.c -O3 -mavx
 //go:generate go tool goat src/floats_avx512.c -O3 -mavx -mfma -mavx512f
 
 func init() {
@@ -35,6 +36,9 @@ func init() {
 		kernels.l2 = l2SquaredAVX
 		kernels.dot = innerProductAVX
 		kernels.products = dotNormsAVX
+	}
+	if cpu.X86.HasAVX {
+		kernels.dot2 = innerProducts2AVXBatch
 	}
 }
 
@@ -54,6 +58,17 @@ func innerProductAVX(left, right []float32) float32 {
 	var result float32
 	xvec_avx_inner_product(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
 	return result
+}
+
+func innerProducts2AVXBatch(query, first, second []float32) (firstProduct, secondProduct float32) {
+	if len(query) < 8 {
+		return innerProducts2Scalar(query, first, second)
+	}
+	xvec_avx_batch_inner_products2(
+		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]), int64(len(query)),
+		unsafe.Pointer(&firstProduct), unsafe.Pointer(&secondProduct),
+	)
+	return
 }
 
 func dotNormsAVX(left, right []float32) (dot, leftNorm, rightNorm float32) {

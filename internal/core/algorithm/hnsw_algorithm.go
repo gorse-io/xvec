@@ -249,6 +249,8 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 		entryPoint, maxLevel, err := buildParallelHNSW(ctx, workers, index.options, index.levels, index.neighbors,
 			func(left, right int) (float32, error) {
 				return index.computeDistanceAt(left, right)
+			}, func(query, first, second int) (float32, float32, error) {
+				return index.computeDistancePairAt(query, first, second)
 			})
 		if err != nil {
 			return nil, fmt.Errorf("core: construct HNSW: %w", err)
@@ -609,6 +611,24 @@ func (i *HNSWIndex) computeDistanceAt(left, right int) (float32, error) {
 		)
 	}
 	return i.computeDistance(i.vectorAt(left), i.vectorAt(right))
+}
+
+func (i *HNSWIndex) computeDistancePairAt(query, first, second int) (float32, float32, error) {
+	if i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys) {
+		return mathutil.CosineDistances2WithMagnitudesPrevalidated(
+			i.vectorAt(query), i.vectorAt(first), i.vectorAt(second),
+			i.vectorMagnitudes[query], i.vectorMagnitudes[first], i.vectorMagnitudes[second],
+		)
+	}
+	firstScore, err := i.computeDistanceAt(query, first)
+	if err != nil {
+		return 0, 0, err
+	}
+	secondScore, err := i.computeDistanceAt(query, second)
+	if err != nil {
+		return 0, 0, err
+	}
+	return firstScore, secondScore, nil
 }
 
 func (i *HNSWIndex) queryDistanceAt(query []float32, queryMagnitude float32, position int) (float32, error) {

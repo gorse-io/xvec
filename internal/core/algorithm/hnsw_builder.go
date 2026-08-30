@@ -30,6 +30,7 @@ type parallelHNSWGraph struct {
 	neighbors [][][]int
 	nodeLocks []sync.RWMutex
 	score     func(left, right int) (float32, error)
+	scorePair func(query, first, second int) (float32, float32, error)
 
 	entryMu  sync.RWMutex
 	entry    int
@@ -43,13 +44,25 @@ func buildParallelHNSW(
 	levels []int,
 	neighbors [][][]int,
 	score func(left, right int) (float32, error),
+	scorePairs ...func(query, first, second int) (float32, float32, error),
 ) (entryPoint, maxLevel int, err error) {
 	if len(levels) == 0 {
 		return -1, -1, nil
 	}
+	scorePair := func(query, first, second int) (float32, float32, error) {
+		firstScore, scoreErr := score(query, first)
+		if scoreErr != nil {
+			return 0, 0, scoreErr
+		}
+		secondScore, scoreErr := score(query, second)
+		return firstScore, secondScore, scoreErr
+	}
+	if len(scorePairs) != 0 && scorePairs[0] != nil {
+		scorePair = scorePairs[0]
+	}
 	graph := parallelHNSWGraph{
 		options: options, levels: levels, neighbors: neighbors,
-		nodeLocks: make([]sync.RWMutex, len(levels)), score: score,
+		nodeLocks: make([]sync.RWMutex, len(levels)), score: score, scorePair: scorePair,
 		entry: 0, maxLevel: levels[0],
 	}
 	if err := parallel.ParallelFor(ctx, len(levels)-1, workers, func(workerCtx context.Context, offset int) error {
@@ -156,17 +169,45 @@ func (g *parallelHNSWGraph) searchLayer(
 			break
 		}
 		g.nodeLocks[current.position].RLock()
+		pending := -1
 		for _, neighbor := range g.neighbors[current.position][level] {
 			if visited.seen(neighbor) {
 				continue
 			}
 			visited.mark(neighbor)
-			score, err := g.score(query, neighbor)
+			if pending < 0 {
+				pending = neighbor
+				continue
+			}
+			firstScore, secondScore, err := g.scorePair(query, pending, neighbor)
 			if err != nil {
 				g.nodeLocks[current.position].RUnlock()
 				return nil, err
 			}
-			node := hnswScoredNode{position: neighbor, score: score}
+			for pairIndex, pairPosition := range [2]int{pending, neighbor} {
+				score := firstScore
+				if pairIndex == 1 {
+					score = secondScore
+				}
+				node := hnswScoredNode{position: pairPosition, score: score}
+				worst, hasWorst = results.Peek()
+				if results.Len() < limit || !hasWorst || hnswNodeBetter(g.options.Metric, node, worst) {
+					candidates.Push(node)
+					results.Push(node)
+					if results.Len() > limit {
+						_, _ = results.Pop()
+					}
+				}
+			}
+			pending = -1
+		}
+		if pending >= 0 {
+			score, err := g.score(query, pending)
+			if err != nil {
+				g.nodeLocks[current.position].RUnlock()
+				return nil, err
+			}
+			node := hnswScoredNode{position: pending, score: score}
 			worst, hasWorst = results.Peek()
 			if results.Len() < limit || !hasWorst || hnswNodeBetter(g.options.Metric, node, worst) {
 				candidates.Push(node)
@@ -245,12 +286,23 @@ func (g *parallelHNSWGraph) mergeNeighbors(ctx context.Context, owner int, addit
 		return nil
 	}
 	candidates := make([]hnswScoredNode, 0, len(merged))
-	for _, position := range merged {
-		score, err := g.score(owner, position)
+	paired := len(merged) &^ 1
+	for offset := 0; offset < paired; offset += 2 {
+		firstScore, secondScore, err := g.scorePair(owner, merged[offset], merged[offset+1])
 		if err != nil {
 			return err
 		}
-		candidates = append(candidates, hnswScoredNode{position: position, score: score})
+		candidates = append(candidates,
+			hnswScoredNode{position: merged[offset], score: firstScore},
+			hnswScoredNode{position: merged[offset+1], score: secondScore},
+		)
+	}
+	if paired != len(merged) {
+		score, err := g.score(owner, merged[paired])
+		if err != nil {
+			return err
+		}
+		candidates = append(candidates, hnswScoredNode{position: merged[paired], score: score})
 	}
 	slices.SortFunc(candidates, func(left, right hnswScoredNode) int {
 		if hnswNodeBetter(g.options.Metric, left, right) {
