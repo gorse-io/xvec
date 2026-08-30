@@ -19,6 +19,6 @@ export default hopeTheme({
     gfm: true,
   },
   plugins: {
-    slimsearch: {},
+    slimsearch: false,
   },
 });
