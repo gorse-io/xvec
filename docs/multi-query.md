@@ -1,97 +1,97 @@
-# MultiQuery
+# Multi-query and reranking
 
-`Collection.MultiQuery` evaluates two or more dense-vector, sparse-vector, or
-full-text branches over one live collection snapshot. Every branch receives
-the same SQL scalar filter and produces its own bounded candidate list. An
-explicit `Reranker` then combines those lists into at most `TopK` documents.
+`Collection.MultiQuery` runs at least two dense-vector, sparse-vector,
+primary-key-vector, or FTS branches over one immutable live-document snapshot.
+A shared SQL filter is applied to every branch before candidates are passed to
+a reranker.
 
 ```go
 results, err := collection.MultiQuery(ctx, xvec.MultiQuery{
     Queries: []xvec.SubQuery{
         {
             Field: "embedding",
-            DenseVector: xvec.VectorFP32{0.1, 0.2, 0.3},
+            DenseVector: xvec.VectorFP32{1, 0},
             NumCandidates: 50,
         },
         {
-            Field: "keywords",
-            SparseVector: xvec.SparseVectorFP32{
-                Indices: []uint32{3, 17},
-                Values:  []float32{0.8, 0.5},
-            },
-            NumCandidates: 50,
-        },
-        {
-            Field: "body",
-            FTS: &xvec.FTSClause{Match: "portable vector search"},
-            Params: xvec.FTSQueryParams{DefaultOperator: "AND"},
+            Field: "title",
+            FTS: &xvec.FTSClause{Match: "vector search"},
             NumCandidates: 50,
         },
     },
     TopK: 10,
-    Filter: "published = true",
     Projection: xvec.Projection{OutputFields: []string{"title"}},
-    Reranker: myReranker, // omit to use default RRF
 })
 ```
 
-Exactly one target must be set in each `SubQuery`. Dense and sparse branches
-accept the same index-specific `QueryParams` as `Collection.Query`. An FTS
-branch targets an FTS-indexed `STRING` field and uses exactly one of:
+Each `SubQuery` sets exactly one target. A zero candidate count selects
+`DefaultSubQueryCandidates`; a zero final `TopK` selects
+`DefaultMultiQueryTopK`. Branch counts and final counts cannot exceed
+`MaxQueryTopK`.
 
-- `FTSClause.Query` for terms, quoted phrases, parentheses, `AND`, `OR`, `+`
-  must, and `-` must-not syntax;
-- `FTSClause.Match` for natural text analyzed without operator parsing.
-
-`FTSQueryParams.DefaultOperator` is case-insensitive `OR` or `AND`; empty means
-`OR`. Index text and query text use the field's configured whitespace,
-standard, ngram, or Jieba tokenizer followed by lowercase, ASCII-folding, and
-stemmer filters in declaration order. Full-text candidates use exact BM25 with
-the pinned `k1=1.2` and `b=0.75` defaults. The shared scalar filter masks
-eligible documents after corpus statistics are formed, so filtering does not
-change IDF or average document length.
-
-`TopK == 0` defaults to 10. `NumCandidates == 0` also defaults to 10. Both are
-bounded by 100,000, and MultiQuery requires at least two branches.
-
-The process [`RuntimeConfig`](runtime-config.md) admits the complete operation
-as one query task. Its scratch estimate increases with branch count. A
-selective shared filter may route vector branches to exact scans and FTS
-branches to posting seeks according to the configured planner ratios; these
-routes are exact and do not change the result set.
+Branches execute with the same vector/FTS semantics as `Query`. Primary-key
+branches resolve their vector from the same snapshot. FTS corpus statistics
+include every live document; a scalar filter masks candidates without changing
+IDF or average document length.
 
 ## Reranker contract
 
-`Reranker.Rerank` receives batches in sub-query order. Each `RerankBatch`
-contains an independent field schema and projected, score-ordered document
-copies. Vector scores retain their metric semantics; FTS scores are descending
-BM25 values. A reranker may reorder candidates and replace their scores, but
-its output must:
+The reranker receives one independently owned, score-ordered `RerankBatch` per
+sub-query in sub-query order. It may change scores and order, but returned
+documents must be distinct and drawn from those batches. xvec validates callback
+output against the snapshot before projection. Implementations shared by
+concurrent calls must be concurrency-safe.
 
-- contain at most `topK` documents;
-- contain no duplicate document;
-- select every document from at least one input batch, preserving its DocID
-  and primary key;
-- use finite scores.
+A nil reranker selects reciprocal-rank fusion.
 
-The collection validates this boundary and rematerializes the selected
-documents from the immutable snapshot, so changes to candidate field maps do
-not alter stored or returned data. Caller code runs after the collection read
-lock is released and may safely call other collection methods. Context and
-reranker errors are propagated through the structured xvec error model.
+### Reciprocal-rank fusion
 
-The generic `Reranker` abstraction and baseline-compatible
-[`RRFReranker`](rrf-reranker.md) are executable now. A nil reranker selects RRF
-with `rank_constant=60`. [`WeightedReranker`](weighted-reranker.md) provides the
-pinned metric-specific score normalization formulas and explicit per-branch
-weights. [`CallbackReranker`](callback-reranker.md) adapts context-aware Go
-functions, propagates returned errors, and contains callback panics as
-structured internal errors.
+RRF combines ranks without comparing raw score domains. A document at zero-based
+rank `r` contributes:
 
-## Storage boundary
+```text
+1 / (rank_constant + r + 1)
+```
 
-MultiQuery reuses the collection's per-segment runtime cache. `Flush` publishes
-vector files and FTS/INVERT Pebble directories only for newly immutable segments; reopen loads
-matching artifacts instead of retraining them. Segment-local branches are
-merged globally, and deletion masks prevent superseded versions from becoming
-candidates. The native Go format does not read C++ collection files.
+The default rank constant is 60. Contributions are summed by primary key,
+results are ordered by descending fused score, and ties use primary key then
+document ID for deterministic output.
+
+```go
+reranker := xvec.NewRRFReranker()
+```
+
+### Weighted score fusion
+
+`WeightedReranker` normalizes each branch according to its field metric,
+multiplies by the corresponding finite weight, and sums by primary key. The
+weight count must match the number of branches; negative weights are allowed.
+
+```go
+reranker := xvec.NewWeightedReranker(0.35, 0.65)
+```
+
+The first occurrence supplies the returned document payload. Equal fused scores
+use deterministic key and document-ID ordering.
+
+### Callback reranking
+
+`NewCallbackReranker` adapts a context-aware function:
+
+```go
+reranker := xvec.NewCallbackReranker(func(
+    ctx context.Context,
+    batches []xvec.RerankBatch,
+    topK int,
+) ([]xvec.Document, error) {
+    return externalRerank(ctx, batches, topK)
+})
+```
+
+Callback errors are returned unchanged. Panics are converted to structured
+internal errors so caller code cannot unwind through the collection boundary.
+The adapter does not serialize calls; the callback owns its concurrency policy.
+
+Projection is applied only after reranking, so rerankers see the complete
+candidate payload needed for validation and scoring while callers receive only
+the requested result shape.

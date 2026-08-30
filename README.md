@@ -165,18 +165,21 @@ branches over one snapshot.
 
 Dense vectors support FP16 and FP32 storage, plus supported scalar
 quantization options. Sparse vectors support exact Flat and HNSW
-inner-product search. See the [Collection API](docs/collection-api.md) and
-[vector query semantics](docs/vector-query.md) for filters, radius queries,
-projections, ANN parameters, grouping, and refinement.
+inner-product search. See [Collections](docs/collection.md),
+[Queries and filters](docs/query.md), and [Vector indexes](docs/vector-indexes.md)
+for lifecycle, filtering, radius queries, projections, ANN parameters,
+grouping, and refinement.
 
 ## Documentation
 
-- [Collection API](docs/collection-api.md)
-- [Vector query semantics](docs/vector-query.md)
-- [Hybrid MultiQuery](docs/multi-query.md)
-- [Segment-native indexes](docs/segment-native-indexes.md)
-- [Runtime configuration](docs/runtime-config.md)
-- [Native Go disk format](docs/disk-format.md)
+- [Documentation index](docs/README.md)
+- [Collections](docs/collection.md)
+- [Queries and filters](docs/query.md)
+- [Multi-query and reranking](docs/multi-query.md)
+- [Full-text search](docs/full-text-search.md)
+- [Vector indexes](docs/vector-indexes.md)
+- [Runtime configuration](docs/runtime.md)
+- [Storage and recovery](docs/storage.md)
 - [VectorDBBench-compatible Go benchmark](cmd/vector-db-bench/README.md)
 
 ## License
