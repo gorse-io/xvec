@@ -556,7 +556,7 @@ func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context, wor
 			indexes = cached.indexes
 		} else {
 			var buildErr error
-			indexes, buildErr = buildCollectionRuntimeIndexes(ctx, c.schema, segment.documents, workers, c.options.MaxBufferSize, c.options.EnableMmap, nil)
+			indexes, buildErr = buildCollectionArtifactIndexes(ctx, c.schema, segment.documents, workers, c.options.MaxBufferSize)
 			if buildErr != nil {
 				cleanup()
 				return fmt.Errorf("build indexes for segment %d: %w", segment.metadata.ID, buildErr)
@@ -742,6 +742,32 @@ func buildCollectionRuntimeIndexes(
 	useMmap bool,
 	artifacts map[string]string,
 ) (*collectionRuntimeIndexes, error) {
+	return buildCollectionIndexes(ctx, schema, documents, workers, maxBufferSize, useMmap, artifacts, false)
+}
+
+// buildCollectionArtifactIndexes constructs only indexes that have a durable
+// artifact. Query-only exact and Flat fallbacks are deliberately omitted: the
+// caller writes the native artifacts and closes this temporary generation.
+func buildCollectionArtifactIndexes(
+	ctx context.Context,
+	schema CollectionSchema,
+	documents []Document,
+	workers int,
+	maxBufferSize uint32,
+) (*collectionRuntimeIndexes, error) {
+	return buildCollectionIndexes(ctx, schema, documents, workers, maxBufferSize, false, nil, true)
+}
+
+func buildCollectionIndexes(
+	ctx context.Context,
+	schema CollectionSchema,
+	documents []Document,
+	workers int,
+	maxBufferSize uint32,
+	useMmap bool,
+	artifacts map[string]string,
+	artifactOnly bool,
+) (*collectionRuntimeIndexes, error) {
 	indexes := &collectionRuntimeIndexes{
 		denseFlat: make(map[string]collectionDenseIndex), denseNative: make(map[string]collectionDenseIndex),
 		denseExact: make(map[string]collectionDenseIndex),
@@ -762,6 +788,25 @@ func buildCollectionRuntimeIndexes(
 			spec, err := resolveCollectionVectorIndex(field, "build collection indexes", "")
 			if err != nil {
 				return fail(err)
+			}
+			if artifactOnly {
+				if spec.indexType == IndexTypeFlat {
+					continue
+				}
+				if field.DataType.IsDenseVector() {
+					native, buildErr := buildCollectionDenseNative(ctx, schema.Name, field, documents, spec, workers, maxBufferSize)
+					if buildErr != nil {
+						return fail(buildErr)
+					}
+					indexes.denseNative[field.Name] = native
+				} else {
+					native, buildErr := buildCollectionSparseIndex(ctx, field, documents, spec, false, workers)
+					if buildErr != nil {
+						return fail(buildErr)
+					}
+					indexes.sparseNative[field.Name] = native
+				}
+				continue
 			}
 			if field.DataType.IsDenseVector() {
 				var exact collectionDenseIndex
@@ -802,20 +847,7 @@ func buildCollectionRuntimeIndexes(
 					indexes.denseNative[field.Name] = native
 					continue
 				}
-				switch spec.indexType {
-				case IndexTypeHNSW:
-					native, err = buildCollectionDenseHNSW(ctx, schema.Name, field, documents, spec, workers)
-				case IndexTypeIVFRaBitQ:
-					native, err = buildCollectionDenseIVFRaBitQ(ctx, field, documents, spec, workers)
-				case IndexTypeIVF:
-					native, err = buildCollectionDenseIVF(ctx, schema.Name, field, documents, spec, workers)
-				case IndexTypeVamana:
-					native, err = buildCollectionDenseVamana(ctx, schema.Name, field, documents, spec, workers)
-				case IndexTypeDiskANN:
-					native, err = buildCollectionDenseDiskANN(ctx, schema.Name, field, documents, spec, workers, maxBufferSize)
-				default:
-					err = fmt.Errorf("unsupported dense collection index %s", spec.indexType)
-				}
+				native, err = buildCollectionDenseNative(ctx, schema.Name, field, documents, spec, workers, maxBufferSize)
 				if err != nil {
 					return fail(err)
 				}
@@ -902,6 +934,31 @@ func buildCollectionRuntimeIndexes(
 		indexes.scalar[field.Name] = index
 	}
 	return indexes, nil
+}
+
+func buildCollectionDenseNative(
+	ctx context.Context,
+	schemaName string,
+	field FieldSchema,
+	documents []Document,
+	spec collectionVectorIndex,
+	workers int,
+	maxBufferSize uint32,
+) (collectionDenseIndex, error) {
+	switch spec.indexType {
+	case IndexTypeHNSW:
+		return buildCollectionDenseHNSW(ctx, schemaName, field, documents, spec, workers)
+	case IndexTypeIVFRaBitQ:
+		return buildCollectionDenseIVFRaBitQ(ctx, field, documents, spec, workers)
+	case IndexTypeIVF:
+		return buildCollectionDenseIVF(ctx, schemaName, field, documents, spec, workers)
+	case IndexTypeVamana:
+		return buildCollectionDenseVamana(ctx, schemaName, field, documents, spec, workers)
+	case IndexTypeDiskANN:
+		return buildCollectionDenseDiskANN(ctx, schemaName, field, documents, spec, workers, maxBufferSize)
+	default:
+		return nil, fmt.Errorf("unsupported dense collection index %s", spec.indexType)
+	}
 }
 
 func (i *collectionRuntimeIndexes) scalarIndex(ctx context.Context, name string) (*sqlengine.InvertedIndex, error) {
@@ -4049,6 +4106,12 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 	}); err != nil {
 		return err
 	}
+	// Rewriting replaces the segment manager and makes both the decoded input
+	// snapshot and the old segment payloads unreachable. Collect at this phase
+	// boundary so large index builds reuse that memory instead of stacking their
+	// Flat and graph allocations on the previous generation's heap goal.
+	documents = nil
+	runtime.GC()
 	if err := c.refreshSegmentIndexArtifactsLocked(ctx, workers); err != nil {
 		return wrapCollectionError(op, c.path, err)
 	}

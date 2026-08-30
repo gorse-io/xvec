@@ -622,6 +622,27 @@ func TestBuildCollectionRuntimeIndexesSharesUnquantizedDenseFlat(t *testing.T) {
 	require.Same(t, flat, indexes.denseNative["embedding"])
 }
 
+func TestBuildCollectionArtifactIndexesOmitsQueryOnlyDenseIndexes(t *testing.T) {
+	ctx := context.Background()
+	params := NewHNSWIndexParams(MetricTypeL2)
+	params.M, params.EFConstruction = 4, 8
+	schema := NewCollectionSchema("artifact_hnsw", FieldSchema{
+		Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: params,
+	})
+	documents := []Document{
+		{DocID: 1, PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{1, 0}}},
+		{DocID: 2, PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{0, 1}}},
+	}
+
+	indexes, err := buildCollectionArtifactIndexes(ctx, schema, documents, 1, 0)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, indexes.Close()) }()
+
+	require.Empty(t, indexes.denseExact)
+	require.Empty(t, indexes.denseFlat)
+	require.NotNil(t, indexes.denseNative["embedding"])
+}
+
 func TestBuildCollectionRuntimeIndexesDefersDiskANNFlat(t *testing.T) {
 	ctx := context.Background()
 	params := NewDiskANNIndexParams(MetricTypeL2)
