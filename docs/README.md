@@ -5,14 +5,11 @@ heroImage: /logo.png
 heroText: xvec
 tagline: Zvec inspired lightweight, lightning-fast, in-process vector database in Go
 actions:
-  - text: Collections
-    link: /collection.html
-    type: primary
-  - text: Query guide
-    link: /query.html
-    type: secondary
   - text: Go reference
     link: https://pkg.go.dev/github.com/gorse-io/xvec
+    type: primary
+  - text: GitHub
+    link: https://github.com/gorse-io/xvec
     type: secondary
 features:
   - title: Embedded and pure Go
