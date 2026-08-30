@@ -274,7 +274,9 @@ func writableBenchmarkCollection(ctx context.Context, config benchConfig) (*xvec
 		return nil, fmt.Errorf("unsupported index type %q", config.IndexType)
 	}
 	schema := xvec.NewCollectionSchema("vector_bench_test",
-		xvec.FieldSchema{Name: "id", DataType: xvec.DataTypeInt64, Index: xvec.NewInvertIndexParams()},
+		// VectorDBBench does not filter on id, and the zvec backend leaves this
+		// field unindexed. Keep both backends on the same HNSW-only workload.
+		xvec.FieldSchema{Name: "id", DataType: xvec.DataTypeInt64},
 		xvec.FieldSchema{
 			Name: "dense", DataType: xvec.DataTypeVectorFP32, Dimension: uint32(config.caseSpec.Dimension), Index: index,
 		},
