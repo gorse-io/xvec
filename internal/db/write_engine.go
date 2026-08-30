@@ -325,7 +325,7 @@ func (e *WriteEngine) insertOneLocked(ctx context.Context, input WriteInput) (ui
 	if err := writing.ApplyExpected(applyContext, docID, input.PrimaryKey, input.Payload); err != nil {
 		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: apply WAL insert: %w", err)))
 	}
-	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, docID); err != nil {
+	if err := e.manager.PrimaryKeys().PutNew(applyContext, input.PrimaryKey, docID); err != nil {
 		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: index WAL insert: %w", err)))
 	}
 	if syncErr != nil {

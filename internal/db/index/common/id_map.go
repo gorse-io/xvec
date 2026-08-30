@@ -267,6 +267,46 @@ func (m *PrimaryKeyMap) Put(ctx context.Context, key string, docID uint64) (uint
 	return previous, found, nil
 }
 
+// PutNew adds a key that the serialized write path has already proved absent.
+// It avoids repeating the same Pebble lookup after the WAL record and segment
+// payload have been applied.
+func (m *PrimaryKeyMap) PutNew(ctx context.Context, key string, docID uint64) error {
+	if m == nil {
+		return errors.New("db: nil IDMap")
+	}
+	if ctx == nil {
+		return errors.New("db: nil IDMap write context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := ValidatePrimaryKey(key); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.db == nil {
+		return errors.New("db: closed IDMap")
+	}
+	if m.overlay != nil {
+		m.overlay[key] = primaryKeyDelta{docID: docID}
+	} else {
+		var encoded [8]byte
+		binary.BigEndian.PutUint64(encoded[:], docID)
+		var err error
+		if m.setPoint != nil {
+			err = m.setPoint([]byte(key), encoded[:])
+		} else {
+			err = m.db.Set([]byte(key), encoded[:], pebble.NoSync)
+		}
+		if err != nil {
+			return fmt.Errorf("db: write new IDMap point: %w", err)
+		}
+	}
+	m.count++
+	return nil
+}
+
 // Delete removes key and returns its prior global document ID, if any.
 func (m *PrimaryKeyMap) Delete(ctx context.Context, key string) (uint64, bool, error) {
 	if m == nil {

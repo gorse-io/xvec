@@ -1377,8 +1377,7 @@ func applyRecoveredOperation(ctx context.Context, manager *segmentstore.SegmentM
 		if err := writing.ApplyExpected(ctx, operation.DocID, operation.PrimaryKey, operation.Payload); err != nil {
 			return err
 		}
-		_, _, err := manager.PrimaryKeys().Put(ctx, operation.PrimaryKey, operation.DocID)
-		return err
+		return manager.PrimaryKeys().PutNew(ctx, operation.PrimaryKey, operation.DocID)
 	case writeOperationUpsert, writeOperationUpdate:
 		previous, existed, err := manager.PrimaryKeys().Get(operation.PrimaryKey)
 		if err != nil {
