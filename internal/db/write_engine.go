@@ -311,7 +311,7 @@ func (e *WriteEngine) insertOneLocked(ctx context.Context, input WriteInput) (ui
 	}
 	operation := writeOperation{
 		Type: writeOperationInsert, DocID: docID,
-		PrimaryKey: input.PrimaryKey, Payload: slices.Clone(input.Payload),
+		PrimaryKey: input.PrimaryKey, Payload: input.Payload,
 	}
 	encoded, err := encodeWriteOperation(operation)
 	if err != nil {
@@ -322,17 +322,16 @@ func (e *WriteEngine) insertOneLocked(ctx context.Context, input WriteInput) (ui
 		return 0, syncErr
 	}
 	applyContext := context.WithoutCancel(ctx)
-	doc, err := writing.AppendExpected(applyContext, docID, input.PrimaryKey, input.Payload)
-	if err != nil {
+	if err := writing.ApplyExpected(applyContext, docID, input.PrimaryKey, input.Payload); err != nil {
 		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: apply WAL insert: %w", err)))
 	}
-	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, doc.DocID); err != nil {
+	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, docID); err != nil {
 		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: index WAL insert: %w", err)))
 	}
 	if syncErr != nil {
-		return doc.DocID, e.poisonLocked(syncErr)
+		return docID, e.poisonLocked(syncErr)
 	}
-	return doc.DocID, syncErr
+	return docID, syncErr
 }
 
 func (e *WriteEngine) upsertOneLocked(ctx context.Context, input WriteInput) (uint64, error) {
@@ -359,7 +358,7 @@ func (e *WriteEngine) upsertOneLocked(ctx context.Context, input WriteInput) (ui
 	}
 	operation := writeOperation{
 		Type: writeOperationUpsert, DocID: docID,
-		PrimaryKey: input.PrimaryKey, Payload: slices.Clone(input.Payload),
+		PrimaryKey: input.PrimaryKey, Payload: input.Payload,
 	}
 	encoded, err := encodeWriteOperation(operation)
 	if err != nil {
@@ -370,8 +369,7 @@ func (e *WriteEngine) upsertOneLocked(ctx context.Context, input WriteInput) (ui
 		return 0, syncErr
 	}
 	applyContext := context.WithoutCancel(ctx)
-	doc, err := writing.AppendExpected(applyContext, docID, input.PrimaryKey, input.Payload)
-	if err != nil {
+	if err := writing.ApplyExpected(applyContext, docID, input.PrimaryKey, input.Payload); err != nil {
 		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: apply WAL upsert: %w", err)))
 	}
 	if existed {
@@ -379,13 +377,13 @@ func (e *WriteEngine) upsertOneLocked(ctx context.Context, input WriteInput) (ui
 			return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: delete prior upsert version: %w", err)))
 		}
 	}
-	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, doc.DocID); err != nil {
+	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, docID); err != nil {
 		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: index WAL upsert: %w", err)))
 	}
 	if syncErr != nil {
-		return doc.DocID, e.poisonLocked(syncErr)
+		return docID, e.poisonLocked(syncErr)
 	}
-	return doc.DocID, syncErr
+	return docID, syncErr
 }
 
 func (e *WriteEngine) updateOneLocked(ctx context.Context, input WriteInput) (uint64, error) {
@@ -415,7 +413,7 @@ func (e *WriteEngine) updateOneLocked(ctx context.Context, input WriteInput) (ui
 	}
 	encoded, err := encodeWriteOperation(writeOperation{
 		Type: writeOperationUpdate, DocID: docID,
-		PrimaryKey: input.PrimaryKey, Payload: slices.Clone(input.Payload),
+		PrimaryKey: input.PrimaryKey, Payload: input.Payload,
 	})
 	if err != nil {
 		return 0, err
@@ -425,20 +423,19 @@ func (e *WriteEngine) updateOneLocked(ctx context.Context, input WriteInput) (ui
 		return 0, syncErr
 	}
 	applyContext := context.WithoutCancel(ctx)
-	doc, err := writing.AppendExpected(applyContext, docID, input.PrimaryKey, input.Payload)
-	if err != nil {
+	if err := writing.ApplyExpected(applyContext, docID, input.PrimaryKey, input.Payload); err != nil {
 		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: apply WAL update: %w", err)))
 	}
 	if _, err := e.manager.Deletes().MarkDeleted(applyContext, previous); err != nil {
 		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: delete prior update version: %w", err)))
 	}
-	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, doc.DocID); err != nil {
+	if _, _, err := e.manager.PrimaryKeys().Put(applyContext, input.PrimaryKey, docID); err != nil {
 		return 0, e.poisonLocked(errors.Join(syncErr, fmt.Errorf("db: index WAL update: %w", err)))
 	}
 	if syncErr != nil {
-		return doc.DocID, e.poisonLocked(syncErr)
+		return docID, e.poisonLocked(syncErr)
 	}
-	return doc.DocID, syncErr
+	return docID, syncErr
 }
 
 func (e *WriteEngine) deleteOneLocked(ctx context.Context, primaryKey string) (uint64, error) {

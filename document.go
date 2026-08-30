@@ -448,7 +448,7 @@ func marshalDocumentPayload(fields map[string]any) ([]byte, error) {
 	sort.Strings(names)
 	payload := make([]byte, 0)
 	for _, name := range names {
-		value, dataType, err := cloneDocumentValue(fields[name])
+		value, dataType, err := documentValueForEncoding(fields[name])
 		if err != nil {
 			return nil, invalidArgument("encode document", "field %q: %v", name, err)
 		}
@@ -478,6 +478,21 @@ func marshalDocumentPayload(fields map[string]any) ([]byte, error) {
 	binary.LittleEndian.PutUint32(encoded[28:32], hashutil.CRC32C(encoded[:28]))
 	copy(encoded[documentHeaderSize:], payload)
 	return encoded, nil
+}
+
+// documentValueForEncoding avoids an intermediate vector clone for the most
+// common ingestion representation. encodeDocumentValue synchronously copies
+// FP32 values into the schema payload, so retaining a second private vector is
+// unnecessary. Representations that need canonicalization keep the existing
+// clone path.
+func documentValueForEncoding(value any) (any, DataType, error) {
+	if vector, ok := value.(VectorFP32); ok {
+		if err := validateFiniteFloat32s(vector); err != nil {
+			return nil, 0, err
+		}
+		return vector, DataTypeVectorFP32, nil
+	}
+	return cloneDocumentValue(value)
 }
 
 func unmarshalDocumentPayload(encoded []byte) (map[string]any, error) {

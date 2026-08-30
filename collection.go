@@ -5297,19 +5297,23 @@ func (c *Collection) insertDocumentsLocked(ctx context.Context, documents []Docu
 }
 
 func (c *Collection) prepareWriteDocumentLocked(ctx context.Context, operator Operator, document Document) (Document, error) {
+	if operator == OperatorInsert {
+		// Insert only retains the schema-encoded payload, so validating the
+		// caller's document in place avoids cloning large vectors that are
+		// immediately encoded and discarded.
+		if err := document.Validate(c.schema); err != nil {
+			return Document{}, err
+		}
+		if err := validateCollectionVectorRepresentations(ctx, c.schema, document); err != nil {
+			return Document{}, err
+		}
+		return document, nil
+	}
 	clone, err := document.Clone()
 	if err != nil {
 		return Document{}, err
 	}
 	switch operator {
-	case OperatorInsert:
-		if err := clone.Validate(c.schema); err != nil {
-			return Document{}, err
-		}
-		if err := validateCollectionVectorRepresentations(ctx, c.schema, clone); err != nil {
-			return Document{}, err
-		}
-		return clone, nil
 	case OperatorUpsert, OperatorUpdate:
 		if err := validateDocumentAgainstSchema(clone, c.schema, true); err != nil {
 			return Document{}, err

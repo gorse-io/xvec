@@ -103,7 +103,8 @@ func (s *WriteSegment) ReservedRange() (uint64, uint64) {
 
 // Append stores a cloned payload and assigns the next contiguous document ID.
 func (s *WriteSegment) Append(ctx context.Context, primaryKey string, payload []byte) (StoredDocument, error) {
-	return s.append(ctx, nil, primaryKey, payload)
+	document, err := s.append(ctx, nil, primaryKey, payload)
+	return document.Clone(), err
 }
 
 // NextDocumentID returns the ID that the next append will receive.
@@ -125,7 +126,15 @@ func (s *WriteSegment) NextDocumentID() (uint64, error) {
 // AppendExpected appends only if expectedDocID is still next. It lets the WAL
 // record and in-memory application agree on the assigned global ID.
 func (s *WriteSegment) AppendExpected(ctx context.Context, expectedDocID uint64, primaryKey string, payload []byte) (StoredDocument, error) {
-	return s.append(ctx, &expectedDocID, primaryKey, payload)
+	document, err := s.append(ctx, &expectedDocID, primaryKey, payload)
+	return document.Clone(), err
+}
+
+// ApplyExpected appends a WAL-backed document without cloning it again for a
+// return value. The segment still retains its own payload copy.
+func (s *WriteSegment) ApplyExpected(ctx context.Context, expectedDocID uint64, primaryKey string, payload []byte) error {
+	_, err := s.append(ctx, &expectedDocID, primaryKey, payload)
+	return err
 }
 
 func (s *WriteSegment) append(ctx context.Context, expectedDocID *uint64, primaryKey string, payload []byte) (StoredDocument, error) {
@@ -161,7 +170,7 @@ func (s *WriteSegment) append(ctx context.Context, expectedDocID *uint64, primar
 		Payload: slices.Clone(payload),
 	}
 	s.docs = append(s.docs, doc)
-	return doc.Clone(), nil
+	return doc, nil
 }
 
 // Document returns an independent document copy.

@@ -1107,7 +1107,7 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 		}
 		for index := range run {
 			document := &run[index]
-			if _, appendErr := writing.AppendExpected(ctx, document.DocID, document.PrimaryKey, document.Payload); appendErr != nil {
+			if appendErr := writing.ApplyExpected(ctx, document.DocID, document.PrimaryKey, document.Payload); appendErr != nil {
 				cleanup()
 				return false, appendErr
 			}
@@ -1374,7 +1374,7 @@ func applyRecoveredOperation(ctx context.Context, manager *segmentstore.SegmentM
 		} else if exists {
 			return ErrPrimaryKeyExists
 		}
-		if _, err := writing.AppendExpected(ctx, operation.DocID, operation.PrimaryKey, operation.Payload); err != nil {
+		if err := writing.ApplyExpected(ctx, operation.DocID, operation.PrimaryKey, operation.Payload); err != nil {
 			return err
 		}
 		_, _, err := manager.PrimaryKeys().Put(ctx, operation.PrimaryKey, operation.DocID)
@@ -1387,7 +1387,7 @@ func applyRecoveredOperation(ctx context.Context, manager *segmentstore.SegmentM
 		if operation.Type == writeOperationUpdate && !existed {
 			return ErrPrimaryKeyNotFound
 		}
-		if _, err := writing.AppendExpected(ctx, operation.DocID, operation.PrimaryKey, operation.Payload); err != nil {
+		if err := writing.ApplyExpected(ctx, operation.DocID, operation.PrimaryKey, operation.Payload); err != nil {
 			return err
 		}
 		if existed {
