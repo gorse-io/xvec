@@ -35,17 +35,25 @@ func TestPublicDefaultsCompatibility(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.True(t, fixture.Baseline == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
+	delete(fixture.Defaults, "hnsw_rabitq_index")
+	fixture.Defaults["ivf_rabitq_index"] = map[string]any{
+		"n_list": float64(1024), "total_bits": float64(7), "sample_count": float64(0),
+	}
+	delete(fixture.Defaults, "hnsw_rabitq_query")
+	fixture.Defaults["ivf_rabitq_query"] = map[string]any{
+		"nprobe": float64(10), "scale_factor": float64(10),
+	}
 
 	invert := NewInvertIndexParams()
 	hnsw := NewHNSWIndexParams(MetricTypeL2)
-	rabitq := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	rabitq := NewIVFRaBitQIndexParams(MetricTypeL2)
 	ivf := NewIVFIndexParams(MetricTypeL2)
 	diskANN := NewDiskANNIndexParams(MetricTypeL2)
 	vamana := NewVamanaIndexParams(MetricTypeL2)
 	fts := NewFTSIndexParams()
 	flatQuery := NewFlatQueryParams()
 	hnswQuery := NewHNSWQueryParams()
-	rabitqQuery := NewHNSWRaBitQQueryParams()
+	rabitqQuery := NewIVFRaBitQQueryParams()
 	ivfQuery := NewIVFQueryParams()
 	diskANNQuery := NewDiskANNQueryParams()
 	vamanaQuery := NewVamanaQueryParams()
@@ -53,21 +61,21 @@ func TestPublicDefaultsCompatibility(t *testing.T) {
 	collection := NewCollectionSchema("abc", NewField("id", DataTypeString))
 
 	got := map[string]map[string]any{
-		"invert_index":      {"range": invert.EnableRangeOptimization, "extended_wildcard": invert.EnableExtendedWildcard},
-		"hnsw_index":        {"m": hnsw.M, "ef_construction": hnsw.EFConstruction},
-		"hnsw_rabitq_index": {"total_bits": rabitq.TotalBits, "num_clusters": rabitq.NumClusters, "sample_count": rabitq.SampleCount, "m": rabitq.M, "ef_construction": rabitq.EFConstruction},
-		"ivf_index":         {"n_list": ivf.NList, "n_iterations": ivf.NIterations, "use_soar": ivf.UseSOAR},
-		"diskann_index":     {"max_degree": diskANN.MaxDegree, "list_size": diskANN.ListSize, "pq_chunks": diskANN.PQChunks},
-		"vamana_index":      {"max_degree": vamana.MaxDegree, "search_list_size": vamana.SearchListSize, "alpha": vamana.Alpha, "saturate_graph": vamana.SaturateGraph},
-		"fts_index":         {"tokenizer": fts.Tokenizer, "filters": fts.Filters, "extra_params": fts.ExtraParams},
-		"flat_query":        {"scale_factor": flatQuery.ScaleFactor},
-		"hnsw_query":        {"ef": hnswQuery.EF, "prefetch_offset": hnswQuery.PrefetchOffset, "prefetch_lines": hnswQuery.PrefetchLines},
-		"hnsw_rabitq_query": {"ef": rabitqQuery.EF},
-		"ivf_query":         {"nprobe": ivfQuery.NProbe, "scale_factor": ivfQuery.ScaleFactor},
-		"diskann_query":     {"list_size": diskANNQuery.ListSize},
-		"vamana_query":      {"ef_search": vamanaQuery.EFSearch, "prefetch_offset": vamanaQuery.PrefetchOffset, "prefetch_lines": vamanaQuery.PrefetchLines},
-		"fts_query":         {"default_operator": ftsQuery.DefaultOperator},
-		"collection":        {"max_docs_per_segment": collection.MaxDocsPerSegment},
+		"invert_index":     {"range": invert.EnableRangeOptimization, "extended_wildcard": invert.EnableExtendedWildcard},
+		"hnsw_index":       {"m": hnsw.M, "ef_construction": hnsw.EFConstruction},
+		"ivf_rabitq_index": {"n_list": rabitq.NList, "total_bits": rabitq.TotalBits, "sample_count": rabitq.SampleCount},
+		"ivf_index":        {"n_list": ivf.NList, "n_iterations": ivf.NIterations, "use_soar": ivf.UseSOAR},
+		"diskann_index":    {"max_degree": diskANN.MaxDegree, "list_size": diskANN.ListSize, "pq_chunks": diskANN.PQChunks},
+		"vamana_index":     {"max_degree": vamana.MaxDegree, "search_list_size": vamana.SearchListSize, "alpha": vamana.Alpha, "saturate_graph": vamana.SaturateGraph},
+		"fts_index":        {"tokenizer": fts.Tokenizer, "filters": fts.Filters, "extra_params": fts.ExtraParams},
+		"flat_query":       {"scale_factor": flatQuery.ScaleFactor},
+		"hnsw_query":       {"ef": hnswQuery.EF, "prefetch_offset": hnswQuery.PrefetchOffset, "prefetch_lines": hnswQuery.PrefetchLines},
+		"ivf_rabitq_query": {"nprobe": rabitqQuery.NProbe, "scale_factor": rabitqQuery.ScaleFactor},
+		"ivf_query":        {"nprobe": ivfQuery.NProbe, "scale_factor": ivfQuery.ScaleFactor},
+		"diskann_query":    {"list_size": diskANNQuery.ListSize},
+		"vamana_query":     {"ef_search": vamanaQuery.EFSearch, "prefetch_offset": vamanaQuery.PrefetchOffset, "prefetch_lines": vamanaQuery.PrefetchLines},
+		"fts_query":        {"default_operator": ftsQuery.DefaultOperator},
+		"collection":       {"max_docs_per_segment": collection.MaxDocsPerSegment},
 	}
 	wantJSON, _ := json.Marshal(fixture.Defaults)
 	gotJSON, _ := json.Marshal(got)

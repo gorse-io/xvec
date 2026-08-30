@@ -132,7 +132,7 @@ are synchronized. Active working state, unknown names, symlinks, and manifest
 generations are not removed. A crash during pruning leaves only harmless
 unreferenced files; even a no-op Optimize retries the cleanup.
 
-HNSW, HNSW-RaBitQ, IVF, Vamana, DiskANN, and sparse HNSW retain their native
+HNSW, IVF, IVF-RaBitQ, Vamana, DiskANN, and sparse HNSW retain their native
 `.zvi` formats. FTS and INVERT use Pebble byte-ordered keys: document/row
 bitmaps and posting lists are split into bounded chunks whose ordinal suffixes
 must be contiguous. FTS keeps its independently checksummed compressed posting

@@ -11,7 +11,7 @@ The currently executable index types are:
 - `FlatIndexParams` and `HNSWIndexParams` on supported dense or sparse vector
   fields;
 - `IVFIndexParams` on supported dense vector fields;
-- `HNSWRaBitQIndexParams` on FP32 dense vector fields with 64–4095
+- `IVFRaBitQIndexParams` on FP32 dense vector fields with 64–4095
   dimensions and L2, IP, or cosine scoring;
 - `VamanaIndexParams` on supported dense vector fields;
 - `DiskANNIndexParams` on FP32 or FP16 dense vector fields;
@@ -22,8 +22,8 @@ The currently executable index types are:
 
 Dense Flat/HNSW/IVF definitions may use FP16, INT8, or INT4 scalar codes where
 the vector data type permits them; INT8/INT4 may enable rotation. Sparse
-Flat/HNSW supports unquantized or FP16-rounded values. HNSW-RaBitQ trains and
-validates its centroid/rotation model and graph during backfill. Vamana
+Flat/HNSW supports unquantized or FP16-rounded values. IVF-RaBitQ trains and
+validates its coarse lists and RaBitQ model during backfill. Vamana
 performs deterministic RobustPrune graph construction and supports the same
 FP16/INT8/INT4 scalar representations as dense HNSW. DiskANN constructs its
 graph and internal PQ codes during backfill and supports FP16/INT8/INT4 public
@@ -51,11 +51,11 @@ err := collection.CreateIndex(ctx, "title", params,
 )
 ```
 
-The native Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, DiskANN, INVERT, and FTS
+The native Flat, HNSW, IVF, IVF-RaBitQ, Vamana, DiskANN, INVERT, and FTS
 collection structures are cached per data segment and schema identity.
 CreateIndex persists validated parameters and backfill constructs the requested
 runtime representation, including quantization overflow and rotation checks;
-IVF, HNSW-RaBitQ, and DiskANN also complete deterministic training, while
+IVF, IVF-RaBitQ, and DiskANN also complete deterministic training, while
 Vamana completes graph construction and medoid selection. Existing WAL data, new
 writes, Close/reopen, and later Flush all use the newly published schema.
 Flush publishes checksummed vector, FTS, and INVERT artifacts only for newly

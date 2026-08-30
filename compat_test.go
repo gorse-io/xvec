@@ -44,6 +44,10 @@ func loadPublicAPIFixture(t *testing.T) publicAPIFixture {
 
 func TestPublicEnumCompatibility(t *testing.T) {
 	fixture := loadPublicAPIFixture(t)
+	// zvec-go v0.7.0 replaces the earlier public HNSW-RaBitQ value with
+	// IVF-RaBitQ at value 7.
+	delete(fixture.Enums["IndexType"], "HNSW_RABITQ")
+	fixture.Enums["IndexType"]["IVF_RABITQ"] = 7
 	got := map[string]map[string]uint32{
 		"IndexType":    enumValues(indexTypeNames),
 		"DataType":     enumValues(dataTypeNames),

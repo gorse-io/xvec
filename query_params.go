@@ -88,27 +88,28 @@ func (p HNSWQueryParams) Validate() error {
 }
 func (p HNSWQueryParams) cloneQueryParams() QueryParams { return p }
 
-// HNSWRaBitQQueryParams configures HNSW traversal over RaBitQ codes.
-type HNSWRaBitQQueryParams struct {
+// IVFRaBitQQueryParams configures IVF probing over RaBitQ codes.
+type IVFRaBitQQueryParams struct {
 	QueryOptions
-	EF int
+	NProbe      int
+	ScaleFactor float32
 }
 
-func NewHNSWRaBitQQueryParams() HNSWRaBitQQueryParams {
-	return HNSWRaBitQQueryParams{EF: DefaultHNSWEFSearch}
+func NewIVFRaBitQQueryParams() IVFRaBitQQueryParams {
+	return IVFRaBitQQueryParams{NProbe: DefaultIVFNProbe, ScaleFactor: DefaultRefinerScaleFactor}
 }
 
-func (HNSWRaBitQQueryParams) IndexType() IndexType { return IndexTypeHNSWRaBitQ }
-func (p HNSWRaBitQQueryParams) Validate() error {
-	if err := p.validate("validate HNSW RaBitQ query params"); err != nil {
+func (IVFRaBitQQueryParams) IndexType() IndexType { return IndexTypeIVFRaBitQ }
+func (p IVFRaBitQQueryParams) Validate() error {
+	if err := p.validate("validate IVF RaBitQ query params"); err != nil {
 		return err
 	}
-	if p.EF <= 0 || p.EF > MaxGraphEFSearch {
-		return invalidArgument("validate HNSW RaBitQ query params", "EF must be in [1, %d]", MaxGraphEFSearch)
+	if p.NProbe <= 0 {
+		return invalidArgument("validate IVF RaBitQ query params", "NProbe must be positive")
 	}
-	return nil
+	return validateScaleFactor("validate IVF RaBitQ query params", p.ScaleFactor)
 }
-func (p HNSWRaBitQQueryParams) cloneQueryParams() QueryParams { return p }
+func (p IVFRaBitQQueryParams) cloneQueryParams() QueryParams { return p }
 
 // IVFQueryParams configures inverted-list probing and optional refinement.
 type IVFQueryParams struct {

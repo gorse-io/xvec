@@ -24,27 +24,27 @@ import "fmt"
 type IndexType uint32
 
 const (
-	IndexTypeUndefined  IndexType = 0
-	IndexTypeHNSW       IndexType = 1
-	IndexTypeIVF        IndexType = 2
-	IndexTypeFlat       IndexType = 3
-	IndexTypeHNSWRaBitQ IndexType = 4
-	IndexTypeDiskANN    IndexType = 5
-	IndexTypeVamana     IndexType = 6
-	IndexTypeInvert     IndexType = 10
-	IndexTypeFTS        IndexType = 11
+	IndexTypeUndefined IndexType = 0
+	IndexTypeHNSW      IndexType = 1
+	IndexTypeIVF       IndexType = 2
+	IndexTypeFlat      IndexType = 3
+	IndexTypeDiskANN   IndexType = 5
+	IndexTypeVamana    IndexType = 6
+	IndexTypeIVFRaBitQ IndexType = 7
+	IndexTypeInvert    IndexType = 10
+	IndexTypeFTS       IndexType = 11
 )
 
 var indexTypeNames = map[IndexType]string{
-	IndexTypeUndefined:  "UNDEFINED",
-	IndexTypeHNSW:       "HNSW",
-	IndexTypeIVF:        "IVF",
-	IndexTypeFlat:       "FLAT",
-	IndexTypeHNSWRaBitQ: "HNSW_RABITQ",
-	IndexTypeDiskANN:    "DISKANN",
-	IndexTypeVamana:     "VAMANA",
-	IndexTypeInvert:     "INVERT",
-	IndexTypeFTS:        "FTS",
+	IndexTypeUndefined: "UNDEFINED",
+	IndexTypeHNSW:      "HNSW",
+	IndexTypeIVF:       "IVF",
+	IndexTypeFlat:      "FLAT",
+	IndexTypeDiskANN:   "DISKANN",
+	IndexTypeVamana:    "VAMANA",
+	IndexTypeIVFRaBitQ: "IVF_RABITQ",
+	IndexTypeInvert:    "INVERT",
+	IndexTypeFTS:       "FTS",
 }
 
 func (t IndexType) String() string { return enumName(indexTypeNames, t, "IndexType") }
@@ -55,8 +55,8 @@ func (t IndexType) Valid() bool { return enumValid(indexTypeNames, t) }
 // IsVector reports whether t is a vector index type.
 func (t IndexType) IsVector() bool {
 	switch t {
-	case IndexTypeHNSW, IndexTypeIVF, IndexTypeFlat, IndexTypeHNSWRaBitQ,
-		IndexTypeDiskANN, IndexTypeVamana:
+	case IndexTypeHNSW, IndexTypeIVF, IndexTypeFlat, IndexTypeDiskANN,
+		IndexTypeVamana, IndexTypeIVFRaBitQ:
 		return true
 	default:
 		return false

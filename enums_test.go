@@ -33,7 +33,9 @@ func TestEnumBehavior(t *testing.T) {
 		got := IndexType(9).String()
 		require.True(t, got == "IndexType(9)")
 	}
-	require.True(t, IndexTypeHNSWRaBitQ.IsVector(),
+	require.Equal(t, IndexType(7), IndexTypeIVFRaBitQ)
+	require.Equal(t, "IVF_RABITQ", IndexTypeIVFRaBitQ.String())
+	require.True(t, IndexTypeIVFRaBitQ.IsVector(),
 		"IndexType.IsVector returned an incorrect result")
 	require.False(t, IndexTypeInvert.IsVector(),
 		"IndexType.IsVector returned an incorrect result")

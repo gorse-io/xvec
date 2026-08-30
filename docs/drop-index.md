@@ -25,7 +25,7 @@ in-memory schema and CURRENT manifest unchanged. Scalar INVERT/FTS definitions
 and later vector definitions can be removed because no replacement artifact is
 needed.
 
-Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, DiskANN, FTS, and INVERT collection
+Flat, HNSW, IVF, IVF-RaBitQ, Vamana, DiskANN, FTS, and INVERT collection
 runtime structures follow the new schema immediately. Existing per-segment
 artifacts carry the old schema hash and cannot be selected; a later Flush or
 Optimize publishes the replacement metadata and prunes obsolete files. The

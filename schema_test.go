@@ -59,7 +59,7 @@ func TestVectorFieldSchemaValidation(t *testing.T) {
 	flatIP := NewFlatIndexParams(MetricTypeIP)
 	hnswL2 := NewHNSWIndexParams(MetricTypeL2)
 	ivfIP := NewIVFIndexParams(MetricTypeIP)
-	rabitq := NewHNSWRaBitQIndexParams(MetricTypeMIPSL2)
+	rabitq := NewIVFRaBitQIndexParams(MetricTypeMIPSL2)
 	diskANN := NewDiskANNIndexParams(MetricTypeL2)
 	diskANN.PQChunks = 129
 	diskANNAuto := NewDiskANNIndexParams(MetricTypeL2)
@@ -74,7 +74,7 @@ func TestVectorFieldSchemaValidation(t *testing.T) {
 		{Name: "dense_invert", DataType: DataTypeVectorFP32, Dimension: 128, Index: NewInvertIndexParams()},
 		{Name: "cosine_int8", DataType: DataTypeVectorInt8, Dimension: 128, Index: NewFlatIndexParams(MetricTypeCosine)},
 		{Name: "ivf_ip_int8", DataType: DataTypeVectorInt8, Dimension: 128, Index: ivfIP},
-		{Name: "rabitq_dim", DataType: DataTypeVectorFP32, Dimension: 32, Index: NewHNSWRaBitQIndexParams(MetricTypeL2)},
+		{Name: "rabitq_dim", DataType: DataTypeVectorFP32, Dimension: 32, Index: NewIVFRaBitQIndexParams(MetricTypeL2)},
 		{Name: "rabitq_metric", DataType: DataTypeVectorFP32, Dimension: 128, Index: rabitq},
 		{Name: "quant_fp16", DataType: DataTypeVectorFP16, Dimension: 128, Index: FlatIndexParams{Metric: MetricTypeL2, Quantize: QuantizeTypeFP16}},
 		{Name: "quant_int4_odd", DataType: DataTypeVectorFP32, Dimension: 127, Index: FlatIndexParams{Metric: MetricTypeL2, Quantize: QuantizeTypeInt4}},
@@ -93,7 +93,7 @@ func TestVectorFieldSchemaValidation(t *testing.T) {
 		{Name: "dense", DataType: DataTypeVectorFP32, Dimension: 128, Index: hnswL2},
 		{Name: "quant_int4_even", DataType: DataTypeVectorFP32, Dimension: 128, Index: FlatIndexParams{Metric: MetricTypeL2, Quantize: QuantizeTypeInt4}},
 		{Name: "sparse", DataType: DataTypeSparseVectorFP32, Index: flatIP},
-		{Name: "rabitq", DataType: DataTypeVectorFP32, Dimension: 128, Index: NewHNSWRaBitQIndexParams(MetricTypeCosine)},
+		{Name: "rabitq", DataType: DataTypeVectorFP32, Dimension: 128, Index: NewIVFRaBitQIndexParams(MetricTypeCosine)},
 		{Name: "disk_fp16", DataType: DataTypeVectorFP16, Dimension: 128, Index: NewDiskANNIndexParams(MetricTypeL2)},
 	}
 	for _, field := range valid {
@@ -177,7 +177,7 @@ func TestCollectionSchemaCodecRoundTripIndexParameters(t *testing.T) {
 	indexParameters := []IndexParams{
 		NewFlatIndexParams(MetricTypeIP),
 		NewHNSWIndexParams(MetricTypeL2),
-		NewHNSWRaBitQIndexParams(MetricTypeCosine),
+		NewIVFRaBitQIndexParams(MetricTypeCosine),
 		NewIVFIndexParams(MetricTypeIP),
 		NewDiskANNIndexParams(MetricTypeL2),
 		NewVamanaIndexParams(MetricTypeCosine),

@@ -49,7 +49,7 @@ and Flush remain available.
 sparse vector, resolves a vector from `PrimaryKey`, executes one `FTS` clause,
 or performs a filter-only query when no target and no field are supplied.
 Filter-only results use ascending document-ID order and zero scores. Flat
-search is exact. Dense HNSW, HNSW-RaBitQ, IVF, Vamana, and DiskANN
+search is exact. Dense HNSW, IVF, IVF-RaBitQ, Vamana, and DiskANN
 plus sparse inner-product HNSW use their matching native Go runtimes; an explicit
 `Linear` query scans the matching representation for truth comparisons. Query
 parameters expose EF or NProbe, metric-aware radius, SQL scalar filters,
@@ -78,7 +78,7 @@ tokenizers and filters, exact boolean/phrase execution, and deletion-aware BM25
 statistics. See the [MultiQuery contract](multi-query.md) for candidate,
 projection, and untrusted-reranker output rules.
 
-`CreateIndex` atomically publishes implemented Flat, HNSW, HNSW-RaBitQ, IVF,
+`CreateIndex` atomically publishes implemented Flat, HNSW, IVF, IVF-RaBitQ,
 Vamana, DiskANN, and INVERT parameters after full-snapshot validation.
 `DropIndex` atomically clears scalar metadata or restores vector fields to
 Flat/IP. `AddColumn` atomically installs
@@ -87,7 +87,7 @@ atomically renames or replaces basic numeric fields, and `DropColumn`
 atomically removes them. `Optimize` atomically rewrites the current live
 snapshot, compacts contiguous document-ID runs up to the schema segment limit,
 reclaims deleted and superseded versions, and prunes obsolete native segment,
-WAL, and snapshot files. It accepts the implemented Flat/HNSW/HNSW-RaBitQ/IVF,
+WAL, and snapshot files. It accepts the implemented Flat/HNSW/IVF/IVF-RaBitQ,
 Vamana/DiskANN, and scalar INVERT definitions. Scalar quantization and rotation
 apply to Flat, HNSW, IVF, Vamana, and DiskANN. On DiskANN, public scalar codes
 determine first-stage scores and feed the separately configured internal PQ
@@ -95,8 +95,8 @@ used for graph traversal; exact refinement continues to use original vectors.
 
 Collection indexes are cached per segment, so repeated Query, MultiQuery, and
 GroupByQuery calls keep immutable vector, FTS, and INVERT state while only the
-WAL-backed segment changes. `Flush` publishes checksummed HNSW, HNSW-RaBitQ,
-IVF, Vamana, DiskANN, sparse HNSW, FTS, and INVERT artifacts for newly sealed
+WAL-backed segment changes. `Flush` publishes checksummed HNSW, IVF, IVF-RaBitQ,
+Vamana, DiskANN, sparse HNSW, FTS, and INVERT artifacts for newly sealed
 segments. Reopen loads matching artifacts. DiskANN uses the collection's
 persisted `EnableMmap` option for immutable random-access files.
 

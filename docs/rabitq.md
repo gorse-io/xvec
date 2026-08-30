@@ -1,14 +1,14 @@
 # RaBitQ training and distance estimation
 
 This v0.4 component implements the portable RaBitQ model, converter, and
-distance estimator used by the HNSW-RaBitQ index. Its behavioral baseline is
+distance estimator used by the IVF-RaBitQ index. Its behavioral baseline is
 zvec commit `58375ff` and the locked RaBitQ-Library commit
 `858b0d6c480766d0e4f08fc5e02f34b53d698fad`.
 
 The converter remains internal to `internal/core`. Public
-`HNSWRaBitQIndexParams` is executable through Collection queries and uses this
+`IVFRaBitQIndexParams` is executable through Collection queries and uses this
 component without falling back to another index. See the
-[HNSW-RaBitQ index](hnsw-rabitq.md) for graph behavior, refinement, and native
+[IVF-RaBitQ index](ivf-rabitq.md) for list probing, refinement, and native
 persistence.
 
 ## Model training
@@ -65,7 +65,7 @@ The resulting immutable query is safe for concurrent estimates:
 - one-bit models return the same result from both methods.
 
 All estimator outputs are lower-is-better internal distances. L2 is squared
-Euclidean distance, IP is `1 - dot`, and cosine is `1 - cosine`. An HNSW layer
+Euclidean distance, IP is `1 - dot`, and cosine is `1 - cosine`. An index layer
 must convert the internal IP distance back to the public higher-is-better score
 when it publishes results.
 

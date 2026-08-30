@@ -23,7 +23,7 @@ import (
 
 func TestQueryParamsDefaultsValidate(t *testing.T) {
 	params := []QueryParams{
-		NewFlatQueryParams(), NewHNSWQueryParams(), NewHNSWRaBitQQueryParams(),
+		NewFlatQueryParams(), NewHNSWQueryParams(), NewIVFRaBitQQueryParams(),
 		NewIVFQueryParams(), NewDiskANNQueryParams(), NewVamanaQueryParams(),
 		NewFTSQueryParams(),
 	}
@@ -40,8 +40,10 @@ func TestQueryParamsRejectInvalidValues(t *testing.T) {
 	hnsw.EF = 0
 	hnswLarge := NewHNSWQueryParams()
 	hnswLarge.EF = MaxGraphEFSearch + 1
-	rabitqLarge := NewHNSWRaBitQQueryParams()
-	rabitqLarge.EF = MaxGraphEFSearch + 1
+	rabitqProbe := NewIVFRaBitQQueryParams()
+	rabitqProbe.NProbe = 0
+	rabitqScale := NewIVFRaBitQQueryParams()
+	rabitqScale.ScaleFactor = 0
 	ivf := NewIVFQueryParams()
 	ivf.NProbe = 0
 	flat := NewFlatQueryParams()
@@ -58,7 +60,7 @@ func TestQueryParamsRejectInvalidValues(t *testing.T) {
 	nan.ScaleFactor = float32(math.NaN())
 
 	params := []QueryParams{
-		hnsw, hnswLarge, rabitqLarge, ivf, flat, diskANN, diskANNLarge, vamana, vamanaLarge, nan,
+		hnsw, hnswLarge, rabitqProbe, rabitqScale, ivf, flat, diskANN, diskANNLarge, vamana, vamanaLarge, nan,
 		FTSQueryParams{DefaultOperator: "XOR"},
 	}
 	for _, params := range params {

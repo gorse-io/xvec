@@ -25,7 +25,7 @@ func TestIndexParamsDefaultsValidate(t *testing.T) {
 		NewInvertIndexParams(),
 		NewFlatIndexParams(MetricTypeIP),
 		NewHNSWIndexParams(MetricTypeL2),
-		NewHNSWRaBitQIndexParams(MetricTypeCosine),
+		NewIVFRaBitQIndexParams(MetricTypeCosine),
 		NewIVFIndexParams(MetricTypeIP),
 		NewDiskANNIndexParams(MetricTypeL2),
 		NewVamanaIndexParams(MetricTypeCosine),
@@ -37,6 +37,12 @@ func TestIndexParamsDefaultsValidate(t *testing.T) {
 			assert.NoError(t, err)
 		}
 	}
+}
+
+func TestIVFRaBitQZeroTotalBitsUsesNativeDefault(t *testing.T) {
+	params := NewIVFRaBitQIndexParams(MetricTypeL2)
+	params.TotalBits = 0
+	assert.NoError(t, params.Validate())
 }
 
 func TestIndexParamsRejectInvalidValues(t *testing.T) {
@@ -59,13 +65,14 @@ func TestIndexParamsRejectInvalidValues(t *testing.T) {
 	rotated.Quantizer.EnableRotate = true
 	rabitq := NewFlatIndexParams(MetricTypeL2)
 	rabitq.Quantize = QuantizeTypeRaBitQ
-	rabitqBits := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	rabitqBits := NewIVFRaBitQIndexParams(MetricTypeL2)
 	rabitqBits.TotalBits = MaxRaBitQTotalBits + 1
+	rabitqNList := NewIVFRaBitQIndexParams(MetricTypeL2)
+	rabitqNList.NList = 0
 
 	params := []IndexParams{
 		FlatIndexParams{}, hnsw, hnswLarge, ivf, diskANN, diskANNDegree, vamana, vamanaOcclusion, rotated, rabitq,
-		rabitqBits,
-		HNSWRaBitQIndexParams{Metric: MetricTypeL2, TotalBits: 7, NumClusters: 16, M: 10, EFConstruction: 9},
+		rabitqBits, rabitqNList,
 	}
 	for _, params := range params {
 		{

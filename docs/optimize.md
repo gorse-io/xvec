@@ -19,13 +19,13 @@ the same live documents before and after optimization. A fully deleted
 collection is rewritten with no immutable segments but still retains its next
 document ID.
 
-The current implementation supports Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, and
+The current implementation supports Flat, HNSW, IVF, IVF-RaBitQ, Vamana, and
 DiskANN vector definitions, including implemented scalar quantization and
 rotation; scalar INVERT indexes whose value type is implemented by the filter
 runtime; FTS string indexes; and fields without indexes. Optimize builds and
 publishes fresh index artifacts for the replacement immutable segments.
-HNSW-RaBitQ rebuilds its native
-model, codes, and graph deterministically from original FP32 vectors; Vamana
+IVF-RaBitQ rebuilds its native
+coarse lists, model, and codes deterministically from original FP32 vectors; Vamana
 rebuilds RobustPrune topology and its medoid, then recreates any configured
 scalar codes. DiskANN rebuilds its graph, PQ model, codes, and sector records
 from the configured scalar representation while retaining original FP32

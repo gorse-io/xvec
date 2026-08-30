@@ -19,7 +19,7 @@ server, or prebuilt native libraries.
 ## Features
 
 - Dense and sparse vector storage with exact and approximate nearest-neighbor search.
-- Flat, HNSW, HNSW-RaBitQ, IVF, Vamana, and DiskANN indexes.
+- Flat, HNSW, IVF, IVF-RaBitQ, Vamana, and DiskANN indexes.
 - L2, inner-product, cosine, and MIPS-L2 metrics with optional quantization and refinement.
 - Scalar filtering, block-max WAND BM25 full-text search, grouping, and hybrid multi-query retrieval.
 - Configurable WAL durability batching, crash recovery, segment-native incremental indexes, and atomic compaction.
@@ -158,8 +158,8 @@ branches over one snapshot.
 | --- | --- |
 | Flat | Exact search and small collections |
 | HNSW | General-purpose low-latency ANN search |
-| HNSW-RaBitQ | Memory-efficient graph search for larger vectors |
 | IVF | Tunable approximate search with list probing |
+| IVF-RaBitQ | Inverted-file probing with memory-efficient RaBitQ scoring |
 | Vamana | Graph-based search with deterministic native persistence |
 | DiskANN | Disk-backed graph search with bounded node caching |
 

@@ -1321,7 +1321,7 @@ func TestCollectionDenseHNSWQueryControlsAndRecall(t *testing.T) {
 	}
 }
 
-func TestCollectionHNSWRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
+func TestCollectionIVFRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "rabitq")
 	schema := NewCollectionSchema("rabitq_collection",
@@ -1340,11 +1340,9 @@ func TestCollectionHNSWRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 	queryVector := documents[73].Fields["embedding"].(VectorFP32)
 	exact := exactDenseDocumentResults(t, documents, queryVector, core.MetricL2, 15)
 
-	indexParams := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	indexParams := NewIVFRaBitQIndexParams(MetricTypeL2)
 	indexParams.TotalBits = 7
-	indexParams.NumClusters = 8
-	indexParams.M = 8
-	indexParams.EFConstruction = 40
+	indexParams.NList = 8
 	{
 		err := collection.CreateIndex(ctx, "embedding", indexParams, CreateIndexOptions{Concurrency: 3})
 		require.NoError(t, err)
@@ -1354,8 +1352,8 @@ func TestCollectionHNSWRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, defaulted, 5)
 
-	queryParams := NewHNSWRaBitQQueryParams()
-	queryParams.EF = 100
+	queryParams := NewIVFRaBitQQueryParams()
+	queryParams.NProbe = 8
 	query := VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 15, Params: queryParams}
 	approximate, err := collection.Query(ctx, query)
 	require.NoError(t, err)
@@ -1363,6 +1361,19 @@ func TestCollectionHNSWRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 		recall := documentRecall(approximate, exact)
 		require.True(t, recall >= .85)
 	}
+
+	multi, err := collection.MultiQuery(ctx, MultiQuery{
+		Queries: []SubQuery{
+			{Field: "embedding", DenseVector: queryVector, Params: queryParams, NumCandidates: 5},
+			{Field: "embedding", DenseVector: queryVector, Params: queryParams, NumCandidates: 5},
+		},
+		TopK: 5,
+		Reranker: testRerankerFunc(func(_ context.Context, batches []RerankBatch, _ int) ([]Document, error) {
+			return batches[0].Documents, nil
+		}),
+	})
+	require.NoError(t, err)
+	require.Len(t, multi, 5)
 
 	queryParams.Linear = true
 	queryParams.UseRefiner = true
@@ -1404,11 +1415,38 @@ func TestCollectionHNSWRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 	reopened, err := collection.Query(ctx, query)
 	require.NoError(t, err)
 	require.Equal(t, filtered, reopened,
-		"reopened HNSW-RaBitQ query differs")
+		"reopened IVF-RaBitQ query differs")
 
 	field, _ := collection.Schema().Field("embedding")
-	require.Equal(t, IndexTypeHNSWRaBitQ, field.IndexType())
+	require.Equal(t, IndexTypeIVFRaBitQ, field.IndexType())
 	require.True(t, collection.Stats().IndexCompleteness["embedding"] == 1)
+}
+
+func TestCollectionIVFRaBitQGroupByRejectsRefiner(t *testing.T) {
+	ctx := context.Background()
+	schema := NewCollectionSchema("ivf_rabitq_group_refiner",
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 64, Index: NewIVFRaBitQIndexParams(MetricTypeL2)},
+		FieldSchema{Name: "group", DataType: DataTypeString, Nullable: true},
+	)
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "collection"), schema, NewCollectionOptions())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, collection.Close()) }()
+	params := NewIVFRaBitQQueryParams()
+	params.UseRefiner = true
+	query := GroupByVectorQuery{
+		Field: "embedding", DenseVector: make(VectorFP32, 64), Params: params,
+		GroupByField: "group", GroupCount: 2, TopKPerGroup: 1,
+	}
+	_, err = collection.GroupByQuery(ctx, query)
+	require.ErrorIs(t, err, ErrNotSupported)
+	for index, group := range []string{"a", "b"} {
+		vector := make(VectorFP32, 64)
+		vector[0] = float32(index)
+		_, err = collection.Insert(ctx, []Document{{PrimaryKey: group, Fields: map[string]any{"embedding": vector, "group": group}}})
+		require.NoError(t, err)
+	}
+	_, err = collection.GroupByQuery(ctx, query)
+	require.ErrorIs(t, err, ErrNotSupported)
 }
 
 func TestCollectionVamanaQueryCreateIndexQuantizeOptimizeAndReopen(t *testing.T) {
@@ -4315,10 +4353,6 @@ func TestCollectionDenseQuantizedLinearGroupByAndRefinement(t *testing.T) {
 	hnsw.M, hnsw.EFConstruction = 8, 32
 	hnsw.Quantize = QuantizeTypeInt8
 	hnsw.Quantizer.EnableRotate = true
-	rabitq := NewHNSWRaBitQIndexParams(MetricTypeL2)
-	rabitq.TotalBits, rabitq.NumClusters = 5, 4
-	rabitq.M, rabitq.EFConstruction = 6, 24
-
 	tests := []struct {
 		name   string
 		index  IndexParams
@@ -4336,14 +4370,6 @@ func TestCollectionDenseQuantizedLinearGroupByAndRefinement(t *testing.T) {
 			name: "HNSW INT8", index: hnsw,
 			params: func(refine bool) QueryParams {
 				value := NewHNSWQueryParams()
-				value.Linear, value.UseRefiner = true, refine
-				return value
-			},
-		},
-		{
-			name: "HNSW RaBitQ", index: rabitq,
-			params: func(refine bool) QueryParams {
-				value := NewHNSWRaBitQQueryParams()
 				value.Linear, value.UseRefiner = true, refine
 				return value
 			},
@@ -4521,9 +4547,8 @@ func TestCollectionNativeDenseHNSWGroupBy(t *testing.T) {
 	quantized := hnsw
 	quantized.Quantize = QuantizeTypeInt8
 	quantized.Quantizer.EnableRotate = true
-	rabitq := NewHNSWRaBitQIndexParams(MetricTypeL2)
-	rabitq.TotalBits, rabitq.NumClusters, rabitq.SampleCount = 5, 1, 8
-	rabitq.M, rabitq.EFConstruction = 4, 16
+	rabitq := NewIVFRaBitQIndexParams(MetricTypeL2)
+	rabitq.TotalBits, rabitq.NList, rabitq.SampleCount = 5, 1, 8
 
 	tests := []struct {
 		name   string
@@ -4547,10 +4572,10 @@ func TestCollectionNativeDenseHNSWGroupBy(t *testing.T) {
 			},
 		},
 		{
-			name: "HNSW RaBitQ", index: rabitq,
+			name: "IVF RaBitQ", index: rabitq,
 			params: func(linear bool) QueryParams {
-				params := NewHNSWRaBitQQueryParams()
-				params.EF, params.Linear = 4, linear
+				params := NewIVFRaBitQQueryParams()
+				params.NProbe, params.Linear = 1, linear
 				return params
 			},
 		},
