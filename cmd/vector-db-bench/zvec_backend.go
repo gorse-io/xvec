@@ -259,6 +259,11 @@ func writableZvecBenchmarkCollection(config benchConfig) (*zvec.Collection, erro
 		if err != nil {
 			return nil, fmt.Errorf("create zvec HNSW index params: %w", err)
 		}
+	case indexIVF:
+		index, err = zvec.NewIVFIndexParams(metric, config.IVFNList, config.IVFNIterations, config.IVFUseSOAR)
+		if err != nil {
+			return nil, fmt.Errorf("create zvec IVF index params: %w", err)
+		}
 	case indexDiskANN:
 		index, err = zvec.NewDiskANNIndexParams(metric, config.DiskANNMaxDegree, config.DiskANNBuildList, config.DiskANNPQChunks)
 		if err != nil {
@@ -376,6 +381,8 @@ type zvecQueryEngine struct {
 	indexType   string
 	ef          int
 	diskANNList int
+	ivfNProbe   int
+	ivfScale    float32
 	useRefiner  bool
 	k           int
 	fullText    bool
@@ -395,7 +402,8 @@ func openZvecQueryEngine(config benchConfig) (benchmarkQueryEngine, io.Closer, e
 	}
 	return zvecQueryEngine{
 		collection: collection, indexType: config.IndexType, ef: config.EFSearch,
-		diskANNList: config.DiskANNQueryList, useRefiner: config.UseRefiner, k: config.K,
+		diskANNList: config.DiskANNQueryList, ivfNProbe: config.IVFNProbe,
+		ivfScale: float32(config.IVFScaleFactor), useRefiner: config.UseRefiner, k: config.K,
 		fullText:   config.caseSpec.Workload == workloadFullText,
 		returnText: config.caseSpec.Workload == workloadFullText && strings.EqualFold(config.PayloadProfile, "text"), ftsOperator: strings.ToUpper(config.FTSDefaultOperator),
 	}, collection, nil
@@ -456,6 +464,15 @@ func (e zvecQueryEngine) search(ctx context.Context, benchmarkQuery benchmarkQue
 	}
 	if e.fullText {
 		// FTS query parameters are attached above.
+	} else if strings.EqualFold(e.indexType, indexIVF) {
+		params := zvec.NewIVFQueryParams(e.ivfNProbe, e.useRefiner, e.ivfScale)
+		if params == nil {
+			return nil, errors.New("create zvec IVF query params")
+		}
+		defer params.Destroy()
+		if err := query.SetIVFParams(params); err != nil {
+			return nil, fmt.Errorf("set zvec IVF query params: %w", err)
+		}
 	} else if strings.EqualFold(e.indexType, indexDiskANN) {
 		params := zvec.NewDiskANNQueryParams(e.diskANNList)
 		if params == nil {

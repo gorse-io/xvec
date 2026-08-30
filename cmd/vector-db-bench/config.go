@@ -30,6 +30,7 @@ const (
 	backendXvec      = "xvec"
 	backendZvec      = "zvec"
 	indexHNSW        = "hnsw"
+	indexIVF         = "ivf"
 	indexDiskANN     = "diskann"
 	indexVamana      = "vamana"
 	workloadVector   = "vector"
@@ -91,6 +92,11 @@ type benchConfig struct {
 	EFConstruction       int
 	EFSearch             int
 	IndexType            string
+	IVFNList             int
+	IVFNIterations       int
+	IVFUseSOAR           bool
+	IVFNProbe            int
+	IVFScaleFactor       float64
 	DiskANNMaxDegree     int
 	DiskANNBuildList     int
 	DiskANNPQChunks      int
@@ -151,7 +157,12 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	flags.IntVar(&config.M, "m", 50, "HNSW M")
 	flags.IntVar(&config.EFConstruction, "ef-construction", 500, "HNSW construction EF")
 	flags.IntVar(&config.EFSearch, "ef-search", 300, "HNSW search EF")
-	flags.StringVar(&config.IndexType, "index-type", indexHNSW, "vector index: hnsw, diskann, or vamana")
+	flags.StringVar(&config.IndexType, "index-type", indexHNSW, "vector index: hnsw, ivf, diskann, or vamana")
+	flags.IntVar(&config.IVFNList, "ivf-n-list", 1024, "IVF centroid/list count")
+	flags.IntVar(&config.IVFNIterations, "ivf-n-iterations", 10, "IVF k-means training iterations")
+	flags.BoolVar(&config.IVFUseSOAR, "ivf-use-soar", false, "enable IVF SOAR list assignment")
+	flags.IntVar(&config.IVFNProbe, "ivf-n-probe", 10, "IVF lists probed per query")
+	flags.Float64Var(&config.IVFScaleFactor, "ivf-scale-factor", 10, "IVF refiner candidate scale factor")
 	flags.IntVar(&config.DiskANNMaxDegree, "diskann-max-degree", 100, "DiskANN graph maximum degree")
 	flags.IntVar(&config.DiskANNBuildList, "diskann-build-list", 50, "DiskANN construction candidate list size")
 	flags.IntVar(&config.DiskANNPQChunks, "diskann-pq-chunks", 0, "DiskANN PQ chunks; zero uses the backend automatic value")
@@ -248,6 +259,10 @@ func (c benchConfig) validate() error {
 			if c.M <= 0 || c.EFConstruction < c.M || c.EFSearch <= 0 {
 				return errors.New("HNSW parameters require m > 0, ef-construction >= m, and ef-search > 0")
 			}
+		case indexIVF:
+			if c.IVFNList <= 0 || c.IVFNIterations <= 0 || c.IVFNProbe <= 0 || c.IVFScaleFactor <= 0 {
+				return errors.New("IVF parameters require positive n-list, n-iterations, n-probe, and scale-factor")
+			}
 		case indexDiskANN:
 			if c.DiskANNMaxDegree <= 0 || c.DiskANNBuildList <= 0 || c.DiskANNPQChunks < 0 || c.DiskANNQueryList <= 0 {
 				return errors.New("DiskANN parameters require positive max-degree, build-list, and query-list, and non-negative pq-chunks")
@@ -263,7 +278,7 @@ func (c benchConfig) validate() error {
 				return fmt.Errorf("zvec Vamana requires ef-search %d and refiner disabled", defaultVamanaEFSearch)
 			}
 		default:
-			return fmt.Errorf("unsupported index-type %q: use hnsw, diskann, or vamana", c.IndexType)
+			return fmt.Errorf("unsupported index-type %q: use hnsw, ivf, diskann, or vamana", c.IndexType)
 		}
 	} else {
 		switch strings.ToLower(c.FTSTokenizer) {

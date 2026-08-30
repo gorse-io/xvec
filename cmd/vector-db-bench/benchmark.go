@@ -257,6 +257,14 @@ func writableBenchmarkCollection(ctx context.Context, config benchConfig) (*xvec
 		params.Quantize = quantize
 		params.Quantizer.EnableRotate = quantize == xvec.QuantizeTypeInt8 || quantize == xvec.QuantizeTypeInt4
 		index = params
+	case indexIVF:
+		params := xvec.NewIVFIndexParams(metric)
+		params.NList = config.IVFNList
+		params.NIterations = config.IVFNIterations
+		params.UseSOAR = config.IVFUseSOAR
+		params.Quantize = quantize
+		params.Quantizer.EnableRotate = quantize == xvec.QuantizeTypeInt8 || quantize == xvec.QuantizeTypeInt4
+		index = params
 	case indexDiskANN:
 		params := xvec.NewDiskANNIndexParams(metric)
 		params.MaxDegree = config.DiskANNMaxDegree
@@ -275,7 +283,7 @@ func writableBenchmarkCollection(ctx context.Context, config benchConfig) (*xvec
 	}
 	schema := xvec.NewCollectionSchema("vector_bench_test",
 		// VectorDBBench does not filter on id, and the zvec backend leaves this
-		// field unindexed. Keep both backends on the same HNSW-only workload.
+		// field unindexed. Keep both backends on the same vector-only workload.
 		xvec.FieldSchema{Name: "id", DataType: xvec.DataTypeInt64},
 		xvec.FieldSchema{
 			Name: "dense", DataType: xvec.DataTypeVectorFP32, Dimension: uint32(config.caseSpec.Dimension), Index: index,
@@ -337,7 +345,13 @@ type xvecQueryEngine struct {
 
 func newXvecQueryEngine(collection *xvec.Collection, config benchConfig) xvecQueryEngine {
 	var params xvec.QueryParams
-	if strings.EqualFold(config.IndexType, indexDiskANN) {
+	if strings.EqualFold(config.IndexType, indexIVF) {
+		ivf := xvec.NewIVFQueryParams()
+		ivf.NProbe = config.IVFNProbe
+		ivf.ScaleFactor = float32(config.IVFScaleFactor)
+		ivf.UseRefiner = config.UseRefiner
+		params = ivf
+	} else if strings.EqualFold(config.IndexType, indexDiskANN) {
 		diskANN := xvec.NewDiskANNQueryParams()
 		diskANN.ListSize = config.DiskANNQueryList
 		diskANN.UseRefiner = config.UseRefiner

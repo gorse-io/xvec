@@ -152,6 +152,26 @@ func TestParseConfigDiskANN(t *testing.T) {
 	require.ErrorContains(t, err, "DiskANN parameters")
 }
 
+func TestParseConfigIVF(t *testing.T) {
+	config, err := parseConfig([]string{
+		backendXvec, "--path", t.TempDir(), "--index-type", indexIVF,
+		"--ivf-n-list", "512", "--ivf-n-iterations", "12",
+		"--ivf-use-soar", "--ivf-n-probe", "32", "--ivf-scale-factor", "8",
+	}, &bytes.Buffer{})
+	require.NoError(t, err)
+	require.Equal(t, indexIVF, config.IndexType)
+	require.Equal(t, 512, config.IVFNList)
+	require.Equal(t, 12, config.IVFNIterations)
+	require.True(t, config.IVFUseSOAR)
+	require.Equal(t, 32, config.IVFNProbe)
+	require.Equal(t, 8.0, config.IVFScaleFactor)
+
+	_, err = parseConfig([]string{
+		backendXvec, "--path", t.TempDir(), "--index-type", indexIVF, "--ivf-n-probe", "0",
+	}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "IVF parameters")
+}
+
 func TestParseConfigVamana(t *testing.T) {
 	config, err := parseConfig([]string{
 		backendXvec, "--path", t.TempDir(), "--index-type", indexVamana,

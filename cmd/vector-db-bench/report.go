@@ -34,6 +34,11 @@ type reportConfig struct {
 	M                   int      `json:"m"`
 	EFConstruction      int      `json:"ef_construction"`
 	EFSearch            int      `json:"ef_search"`
+	IVFNList            int      `json:"ivf_n_list"`
+	IVFNIterations      int      `json:"ivf_n_iterations"`
+	IVFUseSOAR          bool     `json:"ivf_use_soar"`
+	IVFNProbe           int      `json:"ivf_n_probe"`
+	IVFScaleFactor      float64  `json:"ivf_scale_factor"`
 	DiskANNMaxDegree    int      `json:"diskann_max_degree"`
 	DiskANNBuildList    int      `json:"diskann_build_list"`
 	DiskANNPQChunks     int      `json:"diskann_pq_chunks"`
@@ -143,6 +148,8 @@ func newBenchmarkReport(config benchConfig) benchmarkReport {
 			Backend: config.Backend, Path: config.Path, DBLabel: config.DBLabel,
 			IndexType: config.IndexType,
 			M:         config.M, EFConstruction: config.EFConstruction, EFSearch: config.EFSearch,
+			IVFNList: config.IVFNList, IVFNIterations: config.IVFNIterations,
+			IVFUseSOAR: config.IVFUseSOAR, IVFNProbe: config.IVFNProbe, IVFScaleFactor: config.IVFScaleFactor,
 			DiskANNMaxDegree: config.DiskANNMaxDegree, DiskANNBuildList: config.DiskANNBuildList,
 			DiskANNPQChunks: config.DiskANNPQChunks, DiskANNQueryList: config.DiskANNQueryList,
 			QuantizeType: quantize, UseRefiner: config.UseRefiner, K: config.K,

@@ -7,7 +7,7 @@ vector and full-text search performance workloads:
 
 - Cohere, LAION, BioASQ, and OpenAI Parquet datasets;
 - MS MARCO and HotpotQA BM25 datasets with semantic qrels;
-- HNSW, DiskANN, or Vamana loading and optimization;
+- HNSW, IVF, DiskANN, or Vamana loading and optimization;
 - serial Recall@K, QPS, and latency percentiles;
 - FTS Recall@K, MRR@K, and NDCG@K;
 - sustained concurrent QPS and latency at multiple worker counts;
@@ -186,6 +186,30 @@ Use the same command for `zvec`, changing only the backend, collection path,
 and output path. When `--optimize-concurrency` is positive, it also pins zvec's
 global query and optimize thread pools to that value. `taskset` and
 `GOMAXPROCS` should still be identical for both processes.
+
+## IVF comparison
+
+Select IVF explicitly and keep the centroid training and probe parameters the
+same for both backends. The defaults shown below match xvec and zvec-go:
+
+```powershell
+./vector-db-bench.exe xvec `
+  --path ./.bench/collections/cohere-1m-xvec-ivf `
+  --case-type Performance768D1M `
+  --index-type ivf `
+  --ivf-n-list 1024 `
+  --ivf-n-iterations 10 `
+  --ivf-n-probe 10 `
+  --ivf-scale-factor 10 `
+  --optimize-concurrency 8 `
+  --num-concurrency 8 `
+  --output ./.bench/xvec-ivf.json
+```
+
+Run zvec with the same arguments, changing only the backend, collection path,
+and output path. `--ivf-use-soar` enables SOAR list assignment, while
+`--is-using-refiner` enables query-time refinement using
+`--ivf-scale-factor` candidates. Both are disabled by default.
 
 ## Vamana comparison
 
