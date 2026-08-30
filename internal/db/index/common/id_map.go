@@ -60,6 +60,7 @@ type PrimaryKeyMap struct {
 	mu      sync.RWMutex
 	db      *pebble.DB
 	count   int
+	known   map[string]struct{}
 	overlay map[string]primaryKeyDelta
 
 	// Tests use these hooks to exercise fail-stop behavior after an outer-WAL
@@ -80,7 +81,7 @@ func NewPrimaryKeyMap() *PrimaryKeyMap {
 	if err != nil {
 		panic(fmt.Sprintf("db: create in-memory IDMap: %v", err))
 	}
-	return &PrimaryKeyMap{db: database}
+	return &PrimaryKeyMap{db: database, known: make(map[string]struct{})}
 }
 
 // CreatePrimaryKeyMap creates a disposable writable Pebble IDMap at path.
@@ -113,7 +114,7 @@ func CreatePrimaryKeyMap(ctx context.Context, name string) (*PrimaryKeyMap, erro
 		closeErr := database.Close()
 		return nil, errors.Join(fmt.Errorf("db: sync IDMap parent: %w", err), closeErr)
 	}
-	return &PrimaryKeyMap{db: database}, nil
+	return &PrimaryKeyMap{db: database, known: make(map[string]struct{})}, nil
 }
 
 // OpenPrimaryKeyMap copies checkpoint into a new disposable working directory
@@ -158,7 +159,7 @@ func OpenPrimaryKeyMap(ctx context.Context, checkpoint, working string) (*Primar
 		_ = os.RemoveAll(working)
 		return nil, fmt.Errorf("db: open IDMap working copy: %w", err)
 	}
-	result := &PrimaryKeyMap{db: database}
+	result := &PrimaryKeyMap{db: database, known: make(map[string]struct{})}
 	result.count, err = result.scanCount(ctx)
 	if err != nil {
 		closeErr := database.Close()
@@ -260,6 +261,7 @@ func (m *PrimaryKeyMap) Put(ctx context.Context, key string, docID uint64) (uint
 		if err != nil {
 			return 0, false, fmt.Errorf("db: write IDMap point: %w", err)
 		}
+		m.known[key] = struct{}{}
 	}
 	if !found {
 		m.count++
@@ -302,6 +304,7 @@ func (m *PrimaryKeyMap) PutNew(ctx context.Context, key string, docID uint64) er
 		if err != nil {
 			return fmt.Errorf("db: write new IDMap point: %w", err)
 		}
+		m.known[key] = struct{}{}
 	}
 	m.count++
 	return nil
@@ -341,6 +344,7 @@ func (m *PrimaryKeyMap) Delete(ctx context.Context, key string) (uint64, bool, e
 		if err != nil {
 			return 0, false, fmt.Errorf("db: delete IDMap point: %w", err)
 		}
+		delete(m.known, key)
 	}
 	m.count--
 	return previous, true, nil
@@ -360,6 +364,11 @@ func (m *PrimaryKeyMap) Get(key string) (uint64, bool, error) {
 }
 
 func (m *PrimaryKeyMap) getLocked(key string) (uint64, bool, error) {
+	if m.known != nil {
+		if _, found := m.known[key]; !found {
+			return 0, false, nil
+		}
+	}
 	if delta, found := m.overlay[key]; found {
 		return delta.docID, !delta.deleted, nil
 	}
@@ -622,6 +631,7 @@ func (m *PrimaryKeyMap) Close() error {
 	}
 	err := m.db.Close()
 	m.db = nil
+	m.known = nil
 	m.overlay = nil
 	return err
 }
@@ -636,11 +646,16 @@ func (m *PrimaryKeyMap) scanCount(ctx context.Context) (count int, err error) {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		if err := ValidatePrimaryKey(string(iterator.Key())); err != nil {
+		key := string(iterator.Key())
+		if err := ValidatePrimaryKey(key); err != nil {
 			return 0, fmt.Errorf("%w: invalid primary key: %v", ErrIDMapCorrupt, err)
 		}
-		if len(iterator.Value()) != 8 {
-			return 0, fmt.Errorf("%w: document ID value has %d bytes", ErrIDMapCorrupt, len(iterator.Value()))
+		value := iterator.Value()
+		if len(value) != 8 {
+			return 0, fmt.Errorf("%w: document ID value has %d bytes", ErrIDMapCorrupt, len(value))
+		}
+		if m.known != nil {
+			m.known[key] = struct{}{}
 		}
 		count++
 	}
