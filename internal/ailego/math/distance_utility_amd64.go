@@ -22,43 +22,55 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-//go:generate go tool goat src/distance_utility_avx.c -O3 -mavx
-//go:generate go tool goat src/distance_utility_batch_avx.c -O3 -mavx
-//go:generate go tool goat src/distance_utility_avx512.c -O3 -mavx -mfma -mavx512f
+//go:generate make distance-avx
+//go:generate make distance-avx512
 
 func init() {
-	switch {
-	case cpu.X86.HasAVX && cpu.X86.HasFMA && cpu.X86.HasAVX512F:
-		kernels.l2 = squaredEuclideanAVX512
-		kernels.dot = innerProductAVX512
-		kernels.products = dotNormsAVX512
-	case cpu.X86.HasAVX:
+	kernels.l2 = squaredEuclideanSSE
+	kernels.dot = innerProductSSE
+	kernels.products = dotNormsSSE
+	if cpu.X86.HasAVX {
 		kernels.l2 = squaredEuclideanAVX
 		kernels.dot = innerProductAVX
 		kernels.products = dotNormsAVX
-	}
-	if cpu.X86.HasAVX {
 		kernels.dot2 = innerProducts2AVXBatch
 		kernels.dot4 = innerProducts4AVXBatch
 	}
+	if cpu.X86.HasAVX && cpu.X86.HasFMA && cpu.X86.HasAVX512F {
+		kernels.l2 = squaredEuclideanAVX512
+		kernels.dot = innerProductAVX512
+		kernels.products = dotNormsAVX512
+	}
+}
+
+func squaredEuclideanSSE(left, right []float32) float32 {
+	return squared_euclidean_distance_fp32_sse(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
+}
+
+func innerProductSSE(left, right []float32) float32 {
+	return inner_product_fp32_sse(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
+}
+
+func dotNormsSSE(left, right []float32) (dot, leftNorm, rightNorm float32) {
+	dot = inner_product_and_squared_norm_fp32_sse(
+		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)),
+		unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
+	)
+	return
 }
 
 func squaredEuclideanAVX(left, right []float32) float32 {
 	if len(left) < 8 {
-		return squaredEuclideanScalar(left, right)
+		return squaredEuclideanSSE(left, right)
 	}
-	var result float32
-	xvec_avx_l2_squared(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
-	return result
+	return squared_euclidean_distance_fp32_avx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
 }
 
 func innerProductAVX(left, right []float32) float32 {
 	if len(left) < 8 {
-		return innerProductScalar(left, right)
+		return innerProductSSE(left, right)
 	}
-	var result float32
-	xvec_avx_inner_product(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
-	return result
+	return inner_product_fp32_avx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
 }
 
 func innerProducts2AVXBatch(query, first, second []float32) (firstProduct, secondProduct float32) {
@@ -87,11 +99,11 @@ func innerProducts4AVXBatch(query, first, second, third, fourth []float32) (firs
 
 func dotNormsAVX(left, right []float32) (dot, leftNorm, rightNorm float32) {
 	if len(left) < 8 {
-		return dotNormsScalar(left, right)
+		return dotNormsSSE(left, right)
 	}
-	xvec_avx_dot_norms(
+	dot = inner_product_and_squared_norm_fp32_avx(
 		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)),
-		unsafe.Pointer(&dot), unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
+		unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
 	)
 	return
 }
@@ -100,27 +112,23 @@ func squaredEuclideanAVX512(left, right []float32) float32 {
 	if len(left) < 16 {
 		return squaredEuclideanAVX(left, right)
 	}
-	var result float32
-	xvec_avx512_l2_squared(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
-	return result
+	return squared_euclidean_distance_fp32_avx512(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
 }
 
 func innerProductAVX512(left, right []float32) float32 {
 	if len(left) < 16 {
 		return innerProductAVX(left, right)
 	}
-	var result float32
-	xvec_avx512_inner_product(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
-	return result
+	return inner_product_fp32_avx512(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
 }
 
 func dotNormsAVX512(left, right []float32) (dot, leftNorm, rightNorm float32) {
 	if len(left) < 16 {
 		return dotNormsAVX(left, right)
 	}
-	xvec_avx512_dot_norms(
+	dot = inner_product_and_squared_norm_fp32_avx512(
 		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)),
-		unsafe.Pointer(&dot), unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
+		unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
 	)
 	return
 }

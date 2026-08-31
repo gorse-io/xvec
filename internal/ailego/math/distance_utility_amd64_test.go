@@ -22,6 +22,10 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
+func TestSSEDistanceKernels(t *testing.T) {
+	testArchitectureKernels(t, squaredEuclideanSSE, innerProductSSE, dotNormsSSE)
+}
+
 func TestAVXDistanceKernels(t *testing.T) {
 	if !cpu.X86.HasAVX {
 		t.Skip("AVX is not supported by this CPU")
