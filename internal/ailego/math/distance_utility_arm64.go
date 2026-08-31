@@ -22,7 +22,7 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-//go:generate go tool goat src/distance_utility_neon.c -O3
+//go:generate make distance-neon
 
 func init() {
 	if cpu.ARM64.HasASIMD {
@@ -37,7 +37,7 @@ func squaredEuclideanNEON(left, right []float32) float32 {
 		return squaredEuclideanScalar(left, right)
 	}
 	var result float32
-	xvec_neon_l2_squared(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
+	squared_euclidean_distance_fp32_neon(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
 	return result
 }
 
@@ -46,7 +46,7 @@ func innerProductNEON(left, right []float32) float32 {
 		return innerProductScalar(left, right)
 	}
 	var result float32
-	xvec_neon_inner_product(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
+	inner_product_fp32_neon(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
 	return result
 }
 
@@ -54,7 +54,7 @@ func dotNormsNEON(left, right []float32) (dot, leftNorm, rightNorm float32) {
 	if len(left) < 4 {
 		return dotNormsScalar(left, right)
 	}
-	xvec_neon_dot_norms(
+	inner_product_and_squared_norm_fp32_neon(
 		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)),
 		unsafe.Pointer(&dot), unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
 	)

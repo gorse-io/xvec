@@ -55,7 +55,12 @@ distance-avx512:
 	$(GOAT) src/distance_utility_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mfma -mavx512f
 
 distance-neon:
-	$(GOAT) src/distance_utility_neon.c --target $(GOAT_TARGET_ARM64) -O3
+	$(RM) -r $(GOAT_OUTPUT_DIR)
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/euclidean_distance_matrix_fp32_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/inner_product_matrix_fp32_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/mips_euclidean_distance_matrix_fp32_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 distance-rvv:
 	$(GOAT) src/distance_utility_rvv.c --target $(GOAT_TARGET_RVV) -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE)
