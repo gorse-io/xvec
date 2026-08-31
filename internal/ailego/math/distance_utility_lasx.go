@@ -4,9 +4,9 @@
 // 	clang   21.1.8 (6ubuntu1)
 // 	objdump 2.46
 // flags: -mlasx -O3
-// source: src/floats_lasx.c
+// source: src/distance_utility_lasx.c
 
-package floats
+package mathutil
 
 import "unsafe"
 

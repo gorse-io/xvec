@@ -4,7 +4,7 @@
 // 	clang   21.1.8 (6ubuntu1)
 // 	objdump 2.46
 // flags: -march=rv64imafdv -isystem /usr/lib/llvm-21/lib/clang/21/include -O3
-// source: src/floats_rvv.c
+// source: src/distance_utility_rvv.c
 
 TEXT ·xvec_rvv_l2_squared(SB), $0-32
 	MOV  left+0(FP), A0

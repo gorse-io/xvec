@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package floats
+package mathutil
 
 import (
 	"testing"
@@ -26,5 +26,5 @@ func TestNEONDistanceKernels(t *testing.T) {
 	if !cpu.ARM64.HasASIMD {
 		t.Skip("NEON/ASIMD is not supported by this CPU")
 	}
-	testArchitectureKernels(t, l2SquaredNEON, innerProductNEON, dotNormsNEON)
+	testArchitectureKernels(t, squaredEuclideanNEON, innerProductNEON, dotNormsNEON)
 }

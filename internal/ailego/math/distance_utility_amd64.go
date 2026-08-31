@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package floats
+package mathutil
 
 import (
 	"unsafe"
@@ -22,18 +22,18 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-//go:generate go tool goat src/floats_avx.c -O3 -mavx
-//go:generate go tool goat src/floats_batch_avx.c -O3 -mavx
-//go:generate go tool goat src/floats_avx512.c -O3 -mavx -mfma -mavx512f
+//go:generate go tool goat src/distance_utility_avx.c -O3 -mavx
+//go:generate go tool goat src/distance_utility_batch_avx.c -O3 -mavx
+//go:generate go tool goat src/distance_utility_avx512.c -O3 -mavx -mfma -mavx512f
 
 func init() {
 	switch {
 	case cpu.X86.HasAVX && cpu.X86.HasFMA && cpu.X86.HasAVX512F:
-		kernels.l2 = l2SquaredAVX512
+		kernels.l2 = squaredEuclideanAVX512
 		kernels.dot = innerProductAVX512
 		kernels.products = dotNormsAVX512
 	case cpu.X86.HasAVX:
-		kernels.l2 = l2SquaredAVX
+		kernels.l2 = squaredEuclideanAVX
 		kernels.dot = innerProductAVX
 		kernels.products = dotNormsAVX
 	}
@@ -43,9 +43,9 @@ func init() {
 	}
 }
 
-func l2SquaredAVX(left, right []float32) float32 {
+func squaredEuclideanAVX(left, right []float32) float32 {
 	if len(left) < 8 {
-		return l2SquaredScalar(left, right)
+		return squaredEuclideanScalar(left, right)
 	}
 	var result float32
 	xvec_avx_l2_squared(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
@@ -96,9 +96,9 @@ func dotNormsAVX(left, right []float32) (dot, leftNorm, rightNorm float32) {
 	return
 }
 
-func l2SquaredAVX512(left, right []float32) float32 {
+func squaredEuclideanAVX512(left, right []float32) float32 {
 	if len(left) < 16 {
-		return l2SquaredAVX(left, right)
+		return squaredEuclideanAVX(left, right)
 	}
 	var result float32
 	xvec_avx512_l2_squared(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))

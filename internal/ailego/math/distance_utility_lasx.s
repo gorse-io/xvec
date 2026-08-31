@@ -4,7 +4,7 @@
 // 	clang   21.1.8 (6ubuntu1)
 // 	objdump 2.46
 // flags: -mlasx -O3
-// source: src/floats_lasx.c
+// source: src/distance_utility_lasx.c
 
 TEXT ·xvec_lasx_l2_squared(SB), $0-32
 	MOVV left+0(FP), R4

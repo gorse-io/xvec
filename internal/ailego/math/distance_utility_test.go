@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package floats
+package mathutil
 
 import (
 	"fmt"
@@ -40,9 +40,9 @@ func TestDistanceKernelsMatchFloat32Oracle(t *testing.T) {
 			right = right[1:]
 
 			wantL2, wantDot, wantLeftNorm, wantRightNorm := distanceOracle(left, right)
-			requireFloat32Close(t, wantL2, L2Squared(left, right))
-			requireFloat32Close(t, wantDot, InnerProduct(left, right))
-			dot, leftNorm, rightNorm := DotNorms(left, right)
+			requireFloat32Close(t, wantL2, squaredEuclidean(left, right))
+			requireFloat32Close(t, wantDot, innerProduct(left, right))
+			dot, leftNorm, rightNorm := dotNorms(left, right)
 			requireFloat32Close(t, wantDot, dot)
 			requireFloat32Close(t, wantLeftNorm, leftNorm)
 			requireFloat32Close(t, wantRightNorm, rightNorm)
@@ -56,8 +56,8 @@ func TestDistanceKernelsUseFloat32Accumulation(t *testing.T) {
 	// At float32 precision, adding one after 2^24 no longer changes the sum.
 	left := []float32{4096, 1}
 	right := []float32{4096, 1}
-	require.Equal(t, float32(1<<24), InnerProduct(left, right))
-	dot, leftNorm, rightNorm := DotNorms(left, right)
+	require.Equal(t, float32(1<<24), innerProduct(left, right))
+	dot, leftNorm, rightNorm := dotNorms(left, right)
 	require.Equal(t, float32(1<<24), dot)
 	require.Equal(t, float32(1<<24), leftNorm)
 	require.Equal(t, float32(1<<24), rightNorm)
@@ -79,7 +79,7 @@ func TestInnerProducts2MatchesFloat32Oracle(t *testing.T) {
 			query, first, second = query[1:], first[1:], second[1:]
 			_, wantFirst, _, _ := distanceOracle(query, first)
 			_, wantSecond, _, _ := distanceOracle(query, second)
-			gotFirst, gotSecond := InnerProducts2(query, first, second)
+			gotFirst, gotSecond := innerProducts2(query, first, second)
 			requireFloat32Close(t, wantFirst, gotFirst)
 			requireFloat32Close(t, wantSecond, gotSecond)
 		})
@@ -99,7 +99,7 @@ func TestInnerProducts4MatchesFloat32Oracle(t *testing.T) {
 				}
 				vectors[vector] = vectors[vector][1:]
 			}
-			first, second, third, fourth := InnerProducts4(vectors[0], vectors[1], vectors[2], vectors[3], vectors[4])
+			first, second, third, fourth := innerProducts4(vectors[0], vectors[1], vectors[2], vectors[3], vectors[4])
 			for index, got := range []float32{first, second, third, fourth} {
 				_, want, _, _ := distanceOracle(vectors[0], vectors[index+1])
 				requireFloat32Close(t, want, got)
@@ -115,11 +115,11 @@ func TestDistanceKernelsDoNotAllocateOrMutate(t *testing.T) {
 	rightCopy := append([]float32(nil), right...)
 
 	require.Zero(t, testing.AllocsPerRun(100, func() {
-		benchmarkL2 = L2Squared(left, right)
-		benchmarkInnerProduct = InnerProduct(left, right)
-		benchmarkBatch2First, benchmarkBatch2Second = InnerProducts2(left, right, right)
-		benchmarkBatch4First, benchmarkBatch4Second, benchmarkBatch4Third, benchmarkBatch4Fourth = InnerProducts4(left, right, right, right, right)
-		benchmarkDot, benchmarkLeftNorm, benchmarkRightNorm = DotNorms(left, right)
+		benchmarkL2 = squaredEuclidean(left, right)
+		benchmarkInnerProduct = innerProduct(left, right)
+		benchmarkBatch2First, benchmarkBatch2Second = innerProducts2(left, right, right)
+		benchmarkBatch4First, benchmarkBatch4Second, benchmarkBatch4Third, benchmarkBatch4Fourth = innerProducts4(left, right, right, right, right)
+		benchmarkDot, benchmarkLeftNorm, benchmarkRightNorm = dotNorms(left, right)
 	}))
 	require.Equal(t, leftCopy, left)
 	require.Equal(t, rightCopy, right)
@@ -135,41 +135,41 @@ func BenchmarkDistanceKernels(b *testing.B) {
 		}
 		b.Run(fmt.Sprintf("L2/%d", dimension), func(b *testing.B) {
 			for b.Loop() {
-				benchmarkL2 = L2Squared(left, right)
+				benchmarkL2 = squaredEuclidean(left, right)
 			}
 		})
 		b.Run(fmt.Sprintf("InnerProduct/%d", dimension), func(b *testing.B) {
 			for b.Loop() {
-				benchmarkDot = InnerProduct(left, right)
+				benchmarkDot = innerProduct(left, right)
 			}
 		})
 		b.Run(fmt.Sprintf("InnerProductSequential2/%d", dimension), func(b *testing.B) {
 			for b.Loop() {
-				benchmarkDot = InnerProduct(left, right)
-				benchmarkDot2 = InnerProduct(left, right)
+				benchmarkDot = innerProduct(left, right)
+				benchmarkDot2 = innerProduct(left, right)
 			}
 		})
 		b.Run(fmt.Sprintf("InnerProducts2/%d", dimension), func(b *testing.B) {
 			for b.Loop() {
-				benchmarkDot, benchmarkDot2 = InnerProducts2(left, right, right)
+				benchmarkDot, benchmarkDot2 = innerProducts2(left, right, right)
 			}
 		})
 		b.Run(fmt.Sprintf("InnerProductSequential4/%d", dimension), func(b *testing.B) {
 			for b.Loop() {
-				benchmarkDot = InnerProduct(left, right)
-				benchmarkDot2 = InnerProduct(left, right)
-				benchmarkDot3 = InnerProduct(left, right)
-				benchmarkDot4 = InnerProduct(left, right)
+				benchmarkDot = innerProduct(left, right)
+				benchmarkDot2 = innerProduct(left, right)
+				benchmarkDot3 = innerProduct(left, right)
+				benchmarkDot4 = innerProduct(left, right)
 			}
 		})
 		b.Run(fmt.Sprintf("InnerProducts4/%d", dimension), func(b *testing.B) {
 			for b.Loop() {
-				benchmarkDot, benchmarkDot2, benchmarkDot3, benchmarkDot4 = InnerProducts4(left, right, right, right, right)
+				benchmarkDot, benchmarkDot2, benchmarkDot3, benchmarkDot4 = innerProducts4(left, right, right, right, right)
 			}
 		})
 		b.Run(fmt.Sprintf("DotNorms/%d", dimension), func(b *testing.B) {
 			for b.Loop() {
-				benchmarkDot, benchmarkLeftNorm, benchmarkRightNorm = DotNorms(left, right)
+				benchmarkDot, benchmarkLeftNorm, benchmarkRightNorm = dotNorms(left, right)
 			}
 		})
 	}

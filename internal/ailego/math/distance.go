@@ -17,8 +17,6 @@ package mathutil
 import (
 	"errors"
 	"math"
-
-	"github.com/gorse-io/xvec/internal/floats"
 )
 
 var (
@@ -36,7 +34,7 @@ func L2Squared(left, right []float32) (float32, error) {
 	if err := validateDenseFinite(left, right); err != nil {
 		return 0, err
 	}
-	return finiteScore(float64(floats.L2Squared(left, right)))
+	return finiteScore(float64(squaredEuclidean(left, right)))
 }
 
 // InnerProduct computes the dot-product similarity. Higher scores are better.
@@ -47,7 +45,7 @@ func InnerProduct(left, right []float32) (float32, error) {
 	if err := validateDenseFinite(left, right); err != nil {
 		return 0, err
 	}
-	return finiteScore(float64(floats.InnerProduct(left, right)))
+	return finiteScore(float64(innerProduct(left, right)))
 }
 
 // CosineDistance computes 1-cos(left,right). Lower scores are better. Two zero
@@ -63,7 +61,7 @@ func CosineDistance(left, right []float32) (float32, error) {
 }
 
 func cosineDistance(left, right []float32) float32 {
-	inner, leftNorm, rightNorm := floats.DotNorms(left, right)
+	inner, leftNorm, rightNorm := dotNorms(left, right)
 	if leftNorm == 0 && rightNorm == 0 {
 		return 0
 	}
@@ -91,7 +89,7 @@ func MIPSL2Squared(left, right []float32) (float32, error) {
 }
 
 func mipsL2Squared(left, right []float32) float32 {
-	inner, leftNorm, rightNorm := floats.DotNorms(left, right)
+	inner, leftNorm, rightNorm := dotNorms(left, right)
 	denominator := max(leftNorm, rightNorm)
 	if denominator == 0 {
 		return 0

@@ -1,4 +1,4 @@
-//go:build !noasm && loong64
+//go:build !noasm && riscv64
 
 // Copyright 2026-present the xvec project
 //
@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package floats
+package mathutil
 
 import (
 	"testing"
@@ -22,9 +22,9 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-func TestLASXDistanceKernels(t *testing.T) {
-	if !cpu.Loong64.HasLASX {
-		t.Skip("LASX is not supported by this CPU")
+func TestRVVDistanceKernels(t *testing.T) {
+	if !cpu.RISCV64.HasV {
+		t.Skip("RVV is not supported by this CPU")
 	}
-	testArchitectureKernels(t, l2SquaredLASX, innerProductLASX, dotNormsLASX)
+	testArchitectureKernels(t, squaredEuclideanRVV, innerProductRVV, dotNormsRVV)
 }

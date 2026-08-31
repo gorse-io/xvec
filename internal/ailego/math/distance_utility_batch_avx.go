@@ -14,24 +14,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package floats
+package mathutil
 
-import (
-	"testing"
+import "unsafe"
 
-	"golang.org/x/sys/cpu"
-)
+//go:noescape
+func xvec_avx_batch_inner_products2(query, first, second unsafe.Pointer, size int64, firstOutput, secondOutput unsafe.Pointer)
 
-func TestAVXDistanceKernels(t *testing.T) {
-	if !cpu.X86.HasAVX {
-		t.Skip("AVX is not supported by this CPU")
-	}
-	testArchitectureKernels(t, l2SquaredAVX, innerProductAVX, dotNormsAVX)
-}
-
-func TestAVX512DistanceKernels(t *testing.T) {
-	if !cpu.X86.HasAVX || !cpu.X86.HasFMA || !cpu.X86.HasAVX512F {
-		t.Skip("AVX-512/FMA is not supported by this CPU")
-	}
-	testArchitectureKernels(t, l2SquaredAVX512, innerProductAVX512, dotNormsAVX512)
-}
+//go:noescape
+func xvec_avx_batch_inner_products4(query, first, second, third, fourth unsafe.Pointer, size int64, firstOutput, secondOutput, thirdOutput, fourthOutput unsafe.Pointer)

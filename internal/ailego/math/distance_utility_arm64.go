@@ -1,4 +1,4 @@
-//go:build !noasm && loong64
+//go:build !noasm && arm64
 
 // Copyright 2026-present the xvec project
 //
@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package floats
+package mathutil
 
 import (
 	"unsafe"
@@ -22,39 +22,39 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-//go:generate make lasx
+//go:generate go tool goat src/distance_utility_neon.c -O3
 
 func init() {
-	if cpu.Loong64.HasLASX {
-		kernels.l2 = l2SquaredLASX
-		kernels.dot = innerProductLASX
-		kernels.products = dotNormsLASX
+	if cpu.ARM64.HasASIMD {
+		kernels.l2 = squaredEuclideanNEON
+		kernels.dot = innerProductNEON
+		kernels.products = dotNormsNEON
 	}
 }
 
-func l2SquaredLASX(left, right []float32) float32 {
-	if len(left) < 8 {
-		return l2SquaredScalar(left, right)
+func squaredEuclideanNEON(left, right []float32) float32 {
+	if len(left) < 4 {
+		return squaredEuclideanScalar(left, right)
 	}
 	var result float32
-	xvec_lasx_l2_squared(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
+	xvec_neon_l2_squared(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
 	return result
 }
 
-func innerProductLASX(left, right []float32) float32 {
-	if len(left) < 8 {
+func innerProductNEON(left, right []float32) float32 {
+	if len(left) < 4 {
 		return innerProductScalar(left, right)
 	}
 	var result float32
-	xvec_lasx_inner_product(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
+	xvec_neon_inner_product(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
 	return result
 }
 
-func dotNormsLASX(left, right []float32) (dot, leftNorm, rightNorm float32) {
-	if len(left) < 8 {
+func dotNormsNEON(left, right []float32) (dot, leftNorm, rightNorm float32) {
+	if len(left) < 4 {
 		return dotNormsScalar(left, right)
 	}
-	xvec_lasx_dot_norms(
+	xvec_neon_dot_norms(
 		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)),
 		unsafe.Pointer(&dot), unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
 	)

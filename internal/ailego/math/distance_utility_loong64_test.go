@@ -1,4 +1,4 @@
-//go:build !noasm && amd64
+//go:build !noasm && loong64
 
 // Copyright 2026-present the xvec project
 //
@@ -14,12 +14,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package floats
+package mathutil
 
-import "unsafe"
+import (
+	"testing"
 
-//go:noescape
-func xvec_avx_batch_inner_products2(query, first, second unsafe.Pointer, size int64, firstOutput, secondOutput unsafe.Pointer)
+	"golang.org/x/sys/cpu"
+)
 
-//go:noescape
-func xvec_avx_batch_inner_products4(query, first, second, third, fourth unsafe.Pointer, size int64, firstOutput, secondOutput, thirdOutput, fourthOutput unsafe.Pointer)
+func TestLASXDistanceKernels(t *testing.T) {
+	if !cpu.Loong64.HasLASX {
+		t.Skip("LASX is not supported by this CPU")
+	}
+	testArchitectureKernels(t, squaredEuclideanLASX, innerProductLASX, dotNormsLASX)
+}

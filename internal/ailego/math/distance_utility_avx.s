@@ -4,7 +4,7 @@
 // 	clang   21.1.8 (6ubuntu1)
 // 	objdump 2.46
 // flags: -mavx -O3
-// source: src/floats_avx.c
+// source: src/distance_utility_avx.c
 
 TEXT ·xvec_avx_l2_squared(SB), $0-32
 	MOVQ left+0(FP), DI

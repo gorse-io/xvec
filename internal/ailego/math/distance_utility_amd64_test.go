@@ -1,4 +1,4 @@
-//go:build !noasm && riscv64
+//go:build !noasm && amd64
 
 // Copyright 2026-present the xvec project
 //
@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package floats
+package mathutil
 
 import (
 	"testing"
@@ -22,9 +22,16 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-func TestRVVDistanceKernels(t *testing.T) {
-	if !cpu.RISCV64.HasV {
-		t.Skip("RVV is not supported by this CPU")
+func TestAVXDistanceKernels(t *testing.T) {
+	if !cpu.X86.HasAVX {
+		t.Skip("AVX is not supported by this CPU")
 	}
-	testArchitectureKernels(t, l2SquaredRVV, innerProductRVV, dotNormsRVV)
+	testArchitectureKernels(t, squaredEuclideanAVX, innerProductAVX, dotNormsAVX)
+}
+
+func TestAVX512DistanceKernels(t *testing.T) {
+	if !cpu.X86.HasAVX || !cpu.X86.HasFMA || !cpu.X86.HasAVX512F {
+		t.Skip("AVX-512/FMA is not supported by this CPU")
+	}
+	testArchitectureKernels(t, squaredEuclideanAVX512, innerProductAVX512, dotNormsAVX512)
 }

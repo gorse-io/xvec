@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package floats provides allocation-free float32 vector kernels. Callers must
-// pass equal, non-empty slices; validation belongs at the API boundary.
-package floats
+// The distance utility functions provide allocation-free float32 vector kernels.
+// Callers must pass equal, non-empty slices; validation belongs at the API boundary.
+package mathutil
 
 type binaryKernel func(left, right []float32) float32
 type batch2Kernel func(query, first, second []float32) (firstProduct, secondProduct float32)
@@ -28,42 +28,42 @@ var kernels = struct {
 	dot4     batch4Kernel
 	products productsKernel
 }{
-	l2:       l2SquaredScalar,
+	l2:       squaredEuclideanScalar,
 	dot:      innerProductScalar,
 	dot2:     innerProducts2Scalar,
 	dot4:     innerProducts4Scalar,
 	products: dotNormsScalar,
 }
 
-// L2Squared returns the squared Euclidean distance between left and right.
-func L2Squared(left, right []float32) float32 {
+// squaredEuclidean returns the squared Euclidean distance between left and right.
+func squaredEuclidean(left, right []float32) float32 {
 	return kernels.l2(left, right)
 }
 
-// InnerProduct returns the dot product of left and right.
-func InnerProduct(left, right []float32) float32 {
+// innerProduct returns the dot product of left and right.
+func innerProduct(left, right []float32) float32 {
 	return kernels.dot(left, right)
 }
 
-// InnerProducts2 computes the dot product of one query with two candidates in
+// innerProducts2 computes the dot product of one query with two candidates in
 // one pass. SIMD implementations reuse each loaded query block for both
 // candidates, which is the dominant HNSW one-to-many scoring pattern.
-func InnerProducts2(query, first, second []float32) (firstProduct, secondProduct float32) {
+func innerProducts2(query, first, second []float32) (firstProduct, secondProduct float32) {
 	return kernels.dot2(query, first, second)
 }
 
-// InnerProducts4 computes the dot product of one query with four candidates
+// innerProducts4 computes the dot product of one query with four candidates
 // in one pass, amortizing each query load across four independent products.
-func InnerProducts4(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
+func innerProducts4(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
 	return kernels.dot4(query, first, second, third, fourth)
 }
 
-// DotNorms computes the dot product and both squared norms in one pass.
-func DotNorms(left, right []float32) (dot, leftNorm, rightNorm float32) {
+// dotNorms computes the dot product and both squared norms in one pass.
+func dotNorms(left, right []float32) (dot, leftNorm, rightNorm float32) {
 	return kernels.products(left, right)
 }
 
-func l2SquaredScalar(left, right []float32) (sum float32) {
+func squaredEuclideanScalar(left, right []float32) (sum float32) {
 	for index, leftValue := range left {
 		difference := leftValue - right[index]
 		sum += difference * difference

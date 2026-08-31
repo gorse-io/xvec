@@ -4,9 +4,9 @@
 // 	clang   21.1.8 (6ubuntu1)
 // 	objdump 2.46
 // flags: -march=rv64imafdv -isystem /usr/lib/llvm-21/lib/clang/21/include -O3
-// source: src/floats_rvv.c
+// source: src/distance_utility_rvv.c
 
-package floats
+package mathutil
 
 import "unsafe"
 

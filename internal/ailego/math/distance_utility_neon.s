@@ -4,7 +4,7 @@
 // 	clang   21.1.8 (6ubuntu1)
 // 	objdump 2.46
 // flags: -O3
-// source: src/floats_neon.c
+// source: src/distance_utility_neon.c
 
 TEXT ·xvec_neon_l2_squared(SB), $0-32
 	MOVD left+0(FP), R0
