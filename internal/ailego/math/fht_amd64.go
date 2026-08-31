@@ -49,7 +49,7 @@ func fhtFlipSignsAVX2(signs []byte, data []float32) {
 		fhtFlipSignsScalar(signs, data)
 		return
 	}
-	xvec_avx2_fht_flip_signs(unsafe.Pointer(&signs[0]), unsafe.Pointer(&data[0]), int64(len(data)))
+	fht_flip_sign_avx2(unsafe.Pointer(&signs[0]), unsafe.Pointer(&data[0]), int64(len(data)))
 }
 
 func fhtKacWalkAVX2(data []float32) {
@@ -57,7 +57,7 @@ func fhtKacWalkAVX2(data []float32) {
 		fhtKacWalkScalar(data)
 		return
 	}
-	xvec_avx2_fht_kac_walk(unsafe.Pointer(&data[0]), int64(len(data)))
+	fht_kacs_walk_avx2(unsafe.Pointer(&data[0]), int64(len(data)))
 	if len(data)%2 != 0 {
 		data[len(data)/2] *= float32(math.Sqrt2)
 	}
@@ -71,7 +71,7 @@ func fhtInverseKacWalkAVX2(data []float32) {
 	if len(data)%2 != 0 {
 		data[len(data)/2] *= float32(math.Sqrt(.5))
 	}
-	xvec_avx2_fht_inverse_kac_walk(unsafe.Pointer(&data[0]), int64(len(data)))
+	fht_inv_kacs_walk_avx2(unsafe.Pointer(&data[0]), int64(len(data)))
 }
 
 func fhtInPlaceAVX2(data []float32) {
@@ -79,7 +79,7 @@ func fhtInPlaceAVX2(data []float32) {
 		fhtInPlaceScalar(data)
 		return
 	}
-	xvec_avx2_fht_in_place(unsafe.Pointer(&data[0]), int64(len(data)))
+	fht_inplace_avx2(unsafe.Pointer(&data[0]), int64(len(data)))
 }
 
 func fhtFlipSignsAVX512(signs []byte, data []float32) {
@@ -87,7 +87,7 @@ func fhtFlipSignsAVX512(signs []byte, data []float32) {
 		fhtFlipSignsScalar(signs, data)
 		return
 	}
-	xvec_avx512_fht_flip_signs(unsafe.Pointer(&signs[0]), unsafe.Pointer(&data[0]), int64(len(data)))
+	fht_flip_sign_avx512(unsafe.Pointer(&signs[0]), unsafe.Pointer(&data[0]), int64(len(data)))
 }
 
 func fhtKacWalkAVX512(data []float32) {
@@ -95,7 +95,7 @@ func fhtKacWalkAVX512(data []float32) {
 		fhtKacWalkScalar(data)
 		return
 	}
-	xvec_avx512_fht_kac_walk(unsafe.Pointer(&data[0]), int64(len(data)))
+	fht_kacs_walk_avx512(unsafe.Pointer(&data[0]), int64(len(data)))
 	if len(data)%2 != 0 {
 		data[len(data)/2] *= float32(math.Sqrt2)
 	}
@@ -109,7 +109,7 @@ func fhtInverseKacWalkAVX512(data []float32) {
 	if len(data)%2 != 0 {
 		data[len(data)/2] *= float32(math.Sqrt(.5))
 	}
-	xvec_avx512_fht_inverse_kac_walk(unsafe.Pointer(&data[0]), int64(len(data)))
+	fht_inv_kacs_walk_avx512(unsafe.Pointer(&data[0]), int64(len(data)))
 }
 
 func fhtInPlaceAVX512(data []float32) {
@@ -117,5 +117,5 @@ func fhtInPlaceAVX512(data []float32) {
 		fhtInPlaceScalar(data)
 		return
 	}
-	xvec_avx512_fht_in_place(unsafe.Pointer(&data[0]), int64(len(data)))
+	fht_inplace_avx512(unsafe.Pointer(&data[0]), int64(len(data)))
 }

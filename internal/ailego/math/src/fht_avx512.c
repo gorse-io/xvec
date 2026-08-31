@@ -15,7 +15,7 @@
 #include <immintrin.h>
 #include <stdint.h>
 
-void xvec_avx512_fht_flip_signs(uint8_t *signs, float *data, int64_t size) {
+void fht_flip_sign_avx512(uint8_t *signs, float *data, int64_t size) {
     int64_t simd_end = size & ~63LL;
     volatile int32_t sign = (int32_t)0x80000000u;
     const __m512 sign_bit = _mm512_castsi512_ps(_mm512_set1_epi32(sign));
@@ -36,7 +36,7 @@ void xvec_avx512_fht_flip_signs(uint8_t *signs, float *data, int64_t size) {
     }
 }
 
-void xvec_avx512_fht_kac_walk(float *data, int64_t size) {
+void fht_kacs_walk_avx512(float *data, int64_t size) {
     int64_t half = size / 2;
     int64_t base = size % 2;
     int64_t offset = base + half;
@@ -56,7 +56,7 @@ void xvec_avx512_fht_kac_walk(float *data, int64_t size) {
 
 }
 
-void xvec_avx512_fht_inverse_kac_walk(float *data, int64_t size) {
+void fht_inv_kacs_walk_avx512(float *data, int64_t size) {
     int64_t half = size / 2;
     int64_t base = size % 2;
     int64_t offset = base + half;
@@ -77,7 +77,7 @@ void xvec_avx512_fht_inverse_kac_walk(float *data, int64_t size) {
     }
 }
 
-void xvec_avx512_fht_in_place(float *data, int64_t size) {
+void fht_inplace_avx512(float *data, int64_t size) {
     for (int64_t width = 1; width < size; width <<= 1) {
         int64_t step = width << 1;
         int64_t simd_end = width & ~15LL;
