@@ -24,16 +24,29 @@ var (
 	ErrShortSignBits    = errors.New("ailego: sign-bit buffer is too short")
 )
 
+type fhtUnaryKernel func(data []float32)
+type fhtFlipSignsKernel func(signs []byte, data []float32)
+
+type fhtKernels struct {
+	flipSigns      fhtFlipSignsKernel
+	kacWalk        fhtUnaryKernel
+	inverseKacWalk fhtUnaryKernel
+	inPlace        fhtUnaryKernel
+}
+
+var activeFHTKernels = fhtKernels{
+	flipSigns:      fhtFlipSignsScalar,
+	kacWalk:        fhtKacWalkScalar,
+	inverseKacWalk: fhtInverseKacWalkScalar,
+	inPlace:        fhtInPlaceScalar,
+}
+
 // FHTFlipSigns negates elements selected by the little-endian bits in signs.
 func FHTFlipSigns(signs []byte, data []float32) error {
 	if len(signs) < (len(data)+7)/8 {
 		return ErrShortSignBits
 	}
-	for index := range data {
-		if signs[index/8]&(1<<uint(index%8)) != 0 {
-			data[index] = -data[index]
-		}
-	}
+	activeFHTKernels.flipSigns(signs, data)
 	return nil
 }
 
@@ -42,15 +55,7 @@ func FHTInPlace(data []float32) error {
 	if len(data) == 0 || len(data)&(len(data)-1) != 0 {
 		return ErrInvalidFHTLength
 	}
-	for width := 1; width < len(data); width <<= 1 {
-		for block := 0; block < len(data); block += width << 1 {
-			for index := block; index < block+width; index++ {
-				left, right := data[index], data[index+width]
-				data[index] = left + right
-				data[index+width] = left - right
-			}
-		}
-	}
+	activeFHTKernels.inPlace(data)
 	return nil
 }
 
@@ -60,6 +65,47 @@ func FHTKacWalk(data []float32) error {
 	if len(data) == 0 {
 		return ErrInvalidFHTLength
 	}
+	activeFHTKernels.kacWalk(data)
+	return nil
+}
+
+// FHTInverseKacWalk reverses FHTKacWalk.
+func FHTInverseKacWalk(data []float32) error {
+	if len(data) == 0 {
+		return ErrInvalidFHTLength
+	}
+	activeFHTKernels.inverseKacWalk(data)
+	return nil
+}
+
+// ScaleFloat32 multiplies data in place.
+func ScaleFloat32(data []float32, factor float32) {
+	for index := range data {
+		data[index] *= factor
+	}
+}
+
+func fhtFlipSignsScalar(signs []byte, data []float32) {
+	for index := range data {
+		if signs[index/8]&(1<<uint(index%8)) != 0 {
+			data[index] = -data[index]
+		}
+	}
+}
+
+func fhtInPlaceScalar(data []float32) {
+	for width := 1; width < len(data); width <<= 1 {
+		for block := 0; block < len(data); block += width << 1 {
+			for index := block; index < block+width; index++ {
+				left, right := data[index], data[index+width]
+				data[index] = left + right
+				data[index+width] = left - right
+			}
+		}
+	}
+}
+
+func fhtKacWalkScalar(data []float32) {
 	half := len(data) / 2
 	base := len(data) % 2
 	offset := base + half
@@ -71,14 +117,9 @@ func FHTKacWalk(data []float32) error {
 	if base != 0 {
 		data[half] *= float32(math.Sqrt(2))
 	}
-	return nil
 }
 
-// FHTInverseKacWalk reverses FHTKacWalk.
-func FHTInverseKacWalk(data []float32) error {
-	if len(data) == 0 {
-		return ErrInvalidFHTLength
-	}
+func fhtInverseKacWalkScalar(data []float32) {
 	half := len(data) / 2
 	base := len(data) % 2
 	offset := base + half
@@ -89,13 +130,5 @@ func FHTInverseKacWalk(data []float32) error {
 		left, right := data[index], data[index+offset]
 		data[index] = (left + right) * .5
 		data[index+offset] = (left - right) * .5
-	}
-	return nil
-}
-
-// ScaleFloat32 multiplies data in place.
-func ScaleFloat32(data []float32, factor float32) {
-	for index := range data {
-		data[index] *= factor
 	}
 }

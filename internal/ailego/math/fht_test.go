@@ -71,7 +71,7 @@ func TestFHTKacWalkRoundTrip(t *testing.T) {
 	}
 }
 
-func TestFHTValidation(t *testing.T) {
+func TestValidation(t *testing.T) {
 	t.Parallel()
 	for _, data := range [][]float32{nil, {1, 2, 3}} {
 		{
@@ -86,5 +86,21 @@ func TestFHTValidation(t *testing.T) {
 	{
 		err := FHTInverseKacWalk(nil)
 		require.ErrorIs(t, err, ErrInvalidFHTLength)
+	}
+}
+
+func BenchmarkFHTInPlace(b *testing.B) {
+	data := make([]float32, 1024)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = FHTInPlace(data)
+	}
+}
+
+func BenchmarkFHTKacWalk(b *testing.B) {
+	data := make([]float32, 1024)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = FHTKacWalk(data)
 	}
 }
