@@ -15,7 +15,7 @@
 #include <arm_neon.h>
 #include <stdint.h>
 
-void xvec_neon_fht_flip_signs(uint8_t *signs, float *data, int64_t size) {
+void fht_flip_sign_neon(uint8_t *signs, float *data, int64_t size) {
     int64_t simd_end = size & ~3LL;
     for (int64_t index = 0; index < simd_end; index += 4) {
         uint16_t bits = signs[index / 8];
@@ -38,7 +38,7 @@ void xvec_neon_fht_flip_signs(uint8_t *signs, float *data, int64_t size) {
     }
 }
 
-void xvec_neon_fht_kac_walk(float *data, int64_t size) {
+void fht_kacs_walk_neon(float *data, int64_t size) {
     int64_t half = size / 2;
     int64_t base = size % 2;
     int64_t offset = base + half;
@@ -58,7 +58,7 @@ void xvec_neon_fht_kac_walk(float *data, int64_t size) {
 
 }
 
-void xvec_neon_fht_inverse_kac_walk(float *data, int64_t size) {
+void fht_inv_kacs_walk_neon(float *data, int64_t size) {
     int64_t half = size / 2;
     int64_t base = size % 2;
     int64_t offset = base + half;
@@ -79,7 +79,7 @@ void xvec_neon_fht_inverse_kac_walk(float *data, int64_t size) {
     }
 }
 
-void xvec_neon_fht_in_place(float *data, int64_t size) {
+void fht_inplace_neon(float *data, int64_t size) {
     for (int64_t width = 1; width < size; width <<= 1) {
         int64_t step = width << 1;
         int64_t simd_end = width & ~3LL;

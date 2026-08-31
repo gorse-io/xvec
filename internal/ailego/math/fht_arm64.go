@@ -41,7 +41,7 @@ func fhtFlipSignsNEON(signs []byte, data []float32) {
 		fhtFlipSignsScalar(signs, data)
 		return
 	}
-	xvec_neon_fht_flip_signs(unsafe.Pointer(&signs[0]), unsafe.Pointer(&data[0]), int64(len(data)))
+	fht_flip_sign_neon(unsafe.Pointer(&signs[0]), unsafe.Pointer(&data[0]), int64(len(data)))
 }
 
 func fhtKacWalkNEON(data []float32) {
@@ -49,7 +49,7 @@ func fhtKacWalkNEON(data []float32) {
 		fhtKacWalkScalar(data)
 		return
 	}
-	xvec_neon_fht_kac_walk(unsafe.Pointer(&data[0]), int64(len(data)))
+	fht_kacs_walk_neon(unsafe.Pointer(&data[0]), int64(len(data)))
 	if len(data)%2 != 0 {
 		data[len(data)/2] *= float32(math.Sqrt2)
 	}
@@ -63,7 +63,7 @@ func fhtInverseKacWalkNEON(data []float32) {
 	if len(data)%2 != 0 {
 		data[len(data)/2] *= float32(math.Sqrt(.5))
 	}
-	xvec_neon_fht_inverse_kac_walk(unsafe.Pointer(&data[0]), int64(len(data)))
+	fht_inv_kacs_walk_neon(unsafe.Pointer(&data[0]), int64(len(data)))
 }
 
 func fhtInPlaceNEON(data []float32) {
@@ -71,5 +71,5 @@ func fhtInPlaceNEON(data []float32) {
 		fhtInPlaceScalar(data)
 		return
 	}
-	xvec_neon_fht_in_place(unsafe.Pointer(&data[0]), int64(len(data)))
+	fht_inplace_neon(unsafe.Pointer(&data[0]), int64(len(data)))
 }

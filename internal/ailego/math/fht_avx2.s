@@ -6,7 +6,7 @@
 // flags: -mavx2 -O3
 // source: src/fht_avx2.c
 
-TEXT ·xvec_avx2_fht_flip_signs(SB), $0-24
+TEXT ·fht_flip_sign_avx2(SB), $0-24
 	MOVQ signs+0(FP), DI
 	MOVQ data+8(FP), SI
 	MOVQ size+16(FP), DX
@@ -252,7 +252,7 @@ LBB0_5:
 	LONG $0x8f748042; WORD $0x8003 // xorb	$-128, 3(%rdi,%r9,4)
 	JMP  LBB0_7
 
-TEXT ·xvec_avx2_fht_kac_walk(SB), $0-16
+TEXT ·fht_kacs_walk_avx2(SB), $0-16
 	MOVQ data+0(FP), DI
 	MOVQ size+8(FP), SI
 	WORD $0x8948; BYTE $0xf0 // movq	%rsi, %rax
@@ -411,7 +411,7 @@ LBB1_21:
 	WORD $0x014c; BYTE $0xca // addq	%r9, %rdx
 	JMP  LBB1_5
 
-TEXT ·xvec_avx2_fht_inverse_kac_walk(SB), $0-16
+TEXT ·fht_inv_kacs_walk_avx2(SB), $0-16
 	MOVQ data+0(FP), DI
 	MOVQ size+8(FP), SI
 	BYTE $0x55                                 // pushq	%rbp
@@ -472,7 +472,7 @@ LBB2_6:
 	WORD $0xf8c5; BYTE $0x77 // vzeroupper
 	RET
 
-TEXT ·xvec_avx2_fht_in_place(SB), $0-16
+TEXT ·fht_inplace_avx2(SB), $0-16
 	MOVQ data+0(FP), DI
 	MOVQ size+8(FP), SI
 	BYTE $0x55                             // pushq	%rbp

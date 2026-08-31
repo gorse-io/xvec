@@ -11,13 +11,13 @@ package mathutil
 import "unsafe"
 
 //go:noescape
-func xvec_avx512_fht_flip_signs(signs, data unsafe.Pointer, size int64)
+func fht_flip_sign_avx512(signs, data unsafe.Pointer, size int64)
 
 //go:noescape
-func xvec_avx512_fht_kac_walk(data unsafe.Pointer, size int64)
+func fht_kacs_walk_avx512(data unsafe.Pointer, size int64)
 
 //go:noescape
-func xvec_avx512_fht_inverse_kac_walk(data unsafe.Pointer, size int64)
+func fht_inv_kacs_walk_avx512(data unsafe.Pointer, size int64)
 
 //go:noescape
-func xvec_avx512_fht_in_place(data unsafe.Pointer, size int64)
+func fht_inplace_avx512(data unsafe.Pointer, size int64)
