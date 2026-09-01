@@ -152,6 +152,14 @@ func TestParseConfigDiskANN(t *testing.T) {
 	require.ErrorContains(t, err, "DiskANN parameters")
 }
 
+func TestParseConfigFlat(t *testing.T) {
+	config, err := parseConfig([]string{
+		backendXvec, "--path", t.TempDir(), "--index-type", indexFlat,
+	}, &bytes.Buffer{})
+	require.NoError(t, err)
+	require.Equal(t, indexFlat, config.IndexType)
+}
+
 func TestParseConfigIVF(t *testing.T) {
 	config, err := parseConfig([]string{
 		backendXvec, "--path", t.TempDir(), "--index-type", indexIVF,

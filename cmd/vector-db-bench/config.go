@@ -29,6 +29,7 @@ import (
 const (
 	backendXvec      = "xvec"
 	backendZvec      = "zvec"
+	indexFlat        = "flat"
 	indexHNSW        = "hnsw"
 	indexIVF         = "ivf"
 	indexDiskANN     = "diskann"
@@ -157,7 +158,7 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	flags.IntVar(&config.M, "m", 50, "HNSW M")
 	flags.IntVar(&config.EFConstruction, "ef-construction", 500, "HNSW construction EF")
 	flags.IntVar(&config.EFSearch, "ef-search", 300, "HNSW search EF")
-	flags.StringVar(&config.IndexType, "index-type", indexHNSW, "vector index: hnsw, ivf, diskann, or vamana")
+	flags.StringVar(&config.IndexType, "index-type", indexHNSW, "vector index: flat, hnsw, ivf, diskann, or vamana")
 	flags.IntVar(&config.IVFNList, "ivf-n-list", 1024, "IVF centroid/list count")
 	flags.IntVar(&config.IVFNIterations, "ivf-n-iterations", 10, "IVF k-means training iterations")
 	flags.BoolVar(&config.IVFUseSOAR, "ivf-use-soar", false, "enable IVF SOAR list assignment")
@@ -255,6 +256,7 @@ func (c benchConfig) validate() error {
 	}
 	if c.caseSpec.Workload == workloadVector {
 		switch strings.ToLower(c.IndexType) {
+		case indexFlat:
 		case indexHNSW:
 			if c.M <= 0 || c.EFConstruction < c.M || c.EFSearch <= 0 {
 				return errors.New("HNSW parameters require m > 0, ef-construction >= m, and ef-search > 0")
@@ -278,7 +280,7 @@ func (c benchConfig) validate() error {
 				return fmt.Errorf("zvec Vamana requires ef-search %d and refiner disabled", defaultVamanaEFSearch)
 			}
 		default:
-			return fmt.Errorf("unsupported index-type %q: use hnsw, ivf, diskann, or vamana", c.IndexType)
+			return fmt.Errorf("unsupported index-type %q: use flat, hnsw, ivf, diskann, or vamana", c.IndexType)
 		}
 	} else {
 		switch strings.ToLower(c.FTSTokenizer) {

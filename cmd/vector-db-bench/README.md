@@ -7,7 +7,7 @@ vector and full-text search performance workloads:
 
 - Cohere, LAION, BioASQ, and OpenAI Parquet datasets;
 - MS MARCO and HotpotQA BM25 datasets with semantic qrels;
-- HNSW, IVF, DiskANN, or Vamana loading and optimization;
+- Flat, HNSW, IVF, DiskANN, or Vamana loading and optimization;
 - serial Recall@K, QPS, and latency percentiles;
 - FTS Recall@K, MRR@K, and NDCG@K;
 - sustained concurrent QPS and latency at multiple worker counts;

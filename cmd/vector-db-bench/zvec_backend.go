@@ -254,6 +254,11 @@ func writableZvecBenchmarkCollection(config benchConfig) (*zvec.Collection, erro
 	}
 	var index *zvec.IndexParams
 	switch strings.ToLower(config.IndexType) {
+	case indexFlat:
+		index, err = zvec.NewFlatIndexParams(metric)
+		if err != nil {
+			return nil, fmt.Errorf("create zvec Flat index params: %w", err)
+		}
 	case indexHNSW:
 		index, err = zvec.NewHNSWIndexParams(metric, config.M, config.EFConstruction)
 		if err != nil {
@@ -464,6 +469,15 @@ func (e zvecQueryEngine) search(ctx context.Context, benchmarkQuery benchmarkQue
 	}
 	if e.fullText {
 		// FTS query parameters are attached above.
+	} else if strings.EqualFold(e.indexType, indexFlat) {
+		params := zvec.NewFlatQueryParams(e.useRefiner, 10)
+		if params == nil {
+			return nil, errors.New("create zvec Flat query params")
+		}
+		defer params.Destroy()
+		if err := query.SetFlatParams(params); err != nil {
+			return nil, fmt.Errorf("set zvec Flat query params: %w", err)
+		}
 	} else if strings.EqualFold(e.indexType, indexIVF) {
 		params := zvec.NewIVFQueryParams(e.ivfNProbe, e.useRefiner, e.ivfScale)
 		if params == nil {

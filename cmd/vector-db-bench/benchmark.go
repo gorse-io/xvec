@@ -250,6 +250,11 @@ func writableBenchmarkCollection(ctx context.Context, config benchConfig) (*xvec
 	}
 	var index xvec.IndexParams
 	switch strings.ToLower(config.IndexType) {
+	case indexFlat:
+		params := xvec.NewFlatIndexParams(metric)
+		params.Quantize = quantize
+		params.Quantizer.EnableRotate = quantize == xvec.QuantizeTypeInt8 || quantize == xvec.QuantizeTypeInt4
+		index = params
 	case indexHNSW:
 		params := xvec.NewHNSWIndexParams(metric)
 		params.M = config.M
@@ -345,7 +350,11 @@ type xvecQueryEngine struct {
 
 func newXvecQueryEngine(collection *xvec.Collection, config benchConfig) xvecQueryEngine {
 	var params xvec.QueryParams
-	if strings.EqualFold(config.IndexType, indexIVF) {
+	if strings.EqualFold(config.IndexType, indexFlat) {
+		flat := xvec.NewFlatQueryParams()
+		flat.UseRefiner = config.UseRefiner
+		params = flat
+	} else if strings.EqualFold(config.IndexType, indexIVF) {
 		ivf := xvec.NewIVFQueryParams()
 		ivf.NProbe = config.IVFNProbe
 		ivf.ScaleFactor = float32(config.IVFScaleFactor)
