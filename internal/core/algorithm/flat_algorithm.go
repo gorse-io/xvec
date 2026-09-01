@@ -69,12 +69,13 @@ type DenseBuilder interface {
 // DenseFlatIndex stores FP32 vectors contiguously and scans every vector for
 // exact search. Adds are serialized; any number of searches may run together.
 type DenseFlatIndex struct {
-	mu        sync.RWMutex
-	dimension int
-	metric    Metric
-	keys      []uint64
-	vectors   []float32
-	positions map[uint64]int
+	mu         sync.RWMutex
+	dimension  int
+	metric     Metric
+	keys       []uint64
+	vectors    []float32
+	magnitudes []float32
+	positions  map[uint64]int
 }
 
 // NewDenseFlatIndex constructs an empty exact index.
@@ -103,18 +104,24 @@ func (i *DenseFlatIndex) Reserve(count int) error {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if count <= cap(i.keys) && count*i.dimension <= cap(i.vectors) {
+	if count <= cap(i.keys) && count*i.dimension <= cap(i.vectors) &&
+		(i.metric != MetricCosine || count <= cap(i.magnitudes)) {
 		return nil
 	}
 	keys := make([]uint64, len(i.keys), max(count, len(i.keys)))
 	copy(keys, i.keys)
 	vectors := make([]float32, len(i.vectors), max(count*i.dimension, len(i.vectors)))
 	copy(vectors, i.vectors)
+	var magnitudes []float32
+	if i.metric == MetricCosine {
+		magnitudes = make([]float32, len(i.magnitudes), max(count, len(i.magnitudes)))
+		copy(magnitudes, i.magnitudes)
+	}
 	positions := make(map[uint64]int, max(count, len(i.positions)))
 	for key, position := range i.positions {
 		positions[key] = position
 	}
-	i.keys, i.vectors, i.positions = keys, vectors, positions
+	i.keys, i.vectors, i.magnitudes, i.positions = keys, vectors, magnitudes, positions
 	return nil
 }
 
@@ -162,6 +169,10 @@ func (i *DenseFlatIndex) Add(ctx context.Context, key uint64, vector []float32) 
 	if err := mathutil.ValidateDense(vector, i.dimension); err != nil {
 		return fmt.Errorf("core: validate dense Flat vector: %w", err)
 	}
+	var magnitude float32
+	if i.metric == MetricCosine {
+		magnitude = mathutil.L2Magnitude(vector)
+	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -173,6 +184,9 @@ func (i *DenseFlatIndex) Add(ctx context.Context, key uint64, vector []float32) 
 	i.positions[key] = len(i.keys)
 	i.keys = append(i.keys, key)
 	i.vectors = append(i.vectors, vector...)
+	if i.metric == MetricCosine {
+		i.magnitudes = append(i.magnitudes, magnitude)
+	}
 	return nil
 }
 
@@ -226,16 +240,69 @@ func (i *DenseFlatIndex) search(ctx context.Context, query []float32, options Se
 	} else if options.TopK < 0 {
 		return nil, errors.New("core: negative top-k")
 	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.metric == MetricCosine {
+		return i.searchCosine(ctx, query, options)
+	}
 	distance, err := i.metric.Distance()
 	if err != nil {
 		return nil, err
 	}
-	i.mu.RLock()
-	defer i.mu.RUnlock()
 	return topKCandidatesWithDistance(ctx, i.metric, distance, query, options, len(i.keys), func(position int) Candidate {
 		start := position * i.dimension
 		return Candidate{Key: i.keys[position], Vector: i.vectors[start : start+i.dimension]}
 	})
+}
+
+func (i *DenseFlatIndex) searchCosine(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {
+	if options.TopK == 0 || len(i.keys) == 0 {
+		return []Result{}, nil
+	}
+	k := min(options.TopK, len(i.keys))
+	worstFirst := func(left, right Result) bool {
+		if left.Score == right.Score {
+			return left.Key > right.Key
+		}
+		return MetricCosine.Better(right.Score, left.Score)
+	}
+	heap := container.NewHeapWithCapacity(k, worstFirst)
+	queryMagnitude := mathutil.L2Magnitude(query)
+	for position, key := range i.keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if options.Filter != nil && !options.Filter(key) {
+			continue
+		}
+		start := position * i.dimension
+		score := mathutil.CosineDistanceWithMagnitudes(
+			i.vectors[start:start+i.dimension], query, i.magnitudes[position], queryMagnitude,
+		)
+		if !scoreWithinRadius(MetricCosine, score, options.Radius) {
+			continue
+		}
+		result := Result{Key: key, Score: score}
+		if heap.Len() < k {
+			heap.Push(result)
+			continue
+		}
+		worst, _ := heap.Peek()
+		if resultBetter(MetricCosine, result, worst) {
+			heap.Replace(result)
+		}
+	}
+	results := heap.Values()
+	slices.SortFunc(results, func(left, right Result) int {
+		if resultBetter(MetricCosine, left, right) {
+			return -1
+		}
+		if resultBetter(MetricCosine, right, left) {
+			return 1
+		}
+		return 0
+	})
+	return results, nil
 }
 
 // DenseFlatIndexBuilder is a one-shot builder. The built index remains

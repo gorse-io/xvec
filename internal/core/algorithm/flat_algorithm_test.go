@@ -264,6 +264,40 @@ func BenchmarkDenseFlatSearch(b *testing.B) {
 	}
 }
 
+func BenchmarkDenseFlatCosineSearch1536(b *testing.B) {
+	const (
+		count     = 10_000
+		dimension = 1536
+	)
+	index, err := NewDenseFlatIndex(dimension, MetricCosine)
+	if err != nil {
+		require.NoError(b, err)
+	}
+	if err := index.Reserve(count); err != nil {
+		require.NoError(b, err)
+	}
+	for key := range count {
+		vector := make([]float32, dimension)
+		for offset := range vector {
+			vector[offset] = float32(((key+1)*(offset+3))%997)/997 - 0.5
+		}
+		if err := index.Add(context.Background(), uint64(key), vector); err != nil {
+			require.NoError(b, err)
+		}
+	}
+	query := make([]float32, dimension)
+	for offset := range query {
+		query[offset] = float32((offset*17+11)%997)/997 - 0.5
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := index.Search(context.Background(), query, 100); err != nil {
+			require.NoError(b, err)
+		}
+	}
+}
+
 func TestSparseFlatExactSearch(t *testing.T) {
 	index, err := NewSparseFlatIndex(MetricIP)
 	require.NoError(t, err)
