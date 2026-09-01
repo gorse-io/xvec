@@ -205,6 +205,40 @@ func TestDenseFlatBuilderLifecycle(t *testing.T) {
 	}
 }
 
+func TestDenseFlatBuildsValidatedCandidatesInBulk(t *testing.T) {
+	candidates := []Candidate{
+		{Key: 2, Vector: []float32{0, 2}},
+		{Key: 1, Vector: []float32{1, 0}},
+		{Key: 3, Vector: []float32{0, 0}},
+	}
+	index, err := NewDenseFlatIndexFromValidatedCandidates(context.Background(), 2, MetricCosine, candidates)
+	require.NoError(t, err)
+	require.Equal(t, len(candidates), index.Len())
+	require.Len(t, index.magnitudes, len(candidates))
+
+	candidates[1].Vector[0] = 99
+	vector, found := index.Vector(1)
+	require.True(t, found)
+	require.Equal(t, []float32{1, 0}, vector)
+
+	results, err := index.Search(context.Background(), []float32{1, 0}, 3)
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 1, Score: 0}, {Key: 2, Score: 1}, {Key: 3, Score: 1}}, results)
+
+	_, err = NewDenseFlatIndexFromValidatedCandidates(context.Background(), 2, MetricL2, []Candidate{{Key: 1, Vector: []float32{1}}})
+	require.ErrorIs(t, err, ErrInvalidDimension)
+	_, err = NewDenseFlatIndexFromValidatedCandidates(context.Background(), 1, MetricL2, []Candidate{
+		{Key: 1, Vector: []float32{1}},
+		{Key: 1, Vector: []float32{2}},
+	})
+	require.ErrorIs(t, err, ErrDuplicateKey)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = NewDenseFlatIndexFromValidatedCandidates(canceled, 1, MetricL2, nil)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestDenseFlatConcurrentStreamingAndSearch(t *testing.T) {
 	index, err := NewDenseFlatIndex(2, MetricL2)
 	require.NoError(t, err)

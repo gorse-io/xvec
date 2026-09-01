@@ -93,6 +93,58 @@ func NewDenseFlatIndex(dimension int, metric Metric) (*DenseFlatIndex, error) {
 	}, nil
 }
 
+// NewDenseFlatIndexFromValidatedCandidates constructs an exact index in one
+// allocation pass. Candidate vectors must already be finite; the constructor
+// still checks dimensions, duplicate keys, capacity, and cancellation before
+// taking ownership through a copy.
+func NewDenseFlatIndexFromValidatedCandidates(
+	ctx context.Context,
+	dimension int,
+	metric Metric,
+	candidates []Candidate,
+) (*DenseFlatIndex, error) {
+	if ctx == nil {
+		return nil, errors.New("core: nil dense Flat build context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	index, err := NewDenseFlatIndex(dimension, metric)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) > 0 && len(candidates) > maxPlatformInt()/dimension {
+		return nil, ErrDenseCapacity
+	}
+	index.keys = make([]uint64, len(candidates))
+	index.vectors = make([]float32, len(candidates)*dimension)
+	index.positions = make(map[uint64]int, len(candidates))
+	if metric == MetricCosine {
+		index.magnitudes = make([]float32, len(candidates))
+	}
+	for position, candidate := range candidates {
+		if position&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		if len(candidate.Vector) != dimension {
+			return nil, fmt.Errorf("%w: candidate %d has %d, want %d", ErrInvalidDimension, position, len(candidate.Vector), dimension)
+		}
+		if _, exists := index.positions[candidate.Key]; exists {
+			return nil, fmt.Errorf("%w: %d", ErrDuplicateKey, candidate.Key)
+		}
+		index.keys[position] = candidate.Key
+		index.positions[candidate.Key] = position
+		start := position * dimension
+		copy(index.vectors[start:start+dimension], candidate.Vector)
+		if metric == MetricCosine {
+			index.magnitudes[position] = mathutil.L2Magnitude(candidate.Vector)
+		}
+	}
+	return index, nil
+}
+
 // Reserve preallocates storage for at least count total vectors without
 // changing the index length.
 func (i *DenseFlatIndex) Reserve(count int) error {

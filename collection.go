@@ -1806,14 +1806,9 @@ func (i *lazyCollectionDenseFlatIndex) ensure(ctx context.Context) (*core.DenseF
 	if i.index != nil {
 		return i.index, nil
 	}
-	index, err := core.NewDenseFlatIndex(i.dimension, i.metric)
+	index, err := core.NewDenseFlatIndexFromValidatedCandidates(ctx, i.dimension, i.metric, i.candidates)
 	if err != nil {
 		return nil, err
-	}
-	for _, candidate := range i.candidates {
-		if err := index.Add(ctx, candidate.Key, candidate.Vector); err != nil {
-			return nil, err
-		}
 	}
 	i.index = index
 	return index, nil
@@ -4965,27 +4960,11 @@ func (c *Collection) liveDocumentsFromSegmentsLocked(
 }
 
 func buildDenseFlatIndex(ctx context.Context, field FieldSchema, metric core.Metric, documents []Document) (*core.DenseFlatIndex, error) {
-	index, err := core.NewDenseFlatIndex(int(field.Dimension), metric)
+	candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
 	if err != nil {
 		return nil, err
 	}
-	if err := index.Reserve(len(documents)); err != nil {
-		return nil, err
-	}
-	for _, document := range documents {
-		value, found := document.Fields[field.Name]
-		if !found || value == nil {
-			continue
-		}
-		vector, err := denseValueToFloat32(value)
-		if err != nil {
-			return nil, fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, err)
-		}
-		if err := index.Add(ctx, document.DocID, vector); err != nil {
-			return nil, err
-		}
-	}
-	return index, nil
+	return core.NewDenseFlatIndexFromValidatedCandidates(ctx, int(field.Dimension), metric, candidates)
 }
 
 func buildSparseFlatIndex(ctx context.Context, field FieldSchema, documents []Document) (*core.SparseFlatIndex, error) {
