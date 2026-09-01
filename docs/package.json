@@ -5,6 +5,7 @@
   "description": "Documentation site for xvec",
   "license": "Apache-2.0",
   "type": "module",
+  "packageManager": "pnpm@11.0.8",
   "scripts": {
     "docs:build": "vuepress-vite build .",
     "docs:clean-dev": "vuepress-vite dev . --clean-cache",
