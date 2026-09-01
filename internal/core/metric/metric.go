@@ -31,34 +31,17 @@ const (
 	MIPSL2
 )
 
-// Compute calculates the score for left and right.
-func (m Metric) Compute(left, right []float32) (float32, error) {
+// Distance selects the unchecked dense-distance kernel for this metric.
+func (m Metric) Distance() (mathutil.DenseDistance, error) {
 	switch m {
 	case L2:
-		return mathutil.L2Squared(left, right)
+		return mathutil.L2Squared, nil
 	case IP:
-		return mathutil.InnerProduct(left, right)
+		return mathutil.InnerProduct, nil
 	case Cosine:
-		return mathutil.CosineDistance(left, right)
+		return mathutil.CosineDistance, nil
 	case MIPSL2:
-		return mathutil.MIPSL2Squared(left, right)
-	default:
-		return 0, errors.New("core: invalid metric")
-	}
-}
-
-// PrevalidatedDistance selects the allocation-free kernel used by index hot
-// paths after vectors have passed their storage or query boundary validation.
-func (m Metric) PrevalidatedDistance() (mathutil.DenseDistance, error) {
-	switch m {
-	case L2:
-		return mathutil.L2SquaredPrevalidated, nil
-	case IP:
-		return mathutil.InnerProductPrevalidated, nil
-	case Cosine:
-		return mathutil.CosineDistancePrevalidated, nil
-	case MIPSL2:
-		return mathutil.MIPSL2SquaredPrevalidated, nil
+		return mathutil.MIPSL2Squared, nil
 	default:
 		return nil, errors.New("core: invalid metric")
 	}

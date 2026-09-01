@@ -187,7 +187,11 @@ func QuantizedDistance(metric Metric, left, right QuantizedVector) (float32, err
 	if left.kind == QuantizationFP16 {
 		leftDecoded, _ := left.Decode()
 		rightDecoded, _ := right.Decode()
-		return metric.Compute(leftDecoded, rightDecoded)
+		distance, err := metric.Distance()
+		if err != nil {
+			return 0, err
+		}
+		return distance(leftDecoded, rightDecoded), nil
 	}
 
 	dotCodes := integerCodeDot(left, right)

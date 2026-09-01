@@ -16,6 +16,7 @@ package core
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/gorse-io/xvec/internal/ailego/math"
@@ -128,6 +129,40 @@ func TestTopKBoundsAndValidation(t *testing.T) {
 	{
 		_, err = TopK(context.Background(), MetricL2, []float32{1}, []Candidate{{Key: 1, Vector: []float32{1, 2}}}, 1)
 		require.ErrorIs(t, err, mathutil.ErrDimensionMismatch)
+	}
+	{
+		_, err = TopK(context.Background(), MetricL2, []float32{1}, []Candidate{{Key: 1, Vector: []float32{float32(math.NaN())}}}, 1)
+		require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
+	}
+	{
+		results, err = topKCandidatesWithOptions(context.Background(), MetricL2, []float32{1}, SearchOptions{
+			TopK: 1,
+			Filter: func(uint64) bool {
+				return false
+			},
+		}, 1, func(int) Candidate {
+			return Candidate{Key: 1, Vector: []float32{1, 2}}
+		}, true)
+		require.NoError(t, err)
+		require.Empty(t, results)
+	}
+	{
+		filterCalls := 0
+		candidateCalls := 0
+		results, err = topKCandidatesWithOptions(context.Background(), MetricL2, []float32{1}, SearchOptions{
+			TopK: 1,
+			Filter: func(uint64) bool {
+				filterCalls++
+				return true
+			},
+		}, 1, func(int) Candidate {
+			candidateCalls++
+			return Candidate{Key: 1, Vector: []float32{1}}
+		}, true)
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		require.Equal(t, 1, filterCalls)
+		require.Equal(t, 1, candidateCalls)
 	}
 	{
 		_, err = TopK(nil, MetricL2, []float32{1}, nil, 1)

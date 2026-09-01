@@ -29,6 +29,7 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/gorse-io/xvec/internal/ailego/io"
+	"github.com/gorse-io/xvec/internal/ailego/math"
 )
 
 const (
@@ -576,7 +577,7 @@ func (i *DiskANNIndex) searchDiskANN(
 	if len(query) != i.dimension {
 		return nil, fmt.Errorf("%w: query has %d, want %d", ErrInvalidDimension, len(query), i.dimension)
 	}
-	if _, err := i.metric.Compute(query, query); err != nil {
+	if err := mathutil.ValidateDense(query, i.dimension); err != nil {
 		return nil, fmt.Errorf("core: validate DiskANN query: %w", err)
 	}
 
@@ -595,7 +596,7 @@ func (i *DiskANNIndex) searchDiskANN(
 }
 
 func (i *DiskANNIndex) searchDiskANNLinear(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {
-	distance, err := i.metric.PrevalidatedDistance()
+	distance, err := i.metric.Distance()
 	if err != nil {
 		return nil, err
 	}
@@ -615,10 +616,7 @@ func (i *DiskANNIndex) searchDiskANNLinear(ctx context.Context, query []float32,
 			return nil, fmt.Errorf("core: linear DiskANN node read: %w", err)
 		}
 		for _, node := range nodes {
-			score, err := distance(query, node.Vector)
-			if err != nil {
-				return nil, err
-			}
+			score := distance(query, node.Vector)
 			collector.Add(Result{Key: i.keys[node.ID], Score: score})
 		}
 	}
@@ -639,7 +637,7 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 	if err != nil {
 		return nil, fmt.Errorf("core: build DiskANN PQ distance table: %w", err)
 	}
-	distance, err := i.metric.PrevalidatedDistance()
+	distance, err := i.metric.Distance()
 	if err != nil {
 		return nil, err
 	}
@@ -696,10 +694,7 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 			return nil, fmt.Errorf("core: DiskANN graph node read: %w", err)
 		}
 		for _, node := range nodes {
-			exact, err := distance(query, node.Vector)
-			if err != nil {
-				return nil, fmt.Errorf("core: score DiskANN node %d: %w", node.ID, err)
-			}
+			exact := distance(query, node.Vector)
 			collector.Add(Result{Key: i.keys[node.ID], Score: exact})
 			neighborIDs = neighborIDs[:0]
 			for _, neighbor := range node.Neighbors {

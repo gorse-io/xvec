@@ -147,8 +147,7 @@ func TestPQTrainingBuildsLossyCodebook(t *testing.T) {
 		decoded, err := model.Decode(code)
 		require.NoError(t, err)
 
-		score, err := MetricL2.Compute(vectors[index], decoded)
-		require.NoError(t, err)
+		score := testDenseDistance(t, MetricL2, vectors[index], decoded)
 
 		distortion += float64(score)
 	}
@@ -204,8 +203,7 @@ func TestPQL2EncodingDecodeAndDistanceTableFixture(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, score, direct)
 
-	want, err := MetricL2.Compute(query, decoded)
-	require.NoError(t, err)
+	want := testDenseDistance(t, MetricL2, query, decoded)
 	require.Equal(t, score, want)
 }
 
@@ -229,8 +227,7 @@ func TestPQInnerProductTableAndBatch(t *testing.T) {
 		decoded, err := model.Decode(code)
 		require.NoError(t, err)
 
-		want, err := MetricIP.Compute(query, decoded)
-		require.NoError(t, err)
+		want := testDenseDistance(t, MetricIP, query, decoded)
 		require.Equal(t, want, scores[index])
 	}
 }
@@ -257,8 +254,7 @@ func TestPQInnerProductTraining(t *testing.T) {
 	got, err := table.Lookup(code)
 	require.NoError(t, err)
 
-	want, err := MetricIP.Compute(vectors[17], decoded)
-	require.NoError(t, err)
+	want := testDenseDistance(t, MetricIP, vectors[17], decoded)
 	require.InDelta(t, want, got, 1e-5)
 }
 

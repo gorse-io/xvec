@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+
+	"github.com/gorse-io/xvec/internal/ailego/math"
 )
 
 // ScalarQuantizedFlatIndex stores original vectors for optional refinement and
@@ -229,7 +231,7 @@ func newScalarQuantizedVectors(
 		storage.positions[key] = position
 		start := position * dimension
 		vector := storage.originals[start : start+dimension]
-		if _, err := metric.Compute(vector, vector); err != nil {
+		if err := mathutil.ValidateDense(vector, dimension); err != nil {
 			return nil, fmt.Errorf("core: validate scalar-quantized vector %d: %w", position, err)
 		}
 		transformed := vector
@@ -265,7 +267,7 @@ func (s *scalarQuantizedVectors) validateQuery(query []float32) error {
 	if len(query) != s.dimension {
 		return fmt.Errorf("%w: query has %d, want %d", ErrInvalidDimension, len(query), s.dimension)
 	}
-	if _, err := s.metric.Compute(query, query); err != nil {
+	if err := mathutil.ValidateDense(query, s.dimension); err != nil {
 		return fmt.Errorf("core: validate scalar-quantized query: %w", err)
 	}
 	return nil

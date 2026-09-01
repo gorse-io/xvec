@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+
+	"github.com/gorse-io/xvec/internal/ailego/math"
 )
 
 var (
@@ -79,7 +81,7 @@ func (r *OriginalVectorRefiner) Refine(ctx context.Context, query []float32, can
 	if len(query) != r.provider.Dimension() {
 		return nil, fmt.Errorf("%w: query has %d, want %d", ErrInvalidDimension, len(query), r.provider.Dimension())
 	}
-	if _, err := r.metric.Compute(query, query); err != nil {
+	if err := mathutil.ValidateDense(query, r.provider.Dimension()); err != nil {
 		return nil, fmt.Errorf("core: validate refine query: %w", err)
 	}
 

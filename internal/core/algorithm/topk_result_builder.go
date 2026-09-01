@@ -89,7 +89,10 @@ func topKCandidatesWithOptions(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := metric.Compute(query, query); err != nil {
+	if !metric.Valid() {
+		return nil, errors.New("core: invalid metric")
+	}
+	if err := mathutil.ValidateDense(query, len(query)); err != nil {
 		return nil, fmt.Errorf("core: invalid query: %w", err)
 	}
 	if requirePositiveTopK {
@@ -99,10 +102,60 @@ func topKCandidatesWithOptions(
 	} else if options.TopK < 0 {
 		return nil, errors.New("core: negative top-k")
 	}
-	return topKPrevalidatedCandidatesWithOptions(ctx, metric, metric.Compute, query, options, count, candidateAt)
+	if options.TopK == 0 || count == 0 {
+		return []Result{}, nil
+	}
+	distance, err := metric.Distance()
+	if err != nil {
+		return nil, err
+	}
+	k := min(options.TopK, count)
+	worstFirst := func(left, right Result) bool {
+		if left.Score == right.Score {
+			return left.Key > right.Key
+		}
+		return metric.Better(right.Score, left.Score)
+	}
+	heap := container.NewHeapWithCapacity(k, worstFirst)
+	for index := 0; index < count; index++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		candidate := candidateAt(index)
+		if options.Filter != nil && !options.Filter(candidate.Key) {
+			continue
+		}
+		if err := mathutil.ValidateDense(candidate.Vector, len(query)); err != nil {
+			return nil, fmt.Errorf("core: validate candidate %d (key %d): %w", index, candidate.Key, err)
+		}
+		score := distance(candidate.Vector, query)
+		if !scoreWithinRadius(metric, score, options.Radius) {
+			continue
+		}
+		result := Result{Key: candidate.Key, Score: score}
+		if heap.Len() < k {
+			heap.Push(result)
+			continue
+		}
+		worst, _ := heap.Peek()
+		if resultBetter(metric, result, worst) {
+			heap.Replace(result)
+		}
+	}
+	results := heap.Values()
+	slices.SortFunc(results, func(left, right Result) int {
+		if resultBetter(metric, left, right) {
+			return -1
+		}
+		if resultBetter(metric, right, left) {
+			return 1
+		}
+		return 0
+	})
+	return results, nil
 }
 
-func topKPrevalidatedCandidatesWithOptions(
+func topKCandidatesWithDistance(
 	ctx context.Context,
 	metric Metric,
 	distance mathutil.DenseDistance,
@@ -134,10 +187,7 @@ func topKPrevalidatedCandidatesWithOptions(
 		if options.Filter != nil && !options.Filter(candidate.Key) {
 			continue
 		}
-		score, err := distance(candidate.Vector, query)
-		if err != nil {
-			return nil, fmt.Errorf("core: score candidate %d (key %d): %w", index, candidate.Key, err)
-		}
+		score := distance(candidate.Vector, query)
 		if !scoreWithinRadius(metric, score, options.Radius) {
 			continue
 		}
@@ -165,10 +215,10 @@ func topKPrevalidatedCandidatesWithOptions(
 	return results, nil
 }
 
-// topKPrevalidatedCandidateBatchesWithOptions scans already partitioned
+// topKCandidateBatchesWithDistance scans already partitioned
 // candidates without flattening them into a temporary slice. IVF uses one
 // batch per probed inverted list.
-func topKPrevalidatedCandidateBatchesWithOptions(
+func topKCandidateBatchesWithDistance(
 	ctx context.Context,
 	metric Metric,
 	distance mathutil.DenseDistance,
@@ -204,10 +254,7 @@ func topKPrevalidatedCandidateBatchesWithOptions(
 				ordinal++
 				continue
 			}
-			score, err := distance(candidate.Vector, query)
-			if err != nil {
-				return nil, fmt.Errorf("core: score candidate %d (key %d): %w", ordinal, candidate.Key, err)
-			}
+			score := distance(candidate.Vector, query)
 			ordinal++
 			if !scoreWithinRadius(metric, score, options.Radius) {
 				continue

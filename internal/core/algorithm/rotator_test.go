@@ -85,11 +85,8 @@ func TestFHTRotatorPreservesMetrics(t *testing.T) {
 	leftRotated, _ := rotator.Rotate(left)
 	rightRotated, _ := rotator.Rotate(right)
 	for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
-		want, err := metric.Compute(left, right)
-		require.NoError(t, err)
-
-		got, err := metric.Compute(leftRotated, rightRotated)
-		require.NoError(t, err)
+		want := testDenseDistance(t, metric, left, right)
+		got := testDenseDistance(t, metric, leftRotated, rightRotated)
 		require.InDelta(t, want, got, 2e-5*max(1, math.Abs(float64(want))))
 	}
 }

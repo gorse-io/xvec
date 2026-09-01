@@ -388,7 +388,7 @@ func assignKMeans(
 	if metric == MetricCosine {
 		return assignKMeansCosine(ctx, vectors, centroids, workers)
 	}
-	distance, err := metric.PrevalidatedDistance()
+	distance, err := metric.Distance()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -398,7 +398,7 @@ func assignKMeans(
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		label, score, err := nearestCentroidPrevalidatedContext(ctx, metric, distance, centroids, vectors[index])
+		label, score, err := nearestCentroidWithDistanceContext(ctx, metric, distance, centroids, vectors[index])
 		if err != nil {
 			return fmt.Errorf("core: assign k-means vector %d: %w", index, err)
 		}
@@ -417,11 +417,7 @@ func assignKMeans(
 func assignKMeansCosine(ctx context.Context, vectors, centroids [][]float32, workers int) ([]int, []float32, error) {
 	centroidMagnitudes := make([]float32, len(centroids))
 	for index, centroid := range centroids {
-		magnitude, err := mathutil.L2MagnitudePrevalidated(centroid)
-		if err != nil {
-			return nil, nil, fmt.Errorf("core: prepare k-means centroid %d: %w", index, err)
-		}
-		centroidMagnitudes[index] = magnitude
+		centroidMagnitudes[index] = mathutil.L2Magnitude(centroid)
 	}
 	labels := make([]int, len(vectors))
 	scores := make([]float32, len(vectors))
@@ -429,10 +425,7 @@ func assignKMeansCosine(ctx context.Context, vectors, centroids [][]float32, wor
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		vectorMagnitude, err := mathutil.L2MagnitudePrevalidated(vectors[index])
-		if err != nil {
-			return fmt.Errorf("core: prepare k-means vector %d: %w", index, err)
-		}
+		vectorMagnitude := mathutil.L2Magnitude(vectors[index])
 		label, score, err := nearestCosineCentroidContext(ctx, centroids, centroidMagnitudes, vectors[index], vectorMagnitude)
 		if err != nil {
 			return fmt.Errorf("core: assign k-means vector %d: %w", index, err)
@@ -457,12 +450,9 @@ func nearestCosineCentroidContext(
 		return 0, 0, ErrInvalidCentroid
 	}
 	bestIndex := 0
-	bestScore, err := mathutil.CosineDistanceWithMagnitudesPrevalidated(
+	bestScore := mathutil.CosineDistanceWithMagnitudes(
 		centroids[0], vector, centroidMagnitudes[0], vectorMagnitude,
 	)
-	if err != nil {
-		return 0, 0, err
-	}
 	index := 1
 	for ; index+3 < len(centroids); index += 4 {
 		if ctx != nil && (index-1)&63 == 0 {
@@ -470,13 +460,10 @@ func nearestCosineCentroidContext(
 				return 0, 0, err
 			}
 		}
-		firstScore, secondScore, thirdScore, fourthScore, err := mathutil.CosineDistances4WithMagnitudesPrevalidated(
+		firstScore, secondScore, thirdScore, fourthScore := mathutil.CosineDistances4WithMagnitudes(
 			vector, centroids[index], centroids[index+1], centroids[index+2], centroids[index+3],
 			vectorMagnitude, centroidMagnitudes[index], centroidMagnitudes[index+1], centroidMagnitudes[index+2], centroidMagnitudes[index+3],
 		)
-		if err != nil {
-			return 0, 0, err
-		}
 		if firstScore < bestScore {
 			bestIndex, bestScore = index, firstScore
 		}
@@ -491,13 +478,10 @@ func nearestCosineCentroidContext(
 		}
 	}
 	if index+1 < len(centroids) {
-		firstScore, secondScore, err := mathutil.CosineDistances2WithMagnitudesPrevalidated(
+		firstScore, secondScore := mathutil.CosineDistances2WithMagnitudes(
 			vector, centroids[index], centroids[index+1],
 			vectorMagnitude, centroidMagnitudes[index], centroidMagnitudes[index+1],
 		)
-		if err != nil {
-			return 0, 0, err
-		}
 		if firstScore < bestScore {
 			bestIndex, bestScore = index, firstScore
 		}
@@ -507,12 +491,9 @@ func nearestCosineCentroidContext(
 		index += 2
 	}
 	if index < len(centroids) {
-		score, err := mathutil.CosineDistanceWithMagnitudesPrevalidated(
+		score := mathutil.CosineDistanceWithMagnitudes(
 			centroids[index], vector, centroidMagnitudes[index], vectorMagnitude,
 		)
-		if err != nil {
-			return 0, 0, err
-		}
 		if score < bestScore {
 			bestIndex, bestScore = index, score
 		}
@@ -525,14 +506,14 @@ func nearestCentroid(metric Metric, centroids [][]float32, vector []float32) (in
 }
 
 func nearestCentroidContext(ctx context.Context, metric Metric, centroids [][]float32, vector []float32) (int, float32, error) {
-	distance, err := metric.PrevalidatedDistance()
+	distance, err := metric.Distance()
 	if err != nil {
 		return 0, 0, err
 	}
-	return nearestCentroidPrevalidatedContext(ctx, metric, distance, centroids, vector)
+	return nearestCentroidWithDistanceContext(ctx, metric, distance, centroids, vector)
 }
 
-func nearestCentroidPrevalidatedContext(
+func nearestCentroidWithDistanceContext(
 	ctx context.Context,
 	metric Metric,
 	distance mathutil.DenseDistance,
@@ -543,20 +524,14 @@ func nearestCentroidPrevalidatedContext(
 		return 0, 0, ErrInvalidCentroid
 	}
 	bestIndex := 0
-	bestScore, err := distance(centroids[0], vector)
-	if err != nil {
-		return 0, 0, err
-	}
+	bestScore := distance(centroids[0], vector)
 	for index := 1; index < len(centroids); index++ {
 		if ctx != nil && index&63 == 0 {
 			if err := ctx.Err(); err != nil {
 				return 0, 0, err
 			}
 		}
-		score, err := distance(centroids[index], vector)
-		if err != nil {
-			return 0, 0, err
-		}
+		score := distance(centroids[index], vector)
 		if metric.Better(score, bestScore) {
 			bestIndex, bestScore = index, score
 		}
