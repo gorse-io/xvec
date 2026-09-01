@@ -4,6 +4,7 @@ export default sidebar({
   "/benchmark/": [
     "",
     { text: "Flat Index", link: "/benchmark/flat-index" },
+    { text: "HNSW Index", link: "/benchmark/hnsw-index" },
   ],
   "/": [""],
 });
