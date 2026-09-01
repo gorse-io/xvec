@@ -5,6 +5,7 @@ export default sidebar({
     "",
     { text: "Flat Index", link: "/benchmark/flat-index" },
     { text: "HNSW Index", link: "/benchmark/hnsw-index" },
+    { text: "DiskANN Index", link: "/benchmark/diskann-index" },
   ],
   "/": [""],
 });
