@@ -451,6 +451,47 @@ func (c *CollectionStore) SegmentSnapshots(ctx context.Context) ([]SegmentSnapsh
 	return snapshots, nil
 }
 
+// VisitSegmentSnapshots visits retained documents grouped by physical segment
+// without cloning their encoded payloads. Documents are read-only and valid
+// only until visit returns.
+func (c *CollectionStore) VisitSegmentSnapshots(ctx context.Context, visit func(SegmentSnapshot) error) error {
+	if c == nil {
+		return errors.New("db: nil collection")
+	}
+	if ctx == nil {
+		return errors.New("db: nil segment-snapshot context")
+	}
+	if visit == nil {
+		return errors.New("db: nil segment-snapshot visitor")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.closed {
+		return ErrCollectionClosed
+	}
+	for _, segment := range c.manager.ImmutableSegments() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		metadata := segment.Metadata()
+		if err := segment.VisitDocuments(func(documents []segmentstore.StoredDocument) error {
+			return visit(SegmentSnapshot{Metadata: metadata, Documents: documents})
+		}); err != nil {
+			return err
+		}
+	}
+	if writing := c.manager.Writing(); writing != nil {
+		metadata := writing.Metadata()
+		return writing.VisitDocuments(func(documents []segmentstore.StoredDocument) error {
+			return visit(SegmentSnapshot{Metadata: metadata, Documents: documents, Mutable: true})
+		})
+	}
+	return nil
+}
+
 // DocumentCount returns the number of live primary keys in memory.
 func (c *CollectionStore) DocumentCount() uint64 {
 	return c.Stats().DocumentCount

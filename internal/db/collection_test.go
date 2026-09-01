@@ -1023,6 +1023,32 @@ func TestCollectionPublishesOnlyCheckpointNamedByCurrent(t *testing.T) {
 	require.NoError(t, store.Close())
 }
 
+func TestCollectionVisitsSegmentSnapshotsWithoutChangingOwnership(t *testing.T) {
+	ctx := context.Background()
+	store, err := CreateCollection(ctx, t.TempDir(), testCollectionSchema, CollectionOptions{SegmentMaxDocuments: 2})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, store.Close()) }()
+	_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "a", Payload: []byte("first")}, {PrimaryKey: "b", Payload: []byte("second")}})
+	require.NoError(t, err)
+	require.NoError(t, store.Flush(ctx))
+	_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "c", Payload: []byte("third")}})
+	require.NoError(t, err)
+
+	var snapshots []SegmentSnapshot
+	require.NoError(t, store.VisitSegmentSnapshots(ctx, func(snapshot SegmentSnapshot) error {
+		snapshots = append(snapshots, SegmentSnapshot{
+			Metadata: snapshot.Metadata, Mutable: snapshot.Mutable,
+			Documents: segment.CloneDocuments(snapshot.Documents),
+		})
+		return nil
+	}))
+	require.Len(t, snapshots, 2)
+	require.False(t, snapshots[0].Mutable)
+	require.True(t, snapshots[1].Mutable)
+	require.Equal(t, []byte("first"), snapshots[0].Documents[0].Payload)
+	require.Equal(t, []byte("third"), snapshots[1].Documents[0].Payload)
+}
+
 func fileSize(t *testing.T, name string) int64 {
 	t.Helper()
 	info, err := os.Stat(name)

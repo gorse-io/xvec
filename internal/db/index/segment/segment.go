@@ -197,6 +197,20 @@ func (s *WriteSegment) Documents() []StoredDocument {
 	return CloneDocuments(s.docs)
 }
 
+// VisitDocuments exposes a read-only borrowed view while appends are blocked.
+// The view and its payloads are valid only for the duration of visit.
+func (s *WriteSegment) VisitDocuments(visit func([]StoredDocument) error) error {
+	if s == nil {
+		return errors.New("db: nil write segment")
+	}
+	if visit == nil {
+		return errors.New("db: nil write segment visitor")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return visit(s.docs)
+}
+
 // MemoryUsageBytes returns the encoded record bytes retained by the segment.
 func (s *WriteSegment) MemoryUsageBytes() uint64 {
 	if s == nil {
@@ -354,6 +368,18 @@ func (s *ImmutableSegment) Documents() []StoredDocument {
 		return nil
 	}
 	return CloneDocuments(s.docs)
+}
+
+// VisitDocuments exposes a read-only borrowed view of immutable documents.
+// The view and its payloads are valid only for the duration of visit.
+func (s *ImmutableSegment) VisitDocuments(visit func([]StoredDocument) error) error {
+	if s == nil {
+		return errors.New("db: nil immutable segment")
+	}
+	if visit == nil {
+		return errors.New("db: nil immutable segment visitor")
+	}
+	return visit(s.docs)
 }
 
 // MemoryUsageBytes returns the encoded record bytes retained by the segment.

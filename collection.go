@@ -494,24 +494,24 @@ func openCollectionFTSRuntime(ctx context.Context, path string, field FieldSchem
 }
 
 func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSegmentDocuments, error) {
-	snapshots, err := c.store.SegmentSnapshots(ctx)
-	if err != nil {
-		return nil, err
-	}
-	segments := make([]collectionSegmentDocuments, len(snapshots))
-	for index, snapshot := range snapshots {
+	segments := make([]collectionSegmentDocuments, 0)
+	err := c.store.VisitSegmentSnapshots(ctx, func(snapshot db.SegmentSnapshot) error {
 		documents := make([]Document, len(snapshot.Documents))
 		for position, item := range snapshot.Documents {
 			document, decodeErr := decodeStoredDocument(item)
 			if decodeErr != nil {
-				return nil, decodeErr
+				return decodeErr
 			}
 			if validateErr := document.Validate(c.schema); validateErr != nil {
-				return nil, fmt.Errorf("stored document %d violates schema: %w", item.DocID, validateErr)
+				return fmt.Errorf("stored document %d violates schema: %w", item.DocID, validateErr)
 			}
 			documents[position] = document
 		}
-		segments[index] = collectionSegmentDocuments{metadata: snapshot.Metadata, documents: documents, mutable: snapshot.Mutable}
+		segments = append(segments, collectionSegmentDocuments{metadata: snapshot.Metadata, documents: documents, mutable: snapshot.Mutable})
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return segments, nil
 }
