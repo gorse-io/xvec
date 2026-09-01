@@ -26,6 +26,25 @@ var (
 	ErrInvalidSparseOrder = errors.New("ailego: sparse indices must be strictly increasing")
 )
 
+type binaryKernel func(left, right []float32) float32
+type batch2Kernel func(query, first, second []float32) (firstProduct, secondProduct float32)
+type batch4Kernel func(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32)
+type productsKernel func(left, right []float32) (dot, leftNorm, rightNorm float32)
+
+var kernels = struct {
+	l2       binaryKernel
+	dot      binaryKernel
+	dot2     batch2Kernel
+	dot4     batch4Kernel
+	products productsKernel
+}{
+	l2:       squaredEuclideanScalar,
+	dot:      innerProductScalar,
+	dot2:     innerProducts2Scalar,
+	dot4:     innerProducts4Scalar,
+	products: dotNormsScalar,
+}
+
 // DenseDistance computes an unchecked score for two dense vectors. Callers
 // must guarantee equal, non-zero dimensions and finite components. The result
 // may be non-finite if arithmetic overflows.
@@ -127,6 +146,69 @@ func cosineDistanceFromProduct(product, leftMagnitude, rightMagnitude float32) f
 	cosine := product / (leftMagnitude * rightMagnitude)
 	cosine = min(1, max(-1, cosine))
 	return 1 - cosine
+}
+
+func squaredEuclidean(left, right []float32) float32 {
+	return kernels.l2(left, right)
+}
+
+func innerProduct(left, right []float32) float32 {
+	return kernels.dot(left, right)
+}
+
+func innerProducts2(query, first, second []float32) (firstProduct, secondProduct float32) {
+	return kernels.dot2(query, first, second)
+}
+
+func innerProducts4(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
+	return kernels.dot4(query, first, second, third, fourth)
+}
+
+func dotNorms(left, right []float32) (dot, leftNorm, rightNorm float32) {
+	return kernels.products(left, right)
+}
+
+func squaredEuclideanScalar(left, right []float32) (sum float32) {
+	for index, leftValue := range left {
+		difference := leftValue - right[index]
+		sum += difference * difference
+	}
+	return
+}
+
+func innerProductScalar(left, right []float32) (sum float32) {
+	for index, leftValue := range left {
+		sum += leftValue * right[index]
+	}
+	return
+}
+
+func innerProducts2Scalar(query, first, second []float32) (firstProduct, secondProduct float32) {
+	for index, queryValue := range query {
+		firstProduct += queryValue * first[index]
+		secondProduct += queryValue * second[index]
+	}
+	return
+}
+
+func innerProducts4Scalar(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
+	for index, queryValue := range query {
+		firstProduct += queryValue * first[index]
+		secondProduct += queryValue * second[index]
+		thirdProduct += queryValue * third[index]
+		fourthProduct += queryValue * fourth[index]
+	}
+	return
+}
+
+func dotNormsScalar(left, right []float32) (dot, leftNorm, rightNorm float32) {
+	for index, leftValue := range left {
+		rightValue := right[index]
+		dot += leftValue * rightValue
+		leftNorm += leftValue * leftValue
+		rightNorm += rightValue * rightValue
+	}
+	return
 }
 
 // SparseInnerProduct computes the dot product of canonical sparse vectors.

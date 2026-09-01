@@ -1,4 +1,4 @@
-//go:build !noasm && riscv64
+//go:build !noasm && loong64
 
 // Copyright 2026-present the xvec project
 //
@@ -22,30 +22,35 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-//go:generate make rvv
+//go:generate make lasx
 
 func init() {
-	if cpu.RISCV64.HasV {
-		kernels.l2 = squaredEuclideanRVV
-		kernels.dot = innerProductRVV
-		kernels.products = dotNormsRVV
+	if cpu.Loong64.HasLASX {
+		kernels.l2 = squaredEuclideanLASX
+		kernels.dot = innerProductLASX
+		kernels.products = dotNormsLASX
 	}
 }
 
-func squaredEuclideanRVV(left, right []float32) float32 {
-	var result float32
-	xvec_rvv_l2_squared(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
-	return result
+func squaredEuclideanLASX(left, right []float32) float32 {
+	if len(left) < 8 {
+		return squaredEuclideanScalar(left, right)
+	}
+	return squared_euclidean_distance_fp32_lasx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
 }
 
-func innerProductRVV(left, right []float32) float32 {
-	var result float32
-	xvec_rvv_inner_product(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
-	return result
+func innerProductLASX(left, right []float32) float32 {
+	if len(left) < 8 {
+		return innerProductScalar(left, right)
+	}
+	return inner_product_fp32_lasx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
 }
 
-func dotNormsRVV(left, right []float32) (dot, leftNorm, rightNorm float32) {
-	xvec_rvv_dot_norms(
+func dotNormsLASX(left, right []float32) (dot, leftNorm, rightNorm float32) {
+	if len(left) < 8 {
+		return dotNormsScalar(left, right)
+	}
+	inner_product_and_squared_norm_fp32_lasx(
 		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)),
 		unsafe.Pointer(&dot), unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
 	)

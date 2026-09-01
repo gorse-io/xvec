@@ -4,7 +4,7 @@
 // 	clang   21.1.8 (6ubuntu1)
 // 	objdump 2.46
 // flags: -mavx -O3
-// source: src/distance_utility_batch_avx.c
+// source: src/inner_product_batch_fp32_avx.c
 
 TEXT ·xvec_avx_batch_inner_products2(SB), $0-48
 	MOVQ query+0(FP), DI
