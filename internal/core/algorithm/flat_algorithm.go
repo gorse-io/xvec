@@ -268,10 +268,66 @@ func (i *DenseFlatIndex) searchCosine(ctx context.Context, query []float32, opti
 	}
 	heap := container.NewHeapWithCapacity(k, worstFirst)
 	queryMagnitude := mathutil.L2Magnitude(query)
-	for position, key := range i.keys {
+	position := 0
+	if options.Filter == nil {
+		for ; position+3 < len(i.keys); position += 4 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			firstStart := position * i.dimension
+			secondStart := firstStart + i.dimension
+			thirdStart := secondStart + i.dimension
+			fourthStart := thirdStart + i.dimension
+			firstScore, secondScore, thirdScore, fourthScore := mathutil.CosineDistances4WithMagnitudes(
+				query,
+				i.vectors[firstStart:firstStart+i.dimension],
+				i.vectors[secondStart:secondStart+i.dimension],
+				i.vectors[thirdStart:thirdStart+i.dimension],
+				i.vectors[fourthStart:fourthStart+i.dimension],
+				queryMagnitude,
+				i.magnitudes[position],
+				i.magnitudes[position+1],
+				i.magnitudes[position+2],
+				i.magnitudes[position+3],
+			)
+			if scoreWithinRadius(MetricCosine, firstScore, options.Radius) {
+				retainCosineResult(heap, k, Result{Key: i.keys[position], Score: firstScore})
+			}
+			if scoreWithinRadius(MetricCosine, secondScore, options.Radius) {
+				retainCosineResult(heap, k, Result{Key: i.keys[position+1], Score: secondScore})
+			}
+			if scoreWithinRadius(MetricCosine, thirdScore, options.Radius) {
+				retainCosineResult(heap, k, Result{Key: i.keys[position+2], Score: thirdScore})
+			}
+			if scoreWithinRadius(MetricCosine, fourthScore, options.Radius) {
+				retainCosineResult(heap, k, Result{Key: i.keys[position+3], Score: fourthScore})
+			}
+		}
+		if position+1 < len(i.keys) {
+			firstStart := position * i.dimension
+			secondStart := firstStart + i.dimension
+			firstScore, secondScore := mathutil.CosineDistances2WithMagnitudes(
+				query,
+				i.vectors[firstStart:firstStart+i.dimension],
+				i.vectors[secondStart:secondStart+i.dimension],
+				queryMagnitude,
+				i.magnitudes[position],
+				i.magnitudes[position+1],
+			)
+			if scoreWithinRadius(MetricCosine, firstScore, options.Radius) {
+				retainCosineResult(heap, k, Result{Key: i.keys[position], Score: firstScore})
+			}
+			if scoreWithinRadius(MetricCosine, secondScore, options.Radius) {
+				retainCosineResult(heap, k, Result{Key: i.keys[position+1], Score: secondScore})
+			}
+			position += 2
+		}
+	}
+	for ; position < len(i.keys); position++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		key := i.keys[position]
 		if options.Filter != nil && !options.Filter(key) {
 			continue
 		}
@@ -282,15 +338,7 @@ func (i *DenseFlatIndex) searchCosine(ctx context.Context, query []float32, opti
 		if !scoreWithinRadius(MetricCosine, score, options.Radius) {
 			continue
 		}
-		result := Result{Key: key, Score: score}
-		if heap.Len() < k {
-			heap.Push(result)
-			continue
-		}
-		worst, _ := heap.Peek()
-		if resultBetter(MetricCosine, result, worst) {
-			heap.Replace(result)
-		}
+		retainCosineResult(heap, k, Result{Key: key, Score: score})
 	}
 	results := heap.Values()
 	slices.SortFunc(results, func(left, right Result) int {
@@ -303,6 +351,17 @@ func (i *DenseFlatIndex) searchCosine(ctx context.Context, query []float32, opti
 		return 0
 	})
 	return results, nil
+}
+
+func retainCosineResult(heap *container.Heap[Result], k int, result Result) {
+	if heap.Len() < k {
+		heap.Push(result)
+		return
+	}
+	worst, _ := heap.Peek()
+	if resultBetter(MetricCosine, result, worst) {
+		heap.Replace(result)
+	}
 }
 
 // DenseFlatIndexBuilder is a one-shot builder. The built index remains
