@@ -26,6 +26,19 @@ var (
 	ErrInvalidSparseOrder = errors.New("ailego: sparse indices must be strictly increasing")
 )
 
+type binaryKernel func(left, right []float32) float32
+type productsKernel func(left, right []float32) (dot, leftNorm, rightNorm float32)
+
+var kernels = struct {
+	l2       binaryKernel
+	dot      binaryKernel
+	products productsKernel
+}{
+	l2:       squaredEuclideanScalar,
+	dot:      innerProductScalar,
+	products: dotNormsScalar,
+}
+
 // DenseDistance computes an unchecked score for two dense vectors. Callers
 // must guarantee equal, non-zero dimensions and finite components. The result
 // may be non-finite if arithmetic overflows.
@@ -93,30 +106,6 @@ func CosineDistanceWithMagnitudes(left, right []float32, leftMagnitude, rightMag
 	return cosineDistanceFromProduct(innerProduct(left, right), leftMagnitude, rightMagnitude)
 }
 
-// CosineDistances2WithMagnitudes computes cosine distance from one query to two
-// candidates while sharing the query load in the SIMD dot-product kernel.
-func CosineDistances2WithMagnitudes(
-	query, first, second []float32,
-	queryMagnitude, firstMagnitude, secondMagnitude float32,
-) (firstDistance, secondDistance float32) {
-	firstProduct, secondProduct := innerProducts2(query, first, second)
-	return cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude),
-		cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude)
-}
-
-// CosineDistances4WithMagnitudes computes cosine distance from one query to
-// four candidates while sharing query loads in the SIMD dot-product kernel.
-func CosineDistances4WithMagnitudes(
-	query, first, second, third, fourth []float32,
-	queryMagnitude, firstMagnitude, secondMagnitude, thirdMagnitude, fourthMagnitude float32,
-) (firstDistance, secondDistance, thirdDistance, fourthDistance float32) {
-	firstProduct, secondProduct, thirdProduct, fourthProduct := innerProducts4(query, first, second, third, fourth)
-	return cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude),
-		cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude),
-		cosineDistanceFromProduct(thirdProduct, queryMagnitude, thirdMagnitude),
-		cosineDistanceFromProduct(fourthProduct, queryMagnitude, fourthMagnitude)
-}
-
 func cosineDistanceFromProduct(product, leftMagnitude, rightMagnitude float32) float32 {
 	if leftMagnitude == 0 && rightMagnitude == 0 {
 		return 0
@@ -127,6 +116,43 @@ func cosineDistanceFromProduct(product, leftMagnitude, rightMagnitude float32) f
 	cosine := product / (leftMagnitude * rightMagnitude)
 	cosine = min(1, max(-1, cosine))
 	return 1 - cosine
+}
+
+func squaredEuclidean(left, right []float32) float32 {
+	return kernels.l2(left, right)
+}
+
+func innerProduct(left, right []float32) float32 {
+	return kernels.dot(left, right)
+}
+
+func dotNorms(left, right []float32) (dot, leftNorm, rightNorm float32) {
+	return kernels.products(left, right)
+}
+
+func squaredEuclideanScalar(left, right []float32) (sum float32) {
+	for index, leftValue := range left {
+		difference := leftValue - right[index]
+		sum += difference * difference
+	}
+	return
+}
+
+func innerProductScalar(left, right []float32) (sum float32) {
+	for index, leftValue := range left {
+		sum += leftValue * right[index]
+	}
+	return
+}
+
+func dotNormsScalar(left, right []float32) (dot, leftNorm, rightNorm float32) {
+	for index, leftValue := range left {
+		rightValue := right[index]
+		dot += leftValue * rightValue
+		leftNorm += leftValue * leftValue
+		rightNorm += rightValue * rightValue
+	}
+	return
 }
 
 // SparseInnerProduct computes the dot product of canonical sparse vectors.

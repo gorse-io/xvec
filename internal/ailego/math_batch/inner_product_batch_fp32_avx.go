@@ -4,9 +4,9 @@
 // 	clang   21.1.8 (6ubuntu1)
 // 	objdump 2.46
 // flags: -mavx -O3
-// source: src/distance_utility_batch_avx.c
+// source: src/inner_product_batch_fp32_avx.c
 
-package mathutil
+package mathbatch
 
 import "unsafe"
 

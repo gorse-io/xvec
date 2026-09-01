@@ -33,8 +33,6 @@ func init() {
 		kernels.l2 = squaredEuclideanAVX
 		kernels.dot = innerProductAVX
 		kernels.products = dotNormsAVX
-		kernels.dot2 = innerProducts2AVXBatch
-		kernels.dot4 = innerProducts4AVXBatch
 	}
 	if cpu.X86.HasAVX && cpu.X86.HasFMA && cpu.X86.HasAVX512F {
 		kernels.l2 = squaredEuclideanAVX512
@@ -71,30 +69,6 @@ func innerProductAVX(left, right []float32) float32 {
 		return innerProductSSE(left, right)
 	}
 	return inner_product_fp32_avx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
-}
-
-func innerProducts2AVXBatch(query, first, second []float32) (firstProduct, secondProduct float32) {
-	if len(query) < 8 {
-		return innerProducts2Scalar(query, first, second)
-	}
-	xvec_avx_batch_inner_products2(
-		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]), int64(len(query)),
-		unsafe.Pointer(&firstProduct), unsafe.Pointer(&secondProduct),
-	)
-	return
-}
-
-func innerProducts4AVXBatch(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
-	if len(query) < 8 {
-		return innerProducts4Scalar(query, first, second, third, fourth)
-	}
-	xvec_avx_batch_inner_products4(
-		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
-		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)),
-		unsafe.Pointer(&firstProduct), unsafe.Pointer(&secondProduct),
-		unsafe.Pointer(&thirdProduct), unsafe.Pointer(&fourthProduct),
-	)
-	return
 }
 
 func dotNormsAVX(left, right []float32) (dot, leftNorm, rightNorm float32) {

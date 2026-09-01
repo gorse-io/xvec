@@ -31,6 +31,7 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/gorse-io/xvec/internal/ailego/io"
 	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/math_batch"
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
@@ -615,7 +616,7 @@ func (i *HNSWIndex) computeDistanceAt(left, right int) (float32, error) {
 
 func (i *HNSWIndex) computeDistancePairAt(query, first, second int) (float32, float32, error) {
 	if i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys) {
-		firstScore, secondScore := mathutil.CosineDistances2WithMagnitudes(
+		firstScore, secondScore := mathbatch.CosineDistances2WithMagnitudes(
 			i.vectorAt(query), i.vectorAt(first), i.vectorAt(second),
 			i.vectorMagnitudes[query], i.vectorMagnitudes[first], i.vectorMagnitudes[second],
 		)

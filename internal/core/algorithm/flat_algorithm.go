@@ -24,6 +24,7 @@ import (
 
 	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/math_batch"
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
@@ -330,7 +331,7 @@ func (i *DenseFlatIndex) searchCosine(ctx context.Context, query []float32, opti
 			secondStart := firstStart + i.dimension
 			thirdStart := secondStart + i.dimension
 			fourthStart := thirdStart + i.dimension
-			firstScore, secondScore, thirdScore, fourthScore := mathutil.CosineDistances4WithMagnitudes(
+			firstScore, secondScore, thirdScore, fourthScore := mathbatch.CosineDistances4WithMagnitudes(
 				query,
 				i.vectors[firstStart:firstStart+i.dimension],
 				i.vectors[secondStart:secondStart+i.dimension],
@@ -358,7 +359,7 @@ func (i *DenseFlatIndex) searchCosine(ctx context.Context, query []float32, opti
 		if position+1 < len(i.keys) {
 			firstStart := position * i.dimension
 			secondStart := firstStart + i.dimension
-			firstScore, secondScore := mathutil.CosineDistances2WithMagnitudes(
+			firstScore, secondScore := mathbatch.CosineDistances2WithMagnitudes(
 				query,
 				i.vectors[firstStart:firstStart+i.dimension],
 				i.vectors[secondStart:secondStart+i.dimension],

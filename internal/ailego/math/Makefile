@@ -56,7 +56,6 @@ distance-avx:
 	$(GOAT) src/euclidean_distance_matrix_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/inner_product_matrix_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/mips_euclidean_distance_matrix_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
-	$(GOAT) src/distance_utility_batch_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 distance-avx512:
@@ -76,10 +75,20 @@ distance-neon:
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 distance-rvv:
-	$(GOAT) src/distance_utility_rvv.c --target $(GOAT_TARGET_RVV) -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE)
+	$(RM) -r $(GOAT_OUTPUT_DIR)
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/euclidean_distance_matrix_fp32_rvv.c --target $(GOAT_TARGET_RVV) -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/inner_product_matrix_fp32_rvv.c --target $(GOAT_TARGET_RVV) -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/mips_euclidean_distance_matrix_fp32_rvv.c --target $(GOAT_TARGET_RVV) -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 distance-lasx:
-	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/distance_utility_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx
+	$(RM) -r $(GOAT_OUTPUT_DIR)
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/euclidean_distance_matrix_fp32_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/inner_product_matrix_fp32_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/mips_euclidean_distance_matrix_fp32_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 clean:
 	$(RM) src/*.o src/*.s
