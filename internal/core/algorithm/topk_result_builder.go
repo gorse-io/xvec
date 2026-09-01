@@ -105,7 +105,7 @@ func topKCandidatesWithOptions(
 	if options.TopK == 0 || count == 0 {
 		return []Result{}, nil
 	}
-	distance, err := metric.PrevalidatedDistance()
+	distance, err := metric.Distance()
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +155,7 @@ func topKCandidatesWithOptions(
 	return results, nil
 }
 
-func topKPrevalidatedCandidatesWithOptions(
+func topKCandidatesWithDistance(
 	ctx context.Context,
 	metric Metric,
 	distance mathutil.DenseDistance,
@@ -215,10 +215,10 @@ func topKPrevalidatedCandidatesWithOptions(
 	return results, nil
 }
 
-// topKPrevalidatedCandidateBatchesWithOptions scans already partitioned
+// topKCandidateBatchesWithDistance scans already partitioned
 // candidates without flattening them into a temporary slice. IVF uses one
 // batch per probed inverted list.
-func topKPrevalidatedCandidateBatchesWithOptions(
+func topKCandidateBatchesWithDistance(
 	ctx context.Context,
 	metric Metric,
 	distance mathutil.DenseDistance,

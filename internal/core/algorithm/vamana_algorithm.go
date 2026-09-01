@@ -212,7 +212,7 @@ func (b *VamanaBuilder) build(ctx context.Context, workers int) (*VamanaIndex, e
 	if b.built {
 		return nil, ErrBuilderClosed
 	}
-	distance, err := b.options.Metric.PrevalidatedDistance()
+	distance, err := b.options.Metric.Distance()
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +299,7 @@ func (b *VamanaBuilder) buildInterleaved(ctx context.Context, workers int) (*Vam
 	if b.built {
 		return nil, ErrBuilderClosed
 	}
-	distance, err := b.options.Metric.PrevalidatedDistance()
+	distance, err := b.options.Metric.Distance()
 	if err != nil {
 		return nil, err
 	}
@@ -918,7 +918,7 @@ func (i *VamanaIndex) graphDistance(left, right []float32) (float32, error) {
 	distance := i.distance
 	if distance == nil {
 		var err error
-		distance, err = i.options.Metric.PrevalidatedDistance()
+		distance, err = i.options.Metric.Distance()
 		if err != nil {
 			return 0, err
 		}
@@ -932,7 +932,7 @@ func (i *VamanaIndex) graphDistance(left, right []float32) (float32, error) {
 
 func (i *VamanaIndex) graphDistanceAt(left, right int) (float32, error) {
 	if i.options.Metric == MetricCosine {
-		return mathutil.CosineDistanceWithMagnitudesPrevalidated(
+		return mathutil.CosineDistanceWithMagnitudes(
 			i.vectorAt(left), i.vectorAt(right), i.vectorMagnitudes[left], i.vectorMagnitudes[right],
 		), nil
 	}
@@ -941,7 +941,7 @@ func (i *VamanaIndex) graphDistanceAt(left, right int) (float32, error) {
 
 func (i *VamanaIndex) queryDistanceAt(query []float32, queryMagnitude float32, position int) (float32, error) {
 	if i.options.Metric == MetricCosine {
-		return mathutil.CosineDistanceWithMagnitudesPrevalidated(
+		return mathutil.CosineDistanceWithMagnitudes(
 			query, i.vectorAt(position), queryMagnitude, i.vectorMagnitudes[position],
 		), nil
 	}
@@ -955,7 +955,7 @@ func (i *VamanaIndex) cacheCosineMagnitudes(ctx context.Context, workers int) er
 	}
 	i.vectorMagnitudes = make([]float32, len(i.keys))
 	if err := parallel.ParallelFor(ctx, len(i.keys), workers, func(_ context.Context, position int) error {
-		i.vectorMagnitudes[position] = mathutil.L2MagnitudePrevalidated(i.vectorAt(position))
+		i.vectorMagnitudes[position] = mathutil.L2Magnitude(i.vectorAt(position))
 		return nil
 	}); err != nil {
 		return err
@@ -1197,17 +1197,17 @@ func (i *VamanaIndex) searchVamana(ctx context.Context, query []float32, options
 	}
 	queryMagnitude := float32(0)
 	if i.options.Metric == MetricCosine {
-		queryMagnitude = mathutil.L2MagnitudePrevalidated(query)
+		queryMagnitude = mathutil.L2Magnitude(query)
 	}
 	if len(i.keys) <= DefaultVamanaBruteForceThreshold {
 		var candidateMagnitude float32
 		distance := i.distance
 		if i.options.Metric == MetricCosine {
 			distance = func(candidate, query []float32) float32 {
-				return mathutil.CosineDistanceWithMagnitudesPrevalidated(candidate, query, candidateMagnitude, queryMagnitude)
+				return mathutil.CosineDistanceWithMagnitudes(candidate, query, candidateMagnitude, queryMagnitude)
 			}
 		}
-		return topKPrevalidatedCandidatesWithOptions(ctx, i.options.Metric, distance, query, options.SearchOptions, len(i.keys), func(position int) Candidate {
+		return topKCandidatesWithDistance(ctx, i.options.Metric, distance, query, options.SearchOptions, len(i.keys), func(position int) Candidate {
 			if i.options.Metric == MetricCosine {
 				candidateMagnitude = i.vectorMagnitudes[position]
 			}
@@ -1352,7 +1352,7 @@ func (i *VamanaIndex) Add(ctx context.Context, key uint64, vector []float32) err
 	working.keys = append(working.keys, key)
 	working.vectors = append(working.vectors, vector...)
 	if working.options.Metric == MetricCosine {
-		working.vectorMagnitudes = append(working.vectorMagnitudes, mathutil.L2MagnitudePrevalidated(vector))
+		working.vectorMagnitudes = append(working.vectorMagnitudes, mathutil.L2Magnitude(vector))
 	}
 	working.neighbors = append(working.neighbors, nil)
 	working.neighborDistances = append(working.neighborDistances, nil)
@@ -1622,7 +1622,7 @@ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error
 		vectors: make([]float32, count*dimension), positions: make(map[uint64]int, count),
 		neighbors: make([][]int, count), neighborDistances: make([][]float32, count), entryPoint: entry,
 	}
-	index.distance, err = options.Metric.PrevalidatedDistance()
+	index.distance, err = options.Metric.Distance()
 	if err != nil {
 		return nil, err
 	}

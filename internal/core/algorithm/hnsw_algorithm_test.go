@@ -374,7 +374,7 @@ func TestHNSWBuilderLifecycleAndErrors(t *testing.T) {
 	}
 }
 
-func TestHNSWSmallIndexUsesPrevalidatedDistance(t *testing.T) {
+func TestHNSWSmallIndexUsesDistance(t *testing.T) {
 	options := DefaultHNSWBuildOptions(MetricL2)
 	builder, err := NewHNSWBuilder(2, options)
 	require.NoError(t, err)
@@ -386,7 +386,7 @@ func TestHNSWSmallIndexUsesPrevalidatedDistance(t *testing.T) {
 	calls := 0
 	index.distance = func(left, right []float32) float32 {
 		calls++
-		return mathutil.L2SquaredPrevalidated(left, right)
+		return mathutil.L2Squared(left, right)
 	}
 	results, err := index.SearchHNSW(context.Background(), []float32{0, 0}, HNSWSearchOptions{
 		SearchOptions: SearchOptions{TopK: 1},
@@ -505,7 +505,7 @@ func BenchmarkHNSWSearch768DCosine(b *testing.B) {
 	)
 	options := DefaultHNSWBuildOptions(MetricCosine)
 	options.M = m
-	distance, err := options.Metric.PrevalidatedDistance()
+	distance, err := options.Metric.Distance()
 	if err != nil {
 		b.Fatal(err)
 	}

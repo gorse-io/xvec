@@ -26,7 +26,7 @@ func TestDenseMetricsMatchPinnedBaseline(t *testing.T) {
 
 	type metricCase struct {
 		name      string
-		compute   func([]float32, []float32) (float32, error)
+		compute   DenseDistance
 		left      []float32
 		right     []float32
 		expected  float32
@@ -52,9 +52,7 @@ func TestDenseMetricsMatchPinnedBaseline(t *testing.T) {
 
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			actual, err := testCase.compute(testCase.left, testCase.right)
-			require.NoError(t, err)
-
+			actual := testCase.compute(testCase.left, testCase.right)
 			tolerance := testCase.tolerance
 			if tolerance == 0 {
 				tolerance = 1e-7
@@ -77,44 +75,17 @@ func TestDenseMetricZeroVectors(t *testing.T) {
 	assertScore(t, MIPSL2Squared, unit, zero, 2)
 }
 
-func TestDenseMetricValidation(t *testing.T) {
+func TestUncheckedDenseDistanceAPI(t *testing.T) {
 	t.Parallel()
 
-	metrics := []struct {
-		name    string
-		compute func([]float32, []float32) (float32, error)
-	}{
-		{name: "l2", compute: L2Squared},
-		{name: "ip", compute: InnerProduct},
-		{name: "cosine", compute: CosineDistance},
-		{name: "mips-l2", compute: MIPSL2Squared},
-	}
-	for _, metric := range metrics {
-		t.Run(metric.name, func(t *testing.T) {
-			{
-				_, err := metric.compute([]float32{1}, []float32{1, 2})
-				require.ErrorIs(t, err, ErrDimensionMismatch)
-			}
-			{
-				_, err := metric.compute(nil, nil)
-				require.ErrorIs(t, err, ErrEmptyVector)
-			}
-			{
-				_, err := metric.compute([]float32{float32(math.NaN())}, []float32{1})
-				require.ErrorIs(t, err, ErrNonFiniteVector)
-			}
-			{
-				_, err := metric.compute([]float32{1}, []float32{float32(math.Inf(1))})
-				require.ErrorIs(t, err, ErrNonFiniteVector)
-			}
-		})
-	}
-
+	var distance DenseDistance = L2Squared
+	require.Equal(t, float32(25), distance([]float32{1, 2, 3}, []float32{4, 6, 3}))
+	require.Equal(t, float32(5), L2Magnitude([]float32{3, 4}))
+	require.Equal(t, float32(0), CosineDistanceWithMagnitudes(
+		[]float32{1, 0}, []float32{2, 0}, 1, 2,
+	))
 	large := []float32{math.MaxFloat32, math.MaxFloat32}
-	{
-		_, err := InnerProduct(large, large)
-		require.ErrorIs(t, err, ErrNonFiniteVector)
-	}
+	require.True(t, math.IsInf(float64(InnerProduct(large, large)), 1))
 }
 
 func TestValidateDense(t *testing.T) {
@@ -136,26 +107,12 @@ func TestCosineDistanceAvoidsNormProductOverflowAndUnderflow(t *testing.T) {
 		right    []float32
 		expected float32
 	}{
-		{
-			name:     "large identical vectors",
-			left:     []float32{1e10, 1e10},
-			right:    []float32{1e10, 1e10},
-			expected: 0,
-		},
-		{
-			name:     "tiny orthogonal vectors",
-			left:     []float32{1e-20, 0},
-			right:    []float32{0, 1e-20},
-			expected: 1,
-		},
+		{name: "large identical vectors", left: []float32{1e10, 1e10}, right: []float32{1e10, 1e10}, expected: 0},
+		{name: "tiny orthogonal vectors", left: []float32{1e-20, 0}, right: []float32{0, 1e-20}, expected: 1},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			checked, err := CosineDistance(test.left, test.right)
-			require.NoError(t, err)
-			require.InDelta(t, test.expected, checked, 1e-6)
-			prevalidated := CosineDistancePrevalidated(test.left, test.right)
-			require.InDelta(t, test.expected, prevalidated, 1e-6)
+			require.InDelta(t, test.expected, CosineDistance(test.left, test.right), 1e-6)
 		})
 	}
 }
@@ -165,39 +122,27 @@ func TestDenseMetricsUseFloat32Accumulation(t *testing.T) {
 
 	left := []float32{1e8, 1, -1e8}
 	right := []float32{1, 1, 1}
-	checked, err := InnerProduct(left, right)
-	require.NoError(t, err)
-	require.Zero(t, checked)
-	prevalidated := InnerProductPrevalidated(left, right)
-	require.Zero(t, prevalidated)
+	require.Zero(t, InnerProduct(left, right))
 }
 
-func TestPrevalidatedDenseDistanceKernelsMatchCheckedMetrics(t *testing.T) {
+func TestDenseDistanceKernelsDoNotAllocate(t *testing.T) {
 	left := []float32{0.2, 0.9, -0.4, 0.7}
 	right := []float32{0.3, 0.5, 0.8, -0.1}
-	tests := []struct {
-		name       string
-		checked    func([]float32, []float32) (float32, error)
-		prechecked DenseDistance
+	for _, test := range []struct {
+		name     string
+		distance DenseDistance
 	}{
-		{name: "l2", checked: L2Squared, prechecked: L2SquaredPrevalidated},
-		{name: "inner product", checked: InnerProduct, prechecked: InnerProductPrevalidated},
-		{name: "cosine", checked: CosineDistance, prechecked: CosineDistancePrevalidated},
-		{name: "mips-l2", checked: MIPSL2Squared, prechecked: MIPSL2SquaredPrevalidated},
-	}
-	for _, test := range tests {
+		{name: "l2", distance: L2Squared},
+		{name: "inner product", distance: InnerProduct},
+		{name: "cosine", distance: CosineDistance},
+		{name: "mips-l2", distance: MIPSL2Squared},
+	} {
 		t.Run(test.name, func(t *testing.T) {
-			expected, err := test.checked(left, right)
-			require.NoError(t, err)
-			actual := test.prechecked(left, right)
-			require.Equal(t, expected, actual)
 			require.Zero(t, testing.AllocsPerRun(100, func() {
-				benchmarkDenseScore = test.prechecked(left, right)
+				benchmarkDenseScore = test.distance(left, right)
 			}))
 		})
 	}
-	large := []float32{math.MaxFloat32, math.MaxFloat32}
-	require.True(t, math.IsInf(float64(InnerProductPrevalidated(large, large)), 1))
 }
 
 func TestCosineDistanceWithCachedMagnitudes(t *testing.T) {
@@ -210,12 +155,10 @@ func TestCosineDistanceWithCachedMagnitudes(t *testing.T) {
 		{left: []float32{0, 0, 0}, right: []float32{0, 0, 0}},
 		{left: []float32{0, 0, 0}, right: []float32{1, 0, 0}},
 	} {
-		leftMagnitude := L2MagnitudePrevalidated(test.left)
-		rightMagnitude := L2MagnitudePrevalidated(test.right)
-		got := CosineDistanceWithMagnitudesPrevalidated(test.left, test.right, leftMagnitude, rightMagnitude)
-		want, err := CosineDistance(test.left, test.right)
-		require.NoError(t, err)
-		require.InDelta(t, want, got, 1e-6)
+		leftMagnitude := L2Magnitude(test.left)
+		rightMagnitude := L2Magnitude(test.right)
+		got := CosineDistanceWithMagnitudes(test.left, test.right, leftMagnitude, rightMagnitude)
+		require.InDelta(t, CosineDistance(test.left, test.right), got, 1e-6)
 	}
 }
 
@@ -253,14 +196,7 @@ func TestSparseInnerProduct(t *testing.T) {
 	}
 }
 
-func assertScore(
-	t *testing.T,
-	compute func([]float32, []float32) (float32, error),
-	left, right []float32,
-	expected float32,
-) {
+func assertScore(t *testing.T, compute DenseDistance, left, right []float32, expected float32) {
 	t.Helper()
-	score, err := compute(left, right)
-	require.NoError(t, err)
-	require.Equal(t, expected, score)
+	require.Equal(t, expected, compute(left, right))
 }

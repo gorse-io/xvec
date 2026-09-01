@@ -226,13 +226,13 @@ func (i *DenseFlatIndex) search(ctx context.Context, query []float32, options Se
 	} else if options.TopK < 0 {
 		return nil, errors.New("core: negative top-k")
 	}
-	distance, err := i.metric.PrevalidatedDistance()
+	distance, err := i.metric.Distance()
 	if err != nil {
 		return nil, err
 	}
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return topKPrevalidatedCandidatesWithOptions(ctx, i.metric, distance, query, options, len(i.keys), func(position int) Candidate {
+	return topKCandidatesWithDistance(ctx, i.metric, distance, query, options, len(i.keys), func(position int) Candidate {
 		start := position * i.dimension
 		return Candidate{Key: i.keys[position], Vector: i.vectors[start : start+i.dimension]}
 	})
@@ -646,7 +646,7 @@ func (i *DenseFlatIndex) SearchGroups(ctx context.Context, query []float32, opti
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
-	distance, err := i.metric.PrevalidatedDistance()
+	distance, err := i.metric.Distance()
 	if err != nil {
 		return nil, err
 	}

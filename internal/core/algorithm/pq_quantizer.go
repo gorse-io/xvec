@@ -524,7 +524,7 @@ func RestorePQModel(state PQModelState) (*PQModel, error) {
 			return nil, fmt.Errorf("%w: non-finite pivot", ErrInvalidPQModel)
 		}
 	}
-	distance, err := state.Metric.PrevalidatedDistance()
+	distance, err := state.Metric.Distance()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidPQModel, err)
 	}
@@ -779,7 +779,7 @@ func (m *PQModel) subspaceScore(vector []float32, centroid, start, end int) (flo
 	distance := m.distance
 	if distance == nil {
 		var err error
-		distance, err = m.metric.PrevalidatedDistance()
+		distance, err = m.metric.Distance()
 		if err != nil {
 			return 0, err
 		}
@@ -823,7 +823,7 @@ func initializePQKMC2(ctx context.Context, vectors [][]float32, clusters int, me
 	if clusters <= 0 || clusters > len(vectors) {
 		return nil, ErrInvalidCentroid
 	}
-	distance, err := metric.PrevalidatedDistance()
+	distance, err := metric.Distance()
 	if err != nil {
 		return nil, err
 	}

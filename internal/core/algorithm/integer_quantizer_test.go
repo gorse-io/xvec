@@ -106,8 +106,7 @@ func TestQuantizedDistancesMatchDecodedVectors(t *testing.T) {
 		leftDecoded, _ := left.Decode()
 		rightDecoded, _ := right.Decode()
 		for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
-			want, err := metric.Compute(leftDecoded, rightDecoded)
-			require.NoError(t, err)
+			want := testDenseDistance(t, metric, leftDecoded, rightDecoded)
 
 			got, err := QuantizedDistance(metric, left, right)
 			require.NoError(t, err)

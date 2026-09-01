@@ -596,7 +596,7 @@ func (i *DiskANNIndex) searchDiskANN(
 }
 
 func (i *DiskANNIndex) searchDiskANNLinear(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {
-	distance, err := i.metric.PrevalidatedDistance()
+	distance, err := i.metric.Distance()
 	if err != nil {
 		return nil, err
 	}
@@ -637,7 +637,7 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 	if err != nil {
 		return nil, fmt.Errorf("core: build DiskANN PQ distance table: %w", err)
 	}
-	distance, err := i.metric.PrevalidatedDistance()
+	distance, err := i.metric.Distance()
 	if err != nil {
 		return nil, err
 	}

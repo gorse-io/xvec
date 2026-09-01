@@ -131,8 +131,7 @@ func TestRaBitQFullEstimateImprovesCoarseQuality(t *testing.T) {
 		full, err := query.Estimate(code)
 		require.NoError(t, err)
 
-		exact, err := MetricL2.Compute(vectors[index], queryVector)
-		require.NoError(t, err)
+		exact := testDenseDistance(t, MetricL2, vectors[index], queryVector)
 
 		coarseError += math.Abs(float64(coarse.Distance - exact))
 		fullError += math.Abs(float64(full.Distance - exact))
@@ -171,8 +170,7 @@ func TestRaBitQIPCosineAndZeroResidual(t *testing.T) {
 		estimate, err := query.Estimate(code)
 		require.NoError(t, err)
 
-		exact, err := metric.Compute(vectors[23], vectors[23])
-		require.NoError(t, err)
+		exact := testDenseDistance(t, metric, vectors[23], vectors[23])
 
 		if metric == MetricIP {
 			exact = 1 - exact

@@ -26,41 +26,26 @@ var (
 	ErrInvalidSparseOrder = errors.New("ailego: sparse indices must be strictly increasing")
 )
 
-// L2Squared computes squared Euclidean distance using float32 accumulation.
-func L2Squared(left, right []float32) (float32, error) {
-	if err := validateDensePair(left, right); err != nil {
-		return 0, err
-	}
-	if err := validateDenseFinite(left, right); err != nil {
-		return 0, err
-	}
-	return finiteScore(float64(squaredEuclidean(left, right)))
+// DenseDistance computes an unchecked score for two dense vectors. Callers
+// must guarantee equal, non-zero dimensions and finite components. The result
+// may be non-finite if arithmetic overflows.
+type DenseDistance func(left, right []float32) float32
+
+// L2Squared computes unchecked squared Euclidean distance using float32
+// accumulation.
+func L2Squared(left, right []float32) float32 {
+	return squaredEuclidean(left, right)
 }
 
-// InnerProduct computes the dot-product similarity. Higher scores are better.
-func InnerProduct(left, right []float32) (float32, error) {
-	if err := validateDensePair(left, right); err != nil {
-		return 0, err
-	}
-	if err := validateDenseFinite(left, right); err != nil {
-		return 0, err
-	}
-	return finiteScore(float64(innerProduct(left, right)))
+// InnerProduct computes unchecked dot-product similarity. Higher scores are
+// better.
+func InnerProduct(left, right []float32) float32 {
+	return innerProduct(left, right)
 }
 
-// CosineDistance computes 1-cos(left,right). Lower scores are better. Two zero
-// vectors have distance 0; exactly one zero vector has distance 1.
-func CosineDistance(left, right []float32) (float32, error) {
-	if err := validateDensePair(left, right); err != nil {
-		return 0, err
-	}
-	if err := validateDenseFinite(left, right); err != nil {
-		return 0, err
-	}
-	return finiteScore(float64(cosineDistance(left, right)))
-}
-
-func cosineDistance(left, right []float32) float32 {
+// CosineDistance computes unchecked 1-cos(left,right). Lower scores are better.
+// Two zero vectors have distance 0; exactly one zero vector has distance 1.
+func CosineDistance(left, right []float32) float32 {
 	inner, leftNorm, rightNorm := dotNorms(left, right)
 	if leftNorm == 0 && rightNorm == 0 {
 		return 0
@@ -75,26 +60,73 @@ func cosineDistance(left, right []float32) float32 {
 	return 1 - cosine
 }
 
-// MIPSL2Squared computes the baseline localized-spherical MIPS-to-L2
+// MIPSL2Squared computes the unchecked baseline localized-spherical MIPS-to-L2
 // transformation: 2 - 2*ip/max(norm(left)^2,norm(right)^2). Lower scores are
 // better. Two zero vectors have distance 0.
-func MIPSL2Squared(left, right []float32) (float32, error) {
-	if err := validateDensePair(left, right); err != nil {
-		return 0, err
-	}
-	if err := validateDenseFinite(left, right); err != nil {
-		return 0, err
-	}
-	return finiteScore(float64(mipsL2Squared(left, right)))
-}
-
-func mipsL2Squared(left, right []float32) float32 {
+func MIPSL2Squared(left, right []float32) float32 {
 	inner, leftNorm, rightNorm := dotNorms(left, right)
 	denominator := max(leftNorm, rightNorm)
 	if denominator == 0 {
 		return 0
 	}
 	return 2 - 2*inner/denominator
+}
+
+// L2Magnitude computes a vector magnitude.
+func L2Magnitude(vector []float32) float32 {
+	norm := innerProduct(vector, vector)
+	if norm < 0 {
+		norm = 0
+	}
+	return float32(math.Sqrt(float64(norm)))
+}
+
+// CosineDistanceWithMagnitudes computes cosine distance while reusing cached
+// magnitudes, reducing every candidate score to one dot product.
+func CosineDistanceWithMagnitudes(left, right []float32, leftMagnitude, rightMagnitude float32) float32 {
+	if leftMagnitude == 0 && rightMagnitude == 0 {
+		return 0
+	}
+	if leftMagnitude == 0 || rightMagnitude == 0 {
+		return 1
+	}
+	return cosineDistanceFromProduct(innerProduct(left, right), leftMagnitude, rightMagnitude)
+}
+
+// CosineDistances2WithMagnitudes computes cosine distance from one query to two
+// candidates while sharing the query load in the SIMD dot-product kernel.
+func CosineDistances2WithMagnitudes(
+	query, first, second []float32,
+	queryMagnitude, firstMagnitude, secondMagnitude float32,
+) (firstDistance, secondDistance float32) {
+	firstProduct, secondProduct := innerProducts2(query, first, second)
+	return cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude),
+		cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude)
+}
+
+// CosineDistances4WithMagnitudes computes cosine distance from one query to
+// four candidates while sharing query loads in the SIMD dot-product kernel.
+func CosineDistances4WithMagnitudes(
+	query, first, second, third, fourth []float32,
+	queryMagnitude, firstMagnitude, secondMagnitude, thirdMagnitude, fourthMagnitude float32,
+) (firstDistance, secondDistance, thirdDistance, fourthDistance float32) {
+	firstProduct, secondProduct, thirdProduct, fourthProduct := innerProducts4(query, first, second, third, fourth)
+	return cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude),
+		cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude),
+		cosineDistanceFromProduct(thirdProduct, queryMagnitude, thirdMagnitude),
+		cosineDistanceFromProduct(fourthProduct, queryMagnitude, fourthMagnitude)
+}
+
+func cosineDistanceFromProduct(product, leftMagnitude, rightMagnitude float32) float32 {
+	if leftMagnitude == 0 && rightMagnitude == 0 {
+		return 0
+	}
+	if leftMagnitude == 0 || rightMagnitude == 0 {
+		return 1
+	}
+	cosine := product / (leftMagnitude * rightMagnitude)
+	cosine = min(1, max(-1, cosine))
+	return 1 - cosine
 }
 
 // SparseInnerProduct computes the dot product of canonical sparse vectors.
@@ -125,26 +157,6 @@ func SparseInnerProduct(
 		}
 	}
 	return finiteScore(sum)
-}
-
-func validateDensePair(left, right []float32) error {
-	if len(left) != len(right) {
-		return ErrDimensionMismatch
-	}
-	if len(left) == 0 {
-		return ErrEmptyVector
-	}
-	return nil
-}
-
-func validateDenseFinite(left, right []float32) error {
-	for index, leftValue := range left {
-		rightValue := right[index]
-		if !finite32(leftValue) || !finite32(rightValue) {
-			return ErrNonFiniteVector
-		}
-	}
-	return nil
 }
 
 // ValidateDense checks one dense vector at an API or storage boundary.

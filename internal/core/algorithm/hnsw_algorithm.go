@@ -204,7 +204,7 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	distance, err := b.options.Metric.PrevalidatedDistance()
+	distance, err := b.options.Metric.Distance()
 	if err != nil {
 		return nil, err
 	}
@@ -596,7 +596,7 @@ func (i *HNSWIndex) computeDistance(left, right []float32) (float32, error) {
 		// Keep package-local literal fixtures usable while production indexes
 		// always install the scorer at build or open time.
 		var err error
-		distance, err = i.options.Metric.PrevalidatedDistance()
+		distance, err = i.options.Metric.Distance()
 		if err != nil {
 			return 0, err
 		}
@@ -606,7 +606,7 @@ func (i *HNSWIndex) computeDistance(left, right []float32) (float32, error) {
 
 func (i *HNSWIndex) computeDistanceAt(left, right int) (float32, error) {
 	if i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys) {
-		return mathutil.CosineDistanceWithMagnitudesPrevalidated(
+		return mathutil.CosineDistanceWithMagnitudes(
 			i.vectorAt(left), i.vectorAt(right), i.vectorMagnitudes[left], i.vectorMagnitudes[right],
 		), nil
 	}
@@ -615,7 +615,7 @@ func (i *HNSWIndex) computeDistanceAt(left, right int) (float32, error) {
 
 func (i *HNSWIndex) computeDistancePairAt(query, first, second int) (float32, float32, error) {
 	if i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys) {
-		firstScore, secondScore := mathutil.CosineDistances2WithMagnitudesPrevalidated(
+		firstScore, secondScore := mathutil.CosineDistances2WithMagnitudes(
 			i.vectorAt(query), i.vectorAt(first), i.vectorAt(second),
 			i.vectorMagnitudes[query], i.vectorMagnitudes[first], i.vectorMagnitudes[second],
 		)
@@ -634,7 +634,7 @@ func (i *HNSWIndex) computeDistancePairAt(query, first, second int) (float32, fl
 
 func (i *HNSWIndex) queryDistanceAt(query []float32, queryMagnitude float32, position int) (float32, error) {
 	if i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys) {
-		return mathutil.CosineDistanceWithMagnitudesPrevalidated(
+		return mathutil.CosineDistanceWithMagnitudes(
 			query, i.vectorAt(position), queryMagnitude, i.vectorMagnitudes[position],
 		), nil
 	}
@@ -655,7 +655,7 @@ func (i *HNSWIndex) cacheCosineMagnitudes(ctx context.Context, workers int) erro
 	}
 	i.vectorMagnitudes = make([]float32, len(i.keys))
 	return parallel.ParallelFor(ctx, len(i.keys), workers, func(_ context.Context, position int) error {
-		i.vectorMagnitudes[position] = mathutil.L2MagnitudePrevalidated(i.vectorAt(position))
+		i.vectorMagnitudes[position] = mathutil.L2Magnitude(i.vectorAt(position))
 		return nil
 	})
 }
@@ -763,7 +763,7 @@ func (i *HNSWIndex) SearchHNSWGroups(
 	}
 	queryMagnitude := float32(0)
 	if i.options.Metric == MetricCosine {
-		queryMagnitude = mathutil.L2MagnitudePrevalidated(query)
+		queryMagnitude = mathutil.L2Magnitude(query)
 	}
 
 	i.mu.RLock()
@@ -847,7 +847,7 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 	}
 	queryMagnitude := float32(0)
 	if i.options.Metric == MetricCosine {
-		queryMagnitude = mathutil.L2MagnitudePrevalidated(query)
+		queryMagnitude = mathutil.L2Magnitude(query)
 	}
 	if options.TopK == 0 || len(i.keys) == 0 {
 		return []Result{}, nil
@@ -856,12 +856,12 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 		distance := i.distance
 		if distance == nil {
 			var err error
-			distance, err = i.options.Metric.PrevalidatedDistance()
+			distance, err = i.options.Metric.Distance()
 			if err != nil {
 				return nil, err
 			}
 		}
-		return topKPrevalidatedCandidatesWithOptions(ctx, i.options.Metric, distance, query, options.SearchOptions, len(i.keys), func(position int) Candidate {
+		return topKCandidatesWithDistance(ctx, i.options.Metric, distance, query, options.SearchOptions, len(i.keys), func(position int) Candidate {
 			return Candidate{Key: i.keys[position], Vector: i.vectorAt(position)}
 		})
 	}
@@ -1374,7 +1374,7 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 	if count > maxPlatformInt()/dimension {
 		return nil, fmt.Errorf("%w: vector storage exceeds platform capacity", ErrInvalidHNSWFile)
 	}
-	distance, err := options.Metric.PrevalidatedDistance()
+	distance, err := options.Metric.Distance()
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid metric", ErrInvalidHNSWFile)
 	}

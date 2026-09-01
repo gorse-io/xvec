@@ -1532,8 +1532,7 @@ func TestCollectionVamanaQueryCreateIndexQuantizeOptimizeAndReopen(t *testing.T)
 	}
 	for _, document := range refined {
 		original := byKey[document.PrimaryKey].Fields["embedding"].(VectorFP32)
-		want, err := core.MetricL2.Compute(queryVector, original)
-		require.NoError(t, err)
+		want := denseScore(t, core.MetricL2, queryVector, original)
 		require.Equal(t, want, document.Score)
 	}
 	queryParams.UseRefiner = false
@@ -1634,8 +1633,7 @@ func TestCollectionDiskANNQueryCreateIndexRefineOptimizeAndReopen(t *testing.T) 
 	}
 	for _, document := range refined {
 		original := byKey[document.PrimaryKey].Fields["embedding"].(VectorFP32)
-		want, err := core.MetricL2.Compute(queryVector, original)
-		require.NoError(t, err)
+		want := denseScore(t, core.MetricL2, queryVector, original)
 		require.Equal(t, want, document.Score)
 	}
 
@@ -1764,8 +1762,7 @@ func TestCollectionScalarQuantizedDiskANNBackfillRefineOptimizeAndReopen(t *test
 			quantizedDifference := false
 			for _, document := range linear {
 				original := byKey[document.PrimaryKey].Fields["embedding"].(VectorFP32)
-				score, err := core.MetricL2.Compute(queryVector, original)
-				require.NoError(t, err)
+				score := denseScore(t, core.MetricL2, queryVector, original)
 
 				if document.Score != score {
 					quantizedDifference = true
@@ -2428,6 +2425,13 @@ func exactDenseDocumentResults(t testing.TB, documents []Document, query VectorF
 		output[position].Score = result.Score
 	}
 	return output
+}
+
+func denseScore(t testing.TB, metric core.Metric, left, right []float32) float32 {
+	t.Helper()
+	distance, err := metric.Distance()
+	require.NoError(t, err)
+	return distance(left, right)
 }
 
 func exactSparseDocumentResults(t testing.TB, documents []Document, query SparseVectorFP32, topK int) []Document {
