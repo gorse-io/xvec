@@ -73,8 +73,8 @@ func TestInnerProductsDoNotAllocateOrMutate(t *testing.T) {
 	candidateCopy := append([]float32(nil), candidate...)
 
 	require.Zero(t, testing.AllocsPerRun(100, func() {
-		benchmarkFirst, benchmarkSecond = innerProducts2(query, candidate, candidate)
-		benchmarkFirst, benchmarkSecond, benchmarkThird, benchmarkFourth = innerProducts4(query, candidate, candidate, candidate, candidate)
+		benchmarkBatch2First, benchmarkBatch2Second = innerProducts2(query, candidate, candidate)
+		benchmarkBatch4First, benchmarkBatch4Second, benchmarkBatch4Third, benchmarkBatch4Fourth = innerProducts4(query, candidate, candidate, candidate, candidate)
 	}))
 	require.Equal(t, queryCopy, query)
 	require.Equal(t, candidateCopy, candidate)
@@ -122,8 +122,14 @@ func requireFloat32Close(t *testing.T, expected, actual float32) {
 }
 
 var (
-	benchmarkFirst  float32
-	benchmarkSecond float32
-	benchmarkThird  float32
-	benchmarkFourth float32
+	benchmarkFirst        float32
+	benchmarkSecond       float32
+	benchmarkThird        float32
+	benchmarkFourth       float32
+	benchmarkBatch2First  float32
+	benchmarkBatch2Second float32
+	benchmarkBatch4First  float32
+	benchmarkBatch4Second float32
+	benchmarkBatch4Third  float32
+	benchmarkBatch4Fourth float32
 )
