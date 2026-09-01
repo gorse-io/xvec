@@ -360,6 +360,34 @@ func TestCollectionRuntimeIndexesAreReusedUntilSnapshotChanges(t *testing.T) {
 	require.Equal(t, uint64(2), collection.indexBuildCount)
 }
 
+func TestCollectionSchemaNeedsSegmentIndexArtifacts(t *testing.T) {
+	flat := NewCollectionSchema("flat",
+		FieldSchema{Name: "title", DataType: DataTypeString},
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: NewFlatIndexParams(MetricTypeCosine)},
+	)
+	needsArtifacts, err := collectionSchemaNeedsSegmentIndexArtifacts(flat, "")
+	require.NoError(t, err)
+	require.False(t, needsArtifacts)
+
+	hnsw := flat.Clone()
+	hnsw.Fields[1].Index = NewHNSWIndexParams(MetricTypeCosine)
+	needsArtifacts, err = collectionSchemaNeedsSegmentIndexArtifacts(hnsw, "")
+	require.NoError(t, err)
+	require.True(t, needsArtifacts)
+
+	invert := flat.Clone()
+	invert.Fields[0].Index = NewInvertIndexParams()
+	needsArtifacts, err = collectionSchemaNeedsSegmentIndexArtifacts(invert, "")
+	require.NoError(t, err)
+	require.True(t, needsArtifacts)
+
+	fts := flat.Clone()
+	fts.Fields[0].Index = NewFTSIndexParams()
+	needsArtifacts, err = collectionSchemaNeedsSegmentIndexArtifacts(fts, "")
+	require.NoError(t, err)
+	require.True(t, needsArtifacts)
+}
+
 func TestCollectionPersistsAndReopensSnapshotIndexes(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "persisted-indexes")

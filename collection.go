@@ -518,6 +518,19 @@ func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSe
 
 func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context, workers int) error {
 	c.invalidateQuerySnapshotLocked()
+	needsArtifacts, err := collectionSchemaNeedsSegmentIndexArtifacts(c.schema, c.path)
+	if err != nil {
+		return err
+	}
+	if !needsArtifacts {
+		manifest := c.store.Manifest()
+		if len(manifest.SegmentIndexSnapshots) != 0 {
+			if _, err := c.store.PublishSegmentIndexSnapshots(ctx, nil); err != nil {
+				return err
+			}
+		}
+		return c.store.PruneObsoleteArtifacts(ctx)
+	}
 	segments, err := c.segmentDocumentsLocked(ctx)
 	if err != nil {
 		return err
@@ -597,6 +610,25 @@ func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context, wor
 		return c.store.PruneObsoleteArtifacts(ctx)
 	}
 	return c.store.PruneObsoleteArtifacts(ctx)
+}
+
+func collectionSchemaNeedsSegmentIndexArtifacts(schema CollectionSchema, path string) (bool, error) {
+	for _, field := range schema.Fields {
+		if field.DataType.IsVector() {
+			spec, err := resolveCollectionVectorIndex(field, "persist segment indexes", path)
+			if err != nil {
+				return false, err
+			}
+			if spec.indexType != IndexTypeFlat {
+				return true, nil
+			}
+			continue
+		}
+		if field.IndexType() == IndexTypeFTS || field.IndexType() == IndexTypeInvert {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (c *Collection) segmentIndexSnapshotFilesExist(metadata common.SegmentMetadata, key collectionRuntimeKey, snapshot common.SegmentIndexSnapshotMetadata) bool {
