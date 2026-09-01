@@ -27,21 +27,15 @@ var (
 )
 
 type binaryKernel func(left, right []float32) float32
-type batch2Kernel func(query, first, second []float32) (firstProduct, secondProduct float32)
-type batch4Kernel func(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32)
 type productsKernel func(left, right []float32) (dot, leftNorm, rightNorm float32)
 
 var kernels = struct {
 	l2       binaryKernel
 	dot      binaryKernel
-	dot2     batch2Kernel
-	dot4     batch4Kernel
 	products productsKernel
 }{
 	l2:       squaredEuclideanScalar,
 	dot:      innerProductScalar,
-	dot2:     innerProducts2Scalar,
-	dot4:     innerProducts4Scalar,
 	products: dotNormsScalar,
 }
 
@@ -112,30 +106,6 @@ func CosineDistanceWithMagnitudes(left, right []float32, leftMagnitude, rightMag
 	return cosineDistanceFromProduct(innerProduct(left, right), leftMagnitude, rightMagnitude)
 }
 
-// CosineDistances2WithMagnitudes computes cosine distance from one query to two
-// candidates while sharing the query load in the SIMD dot-product kernel.
-func CosineDistances2WithMagnitudes(
-	query, first, second []float32,
-	queryMagnitude, firstMagnitude, secondMagnitude float32,
-) (firstDistance, secondDistance float32) {
-	firstProduct, secondProduct := innerProducts2(query, first, second)
-	return cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude),
-		cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude)
-}
-
-// CosineDistances4WithMagnitudes computes cosine distance from one query to
-// four candidates while sharing query loads in the SIMD dot-product kernel.
-func CosineDistances4WithMagnitudes(
-	query, first, second, third, fourth []float32,
-	queryMagnitude, firstMagnitude, secondMagnitude, thirdMagnitude, fourthMagnitude float32,
-) (firstDistance, secondDistance, thirdDistance, fourthDistance float32) {
-	firstProduct, secondProduct, thirdProduct, fourthProduct := innerProducts4(query, first, second, third, fourth)
-	return cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude),
-		cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude),
-		cosineDistanceFromProduct(thirdProduct, queryMagnitude, thirdMagnitude),
-		cosineDistanceFromProduct(fourthProduct, queryMagnitude, fourthMagnitude)
-}
-
 func cosineDistanceFromProduct(product, leftMagnitude, rightMagnitude float32) float32 {
 	if leftMagnitude == 0 && rightMagnitude == 0 {
 		return 0
@@ -156,14 +126,6 @@ func innerProduct(left, right []float32) float32 {
 	return kernels.dot(left, right)
 }
 
-func innerProducts2(query, first, second []float32) (firstProduct, secondProduct float32) {
-	return kernels.dot2(query, first, second)
-}
-
-func innerProducts4(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
-	return kernels.dot4(query, first, second, third, fourth)
-}
-
 func dotNorms(left, right []float32) (dot, leftNorm, rightNorm float32) {
 	return kernels.products(left, right)
 }
@@ -179,24 +141,6 @@ func squaredEuclideanScalar(left, right []float32) (sum float32) {
 func innerProductScalar(left, right []float32) (sum float32) {
 	for index, leftValue := range left {
 		sum += leftValue * right[index]
-	}
-	return
-}
-
-func innerProducts2Scalar(query, first, second []float32) (firstProduct, secondProduct float32) {
-	for index, queryValue := range query {
-		firstProduct += queryValue * first[index]
-		secondProduct += queryValue * second[index]
-	}
-	return
-}
-
-func innerProducts4Scalar(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
-	for index, queryValue := range query {
-		firstProduct += queryValue * first[index]
-		secondProduct += queryValue * second[index]
-		thirdProduct += queryValue * third[index]
-		fourthProduct += queryValue * fourth[index]
 	}
 	return
 }

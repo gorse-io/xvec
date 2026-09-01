@@ -23,6 +23,7 @@ import (
 
 	"github.com/gorse-io/xvec/internal/ailego/algorithm"
 	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/math_batch"
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
@@ -460,7 +461,7 @@ func nearestCosineCentroidContext(
 				return 0, 0, err
 			}
 		}
-		firstScore, secondScore, thirdScore, fourthScore := mathutil.CosineDistances4WithMagnitudes(
+		firstScore, secondScore, thirdScore, fourthScore := mathbatch.CosineDistances4WithMagnitudes(
 			vector, centroids[index], centroids[index+1], centroids[index+2], centroids[index+3],
 			vectorMagnitude, centroidMagnitudes[index], centroidMagnitudes[index+1], centroidMagnitudes[index+2], centroidMagnitudes[index+3],
 		)
@@ -478,7 +479,7 @@ func nearestCosineCentroidContext(
 		}
 	}
 	if index+1 < len(centroids) {
-		firstScore, secondScore := mathutil.CosineDistances2WithMagnitudes(
+		firstScore, secondScore := mathbatch.CosineDistances2WithMagnitudes(
 			vector, centroids[index], centroids[index+1],
 			vectorMagnitude, centroidMagnitudes[index], centroidMagnitudes[index+1],
 		)

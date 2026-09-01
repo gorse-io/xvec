@@ -6,7 +6,7 @@
 // flags: -mavx -O3
 // source: src/inner_product_batch_fp32_avx.c
 
-package mathutil
+package mathbatch
 
 import "unsafe"
 
