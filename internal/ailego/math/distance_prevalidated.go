@@ -16,8 +16,6 @@ package mathutil
 
 import (
 	"math"
-
-	"github.com/gorse-io/xvec/internal/floats"
 )
 
 // DenseDistance computes a score for two already validated dense vectors.
@@ -28,12 +26,12 @@ type DenseDistance func(left, right []float32) (float32, error)
 // its inputs. It is intended for index hot paths whose storage boundary has
 // already validated every vector.
 func L2SquaredPrevalidated(left, right []float32) (float32, error) {
-	return finiteScore(float64(floats.L2Squared(left, right)))
+	return finiteScore(float64(squaredEuclidean(left, right)))
 }
 
 // InnerProductPrevalidated computes inner product without validating inputs.
 func InnerProductPrevalidated(left, right []float32) (float32, error) {
-	return finiteScore(float64(floats.InnerProduct(left, right)))
+	return finiteScore(float64(innerProduct(left, right)))
 }
 
 // CosineDistancePrevalidated computes cosine distance without validating inputs.
@@ -44,7 +42,7 @@ func CosineDistancePrevalidated(left, right []float32) (float32, error) {
 // L2MagnitudePrevalidated computes a vector magnitude without validating its
 // components. It is intended for indexes that cache norms at ingestion time.
 func L2MagnitudePrevalidated(vector []float32) (float32, error) {
-	norm := floats.InnerProduct(vector, vector)
+	norm := innerProduct(vector, vector)
 	if norm < 0 {
 		norm = 0
 	}
@@ -61,7 +59,7 @@ func CosineDistanceWithMagnitudesPrevalidated(left, right []float32, leftMagnitu
 	if leftMagnitude == 0 || rightMagnitude == 0 {
 		return 1, nil
 	}
-	cosine := floats.InnerProduct(left, right) / (leftMagnitude * rightMagnitude)
+	cosine := innerProduct(left, right) / (leftMagnitude * rightMagnitude)
 	cosine = min(1, max(-1, cosine))
 	return finiteScore(float64(1 - cosine))
 }
@@ -73,7 +71,7 @@ func CosineDistances2WithMagnitudesPrevalidated(
 	query, first, second []float32,
 	queryMagnitude, firstMagnitude, secondMagnitude float32,
 ) (firstDistance, secondDistance float32, err error) {
-	firstProduct, secondProduct := floats.InnerProducts2(query, first, second)
+	firstProduct, secondProduct := innerProducts2(query, first, second)
 	firstDistance, err = cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude)
 	if err != nil {
 		return 0, 0, err
@@ -92,7 +90,7 @@ func CosineDistances4WithMagnitudesPrevalidated(
 	query, first, second, third, fourth []float32,
 	queryMagnitude, firstMagnitude, secondMagnitude, thirdMagnitude, fourthMagnitude float32,
 ) (firstDistance, secondDistance, thirdDistance, fourthDistance float32, err error) {
-	firstProduct, secondProduct, thirdProduct, fourthProduct := floats.InnerProducts4(query, first, second, third, fourth)
+	firstProduct, secondProduct, thirdProduct, fourthProduct := innerProducts4(query, first, second, third, fourth)
 	firstDistance, err = cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude)
 	if err != nil {
 		return 0, 0, 0, 0, err

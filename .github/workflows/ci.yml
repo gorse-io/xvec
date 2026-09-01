@@ -98,6 +98,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-user
       - name: Test RISC-V RVV
-        run: make -C internal/floats test-rvv
+        run: make -C internal/ailego/math test-rvv
       - name: Test LoongArch LASX
-        run: make -C internal/floats test-lasx
+        run: make -C internal/ailego/math test-lasx
