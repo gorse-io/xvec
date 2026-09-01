@@ -159,7 +159,7 @@ func (i *DenseFlatIndex) Add(ctx context.Context, key uint64, vector []float32) 
 	if len(vector) != i.dimension {
 		return fmt.Errorf("%w: got %d, want %d", ErrInvalidDimension, len(vector), i.dimension)
 	}
-	if _, err := mathutil.L2Squared(vector, vector); err != nil {
+	if err := mathutil.ValidateDense(vector, i.dimension); err != nil {
 		return fmt.Errorf("core: validate dense Flat vector: %w", err)
 	}
 	i.mu.Lock()
@@ -210,15 +210,32 @@ func (i *DenseFlatIndex) search(ctx context.Context, query []float32, options Se
 	if ctx == nil {
 		return nil, errors.New("core: nil dense Flat search context")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(query) != i.dimension {
 		return nil, fmt.Errorf("%w: query has %d, want %d", ErrInvalidDimension, len(query), i.dimension)
 	}
+	if err := mathutil.ValidateDense(query, i.dimension); err != nil {
+		return nil, fmt.Errorf("core: validate dense Flat query: %w", err)
+	}
+	if requirePositiveTopK {
+		if err := options.Validate(); err != nil {
+			return nil, err
+		}
+	} else if options.TopK < 0 {
+		return nil, errors.New("core: negative top-k")
+	}
+	distance, err := i.metric.PrevalidatedDistance()
+	if err != nil {
+		return nil, err
+	}
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return topKCandidatesWithOptions(ctx, i.metric, query, options, len(i.keys), func(position int) Candidate {
+	return topKPrevalidatedCandidatesWithOptions(ctx, i.metric, distance, query, options, len(i.keys), func(position int) Candidate {
 		start := position * i.dimension
 		return Candidate{Key: i.keys[position], Vector: i.vectors[start : start+i.dimension]}
-	}, requirePositiveTopK)
+	})
 }
 
 // DenseFlatIndexBuilder is a one-shot builder. The built index remains
@@ -623,10 +640,14 @@ func (i *DenseFlatIndex) SearchGroups(ctx context.Context, query []float32, opti
 	if len(query) != i.dimension {
 		return nil, fmt.Errorf("%w: query has %d, want %d", ErrInvalidDimension, len(query), i.dimension)
 	}
-	if _, err := i.metric.Compute(query, query); err != nil {
+	if err := mathutil.ValidateDense(query, i.dimension); err != nil {
 		return nil, fmt.Errorf("core: invalid dense group-by query: %w", err)
 	}
 	if err := options.Validate(); err != nil {
+		return nil, err
+	}
+	distance, err := i.metric.PrevalidatedDistance()
+	if err != nil {
 		return nil, err
 	}
 
@@ -641,10 +662,7 @@ func (i *DenseFlatIndex) SearchGroups(ctx context.Context, query []float32, opti
 			continue
 		}
 		start := position * i.dimension
-		score, err := i.metric.Compute(i.vectors[start:start+i.dimension], query)
-		if err != nil {
-			return nil, fmt.Errorf("core: score dense group candidate %d (key %d): %w", position, key, err)
-		}
+		score := distance(i.vectors[start:start+i.dimension], query)
 		if !scoreWithinRadius(i.metric, score, options.Radius) {
 			continue
 		}

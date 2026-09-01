@@ -923,10 +923,7 @@ func (i *VamanaIndex) graphDistance(left, right []float32) (float32, error) {
 			return 0, err
 		}
 	}
-	score, err := distance(left, right)
-	if err != nil {
-		return 0, err
-	}
+	score := distance(left, right)
 	if i.options.Metric == MetricIP {
 		return -score, nil
 	}
@@ -937,7 +934,7 @@ func (i *VamanaIndex) graphDistanceAt(left, right int) (float32, error) {
 	if i.options.Metric == MetricCosine {
 		return mathutil.CosineDistanceWithMagnitudesPrevalidated(
 			i.vectorAt(left), i.vectorAt(right), i.vectorMagnitudes[left], i.vectorMagnitudes[right],
-		)
+		), nil
 	}
 	return i.graphDistance(i.vectorAt(left), i.vectorAt(right))
 }
@@ -946,9 +943,9 @@ func (i *VamanaIndex) queryDistanceAt(query []float32, queryMagnitude float32, p
 	if i.options.Metric == MetricCosine {
 		return mathutil.CosineDistanceWithMagnitudesPrevalidated(
 			query, i.vectorAt(position), queryMagnitude, i.vectorMagnitudes[position],
-		)
+		), nil
 	}
-	return i.distance(query, i.vectorAt(position))
+	return i.distance(query, i.vectorAt(position)), nil
 }
 
 func (i *VamanaIndex) cacheCosineMagnitudes(ctx context.Context, workers int) error {
@@ -958,11 +955,7 @@ func (i *VamanaIndex) cacheCosineMagnitudes(ctx context.Context, workers int) er
 	}
 	i.vectorMagnitudes = make([]float32, len(i.keys))
 	if err := parallel.ParallelFor(ctx, len(i.keys), workers, func(_ context.Context, position int) error {
-		magnitude, err := mathutil.L2MagnitudePrevalidated(i.vectorAt(position))
-		if err != nil {
-			return fmt.Errorf("core: cache Vamana vector magnitude %d: %w", position, err)
-		}
-		i.vectorMagnitudes[position] = magnitude
+		i.vectorMagnitudes[position] = mathutil.L2MagnitudePrevalidated(i.vectorAt(position))
 		return nil
 	}); err != nil {
 		return err
@@ -1193,7 +1186,7 @@ func (i *VamanaIndex) searchVamana(ctx context.Context, query []float32, options
 	if len(query) != i.dimension {
 		return nil, fmt.Errorf("%w: query has %d, want %d", ErrInvalidDimension, len(query), i.dimension)
 	}
-	if _, err := i.options.Metric.Compute(query, query); err != nil {
+	if err := mathutil.ValidateDense(query, i.dimension); err != nil {
 		return nil, fmt.Errorf("core: validate Vamana query: %w", err)
 	}
 
@@ -1204,17 +1197,13 @@ func (i *VamanaIndex) searchVamana(ctx context.Context, query []float32, options
 	}
 	queryMagnitude := float32(0)
 	if i.options.Metric == MetricCosine {
-		var err error
-		queryMagnitude, err = mathutil.L2MagnitudePrevalidated(query)
-		if err != nil {
-			return nil, fmt.Errorf("core: prepare Vamana query: %w", err)
-		}
+		queryMagnitude = mathutil.L2MagnitudePrevalidated(query)
 	}
 	if len(i.keys) <= DefaultVamanaBruteForceThreshold {
 		var candidateMagnitude float32
 		distance := i.distance
 		if i.options.Metric == MetricCosine {
-			distance = func(candidate, query []float32) (float32, error) {
+			distance = func(candidate, query []float32) float32 {
 				return mathutil.CosineDistanceWithMagnitudesPrevalidated(candidate, query, candidateMagnitude, queryMagnitude)
 			}
 		}
@@ -1363,11 +1352,7 @@ func (i *VamanaIndex) Add(ctx context.Context, key uint64, vector []float32) err
 	working.keys = append(working.keys, key)
 	working.vectors = append(working.vectors, vector...)
 	if working.options.Metric == MetricCosine {
-		magnitude, err := mathutil.L2MagnitudePrevalidated(vector)
-		if err != nil {
-			return fmt.Errorf("core: cache incremental Vamana vector magnitude: %w", err)
-		}
-		working.vectorMagnitudes = append(working.vectorMagnitudes, magnitude)
+		working.vectorMagnitudes = append(working.vectorMagnitudes, mathutil.L2MagnitudePrevalidated(vector))
 	}
 	working.neighbors = append(working.neighbors, nil)
 	working.neighborDistances = append(working.neighborDistances, nil)

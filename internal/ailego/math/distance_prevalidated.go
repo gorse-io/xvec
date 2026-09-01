@@ -20,48 +20,49 @@ import (
 
 // DenseDistance computes a score for two already validated dense vectors.
 // Callers must guarantee equal, non-zero dimensions and finite components.
-type DenseDistance func(left, right []float32) (float32, error)
+// The returned score is unchecked and may be non-finite if arithmetic overflows.
+type DenseDistance func(left, right []float32) float32
 
 // L2SquaredPrevalidated computes squared Euclidean distance without validating
 // its inputs. It is intended for index hot paths whose storage boundary has
 // already validated every vector.
-func L2SquaredPrevalidated(left, right []float32) (float32, error) {
-	return finiteScore(float64(squaredEuclidean(left, right)))
+func L2SquaredPrevalidated(left, right []float32) float32 {
+	return squaredEuclidean(left, right)
 }
 
 // InnerProductPrevalidated computes inner product without validating inputs.
-func InnerProductPrevalidated(left, right []float32) (float32, error) {
-	return finiteScore(float64(innerProduct(left, right)))
+func InnerProductPrevalidated(left, right []float32) float32 {
+	return innerProduct(left, right)
 }
 
 // CosineDistancePrevalidated computes cosine distance without validating inputs.
-func CosineDistancePrevalidated(left, right []float32) (float32, error) {
-	return finiteScore(float64(cosineDistance(left, right)))
+func CosineDistancePrevalidated(left, right []float32) float32 {
+	return cosineDistance(left, right)
 }
 
 // L2MagnitudePrevalidated computes a vector magnitude without validating its
 // components. It is intended for indexes that cache norms at ingestion time.
-func L2MagnitudePrevalidated(vector []float32) (float32, error) {
+func L2MagnitudePrevalidated(vector []float32) float32 {
 	norm := innerProduct(vector, vector)
 	if norm < 0 {
 		norm = 0
 	}
-	return finiteScore(math.Sqrt(float64(norm)))
+	return float32(math.Sqrt(float64(norm)))
 }
 
 // CosineDistanceWithMagnitudesPrevalidated computes cosine distance while
 // reusing magnitudes cached by an index. This reduces every candidate score to
 // one dot product, matching the normalized-vector hot path used by zvec.
-func CosineDistanceWithMagnitudesPrevalidated(left, right []float32, leftMagnitude, rightMagnitude float32) (float32, error) {
+func CosineDistanceWithMagnitudesPrevalidated(left, right []float32, leftMagnitude, rightMagnitude float32) float32 {
 	if leftMagnitude == 0 && rightMagnitude == 0 {
-		return 0, nil
+		return 0
 	}
 	if leftMagnitude == 0 || rightMagnitude == 0 {
-		return 1, nil
+		return 1
 	}
 	cosine := innerProduct(left, right) / (leftMagnitude * rightMagnitude)
 	cosine = min(1, max(-1, cosine))
-	return finiteScore(float64(1 - cosine))
+	return 1 - cosine
 }
 
 // CosineDistances2WithMagnitudesPrevalidated computes cosine distance from one
@@ -70,17 +71,10 @@ func CosineDistanceWithMagnitudesPrevalidated(left, right []float32, leftMagnitu
 func CosineDistances2WithMagnitudesPrevalidated(
 	query, first, second []float32,
 	queryMagnitude, firstMagnitude, secondMagnitude float32,
-) (firstDistance, secondDistance float32, err error) {
+) (firstDistance, secondDistance float32) {
 	firstProduct, secondProduct := innerProducts2(query, first, second)
-	firstDistance, err = cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude)
-	if err != nil {
-		return 0, 0, err
-	}
-	secondDistance, err = cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude)
-	if err != nil {
-		return 0, 0, err
-	}
-	return firstDistance, secondDistance, nil
+	return cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude),
+		cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude)
 }
 
 // CosineDistances4WithMagnitudesPrevalidated computes cosine distance from one
@@ -89,40 +83,27 @@ func CosineDistances2WithMagnitudesPrevalidated(
 func CosineDistances4WithMagnitudesPrevalidated(
 	query, first, second, third, fourth []float32,
 	queryMagnitude, firstMagnitude, secondMagnitude, thirdMagnitude, fourthMagnitude float32,
-) (firstDistance, secondDistance, thirdDistance, fourthDistance float32, err error) {
+) (firstDistance, secondDistance, thirdDistance, fourthDistance float32) {
 	firstProduct, secondProduct, thirdProduct, fourthProduct := innerProducts4(query, first, second, third, fourth)
-	firstDistance, err = cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude)
-	if err != nil {
-		return 0, 0, 0, 0, err
-	}
-	secondDistance, err = cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude)
-	if err != nil {
-		return 0, 0, 0, 0, err
-	}
-	thirdDistance, err = cosineDistanceFromProduct(thirdProduct, queryMagnitude, thirdMagnitude)
-	if err != nil {
-		return 0, 0, 0, 0, err
-	}
-	fourthDistance, err = cosineDistanceFromProduct(fourthProduct, queryMagnitude, fourthMagnitude)
-	if err != nil {
-		return 0, 0, 0, 0, err
-	}
-	return firstDistance, secondDistance, thirdDistance, fourthDistance, nil
+	return cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude),
+		cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude),
+		cosineDistanceFromProduct(thirdProduct, queryMagnitude, thirdMagnitude),
+		cosineDistanceFromProduct(fourthProduct, queryMagnitude, fourthMagnitude)
 }
 
-func cosineDistanceFromProduct(product, leftMagnitude, rightMagnitude float32) (float32, error) {
+func cosineDistanceFromProduct(product, leftMagnitude, rightMagnitude float32) float32 {
 	if leftMagnitude == 0 && rightMagnitude == 0 {
-		return 0, nil
+		return 0
 	}
 	if leftMagnitude == 0 || rightMagnitude == 0 {
-		return 1, nil
+		return 1
 	}
 	cosine := product / (leftMagnitude * rightMagnitude)
 	cosine = min(1, max(-1, cosine))
-	return finiteScore(float64(1 - cosine))
+	return 1 - cosine
 }
 
 // MIPSL2SquaredPrevalidated computes MIPS-to-L2 distance without validating inputs.
-func MIPSL2SquaredPrevalidated(left, right []float32) (float32, error) {
-	return finiteScore(float64(mipsL2Squared(left, right)))
+func MIPSL2SquaredPrevalidated(left, right []float32) float32 {
+	return mipsL2Squared(left, right)
 }

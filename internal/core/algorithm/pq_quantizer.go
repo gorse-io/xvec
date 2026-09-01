@@ -784,7 +784,7 @@ func (m *PQModel) subspaceScore(vector []float32, centroid, start, end int) (flo
 			return 0, err
 		}
 	}
-	return distance(vector[start:end], pivot)
+	return distance(vector[start:end], pivot), nil
 }
 
 // PQCode stores one unsigned 8-bit centroid ID per chunk.
@@ -850,10 +850,7 @@ func initializePQKMC2(ctx context.Context, vectors [][]float32, clusters int, me
 						return nil, err
 					}
 				}
-				score, err := distance(centroid, vectors[vectorIndex])
-				if err != nil {
-					return nil, err
-				}
+				score := distance(centroid, vectors[vectorIndex])
 				if metric == MetricIP {
 					score = -score
 				}

@@ -384,7 +384,7 @@ func TestHNSWSmallIndexUsesPrevalidatedDistance(t *testing.T) {
 	require.NoError(t, err)
 
 	calls := 0
-	index.distance = func(left, right []float32) (float32, error) {
+	index.distance = func(left, right []float32) float32 {
 		calls++
 		return mathutil.L2SquaredPrevalidated(left, right)
 	}
@@ -397,14 +397,15 @@ func TestHNSWSmallIndexUsesPrevalidatedDistance(t *testing.T) {
 	require.Equal(t, index.Len(), calls)
 }
 
-func TestHNSWBuildPropagatesPrevalidatedDistanceOverflow(t *testing.T) {
+func TestHNSWBuildAllowsUncheckedDistanceOverflow(t *testing.T) {
 	builder, err := NewHNSWBuilder(2, DefaultHNSWBuildOptions(MetricIP))
 	require.NoError(t, err)
 	large := []float32{math.MaxFloat32, math.MaxFloat32}
 	require.NoError(t, builder.Add(context.Background(), 1, large))
 	require.NoError(t, builder.Add(context.Background(), 2, large))
-	_, err = builder.Build(context.Background())
-	require.ErrorIs(t, err, mathutil.ErrNonFiniteVector)
+	index, err := builder.Build(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 2, index.Len())
 }
 
 func TestHNSWLevelSamplingDeterministicAndBounded(t *testing.T) {

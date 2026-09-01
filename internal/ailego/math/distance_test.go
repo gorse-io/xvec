@@ -117,6 +117,16 @@ func TestDenseMetricValidation(t *testing.T) {
 	}
 }
 
+func TestValidateDense(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, ValidateDense([]float32{1, 2}, 2))
+	require.ErrorIs(t, ValidateDense([]float32{1}, 2), ErrDimensionMismatch)
+	require.ErrorIs(t, ValidateDense(nil, 0), ErrEmptyVector)
+	require.ErrorIs(t, ValidateDense([]float32{float32(math.NaN())}, 1), ErrNonFiniteVector)
+	require.ErrorIs(t, ValidateDense([]float32{float32(math.Inf(1))}, 1), ErrNonFiniteVector)
+}
+
 func TestCosineDistanceAvoidsNormProductOverflowAndUnderflow(t *testing.T) {
 	t.Parallel()
 
@@ -144,8 +154,7 @@ func TestCosineDistanceAvoidsNormProductOverflowAndUnderflow(t *testing.T) {
 			checked, err := CosineDistance(test.left, test.right)
 			require.NoError(t, err)
 			require.InDelta(t, test.expected, checked, 1e-6)
-			prevalidated, err := CosineDistancePrevalidated(test.left, test.right)
-			require.NoError(t, err)
+			prevalidated := CosineDistancePrevalidated(test.left, test.right)
 			require.InDelta(t, test.expected, prevalidated, 1e-6)
 		})
 	}
@@ -159,8 +168,7 @@ func TestDenseMetricsUseFloat32Accumulation(t *testing.T) {
 	checked, err := InnerProduct(left, right)
 	require.NoError(t, err)
 	require.Zero(t, checked)
-	prevalidated, err := InnerProductPrevalidated(left, right)
-	require.NoError(t, err)
+	prevalidated := InnerProductPrevalidated(left, right)
 	require.Zero(t, prevalidated)
 }
 
@@ -181,17 +189,15 @@ func TestPrevalidatedDenseDistanceKernelsMatchCheckedMetrics(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			expected, err := test.checked(left, right)
 			require.NoError(t, err)
-			actual, err := test.prechecked(left, right)
-			require.NoError(t, err)
+			actual := test.prechecked(left, right)
 			require.Equal(t, expected, actual)
 			require.Zero(t, testing.AllocsPerRun(100, func() {
-				benchmarkDenseScore, benchmarkDenseErr = test.prechecked(left, right)
+				benchmarkDenseScore = test.prechecked(left, right)
 			}))
 		})
 	}
 	large := []float32{math.MaxFloat32, math.MaxFloat32}
-	_, err := InnerProductPrevalidated(large, large)
-	require.ErrorIs(t, err, ErrNonFiniteVector)
+	require.True(t, math.IsInf(float64(InnerProductPrevalidated(large, large)), 1))
 }
 
 func TestCosineDistanceWithCachedMagnitudes(t *testing.T) {
@@ -204,12 +210,9 @@ func TestCosineDistanceWithCachedMagnitudes(t *testing.T) {
 		{left: []float32{0, 0, 0}, right: []float32{0, 0, 0}},
 		{left: []float32{0, 0, 0}, right: []float32{1, 0, 0}},
 	} {
-		leftMagnitude, err := L2MagnitudePrevalidated(test.left)
-		require.NoError(t, err)
-		rightMagnitude, err := L2MagnitudePrevalidated(test.right)
-		require.NoError(t, err)
-		got, err := CosineDistanceWithMagnitudesPrevalidated(test.left, test.right, leftMagnitude, rightMagnitude)
-		require.NoError(t, err)
+		leftMagnitude := L2MagnitudePrevalidated(test.left)
+		rightMagnitude := L2MagnitudePrevalidated(test.right)
+		got := CosineDistanceWithMagnitudesPrevalidated(test.left, test.right, leftMagnitude, rightMagnitude)
 		want, err := CosineDistance(test.left, test.right)
 		require.NoError(t, err)
 		require.InDelta(t, want, got, 1e-6)
@@ -217,7 +220,6 @@ func TestCosineDistanceWithCachedMagnitudes(t *testing.T) {
 }
 
 var benchmarkDenseScore float32
-var benchmarkDenseErr error
 
 func TestSparseInnerProduct(t *testing.T) {
 	t.Parallel()

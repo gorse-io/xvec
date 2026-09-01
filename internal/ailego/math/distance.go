@@ -147,6 +147,22 @@ func validateDenseFinite(left, right []float32) error {
 	return nil
 }
 
+// ValidateDense checks one dense vector at an API or storage boundary.
+func ValidateDense(vector []float32, dimension int) error {
+	if len(vector) != dimension {
+		return ErrDimensionMismatch
+	}
+	if len(vector) == 0 {
+		return ErrEmptyVector
+	}
+	for _, value := range vector {
+		if !finite32(value) {
+			return ErrNonFiniteVector
+		}
+	}
+	return nil
+}
+
 func validateSparse(indices []uint32, values []float32) error {
 	if len(indices) != len(values) {
 		return ErrDimensionMismatch

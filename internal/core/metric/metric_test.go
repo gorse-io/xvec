@@ -21,8 +21,7 @@ func TestMetricComputeOrderingAndValidation(t *testing.T) {
 		require.NoError(t, err)
 		distance, err := value.PrevalidatedDistance()
 		require.NoError(t, err)
-		actual, err := distance(left, right)
-		require.NoError(t, err)
+		actual := distance(left, right)
 		require.Equal(t, expected, actual)
 	}
 
