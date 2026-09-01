@@ -50,12 +50,12 @@ fht-neon:
 distance-avx:
 	$(RM) -r $(GOAT_OUTPUT_DIR)
 	mkdir -p $(GOAT_OUTPUT_DIR)
-	$(GOAT) src/euclidean_distance_matrix_fp32_sse.c --target $(GOAT_TARGET_AMD64) -O3 -msse2 -e=-fno-jump-tables -o $(GOAT_OUTPUT_DIR)
-	$(GOAT) src/inner_product_matrix_fp32_sse.c --target $(GOAT_TARGET_AMD64) -O3 -msse2 -e=-fno-jump-tables -o $(GOAT_OUTPUT_DIR)
-	$(GOAT) src/mips_euclidean_distance_matrix_fp32_sse.c --target $(GOAT_TARGET_AMD64) -O3 -msse2 -e=-fno-jump-tables -o $(GOAT_OUTPUT_DIR)
-	$(GOAT) src/euclidean_distance_matrix_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -e=-fno-jump-tables -o $(GOAT_OUTPUT_DIR)
-	$(GOAT) src/inner_product_matrix_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -e=-fno-jump-tables -o $(GOAT_OUTPUT_DIR)
-	$(GOAT) src/mips_euclidean_distance_matrix_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -e=-fno-jump-tables -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/euclidean_distance_matrix_fp32_sse.c --target $(GOAT_TARGET_AMD64) -O3 -msse2 -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/inner_product_matrix_fp32_sse.c --target $(GOAT_TARGET_AMD64) -O3 -msse2 -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/mips_euclidean_distance_matrix_fp32_sse.c --target $(GOAT_TARGET_AMD64) -O3 -msse2 -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/euclidean_distance_matrix_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/inner_product_matrix_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/mips_euclidean_distance_matrix_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/distance_utility_batch_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 

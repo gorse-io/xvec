@@ -3,7 +3,7 @@
 // versions:
 // 	clang   21.1.8 (6ubuntu1)
 // 	objdump 2.46
-// flags: -mavx -fno-jump-tables -O3
+// flags: -mavx -O3
 // source: src/euclidean_distance_matrix_fp32_avx.c
 
 TEXT ·squared_euclidean_distance_fp32_avx(SB), $8-28

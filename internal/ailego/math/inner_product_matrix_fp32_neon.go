@@ -11,4 +11,4 @@ package mathutil
 import "unsafe"
 
 //go:noescape
-func inner_product_fp32_neon(lhs, rhs unsafe.Pointer, size int64, out unsafe.Pointer)
+func inner_product_fp32_neon(lhs, rhs unsafe.Pointer, size int64) (result float32)

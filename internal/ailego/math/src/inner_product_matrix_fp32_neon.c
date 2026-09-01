@@ -15,8 +15,7 @@
 #include <arm_neon.h>
 #include <stdint.h>
 
-void inner_product_fp32_neon(const float *lhs, const float *rhs, int64_t size,
-                              float *out) {
+float inner_product_fp32_neon(const float *lhs, const float *rhs, int64_t size) {
     const float *last = lhs + size;
     const float *last_aligned = lhs + ((size >> 3) << 3);
 
@@ -44,5 +43,5 @@ void inner_product_fp32_neon(const float *lhs, const float *rhs, int64_t size,
         case 1:
             result += lhs[0] * rhs[0];
     }
-    *out = result;
+    return result;
 }

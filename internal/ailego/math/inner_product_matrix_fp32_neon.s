@@ -6,11 +6,10 @@
 // flags: -O3
 // source: src/inner_product_matrix_fp32_neon.c
 
-TEXT ·inner_product_fp32_neon(SB), $0-32
+TEXT ·inner_product_fp32_neon(SB), $0-28
 	MOVD lhs+0(FP), R0
 	MOVD rhs+8(FP), R1
 	MOVD size+16(FP), R2
-	MOVD out+24(FP), R3
 	WORD $0xd37ef448     // lsl	x8, x2, #2
 	WORD $0xf27be909     // ands	x9, x8, #0xffffffffffffffe0
 	WORD $0x8b080008     // add	x8, x0, x8
@@ -63,7 +62,7 @@ LBB0_10:
 	WORD $0x1f020020 // fmadd	s0, s1, s2, s0
 
 LBB0_11:
-	WORD $0xbd000060 // str	s0, [x3]
+	FMOVS F0, result+24(FP)
 	RET
 
 LBB0_12:

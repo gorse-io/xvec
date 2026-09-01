@@ -15,8 +15,8 @@
 #include <arm_neon.h>
 #include <stdint.h>
 
-void squared_euclidean_distance_fp32_neon(const float *lhs, const float *rhs,
-                                           int64_t size, float *out) {
+float squared_euclidean_distance_fp32_neon(const float *lhs, const float *rhs,
+                                           int64_t size) {
     const float *last = lhs + size;
     const float *last_aligned = lhs + ((size >> 3) << 3);
 
@@ -53,5 +53,5 @@ void squared_euclidean_distance_fp32_neon(const float *lhs, const float *rhs,
             result += difference * difference;
         }
     }
-    *out = result;
+    return result;
 }

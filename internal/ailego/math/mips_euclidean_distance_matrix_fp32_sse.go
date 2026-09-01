@@ -3,7 +3,7 @@
 // versions:
 // 	clang   21.1.8 (6ubuntu1)
 // 	objdump 2.46
-// flags: -msse2 -fno-jump-tables -O3
+// flags: -msse2 -O3
 // source: src/mips_euclidean_distance_matrix_fp32_sse.c
 
 package mathutil

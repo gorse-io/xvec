@@ -36,18 +36,14 @@ func squaredEuclideanNEON(left, right []float32) float32 {
 	if len(left) < 4 {
 		return squaredEuclideanScalar(left, right)
 	}
-	var result float32
-	squared_euclidean_distance_fp32_neon(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
-	return result
+	return squared_euclidean_distance_fp32_neon(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
 }
 
 func innerProductNEON(left, right []float32) float32 {
 	if len(left) < 4 {
 		return innerProductScalar(left, right)
 	}
-	var result float32
-	inner_product_fp32_neon(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&result))
-	return result
+	return inner_product_fp32_neon(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
 }
 
 func dotNormsNEON(left, right []float32) (dot, leftNorm, rightNorm float32) {
