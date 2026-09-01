@@ -15,6 +15,7 @@
 package segment
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -255,11 +256,7 @@ func (s *WriteSegment) writeImmutable(ctx context.Context, collectionDir, relati
 		return nil, errors.New("db: cannot seal an empty segment")
 	}
 	metadata := segmentMetadata(s.id, s.docs, []string{relativeName})
-	encoded, err := encodeSegment(metadata, s.docs)
-	if err != nil {
-		return nil, err
-	}
-	if err := common.WriteImmutableSnapshot(ctx, filepath.Join(collectionDir, filepath.FromSlash(relativeName)), encoded); err != nil {
+	if err := writeSegmentSnapshot(ctx, filepath.Join(collectionDir, filepath.FromSlash(relativeName)), metadata, s.docs); err != nil {
 		return nil, err
 	}
 	if seal {
@@ -379,35 +376,92 @@ func storedDocumentsMemoryBytes(documents []StoredDocument) uint64 {
 	return total
 }
 
-func encodeSegment(metadata common.SegmentMetadata, docs []StoredDocument) ([]byte, error) {
+func writeSegmentSnapshot(ctx context.Context, name string, metadata common.SegmentMetadata, docs []StoredDocument) error {
+	payloadLength, err := segmentPayloadLength(metadata, docs)
+	if err != nil {
+		return err
+	}
+	return common.WriteImmutableFile(ctx, name, func(file *os.File) error {
+		var placeholder [segmentHeaderSize]byte
+		if err := writeSegmentBytes(file, placeholder[:]); err != nil {
+			return err
+		}
+		writer := bufio.NewWriterSize(file, 4<<20)
+		var payloadCRC uint32
+		for index, doc := range docs {
+			if index&255 == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+			recordHeader := encodeSegmentRecordHeader(doc)
+			for _, part := range [][]byte{recordHeader[:], []byte(doc.PrimaryKey), doc.Payload} {
+				payloadCRC = hashutil.UpdateCRC32C(payloadCRC, part)
+				if err := writeSegmentBytes(writer, part); err != nil {
+					return err
+				}
+			}
+		}
+		if err := writer.Flush(); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		header := encodeSegmentHeader(metadata, payloadLength, payloadCRC)
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		return writeSegmentBytes(file, header[:])
+	})
+}
+
+func writeSegmentBytes(writer io.Writer, contents []byte) error {
+	for len(contents) != 0 {
+		written, err := writer.Write(contents)
+		if written > 0 {
+			contents = contents[written:]
+		}
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}
+
+func segmentPayloadLength(metadata common.SegmentMetadata, docs []StoredDocument) (uint64, error) {
 	if len(docs) == 0 || metadata.DocCount != uint64(len(docs)) {
-		return nil, errors.New("db: invalid segment document count")
+		return 0, errors.New("db: invalid segment document count")
 	}
 	var payloadLength uint64
 	for index, doc := range docs {
 		if err := validateStoredDocument(doc, metadata.MinDocID+uint64(index)); err != nil {
-			return nil, err
+			return 0, err
 		}
 		payloadLength += segmentRecordHeaderSize + uint64(len(doc.PrimaryKey)) + uint64(len(doc.Payload))
 		if payloadLength > maxSegmentPayloadSize || payloadLength > uint64(math.MaxInt) {
-			return nil, errors.New("db: segment payload is too large")
+			return 0, errors.New("db: segment payload is too large")
 		}
 	}
-	payload := make([]byte, 0, int(payloadLength))
-	var recordHeader [segmentRecordHeaderSize]byte
-	for _, doc := range docs {
-		clear(recordHeader[:])
-		binary.LittleEndian.PutUint64(recordHeader[:8], doc.DocID)
-		binary.LittleEndian.PutUint32(recordHeader[8:12], uint32(len(doc.PrimaryKey)))
-		binary.LittleEndian.PutUint32(recordHeader[12:16], uint32(len(doc.Payload)))
-		crc := hashutil.CRC32C([]byte(doc.PrimaryKey))
-		crc = hashutil.UpdateCRC32C(crc, doc.Payload)
-		binary.LittleEndian.PutUint32(recordHeader[16:20], crc)
-		payload = append(payload, recordHeader[:]...)
-		payload = append(payload, doc.PrimaryKey...)
-		payload = append(payload, doc.Payload...)
-	}
-	header := make([]byte, segmentHeaderSize)
+	return payloadLength, nil
+}
+
+func encodeSegmentRecordHeader(doc StoredDocument) [segmentRecordHeaderSize]byte {
+	var header [segmentRecordHeaderSize]byte
+	binary.LittleEndian.PutUint64(header[:8], doc.DocID)
+	binary.LittleEndian.PutUint32(header[8:12], uint32(len(doc.PrimaryKey)))
+	binary.LittleEndian.PutUint32(header[12:16], uint32(len(doc.Payload)))
+	crc := hashutil.CRC32C([]byte(doc.PrimaryKey))
+	crc = hashutil.UpdateCRC32C(crc, doc.Payload)
+	binary.LittleEndian.PutUint32(header[16:20], crc)
+	return header
+}
+
+func encodeSegmentHeader(metadata common.SegmentMetadata, payloadLength uint64, payloadCRC uint32) [segmentHeaderSize]byte {
+	var header [segmentHeaderSize]byte
 	copy(header[:8], segmentMagic[:])
 	binary.LittleEndian.PutUint16(header[8:10], segmentCodecVersion)
 	binary.LittleEndian.PutUint16(header[10:12], segmentHeaderSize)
@@ -415,10 +469,26 @@ func encodeSegment(metadata common.SegmentMetadata, docs []StoredDocument) ([]by
 	binary.LittleEndian.PutUint64(header[24:32], metadata.MinDocID)
 	binary.LittleEndian.PutUint64(header[32:40], metadata.MaxDocID)
 	binary.LittleEndian.PutUint64(header[40:48], metadata.DocCount)
-	binary.LittleEndian.PutUint64(header[48:56], uint64(len(payload)))
-	binary.LittleEndian.PutUint32(header[56:60], hashutil.CRC32C(payload))
+	binary.LittleEndian.PutUint64(header[48:56], payloadLength)
+	binary.LittleEndian.PutUint32(header[56:60], payloadCRC)
 	binary.LittleEndian.PutUint32(header[60:64], hashutil.CRC32C(header[:60]))
-	return append(header, payload...), nil
+	return header
+}
+
+func encodeSegment(metadata common.SegmentMetadata, docs []StoredDocument) ([]byte, error) {
+	payloadLength, err := segmentPayloadLength(metadata, docs)
+	if err != nil {
+		return nil, err
+	}
+	payload := make([]byte, 0, int(payloadLength))
+	for _, doc := range docs {
+		recordHeader := encodeSegmentRecordHeader(doc)
+		payload = append(payload, recordHeader[:]...)
+		payload = append(payload, doc.PrimaryKey...)
+		payload = append(payload, doc.Payload...)
+	}
+	header := encodeSegmentHeader(metadata, uint64(len(payload)), hashutil.CRC32C(payload))
+	return append(header[:], payload...), nil
 }
 
 func decodeSegment(ctx context.Context, encoded []byte) (common.SegmentMetadata, []StoredDocument, error) {

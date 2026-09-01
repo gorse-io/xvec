@@ -255,3 +255,14 @@ func TestSegmentPayloadCRC(t *testing.T) {
 	require.False(t, bytes.Equal(encoded[:8], make([]byte, 8)),
 		"segment magic is empty")
 }
+
+func TestStreamedSegmentEncodingMatchesCodec(t *testing.T) {
+	metadata, docs := sampleSegmentData()
+	want, err := encodeSegment(metadata, docs)
+	require.NoError(t, err)
+	name := filepath.Join(t.TempDir(), "streamed.seg")
+	require.NoError(t, writeSegmentSnapshot(context.Background(), name, metadata, docs))
+	got, err := os.ReadFile(name)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}

@@ -114,6 +114,62 @@ func WriteImmutableSnapshot(ctx context.Context, name string, encoded []byte) er
 	return nil
 }
 
+// WriteImmutableFile atomically publishes a file produced directly into a
+// temporary file. The callback may seek within the file before it returns;
+// the completed file is synced before installation and directory publication.
+func WriteImmutableFile(ctx context.Context, name string, write func(*os.File) error) (err error) {
+	if ctx == nil {
+		return errors.New("db: nil immutable file context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if name == "" {
+		return errors.New("db: empty immutable file path")
+	}
+	if write == nil {
+		return errors.New("db: nil immutable file writer")
+	}
+	dir := filepath.Dir(name)
+	if err := EnsureDirectorySynced(dir); err != nil {
+		return fmt.Errorf("db: create immutable file directory: %w", err)
+	}
+	file, err := os.CreateTemp(dir, ".immutable-*.tmp")
+	if err != nil {
+		return fmt.Errorf("db: create immutable temp file: %w", err)
+	}
+	temp := file.Name()
+	defer func() {
+		if file != nil {
+			closeErr := file.Close()
+			if err == nil && closeErr != nil {
+				err = closeErr
+			}
+		}
+		_ = os.Remove(temp)
+	}()
+	if err := write(file); err != nil {
+		return fmt.Errorf("db: write immutable temp file: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("db: sync immutable temp file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("db: close immutable temp file: %w", err)
+	}
+	file = nil
+	if err := installFileNoReplace(temp, name); err != nil {
+		return fmt.Errorf("db: install immutable file: %w", err)
+	}
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("db: sync immutable file directory: %w", err)
+	}
+	return nil
+}
+
 func EnsureDirectorySynced(dir string) error {
 	var missing []string
 	current := dir
