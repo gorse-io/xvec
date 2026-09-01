@@ -6,7 +6,7 @@ title: Flat Index
 
 This benchmark compares xvec with zvec-go v0.7.0 using the same
 VectorDBBench-compatible `Performance1536D50K` workload. The xvec run used commit
-`f01518f`, which includes the Flat index optimizations described by the commit history.
+`46bb378`, which includes the Flat index optimizations described by the commit history.
 
 ## Configuration
 
@@ -30,21 +30,21 @@ VectorDBBench-compatible `Performance1536D50K` workload. The xvec run used commi
 
 | Build metric | xvec | zvec-go | xvec / zvec-go |
 | --- | ---: | ---: | ---: |
-| Insert time | **3.677 s** | 4.525 s | 0.81x |
-| Optimize time | 4.638 s | **2.533 s** | 1.83x |
-| Total load time | 8.321 s | **7.127 s** | 1.17x |
-| Insert throughput | **13,598.20 rows/s** | 11,048.60 rows/s | 1.23x |
+| Insert time | **3.525 s** | 4.525 s | 0.78x |
+| Optimize time | 3.256 s | **2.533 s** | 1.29x |
+| Total load time | **6.805 s** | 7.127 s | 0.95x |
+| Insert throughput | **14,184.60 rows/s** | 11,048.60 rows/s | 1.28x |
 
 - Index query
 
 | Search metric | xvec | zvec-go | xvec / zvec-go |
 | --- | ---: | ---: | ---: |
 | Recall@100 | **1.00000** | **1.00000** | 1.00x |
-| Serial QPS | **49.41** | 41.98 | 1.18x |
-| Serial average latency | **20.079 ms** | 23.787 ms | 0.84x |
-| Serial p95 latency | **25.752 ms** | 30.123 ms | 0.85x |
-| Serial p99 latency | **31.755 ms** | 37.953 ms | 0.84x |
-| 8-concurrency QPS | 77.32 | **87.58** | 0.88x |
-| 8-concurrency average latency | 103.326 ms | **91.049 ms** | 1.14x |
-| 8-concurrency p95 latency | 137.676 ms | **119.438 ms** | 1.15x |
-| 8-concurrency p99 latency | 166.717 ms | **147.548 ms** | 1.13x |
+| Serial QPS | **50.29** | 41.98 | 1.20x |
+| Serial average latency | **19.703 ms** | 23.787 ms | 0.83x |
+| Serial p95 latency | **24.255 ms** | 30.123 ms | 0.81x |
+| Serial p99 latency | **29.860 ms** | 37.953 ms | 0.79x |
+| 8-concurrency QPS | 77.09 | **87.58** | 0.88x |
+| 8-concurrency average latency | 103.612 ms | **91.049 ms** | 1.14x |
+| 8-concurrency p95 latency | 137.655 ms | **119.438 ms** | 1.15x |
+| 8-concurrency p99 latency | 171.419 ms | **147.548 ms** | 1.16x |
