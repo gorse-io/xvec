@@ -16,9 +16,9 @@ LOONG64_QEMU_FLAGS ?= -cpu max
 TEST_RVV_BINARY ?= .test-rvv.riscv64.test
 TEST_LASX_BINARY ?= .test-lasx.loong64.test
 
-.PHONY: generate avx avx2 avx512 neon rvv lasx fht-avx2 fht-avx512 fht-neon distance-avx distance-avx512 distance-neon distance-rvv distance-lasx clean test-rvv test-lasx
+.PHONY: generate avx avx2 avx512 neon rvv lasx fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-avx512 distance-neon distance-rvv distance-lasx clean test-rvv test-lasx
 
-generate: fht-avx2 fht-avx512 fht-neon distance-avx distance-avx512 distance-neon distance-rvv distance-lasx clean
+generate: fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-avx512 distance-neon distance-rvv distance-lasx clean
 
 avx: distance-avx
 
@@ -28,9 +28,9 @@ avx512: fht-avx512 distance-avx512
 
 neon: fht-neon distance-neon
 
-rvv: distance-rvv
+rvv: fht-rvv distance-rvv
 
-lasx: distance-lasx
+lasx: fht-lasx distance-lasx
 
 fht-avx2:
 	mkdir -p $(GOAT_OUTPUT_DIR)
@@ -46,6 +46,16 @@ fht-neon:
 	mkdir -p $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/fht_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/fht_neon.go $(GOAT_OUTPUT_DIR)/fht_neon.s .
+
+fht-rvv:
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/fht_rvv.c --target $(GOAT_TARGET_RVV) -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/fht_rvv.go $(GOAT_OUTPUT_DIR)/fht_rvv.s .
+
+fht-lasx:
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/fht_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/fht_lasx.go $(GOAT_OUTPUT_DIR)/fht_lasx.s .
 
 distance-avx:
 	$(RM) -r $(GOAT_OUTPUT_DIR)
