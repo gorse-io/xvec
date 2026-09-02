@@ -8,6 +8,7 @@ require (
 	github.com/blevesearch/mmap-go v1.2.0
 	github.com/cockroachdb/pebble/v2 v2.1.6
 	github.com/gofrs/flock v0.13.0
+	github.com/parquet-go/bitpack v1.0.0
 	github.com/parquet-go/parquet-go v0.30.1
 	github.com/stretchr/testify v1.11.1
 	github.com/zvec-ai/zvec-go v0.7.0
@@ -45,7 +46,6 @@ require (
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/minio/minlz v1.0.1-0.20250507153514-87eb42fe8882 // indirect
 	github.com/mschoch/smat v0.2.0 // indirect
-	github.com/parquet-go/bitpack v1.0.0 // indirect
 	github.com/parquet-go/jsonlite v1.0.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
