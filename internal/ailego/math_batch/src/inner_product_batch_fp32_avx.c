@@ -85,3 +85,72 @@ void xvec_avx_batch_inner_products4(float *query, float *first, float *second,
         *fourth_output += query[index] * fourth[index];
     }
 }
+
+void xvec_avx_batch_squared_euclidean_distances2(
+        float *query, float *first, float *second, int64_t size,
+        float *first_output, float *second_output) {
+    int64_t vectors = size / 8;
+    int64_t remain = size % 8;
+    __m256 first_sum = _mm256_setzero_ps();
+    __m256 second_sum = _mm256_setzero_ps();
+    for (int64_t index = 0; index < vectors; index++) {
+        __m256 query_value = _mm256_loadu_ps(query);
+        __m256 first_difference = _mm256_sub_ps(query_value, _mm256_loadu_ps(first));
+        __m256 second_difference = _mm256_sub_ps(query_value, _mm256_loadu_ps(second));
+        first_sum = _mm256_add_ps(first_sum, _mm256_mul_ps(first_difference, first_difference));
+        second_sum = _mm256_add_ps(second_sum, _mm256_mul_ps(second_difference, second_difference));
+        query += 8;
+        first += 8;
+        second += 8;
+    }
+    *first_output = reduce256(first_sum);
+    *second_output = reduce256(second_sum);
+    for (int64_t index = 0; index < remain; index++) {
+        float first_difference = query[index] - first[index];
+        float second_difference = query[index] - second[index];
+        *first_output += first_difference * first_difference;
+        *second_output += second_difference * second_difference;
+    }
+}
+
+void xvec_avx_batch_squared_euclidean_distances4(
+        float *query, float *first, float *second, float *third, float *fourth,
+        int64_t size, float *first_output, float *second_output,
+        float *third_output, float *fourth_output) {
+    int64_t vectors = size / 8;
+    int64_t remain = size % 8;
+    __m256 first_sum = _mm256_setzero_ps();
+    __m256 second_sum = _mm256_setzero_ps();
+    __m256 third_sum = _mm256_setzero_ps();
+    __m256 fourth_sum = _mm256_setzero_ps();
+    for (int64_t index = 0; index < vectors; index++) {
+        __m256 query_value = _mm256_loadu_ps(query);
+        __m256 first_difference = _mm256_sub_ps(query_value, _mm256_loadu_ps(first));
+        __m256 second_difference = _mm256_sub_ps(query_value, _mm256_loadu_ps(second));
+        __m256 third_difference = _mm256_sub_ps(query_value, _mm256_loadu_ps(third));
+        __m256 fourth_difference = _mm256_sub_ps(query_value, _mm256_loadu_ps(fourth));
+        first_sum = _mm256_add_ps(first_sum, _mm256_mul_ps(first_difference, first_difference));
+        second_sum = _mm256_add_ps(second_sum, _mm256_mul_ps(second_difference, second_difference));
+        third_sum = _mm256_add_ps(third_sum, _mm256_mul_ps(third_difference, third_difference));
+        fourth_sum = _mm256_add_ps(fourth_sum, _mm256_mul_ps(fourth_difference, fourth_difference));
+        query += 8;
+        first += 8;
+        second += 8;
+        third += 8;
+        fourth += 8;
+    }
+    *first_output = reduce256(first_sum);
+    *second_output = reduce256(second_sum);
+    *third_output = reduce256(third_sum);
+    *fourth_output = reduce256(fourth_sum);
+    for (int64_t index = 0; index < remain; index++) {
+        float first_difference = query[index] - first[index];
+        float second_difference = query[index] - second[index];
+        float third_difference = query[index] - third[index];
+        float fourth_difference = query[index] - fourth[index];
+        *first_output += first_difference * first_difference;
+        *second_output += second_difference * second_difference;
+        *third_output += third_difference * third_difference;
+        *fourth_output += fourth_difference * fourth_difference;
+    }
+}

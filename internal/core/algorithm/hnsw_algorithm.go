@@ -622,6 +622,12 @@ func (i *HNSWIndex) computeDistancePairAt(query, first, second int) (float32, fl
 		)
 		return firstScore, secondScore, nil
 	}
+	if i.options.Metric == MetricL2 || i.options.Metric == MetricIP {
+		firstScore, secondScore := denseDistances2(
+			i.options.Metric, i.vectorAt(query), i.vectorAt(first), i.vectorAt(second),
+		)
+		return firstScore, secondScore, nil
+	}
 	firstScore, err := i.computeDistanceAt(query, first)
 	if err != nil {
 		return 0, 0, err

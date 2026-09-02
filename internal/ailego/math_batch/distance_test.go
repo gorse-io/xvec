@@ -81,6 +81,51 @@ func innerProductOracle(left, right []float32) (sum float32) {
 	return
 }
 
+func TestSquaredEuclideanDistancesMatchFloat32Oracle(t *testing.T) {
+	t.Parallel()
+	for _, dimension := range []int{1, 3, 4, 7, 8, 15, 16, 17, 127, 128, 129, 768, 1536} {
+		t.Run(fmt.Sprintf("dimension_%d", dimension), func(t *testing.T) {
+			random := rand.New(rand.NewSource(int64(dimension * 7)))
+			vectors := make([][]float32, 5)
+			for vector := range vectors {
+				vectors[vector] = make([]float32, dimension+1)
+				for index := 1; index <= dimension; index++ {
+					vectors[vector][index] = random.Float32()*2 - 1
+				}
+				vectors[vector] = vectors[vector][1:]
+			}
+
+			first, second := SquaredEuclideanDistances2(vectors[0], vectors[1], vectors[2])
+			requireFloat32Close(t, squaredEuclideanOracle(vectors[0], vectors[1]), first)
+			requireFloat32Close(t, squaredEuclideanOracle(vectors[0], vectors[2]), second)
+			firstEuclidean, secondEuclidean := EuclideanDistances2(vectors[0], vectors[1], vectors[2])
+			requireFloat32Close(t, float32(math.Sqrt(float64(squaredEuclideanOracle(vectors[0], vectors[1])))), firstEuclidean)
+			requireFloat32Close(t, float32(math.Sqrt(float64(squaredEuclideanOracle(vectors[0], vectors[2])))), secondEuclidean)
+
+			first, second, third, fourth := SquaredEuclideanDistances4(
+				vectors[0], vectors[1], vectors[2], vectors[3], vectors[4],
+			)
+			for index, actual := range []float32{first, second, third, fourth} {
+				requireFloat32Close(t, squaredEuclideanOracle(vectors[0], vectors[index+1]), actual)
+			}
+			firstEuclidean, secondEuclidean, thirdEuclidean, fourthEuclidean := EuclideanDistances4(
+				vectors[0], vectors[1], vectors[2], vectors[3], vectors[4],
+			)
+			for index, actual := range []float32{firstEuclidean, secondEuclidean, thirdEuclidean, fourthEuclidean} {
+				requireFloat32Close(t, float32(math.Sqrt(float64(squaredEuclideanOracle(vectors[0], vectors[index+1])))), actual)
+			}
+		})
+	}
+}
+
+func squaredEuclideanOracle(left, right []float32) (sum float32) {
+	for index, value := range left {
+		difference := value - right[index]
+		sum += difference * difference
+	}
+	return
+}
+
 func TestInnerProducts2MatchFloat32Oracle(t *testing.T) {
 	t.Parallel()
 	for _, dimension := range []int{1, 7, 8, 15, 16, 17, 127, 128, 129, 768, 1536} {
@@ -167,6 +212,39 @@ func BenchmarkInnerProducts(b *testing.B) {
 		b.Run(fmt.Sprintf("Batch4/%d", dimension), func(b *testing.B) {
 			for b.Loop() {
 				benchmarkFirst, benchmarkSecond, benchmarkThird, benchmarkFourth = innerProducts4(query, candidate, candidate, candidate, candidate)
+			}
+		})
+	}
+}
+
+func testBatchKernels(t *testing.T, dot2 batch2Kernel, dot4 batch4Kernel, l2Squared2 batch2Kernel, l2Squared4 batch4Kernel) {
+	t.Helper()
+	for _, dimension := range []int{1, 3, 4, 7, 8, 15, 16, 17, 127, 128, 129, 768, 1536} {
+		t.Run(fmt.Sprintf("dimension_%d", dimension), func(t *testing.T) {
+			random := rand.New(rand.NewSource(int64(dimension * 11)))
+			vectors := make([][]float32, 5)
+			for vector := range vectors {
+				vectors[vector] = make([]float32, dimension+1)
+				for index := 1; index <= dimension; index++ {
+					vectors[vector][index] = random.Float32()*2 - 1
+				}
+				vectors[vector] = vectors[vector][1:]
+			}
+
+			first, second := dot2(vectors[0], vectors[1], vectors[2])
+			requireFloat32Close(t, innerProductOracle(vectors[0], vectors[1]), first)
+			requireFloat32Close(t, innerProductOracle(vectors[0], vectors[2]), second)
+			first, second, third, fourth := dot4(vectors[0], vectors[1], vectors[2], vectors[3], vectors[4])
+			for index, actual := range []float32{first, second, third, fourth} {
+				requireFloat32Close(t, innerProductOracle(vectors[0], vectors[index+1]), actual)
+			}
+
+			first, second = l2Squared2(vectors[0], vectors[1], vectors[2])
+			requireFloat32Close(t, squaredEuclideanOracle(vectors[0], vectors[1]), first)
+			requireFloat32Close(t, squaredEuclideanOracle(vectors[0], vectors[2]), second)
+			first, second, third, fourth = l2Squared4(vectors[0], vectors[1], vectors[2], vectors[3], vectors[4])
+			for index, actual := range []float32{first, second, third, fourth} {
+				requireFloat32Close(t, squaredEuclideanOracle(vectors[0], vectors[index+1]), actual)
 			}
 		})
 	}
