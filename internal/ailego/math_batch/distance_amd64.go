@@ -28,6 +28,8 @@ func init() {
 	if cpu.X86.HasAVX {
 		kernels.dot2 = innerProducts2AVX
 		kernels.dot4 = innerProducts4AVX
+		kernels.l2Squared2 = squaredEuclideanDistances2AVX
+		kernels.l2Squared4 = squaredEuclideanDistances4AVX
 	}
 }
 
@@ -51,6 +53,30 @@ func innerProducts4AVX(query, first, second, third, fourth []float32) (firstProd
 		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)),
 		unsafe.Pointer(&firstProduct), unsafe.Pointer(&secondProduct),
 		unsafe.Pointer(&thirdProduct), unsafe.Pointer(&fourthProduct),
+	)
+	return
+}
+
+func squaredEuclideanDistances2AVX(query, first, second []float32) (firstDistance, secondDistance float32) {
+	if len(query) < 8 {
+		return squaredEuclideanDistances2Scalar(query, first, second)
+	}
+	xvec_avx_batch_squared_euclidean_distances2(
+		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]), int64(len(query)),
+		unsafe.Pointer(&firstDistance), unsafe.Pointer(&secondDistance),
+	)
+	return
+}
+
+func squaredEuclideanDistances4AVX(query, first, second, third, fourth []float32) (firstDistance, secondDistance, thirdDistance, fourthDistance float32) {
+	if len(query) < 8 {
+		return squaredEuclideanDistances4Scalar(query, first, second, third, fourth)
+	}
+	xvec_avx_batch_squared_euclidean_distances4(
+		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)),
+		unsafe.Pointer(&firstDistance), unsafe.Pointer(&secondDistance),
+		unsafe.Pointer(&thirdDistance), unsafe.Pointer(&fourthDistance),
 	)
 	return
 }

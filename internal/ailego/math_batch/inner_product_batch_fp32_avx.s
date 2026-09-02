@@ -469,3 +469,483 @@ LBB1_4:
 	POPQ DI
 	POPQ DI
 	RET
+
+TEXT ·xvec_avx_batch_squared_euclidean_distances2(SB), $0-48
+	MOVQ query+0(FP), DI
+	MOVQ first+8(FP), SI
+	MOVQ second+16(FP), DX
+	MOVQ size+24(FP), CX
+	MOVQ first_output+32(FP), R8
+	MOVQ second_output+40(FP), R9
+	BYTE $0x55                             // pushq	%rbp
+	WORD $0x8948; BYTE $0xe5               // movq	%rsp, %rbp
+	WORD $0x5641                           // pushq	%r14
+	BYTE $0x53                             // pushq	%rbx
+	LONG $0xf8e48348                       // andq	$-8, %rsp
+	LONG $0x07518d4c                       // leaq	7(%rcx), %r10
+	WORD $0x8548; BYTE $0xc9               // testq	%rcx, %rcx
+	LONG $0xd1490f4c                       // cmovnsq	%rcx, %r10
+	WORD $0x894d; BYTE $0xd3               // movq	%r10, %r11
+	LONG $0xf8e38349                       // andq	$-8, %r11
+	WORD $0x8948; BYTE $0xc8               // movq	%rcx, %rax
+	WORD $0x294c; BYTE $0xd8               // subq	%r11, %rax
+	LONG $0xc057f8c5                       // vxorps	%xmm0, %xmm0, %xmm0
+	LONG $0x08f98348                       // cmpq	$8, %rcx
+	JL   LBB2_1
+	LONG $0x03fac149                       // sarq	$3, %r10
+	QUAD $0xfffffffffff8bb49; WORD $0x7fff // movabsq	$9223372036854775800, %r11      # imm = 0x7FFFFFFFFFFFFFF8
+	WORD $0x214c; BYTE $0xd9               // andq	%r11, %rcx
+	LONG $0x08f98348                       // cmpq	$8, %rcx
+	JNE  LBB2_9
+	LONG $0xc957f0c5                       // vxorps	%xmm1, %xmm1, %xmm1
+	WORD $0x8948; BYTE $0xf9               // movq	%rdi, %rcx
+	WORD $0x8949; BYTE $0xf3               // movq	%rsi, %r11
+	WORD $0x8948; BYTE $0xd3               // movq	%rdx, %rbx
+	JMP  LBB2_4
+
+LBB2_1:
+	LONG $0xc957f0c5 // vxorps	%xmm1, %xmm1, %xmm1
+	JMP  LBB2_7
+
+LBB2_9:
+	QUAD $0xfffffffffffebe49; WORD $0x0fff // movabsq	$1152921504606846974, %r14      # imm = 0xFFFFFFFFFFFFFFE
+	WORD $0x214d; BYTE $0xd6               // andq	%r10, %r14
+	LONG $0xc957f0c5                       // vxorps	%xmm1, %xmm1, %xmm1
+	WORD $0x8948; BYTE $0xf9               // movq	%rdi, %rcx
+	WORD $0x8949; BYTE $0xf3               // movq	%rsi, %r11
+	WORD $0x8948; BYTE $0xd3               // movq	%rdx, %rbx
+
+LBB2_10:
+	LONG $0x1110fcc5               // vmovups	(%rcx), %ymm2
+	LONG $0x5910fcc5; BYTE $0x20   // vmovups	32(%rcx), %ymm3
+	LONG $0x5c6cc1c4; BYTE $0x23   // vsubps	(%r11), %ymm2, %ymm4
+	LONG $0x135cecc5               // vsubps	(%rbx), %ymm2, %ymm2
+	LONG $0xe459dcc5               // vmulps	%ymm4, %ymm4, %ymm4
+	LONG $0xcc58f4c5               // vaddps	%ymm4, %ymm1, %ymm1
+	LONG $0xd259ecc5               // vmulps	%ymm2, %ymm2, %ymm2
+	LONG $0xc258fcc5               // vaddps	%ymm2, %ymm0, %ymm0
+	LONG $0x5c64c1c4; WORD $0x2053 // vsubps	32(%r11), %ymm3, %ymm2
+	LONG $0x5b5ce4c5; BYTE $0x20   // vsubps	32(%rbx), %ymm3, %ymm3
+	LONG $0xd259ecc5               // vmulps	%ymm2, %ymm2, %ymm2
+	LONG $0xca58f4c5               // vaddps	%ymm2, %ymm1, %ymm1
+	LONG $0xd359e4c5               // vmulps	%ymm3, %ymm3, %ymm2
+	LONG $0xc258fcc5               // vaddps	%ymm2, %ymm0, %ymm0
+	LONG $0x40c18348               // addq	$64, %rcx
+	LONG $0x40c38349               // addq	$64, %r11
+	LONG $0x40c38348               // addq	$64, %rbx
+	LONG $0xfec68349               // addq	$-2, %r14
+	JNE  LBB2_10
+
+LBB2_4:
+	LONG $0x01c2f641             // testb	$1, %r10b
+	JE   LBB2_6
+	LONG $0x1110fcc5             // vmovups	(%rcx), %ymm2
+	LONG $0x5c6cc1c4; BYTE $0x1b // vsubps	(%r11), %ymm2, %ymm3
+	LONG $0x135cecc5             // vsubps	(%rbx), %ymm2, %ymm2
+	LONG $0xdb59e4c5             // vmulps	%ymm3, %ymm3, %ymm3
+	LONG $0xcb58f4c5             // vaddps	%ymm3, %ymm1, %ymm1
+	LONG $0xd259ecc5             // vmulps	%ymm2, %ymm2, %ymm2
+	LONG $0xc258fcc5             // vaddps	%ymm2, %ymm0, %ymm0
+
+LBB2_6:
+	LONG $0x05e2c149         // shlq	$5, %r10
+	WORD $0x014c; BYTE $0xd7 // addq	%r10, %rdi
+	WORD $0x014c; BYTE $0xd6 // addq	%r10, %rsi
+	WORD $0x014c; BYTE $0xd2 // addq	%r10, %rdx
+
+LBB2_7:
+	LONG $0xd116fac5               // vmovshdup	%xmm1, %xmm2            # xmm2 = xmm1[1,1,3,3]
+	LONG $0xd258f2c5               // vaddss	%xmm2, %xmm1, %xmm2
+	LONG $0xd9c6f1c5; BYTE $0x01   // vshufpd	$1, %xmm1, %xmm1, %xmm3         # xmm3 = xmm1[1,0]
+	LONG $0xd258e2c5               // vaddss	%xmm2, %xmm3, %xmm2
+	LONG $0xd9c6f0c5; BYTE $0xff   // vshufps	$255, %xmm1, %xmm1, %xmm3       # xmm3 = xmm1[3,3,3,3]
+	LONG $0xd258e2c5               // vaddss	%xmm2, %xmm3, %xmm2
+	LONG $0x197de3c4; WORD $0x01c9 // vextractf128	$1, %ymm1, %xmm1
+	LONG $0xd258f2c5               // vaddss	%xmm2, %xmm1, %xmm2
+	LONG $0xd916fac5               // vmovshdup	%xmm1, %xmm3            # xmm3 = xmm1[1,1,3,3]
+	LONG $0xd258e2c5               // vaddss	%xmm2, %xmm3, %xmm2
+	LONG $0xd9c6f1c5; BYTE $0x01   // vshufpd	$1, %xmm1, %xmm1, %xmm3         # xmm3 = xmm1[1,0]
+	LONG $0xd258e2c5               // vaddss	%xmm2, %xmm3, %xmm2
+	LONG $0xc9c6f0c5; BYTE $0xff   // vshufps	$255, %xmm1, %xmm1, %xmm1       # xmm1 = xmm1[3,3,3,3]
+	LONG $0xca58f2c5               // vaddss	%xmm2, %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x08   // vmovss	%xmm1, (%r8)
+	LONG $0xc816fac5               // vmovshdup	%xmm0, %xmm1            # xmm1 = xmm0[1,1,3,3]
+	LONG $0xc958fac5               // vaddss	%xmm1, %xmm0, %xmm1
+	LONG $0xd0c6f9c5; BYTE $0x01   // vshufpd	$1, %xmm0, %xmm0, %xmm2         # xmm2 = xmm0[1,0]
+	LONG $0xc958eac5               // vaddss	%xmm1, %xmm2, %xmm1
+	LONG $0xd0c6f8c5; BYTE $0xff   // vshufps	$255, %xmm0, %xmm0, %xmm2       # xmm2 = xmm0[3,3,3,3]
+	LONG $0xc958eac5               // vaddss	%xmm1, %xmm2, %xmm1
+	LONG $0x197de3c4; WORD $0x01c0 // vextractf128	$1, %ymm0, %xmm0
+	LONG $0xc958fac5               // vaddss	%xmm1, %xmm0, %xmm1
+	LONG $0xd016fac5               // vmovshdup	%xmm0, %xmm2            # xmm2 = xmm0[1,1,3,3]
+	LONG $0xc958eac5               // vaddss	%xmm1, %xmm2, %xmm1
+	LONG $0xd0c6f9c5; BYTE $0x01   // vshufpd	$1, %xmm0, %xmm0, %xmm2         # xmm2 = xmm0[1,0]
+	LONG $0xc958eac5               // vaddss	%xmm1, %xmm2, %xmm1
+	LONG $0xc0c6f8c5; BYTE $0xff   // vshufps	$255, %xmm0, %xmm0, %xmm0       # xmm0 = xmm0[3,3,3,3]
+	LONG $0xc158fac5               // vaddss	%xmm1, %xmm0, %xmm0
+	LONG $0x117ac1c4; BYTE $0x01   // vmovss	%xmm0, (%r9)
+	WORD $0x8548; BYTE $0xc0       // testq	%rax, %rax
+	JLE  LBB2_8
+	LONG $0x0710fac5               // vmovss	(%rdi), %xmm0                   # xmm0 = mem[0],zero,zero,zero
+	LONG $0x0e5cfac5               // vsubss	(%rsi), %xmm0, %xmm1
+	LONG $0x025cfac5               // vsubss	(%rdx), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x5872c1c4; BYTE $0x08   // vaddss	(%r8), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x08   // vmovss	%xmm1, (%r8)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x587ac1c4; BYTE $0x01   // vaddss	(%r9), %xmm0, %xmm0
+	LONG $0x117ac1c4; BYTE $0x01   // vmovss	%xmm0, (%r9)
+	LONG $0x01f88348               // cmpq	$1, %rax
+	JE   LBB2_8
+	LONG $0x4710fac5; BYTE $0x04   // vmovss	4(%rdi), %xmm0                  # xmm0 = mem[0],zero,zero,zero
+	LONG $0x4e5cfac5; BYTE $0x04   // vsubss	4(%rsi), %xmm0, %xmm1
+	LONG $0x425cfac5; BYTE $0x04   // vsubss	4(%rdx), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x5872c1c4; BYTE $0x08   // vaddss	(%r8), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x08   // vmovss	%xmm1, (%r8)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x587ac1c4; BYTE $0x01   // vaddss	(%r9), %xmm0, %xmm0
+	LONG $0x117ac1c4; BYTE $0x01   // vmovss	%xmm0, (%r9)
+	LONG $0x02f88348               // cmpq	$2, %rax
+	JE   LBB2_8
+	LONG $0x4710fac5; BYTE $0x08   // vmovss	8(%rdi), %xmm0                  # xmm0 = mem[0],zero,zero,zero
+	LONG $0x4e5cfac5; BYTE $0x08   // vsubss	8(%rsi), %xmm0, %xmm1
+	LONG $0x425cfac5; BYTE $0x08   // vsubss	8(%rdx), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x5872c1c4; BYTE $0x08   // vaddss	(%r8), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x08   // vmovss	%xmm1, (%r8)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x587ac1c4; BYTE $0x01   // vaddss	(%r9), %xmm0, %xmm0
+	LONG $0x117ac1c4; BYTE $0x01   // vmovss	%xmm0, (%r9)
+	LONG $0x03f88348               // cmpq	$3, %rax
+	JE   LBB2_8
+	LONG $0x4710fac5; BYTE $0x0c   // vmovss	12(%rdi), %xmm0                 # xmm0 = mem[0],zero,zero,zero
+	LONG $0x4e5cfac5; BYTE $0x0c   // vsubss	12(%rsi), %xmm0, %xmm1
+	LONG $0x425cfac5; BYTE $0x0c   // vsubss	12(%rdx), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x5872c1c4; BYTE $0x08   // vaddss	(%r8), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x08   // vmovss	%xmm1, (%r8)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x587ac1c4; BYTE $0x01   // vaddss	(%r9), %xmm0, %xmm0
+	LONG $0x117ac1c4; BYTE $0x01   // vmovss	%xmm0, (%r9)
+	LONG $0x04f88348               // cmpq	$4, %rax
+	JE   LBB2_8
+	LONG $0x4710fac5; BYTE $0x10   // vmovss	16(%rdi), %xmm0                 # xmm0 = mem[0],zero,zero,zero
+	LONG $0x4e5cfac5; BYTE $0x10   // vsubss	16(%rsi), %xmm0, %xmm1
+	LONG $0x425cfac5; BYTE $0x10   // vsubss	16(%rdx), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x5872c1c4; BYTE $0x08   // vaddss	(%r8), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x08   // vmovss	%xmm1, (%r8)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x587ac1c4; BYTE $0x01   // vaddss	(%r9), %xmm0, %xmm0
+	LONG $0x117ac1c4; BYTE $0x01   // vmovss	%xmm0, (%r9)
+	LONG $0x05f88348               // cmpq	$5, %rax
+	JE   LBB2_8
+	LONG $0x4710fac5; BYTE $0x14   // vmovss	20(%rdi), %xmm0                 # xmm0 = mem[0],zero,zero,zero
+	LONG $0x4e5cfac5; BYTE $0x14   // vsubss	20(%rsi), %xmm0, %xmm1
+	LONG $0x425cfac5; BYTE $0x14   // vsubss	20(%rdx), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x5872c1c4; BYTE $0x08   // vaddss	(%r8), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x08   // vmovss	%xmm1, (%r8)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x587ac1c4; BYTE $0x01   // vaddss	(%r9), %xmm0, %xmm0
+	LONG $0x117ac1c4; BYTE $0x01   // vmovss	%xmm0, (%r9)
+	LONG $0x06f88348               // cmpq	$6, %rax
+	JE   LBB2_8
+	LONG $0x4710fac5; BYTE $0x18   // vmovss	24(%rdi), %xmm0                 # xmm0 = mem[0],zero,zero,zero
+	LONG $0x4e5cfac5; BYTE $0x18   // vsubss	24(%rsi), %xmm0, %xmm1
+	LONG $0x425cfac5; BYTE $0x18   // vsubss	24(%rdx), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x5872c1c4; BYTE $0x08   // vaddss	(%r8), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x08   // vmovss	%xmm1, (%r8)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x587ac1c4; BYTE $0x01   // vaddss	(%r9), %xmm0, %xmm0
+	LONG $0x117ac1c4; BYTE $0x01   // vmovss	%xmm0, (%r9)
+
+LBB2_8:
+	LONG $0xf0658d48         // leaq	-16(%rbp), %rsp
+	BYTE $0x5b               // popq	%rbx
+	WORD $0x5e41             // popq	%r14
+	BYTE $0x5d               // popq	%rbp
+	WORD $0xf8c5; BYTE $0x77 // vzeroupper
+	RET
+
+TEXT ·xvec_avx_batch_squared_euclidean_distances4(SB), $0-80
+	MOVQ  query+0(FP), DI
+	MOVQ  first+8(FP), SI
+	MOVQ  second+16(FP), DX
+	MOVQ  third+24(FP), CX
+	MOVQ  fourth+32(FP), R8
+	MOVQ  size+40(FP), R9
+	PUSHQ fourth_output+72(FP)
+	PUSHQ third_output+64(FP)
+	PUSHQ second_output+56(FP)
+	PUSHQ first_output+48(FP)
+	PUSHQ $0
+	BYTE  $0x55                // pushq	%rbp
+	WORD  $0x8948; BYTE $0xe5  // movq	%rsp, %rbp
+	WORD  $0x5741              // pushq	%r15
+	WORD  $0x5641              // pushq	%r14
+	WORD  $0x5441              // pushq	%r12
+	BYTE  $0x53                // pushq	%rbx
+	LONG  $0xf8e48348          // andq	$-8, %rsp
+	LONG  $0x28458b48          // movq	40(%rbp), %rax
+	LONG  $0x20558b4c          // movq	32(%rbp), %r10
+	LONG  $0x185d8b4c          // movq	24(%rbp), %r11
+	LONG  $0x105d8b48          // movq	16(%rbp), %rbx
+	LONG  $0x07798d4d          // leaq	7(%r9), %r15
+	WORD  $0x854d; BYTE $0xc9  // testq	%r9, %r9
+	LONG  $0xf9490f4d          // cmovnsq	%r9, %r15
+	WORD  $0x894d; BYTE $0xfc  // movq	%r15, %r12
+	LONG  $0xf8e48349          // andq	$-8, %r12
+	WORD  $0x894d; BYTE $0xce  // movq	%r9, %r14
+	WORD  $0x294d; BYTE $0xe6  // subq	%r12, %r14
+	LONG  $0xc057f8c5          // vxorps	%xmm0, %xmm0, %xmm0
+	LONG  $0x08f98349          // cmpq	$8, %r9
+	JL    LBB3_1
+	LONG  $0x03ffc149          // sarq	$3, %r15
+	LONG  $0xdb57e0c5          // vxorps	%xmm3, %xmm3, %xmm3
+	WORD  $0x3145; BYTE $0xc9  // xorl	%r9d, %r9d
+	WORD  $0x894d; BYTE $0xfc  // movq	%r15, %r12
+	LONG  $0xd257e8c5          // vxorps	%xmm2, %xmm2, %xmm2
+	LONG  $0xc957f0c5          // vxorps	%xmm1, %xmm1, %xmm1
+
+LBB3_6:
+	LONG $0x107ca1c4; WORD $0x0f24 // vmovups	(%rdi,%r9), %ymm4
+	LONG $0x5c5ca1c4; WORD $0x0e2c // vsubps	(%rsi,%r9), %ymm4, %ymm5
+	LONG $0x5c5ca1c4; WORD $0x0a34 // vsubps	(%rdx,%r9), %ymm4, %ymm6
+	LONG $0x5c5ca1c4; WORD $0x093c // vsubps	(%rcx,%r9), %ymm4, %ymm7
+	LONG $0x5c5c81c4; WORD $0x0824 // vsubps	(%r8,%r9), %ymm4, %ymm4
+	LONG $0xed59d4c5               // vmulps	%ymm5, %ymm5, %ymm5
+	LONG $0xdd58e4c5               // vaddps	%ymm5, %ymm3, %ymm3
+	LONG $0xee59ccc5               // vmulps	%ymm6, %ymm6, %ymm5
+	LONG $0xd558ecc5               // vaddps	%ymm5, %ymm2, %ymm2
+	LONG $0xef59c4c5               // vmulps	%ymm7, %ymm7, %ymm5
+	LONG $0xcd58f4c5               // vaddps	%ymm5, %ymm1, %ymm1
+	LONG $0xe459dcc5               // vmulps	%ymm4, %ymm4, %ymm4
+	LONG $0xc458fcc5               // vaddps	%ymm4, %ymm0, %ymm0
+	LONG $0x20c18349               // addq	$32, %r9
+	WORD $0xff49; BYTE $0xcc       // decq	%r12
+	JNE  LBB3_6
+	LONG $0x05e7c149               // shlq	$5, %r15
+	WORD $0x014c; BYTE $0xff       // addq	%r15, %rdi
+	WORD $0x014c; BYTE $0xfe       // addq	%r15, %rsi
+	WORD $0x014c; BYTE $0xfa       // addq	%r15, %rdx
+	WORD $0x014c; BYTE $0xf9       // addq	%r15, %rcx
+	WORD $0x014d; BYTE $0xf8       // addq	%r15, %r8
+	JMP  LBB3_3
+
+LBB3_1:
+	LONG $0xc957f0c5 // vxorps	%xmm1, %xmm1, %xmm1
+	LONG $0xd257e8c5 // vxorps	%xmm2, %xmm2, %xmm2
+	LONG $0xdb57e0c5 // vxorps	%xmm3, %xmm3, %xmm3
+
+LBB3_3:
+	LONG $0xe316fac5               // vmovshdup	%xmm3, %xmm4            # xmm4 = xmm3[1,1,3,3]
+	LONG $0xe458e2c5               // vaddss	%xmm4, %xmm3, %xmm4
+	LONG $0xebc6e1c5; BYTE $0x01   // vshufpd	$1, %xmm3, %xmm3, %xmm5         # xmm5 = xmm3[1,0]
+	LONG $0xe458d2c5               // vaddss	%xmm4, %xmm5, %xmm4
+	LONG $0xebc6e0c5; BYTE $0xff   // vshufps	$255, %xmm3, %xmm3, %xmm5       # xmm5 = xmm3[3,3,3,3]
+	LONG $0xe458d2c5               // vaddss	%xmm4, %xmm5, %xmm4
+	LONG $0x197de3c4; WORD $0x01db // vextractf128	$1, %ymm3, %xmm3
+	LONG $0xe458e2c5               // vaddss	%xmm4, %xmm3, %xmm4
+	LONG $0xeb16fac5               // vmovshdup	%xmm3, %xmm5            # xmm5 = xmm3[1,1,3,3]
+	LONG $0xe458d2c5               // vaddss	%xmm4, %xmm5, %xmm4
+	LONG $0xebc6e1c5; BYTE $0x01   // vshufpd	$1, %xmm3, %xmm3, %xmm5         # xmm5 = xmm3[1,0]
+	LONG $0xe458d2c5               // vaddss	%xmm4, %xmm5, %xmm4
+	LONG $0xdbc6e0c5; BYTE $0xff   // vshufps	$255, %xmm3, %xmm3, %xmm3       # xmm3 = xmm3[3,3,3,3]
+	LONG $0xdc58e2c5               // vaddss	%xmm4, %xmm3, %xmm3
+	LONG $0x1b11fac5               // vmovss	%xmm3, (%rbx)
+	LONG $0xda16fac5               // vmovshdup	%xmm2, %xmm3            # xmm3 = xmm2[1,1,3,3]
+	LONG $0xdb58eac5               // vaddss	%xmm3, %xmm2, %xmm3
+	LONG $0xe2c6e9c5; BYTE $0x01   // vshufpd	$1, %xmm2, %xmm2, %xmm4         # xmm4 = xmm2[1,0]
+	LONG $0xdb58dac5               // vaddss	%xmm3, %xmm4, %xmm3
+	LONG $0xe2c6e8c5; BYTE $0xff   // vshufps	$255, %xmm2, %xmm2, %xmm4       # xmm4 = xmm2[3,3,3,3]
+	LONG $0xdb58dac5               // vaddss	%xmm3, %xmm4, %xmm3
+	LONG $0x197de3c4; WORD $0x01d2 // vextractf128	$1, %ymm2, %xmm2
+	LONG $0xdb58eac5               // vaddss	%xmm3, %xmm2, %xmm3
+	LONG $0xe216fac5               // vmovshdup	%xmm2, %xmm4            # xmm4 = xmm2[1,1,3,3]
+	LONG $0xdb58dac5               // vaddss	%xmm3, %xmm4, %xmm3
+	LONG $0xe2c6e9c5; BYTE $0x01   // vshufpd	$1, %xmm2, %xmm2, %xmm4         # xmm4 = xmm2[1,0]
+	LONG $0xdb58dac5               // vaddss	%xmm3, %xmm4, %xmm3
+	LONG $0xd2c6e8c5; BYTE $0xff   // vshufps	$255, %xmm2, %xmm2, %xmm2       # xmm2 = xmm2[3,3,3,3]
+	LONG $0xd358eac5               // vaddss	%xmm3, %xmm2, %xmm2
+	LONG $0x117ac1c4; BYTE $0x13   // vmovss	%xmm2, (%r11)
+	LONG $0xd116fac5               // vmovshdup	%xmm1, %xmm2            # xmm2 = xmm1[1,1,3,3]
+	LONG $0xd258f2c5               // vaddss	%xmm2, %xmm1, %xmm2
+	LONG $0xd9c6f1c5; BYTE $0x01   // vshufpd	$1, %xmm1, %xmm1, %xmm3         # xmm3 = xmm1[1,0]
+	LONG $0xd258e2c5               // vaddss	%xmm2, %xmm3, %xmm2
+	LONG $0xd9c6f0c5; BYTE $0xff   // vshufps	$255, %xmm1, %xmm1, %xmm3       # xmm3 = xmm1[3,3,3,3]
+	LONG $0xd258e2c5               // vaddss	%xmm2, %xmm3, %xmm2
+	LONG $0x197de3c4; WORD $0x01c9 // vextractf128	$1, %ymm1, %xmm1
+	LONG $0xd258f2c5               // vaddss	%xmm2, %xmm1, %xmm2
+	LONG $0xd916fac5               // vmovshdup	%xmm1, %xmm3            # xmm3 = xmm1[1,1,3,3]
+	LONG $0xd258e2c5               // vaddss	%xmm2, %xmm3, %xmm2
+	LONG $0xd9c6f1c5; BYTE $0x01   // vshufpd	$1, %xmm1, %xmm1, %xmm3         # xmm3 = xmm1[1,0]
+	LONG $0xd258e2c5               // vaddss	%xmm2, %xmm3, %xmm2
+	LONG $0xc9c6f0c5; BYTE $0xff   // vshufps	$255, %xmm1, %xmm1, %xmm1       # xmm1 = xmm1[3,3,3,3]
+	LONG $0xca58f2c5               // vaddss	%xmm2, %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0a   // vmovss	%xmm1, (%r10)
+	LONG $0xc816fac5               // vmovshdup	%xmm0, %xmm1            # xmm1 = xmm0[1,1,3,3]
+	LONG $0xc958fac5               // vaddss	%xmm1, %xmm0, %xmm1
+	LONG $0xd0c6f9c5; BYTE $0x01   // vshufpd	$1, %xmm0, %xmm0, %xmm2         # xmm2 = xmm0[1,0]
+	LONG $0xc958eac5               // vaddss	%xmm1, %xmm2, %xmm1
+	LONG $0xd0c6f8c5; BYTE $0xff   // vshufps	$255, %xmm0, %xmm0, %xmm2       # xmm2 = xmm0[3,3,3,3]
+	LONG $0xc958eac5               // vaddss	%xmm1, %xmm2, %xmm1
+	LONG $0x197de3c4; WORD $0x01c0 // vextractf128	$1, %ymm0, %xmm0
+	LONG $0xc958fac5               // vaddss	%xmm1, %xmm0, %xmm1
+	LONG $0xd016fac5               // vmovshdup	%xmm0, %xmm2            # xmm2 = xmm0[1,1,3,3]
+	LONG $0xc958eac5               // vaddss	%xmm1, %xmm2, %xmm1
+	LONG $0xd0c6f9c5; BYTE $0x01   // vshufpd	$1, %xmm0, %xmm0, %xmm2         # xmm2 = xmm0[1,0]
+	LONG $0xc958eac5               // vaddss	%xmm1, %xmm2, %xmm1
+	LONG $0xc0c6f8c5; BYTE $0xff   // vshufps	$255, %xmm0, %xmm0, %xmm0       # xmm0 = xmm0[3,3,3,3]
+	LONG $0xc158fac5               // vaddss	%xmm1, %xmm0, %xmm0
+	LONG $0x0011fac5               // vmovss	%xmm0, (%rax)
+	WORD $0x854d; BYTE $0xf6       // testq	%r14, %r14
+	JLE  LBB3_4
+	LONG $0x0710fac5               // vmovss	(%rdi), %xmm0                   # xmm0 = mem[0],zero,zero,zero
+	LONG $0x0e5cfac5               // vsubss	(%rsi), %xmm0, %xmm1
+	LONG $0x125cfac5               // vsubss	(%rdx), %xmm0, %xmm2
+	LONG $0x195cfac5               // vsubss	(%rcx), %xmm0, %xmm3
+	LONG $0x5c7ac1c4; BYTE $0x00   // vsubss	(%r8), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x0b58f2c5               // vaddss	(%rbx), %xmm1, %xmm1
+	LONG $0x0b11fac5               // vmovss	%xmm1, (%rbx)
+	LONG $0xca59eac5               // vmulss	%xmm2, %xmm2, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0b   // vaddss	(%r11), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0b   // vmovss	%xmm1, (%r11)
+	LONG $0xcb59e2c5               // vmulss	%xmm3, %xmm3, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0a   // vaddss	(%r10), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0a   // vmovss	%xmm1, (%r10)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x0058fac5               // vaddss	(%rax), %xmm0, %xmm0
+	LONG $0x0011fac5               // vmovss	%xmm0, (%rax)
+	LONG $0x01fe8349               // cmpq	$1, %r14
+	JE   LBB3_4
+	LONG $0x4710fac5; BYTE $0x04   // vmovss	4(%rdi), %xmm0                  # xmm0 = mem[0],zero,zero,zero
+	LONG $0x4e5cfac5; BYTE $0x04   // vsubss	4(%rsi), %xmm0, %xmm1
+	LONG $0x525cfac5; BYTE $0x04   // vsubss	4(%rdx), %xmm0, %xmm2
+	LONG $0x595cfac5; BYTE $0x04   // vsubss	4(%rcx), %xmm0, %xmm3
+	LONG $0x5c7ac1c4; WORD $0x0440 // vsubss	4(%r8), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x0b58f2c5               // vaddss	(%rbx), %xmm1, %xmm1
+	LONG $0x0b11fac5               // vmovss	%xmm1, (%rbx)
+	LONG $0xca59eac5               // vmulss	%xmm2, %xmm2, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0b   // vaddss	(%r11), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0b   // vmovss	%xmm1, (%r11)
+	LONG $0xcb59e2c5               // vmulss	%xmm3, %xmm3, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0a   // vaddss	(%r10), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0a   // vmovss	%xmm1, (%r10)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x0058fac5               // vaddss	(%rax), %xmm0, %xmm0
+	LONG $0x0011fac5               // vmovss	%xmm0, (%rax)
+	LONG $0x02fe8349               // cmpq	$2, %r14
+	JE   LBB3_4
+	LONG $0x4710fac5; BYTE $0x08   // vmovss	8(%rdi), %xmm0                  # xmm0 = mem[0],zero,zero,zero
+	LONG $0x4e5cfac5; BYTE $0x08   // vsubss	8(%rsi), %xmm0, %xmm1
+	LONG $0x525cfac5; BYTE $0x08   // vsubss	8(%rdx), %xmm0, %xmm2
+	LONG $0x595cfac5; BYTE $0x08   // vsubss	8(%rcx), %xmm0, %xmm3
+	LONG $0x5c7ac1c4; WORD $0x0840 // vsubss	8(%r8), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x0b58f2c5               // vaddss	(%rbx), %xmm1, %xmm1
+	LONG $0x0b11fac5               // vmovss	%xmm1, (%rbx)
+	LONG $0xca59eac5               // vmulss	%xmm2, %xmm2, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0b   // vaddss	(%r11), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0b   // vmovss	%xmm1, (%r11)
+	LONG $0xcb59e2c5               // vmulss	%xmm3, %xmm3, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0a   // vaddss	(%r10), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0a   // vmovss	%xmm1, (%r10)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x0058fac5               // vaddss	(%rax), %xmm0, %xmm0
+	LONG $0x0011fac5               // vmovss	%xmm0, (%rax)
+	LONG $0x03fe8349               // cmpq	$3, %r14
+	JE   LBB3_4
+	LONG $0x4710fac5; BYTE $0x0c   // vmovss	12(%rdi), %xmm0                 # xmm0 = mem[0],zero,zero,zero
+	LONG $0x4e5cfac5; BYTE $0x0c   // vsubss	12(%rsi), %xmm0, %xmm1
+	LONG $0x525cfac5; BYTE $0x0c   // vsubss	12(%rdx), %xmm0, %xmm2
+	LONG $0x595cfac5; BYTE $0x0c   // vsubss	12(%rcx), %xmm0, %xmm3
+	LONG $0x5c7ac1c4; WORD $0x0c40 // vsubss	12(%r8), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x0b58f2c5               // vaddss	(%rbx), %xmm1, %xmm1
+	LONG $0x0b11fac5               // vmovss	%xmm1, (%rbx)
+	LONG $0xca59eac5               // vmulss	%xmm2, %xmm2, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0b   // vaddss	(%r11), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0b   // vmovss	%xmm1, (%r11)
+	LONG $0xcb59e2c5               // vmulss	%xmm3, %xmm3, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0a   // vaddss	(%r10), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0a   // vmovss	%xmm1, (%r10)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x0058fac5               // vaddss	(%rax), %xmm0, %xmm0
+	LONG $0x0011fac5               // vmovss	%xmm0, (%rax)
+	LONG $0x04fe8349               // cmpq	$4, %r14
+	JE   LBB3_4
+	LONG $0x4710fac5; BYTE $0x10   // vmovss	16(%rdi), %xmm0                 # xmm0 = mem[0],zero,zero,zero
+	LONG $0x4e5cfac5; BYTE $0x10   // vsubss	16(%rsi), %xmm0, %xmm1
+	LONG $0x525cfac5; BYTE $0x10   // vsubss	16(%rdx), %xmm0, %xmm2
+	LONG $0x595cfac5; BYTE $0x10   // vsubss	16(%rcx), %xmm0, %xmm3
+	LONG $0x5c7ac1c4; WORD $0x1040 // vsubss	16(%r8), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x0b58f2c5               // vaddss	(%rbx), %xmm1, %xmm1
+	LONG $0x0b11fac5               // vmovss	%xmm1, (%rbx)
+	LONG $0xca59eac5               // vmulss	%xmm2, %xmm2, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0b   // vaddss	(%r11), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0b   // vmovss	%xmm1, (%r11)
+	LONG $0xcb59e2c5               // vmulss	%xmm3, %xmm3, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0a   // vaddss	(%r10), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0a   // vmovss	%xmm1, (%r10)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x0058fac5               // vaddss	(%rax), %xmm0, %xmm0
+	LONG $0x0011fac5               // vmovss	%xmm0, (%rax)
+	LONG $0x05fe8349               // cmpq	$5, %r14
+	JE   LBB3_4
+	LONG $0x4710fac5; BYTE $0x14   // vmovss	20(%rdi), %xmm0                 # xmm0 = mem[0],zero,zero,zero
+	LONG $0x4e5cfac5; BYTE $0x14   // vsubss	20(%rsi), %xmm0, %xmm1
+	LONG $0x525cfac5; BYTE $0x14   // vsubss	20(%rdx), %xmm0, %xmm2
+	LONG $0x595cfac5; BYTE $0x14   // vsubss	20(%rcx), %xmm0, %xmm3
+	LONG $0x5c7ac1c4; WORD $0x1440 // vsubss	20(%r8), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x0b58f2c5               // vaddss	(%rbx), %xmm1, %xmm1
+	LONG $0x0b11fac5               // vmovss	%xmm1, (%rbx)
+	LONG $0xca59eac5               // vmulss	%xmm2, %xmm2, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0b   // vaddss	(%r11), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0b   // vmovss	%xmm1, (%r11)
+	LONG $0xcb59e2c5               // vmulss	%xmm3, %xmm3, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0a   // vaddss	(%r10), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0a   // vmovss	%xmm1, (%r10)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x0058fac5               // vaddss	(%rax), %xmm0, %xmm0
+	LONG $0x0011fac5               // vmovss	%xmm0, (%rax)
+	LONG $0x06fe8349               // cmpq	$6, %r14
+	JE   LBB3_4
+	LONG $0x4710fac5; BYTE $0x18   // vmovss	24(%rdi), %xmm0                 # xmm0 = mem[0],zero,zero,zero
+	LONG $0x4e5cfac5; BYTE $0x18   // vsubss	24(%rsi), %xmm0, %xmm1
+	LONG $0x525cfac5; BYTE $0x18   // vsubss	24(%rdx), %xmm0, %xmm2
+	LONG $0x595cfac5; BYTE $0x18   // vsubss	24(%rcx), %xmm0, %xmm3
+	LONG $0x5c7ac1c4; WORD $0x1840 // vsubss	24(%r8), %xmm0, %xmm0
+	LONG $0xc959f2c5               // vmulss	%xmm1, %xmm1, %xmm1
+	LONG $0x0b58f2c5               // vaddss	(%rbx), %xmm1, %xmm1
+	LONG $0x0b11fac5               // vmovss	%xmm1, (%rbx)
+	LONG $0xca59eac5               // vmulss	%xmm2, %xmm2, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0b   // vaddss	(%r11), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0b   // vmovss	%xmm1, (%r11)
+	LONG $0xcb59e2c5               // vmulss	%xmm3, %xmm3, %xmm1
+	LONG $0x5872c1c4; BYTE $0x0a   // vaddss	(%r10), %xmm1, %xmm1
+	LONG $0x117ac1c4; BYTE $0x0a   // vmovss	%xmm1, (%r10)
+	LONG $0xc059fac5               // vmulss	%xmm0, %xmm0, %xmm0
+	LONG $0x0058fac5               // vaddss	(%rax), %xmm0, %xmm0
+	LONG $0x0011fac5               // vmovss	%xmm0, (%rax)
+
+LBB3_4:
+	LONG $0xe0658d48         // leaq	-32(%rbp), %rsp
+	BYTE $0x5b               // popq	%rbx
+	WORD $0x5c41             // popq	%r12
+	WORD $0x5e41             // popq	%r14
+	WORD $0x5f41             // popq	%r15
+	BYTE $0x5d               // popq	%rbp
+	WORD $0xf8c5; BYTE $0x77 // vzeroupper
+	POPQ DI
+	POPQ DI
+	POPQ DI
+	POPQ DI
+	POPQ DI
+	RET

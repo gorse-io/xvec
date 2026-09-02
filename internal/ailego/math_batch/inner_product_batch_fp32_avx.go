@@ -15,3 +15,9 @@ func xvec_avx_batch_inner_products2(query, first, second unsafe.Pointer, size in
 
 //go:noescape
 func xvec_avx_batch_inner_products4(query, first, second, third, fourth unsafe.Pointer, size int64, first_output, second_output, third_output, fourth_output unsafe.Pointer)
+
+//go:noescape
+func xvec_avx_batch_squared_euclidean_distances2(query, first, second unsafe.Pointer, size int64, first_output, second_output unsafe.Pointer)
+
+//go:noescape
+func xvec_avx_batch_squared_euclidean_distances4(query, first, second, third, fourth unsafe.Pointer, size int64, first_output, second_output, third_output, fourth_output unsafe.Pointer)

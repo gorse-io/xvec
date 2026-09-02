@@ -298,6 +298,9 @@ func (i *DenseFlatIndex) search(ctx context.Context, query []float32, options Se
 	if i.metric == MetricCosine {
 		return i.searchCosine(ctx, query, options)
 	}
+	if (i.metric == MetricL2 || i.metric == MetricIP) && options.Filter == nil {
+		return i.searchDenseBatched(ctx, query, options)
+	}
 	distance, err := i.metric.Distance()
 	if err != nil {
 		return nil, err
@@ -306,6 +309,86 @@ func (i *DenseFlatIndex) search(ctx context.Context, query []float32, options Se
 		start := position * i.dimension
 		return Candidate{Key: i.keys[position], Vector: i.vectors[start : start+i.dimension]}
 	})
+}
+
+func (i *DenseFlatIndex) searchDenseBatched(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {
+	if options.TopK == 0 || len(i.keys) == 0 {
+		return []Result{}, nil
+	}
+	k := min(options.TopK, len(i.keys))
+	worstFirst := func(left, right Result) bool {
+		if left.Score == right.Score {
+			return left.Key > right.Key
+		}
+		return i.metric.Better(right.Score, left.Score)
+	}
+	heap := container.NewHeapWithCapacity(k, worstFirst)
+	position := 0
+	for ; position+3 < len(i.keys); position += 4 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		firstStart := position * i.dimension
+		secondStart := firstStart + i.dimension
+		thirdStart := secondStart + i.dimension
+		fourthStart := thirdStart + i.dimension
+		firstScore, secondScore, thirdScore, fourthScore := denseDistances4(
+			i.metric,
+			query,
+			i.vectors[firstStart:firstStart+i.dimension],
+			i.vectors[secondStart:secondStart+i.dimension],
+			i.vectors[thirdStart:thirdStart+i.dimension],
+			i.vectors[fourthStart:fourthStart+i.dimension],
+		)
+		retainDenseResult(heap, k, i.metric, options.Radius, Result{Key: i.keys[position], Score: firstScore})
+		retainDenseResult(heap, k, i.metric, options.Radius, Result{Key: i.keys[position+1], Score: secondScore})
+		retainDenseResult(heap, k, i.metric, options.Radius, Result{Key: i.keys[position+2], Score: thirdScore})
+		retainDenseResult(heap, k, i.metric, options.Radius, Result{Key: i.keys[position+3], Score: fourthScore})
+	}
+	if position+1 < len(i.keys) {
+		firstStart := position * i.dimension
+		secondStart := firstStart + i.dimension
+		firstScore, secondScore := denseDistances2(
+			i.metric,
+			query,
+			i.vectors[firstStart:firstStart+i.dimension],
+			i.vectors[secondStart:secondStart+i.dimension],
+		)
+		retainDenseResult(heap, k, i.metric, options.Radius, Result{Key: i.keys[position], Score: firstScore})
+		retainDenseResult(heap, k, i.metric, options.Radius, Result{Key: i.keys[position+1], Score: secondScore})
+		position += 2
+	}
+	if position < len(i.keys) {
+		start := position * i.dimension
+		distance, _ := i.metric.Distance()
+		score := distance(query, i.vectors[start:start+i.dimension])
+		retainDenseResult(heap, k, i.metric, options.Radius, Result{Key: i.keys[position], Score: score})
+	}
+	results := heap.Values()
+	slices.SortFunc(results, func(left, right Result) int {
+		if resultBetter(i.metric, left, right) {
+			return -1
+		}
+		if resultBetter(i.metric, right, left) {
+			return 1
+		}
+		return 0
+	})
+	return results, nil
+}
+
+func retainDenseResult(heap *container.Heap[Result], k int, metric Metric, radius float32, result Result) {
+	if !scoreWithinRadius(metric, result.Score, radius) {
+		return
+	}
+	if heap.Len() < k {
+		heap.Push(result)
+		return
+	}
+	worst, _ := heap.Peek()
+	if resultBetter(metric, result, worst) {
+		heap.Replace(result)
+	}
 }
 
 func (i *DenseFlatIndex) searchCosine(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {

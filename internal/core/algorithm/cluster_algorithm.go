@@ -526,7 +526,42 @@ func nearestCentroidWithDistanceContext(
 	}
 	bestIndex := 0
 	bestScore := distance(centroids[0], vector)
-	for index := 1; index < len(centroids); index++ {
+	index := 1
+	if metric == MetricL2 || metric == MetricIP {
+		for ; index+3 < len(centroids); index += 4 {
+			if ctx != nil && (index-1)&63 == 0 {
+				if err := ctx.Err(); err != nil {
+					return 0, 0, err
+				}
+			}
+			firstScore, secondScore, thirdScore, fourthScore := denseDistances4(
+				metric, vector, centroids[index], centroids[index+1], centroids[index+2], centroids[index+3],
+			)
+			if metric.Better(firstScore, bestScore) {
+				bestIndex, bestScore = index, firstScore
+			}
+			if metric.Better(secondScore, bestScore) {
+				bestIndex, bestScore = index+1, secondScore
+			}
+			if metric.Better(thirdScore, bestScore) {
+				bestIndex, bestScore = index+2, thirdScore
+			}
+			if metric.Better(fourthScore, bestScore) {
+				bestIndex, bestScore = index+3, fourthScore
+			}
+		}
+		if index+1 < len(centroids) {
+			firstScore, secondScore := denseDistances2(metric, vector, centroids[index], centroids[index+1])
+			if metric.Better(firstScore, bestScore) {
+				bestIndex, bestScore = index, firstScore
+			}
+			if metric.Better(secondScore, bestScore) {
+				bestIndex, bestScore = index+1, secondScore
+			}
+			index += 2
+		}
+	}
+	for ; index < len(centroids); index++ {
 		if ctx != nil && index&63 == 0 {
 			if err := ctx.Err(); err != nil {
 				return 0, 0, err

@@ -14,15 +14,62 @@
 
 package mathbatch
 
+import "math"
+
 type batch2Kernel func(query, first, second []float32) (firstProduct, secondProduct float32)
 type batch4Kernel func(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32)
 
 var kernels = struct {
-	dot2 batch2Kernel
-	dot4 batch4Kernel
+	dot2       batch2Kernel
+	dot4       batch4Kernel
+	l2Squared2 batch2Kernel
+	l2Squared4 batch4Kernel
 }{
-	dot2: innerProducts2Scalar,
-	dot4: innerProducts4Scalar,
+	dot2:       innerProducts2Scalar,
+	dot4:       innerProducts4Scalar,
+	l2Squared2: squaredEuclideanDistances2Scalar,
+	l2Squared4: squaredEuclideanDistances4Scalar,
+}
+
+// InnerProducts2 computes inner products from one query to two candidates
+// while sharing each query load.
+func InnerProducts2(query, first, second []float32) (firstProduct, secondProduct float32) {
+	return kernels.dot2(query, first, second)
+}
+
+// InnerProducts4 computes inner products from one query to four candidates
+// while sharing each query load.
+func InnerProducts4(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
+	return kernels.dot4(query, first, second, third, fourth)
+}
+
+// SquaredEuclideanDistances2 computes squared Euclidean distance from one
+// query to two candidates while sharing each query load.
+func SquaredEuclideanDistances2(query, first, second []float32) (firstDistance, secondDistance float32) {
+	return kernels.l2Squared2(query, first, second)
+}
+
+// SquaredEuclideanDistances4 computes squared Euclidean distance from one
+// query to four candidates while sharing each query load.
+func SquaredEuclideanDistances4(query, first, second, third, fourth []float32) (firstDistance, secondDistance, thirdDistance, fourthDistance float32) {
+	return kernels.l2Squared4(query, first, second, third, fourth)
+}
+
+// EuclideanDistances2 computes Euclidean distance from one query to two
+// candidates while sharing each query load.
+func EuclideanDistances2(query, first, second []float32) (firstDistance, secondDistance float32) {
+	firstDistance, secondDistance = SquaredEuclideanDistances2(query, first, second)
+	return float32(math.Sqrt(float64(firstDistance))), float32(math.Sqrt(float64(secondDistance)))
+}
+
+// EuclideanDistances4 computes Euclidean distance from one query to four
+// candidates while sharing each query load.
+func EuclideanDistances4(query, first, second, third, fourth []float32) (firstDistance, secondDistance, thirdDistance, fourthDistance float32) {
+	firstDistance, secondDistance, thirdDistance, fourthDistance = SquaredEuclideanDistances4(query, first, second, third, fourth)
+	return float32(math.Sqrt(float64(firstDistance))),
+		float32(math.Sqrt(float64(secondDistance))),
+		float32(math.Sqrt(float64(thirdDistance))),
+		float32(math.Sqrt(float64(fourthDistance)))
 }
 
 // CosineDistances2WithMagnitudes computes cosine distance from one query to two
@@ -31,7 +78,7 @@ func CosineDistances2WithMagnitudes(
 	query, first, second []float32,
 	queryMagnitude, firstMagnitude, secondMagnitude float32,
 ) (firstDistance, secondDistance float32) {
-	firstProduct, secondProduct := innerProducts2(query, first, second)
+	firstProduct, secondProduct := InnerProducts2(query, first, second)
 	return cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude),
 		cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude)
 }
@@ -42,7 +89,7 @@ func CosineDistances4WithMagnitudes(
 	query, first, second, third, fourth []float32,
 	queryMagnitude, firstMagnitude, secondMagnitude, thirdMagnitude, fourthMagnitude float32,
 ) (firstDistance, secondDistance, thirdDistance, fourthDistance float32) {
-	firstProduct, secondProduct, thirdProduct, fourthProduct := innerProducts4(query, first, second, third, fourth)
+	firstProduct, secondProduct, thirdProduct, fourthProduct := InnerProducts4(query, first, second, third, fourth)
 	return cosineDistanceFromProduct(firstProduct, queryMagnitude, firstMagnitude),
 		cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude),
 		cosineDistanceFromProduct(thirdProduct, queryMagnitude, thirdMagnitude),
@@ -62,11 +109,11 @@ func cosineDistanceFromProduct(product, leftMagnitude, rightMagnitude float32) f
 }
 
 func innerProducts2(query, first, second []float32) (firstProduct, secondProduct float32) {
-	return kernels.dot2(query, first, second)
+	return InnerProducts2(query, first, second)
 }
 
 func innerProducts4(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
-	return kernels.dot4(query, first, second, third, fourth)
+	return InnerProducts4(query, first, second, third, fourth)
 }
 
 func innerProducts2Scalar(query, first, second []float32) (firstProduct, secondProduct float32) {
@@ -83,6 +130,30 @@ func innerProducts4Scalar(query, first, second, third, fourth []float32) (firstP
 		secondProduct += queryValue * second[index]
 		thirdProduct += queryValue * third[index]
 		fourthProduct += queryValue * fourth[index]
+	}
+	return
+}
+
+func squaredEuclideanDistances2Scalar(query, first, second []float32) (firstDistance, secondDistance float32) {
+	for index, queryValue := range query {
+		firstDifference := queryValue - first[index]
+		secondDifference := queryValue - second[index]
+		firstDistance += firstDifference * firstDifference
+		secondDistance += secondDifference * secondDifference
+	}
+	return
+}
+
+func squaredEuclideanDistances4Scalar(query, first, second, third, fourth []float32) (firstDistance, secondDistance, thirdDistance, fourthDistance float32) {
+	for index, queryValue := range query {
+		firstDifference := queryValue - first[index]
+		secondDifference := queryValue - second[index]
+		thirdDifference := queryValue - third[index]
+		fourthDifference := queryValue - fourth[index]
+		firstDistance += firstDifference * firstDifference
+		secondDistance += secondDifference * secondDifference
+		thirdDistance += thirdDifference * thirdDifference
+		fourthDistance += fourthDifference * fourthDifference
 	}
 	return
 }
