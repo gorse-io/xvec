@@ -103,7 +103,7 @@ func (q *SplitSingleQuery) Reset(query []float32) error {
 	if q == nil {
 		return ErrInvalidArgument
 	}
-	if err := q.queryCore.reset(query); err != nil {
+	if err := q.reset(query); err != nil {
 		return err
 	}
 	q.quantized, q.delta, q.vl = quantizeQuery4(q.query, q.config)
@@ -114,7 +114,7 @@ func (q *SplitSingleQuery) SetGAdd(norm float32, ip ...float32) {
 	if len(ip) > 0 {
 		v = ip[0]
 	}
-	q.queryCore.setGAdd(norm, v)
+	q.setGAdd(norm, v)
 }
 func (q *SplitSingleQuery) SetGError(norm float32)  { q.gError = norm }
 func (q *SplitSingleQuery) GAdd() float32           { return q.gAdd }
@@ -204,7 +204,7 @@ func (q *SplitBatchQuery) ResetWithOptions(query []float32, exBits int, metric M
 	}
 	oldExBits, oldMetric := q.exBits, q.metric
 	q.exBits, q.metric = exBits, metric
-	if err := q.queryCore.reset(query); err != nil {
+	if err := q.reset(query); err != nil {
 		q.exBits, q.metric = oldExBits, oldMetric
 		return err
 	}
@@ -216,7 +216,7 @@ func (q *SplitBatchQuery) SetGAdd(norm float32, ip ...float32) {
 	if len(ip) > 0 {
 		v = ip[0]
 	}
-	q.queryCore.setGAdd(norm, v)
+	q.setGAdd(norm, v)
 }
 func (q *SplitBatchQuery) GAdd() float32           { return q.gAdd }
 func (q *SplitBatchQuery) GError() float32         { return q.gError }
