@@ -9,3 +9,5 @@
 // Package simd contains SIMD kernels ported from RaBitQ-Library and generated
 // as pure Go assembly with GoAT.
 package simd
+
+//go:generate make generate

@@ -18,6 +18,7 @@ package simd
 
 import (
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/cpu"
@@ -41,7 +42,7 @@ func TestFlipSignAVX512(t *testing.T) {
 		}
 	}
 
-	FlipSignAVX512(signs, data)
+	flip_sign_avx512(unsafe.Pointer(&signs[0]), unsafe.Pointer(&data[0]), int64(len(data)))
 	require.Equal(t, want, data)
 }
 
@@ -59,6 +60,6 @@ func TestKacsWalkAVX512(t *testing.T) {
 		want[i], want[i+32] = x+y, x-y
 	}
 
-	KacsWalkAVX512(data)
+	kacs_walk_avx512(unsafe.Pointer(&data[0]), int64(len(data)))
 	require.Equal(t, want, data)
 }
