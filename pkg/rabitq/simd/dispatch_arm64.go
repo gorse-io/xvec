@@ -20,9 +20,11 @@ package simd
 //go:generate go tool goat src/pack_excode_neon.c --target arm64 -O3 -o ../simd
 //go:generate go tool goat src/rotator_neon.c --target arm64 -O3 -o ../simd
 //go:generate go tool goat src/space_neon.c --target arm64 -O3 -o ../simd
-//go:generate rm -f src/fastscan_neon.o src/fastscan_neon.s src/pack_excode_neon.o src/pack_excode_neon.s src/rotator_neon.o src/rotator_neon.s src/space_neon.o src/space_neon.s
+//go:generate go tool goat src/warmup_neon.c --target arm64 -O3 -o ../simd
+//go:generate rm -f src/fastscan_neon.o src/fastscan_neon.s src/pack_excode_neon.o src/pack_excode_neon.s src/rotator_neon.o src/rotator_neon.s src/space_neon.o src/space_neon.s src/warmup_neon.o src/warmup_neon.s
 
 func init() {
+	warmupIPX0Q512 = warmup_ip_x0_q_512_neon
 	accumulate, transferLUTHACC, accumulateHACC = accumulate_neon, transfer_lut_hacc_neon, accumulate_hacc_neon
 	flipSign = flip_sign_neon
 	kacsWalk = kacs_walk_neon

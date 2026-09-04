@@ -70,14 +70,19 @@ func TestWarmupIPX0Q512RejectsInvalidInput(t *testing.T) {
 
 func testWarmup(t *testing.T, kernel func(unsafe.Pointer, unsafe.Pointer, float32, float32, int64, int64) float32) {
 	t.Helper()
+	coefficients := [][2]float32{
+		{0.25, -0.75},
+		{-0.6307932, 1.8377749},
+	}
 	for _, dimension := range []int{64, 448, 512, 576, 1024} {
 		for _, queryBits := range []int{1, 4, 8} {
 			data, query := makeWarmupInput(dimension, queryBits)
-			const delta = float32(0.25)
-			const vl = float32(-0.75)
-			want := warmupOracle(data, query, delta, vl, dimension, queryBits)
-			got := kernel(unsafe.Pointer(&data[0]), unsafe.Pointer(&query[0]), delta, vl, int64(dimension), int64(queryBits))
-			require.Equal(t, want, got, "dimension %d query bits %d", dimension, queryBits)
+			for _, coefficient := range coefficients {
+				delta, vl := coefficient[0], coefficient[1]
+				want := warmupOracle(data, query, delta, vl, dimension, queryBits)
+				got := kernel(unsafe.Pointer(&data[0]), unsafe.Pointer(&query[0]), delta, vl, int64(dimension), int64(queryBits))
+				require.Equal(t, want, got, "dimension %d query bits %d delta %v vl %v", dimension, queryBits, delta, vl)
+			}
 		}
 	}
 }
