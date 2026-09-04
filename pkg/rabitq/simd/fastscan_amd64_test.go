@@ -17,6 +17,7 @@
 package simd
 
 import (
+	"reflect"
 	"testing"
 
 	"golang.org/x/sys/cpu"
@@ -34,4 +35,26 @@ func TestFastScanAVX512(t *testing.T) {
 		t.Skip("AVX-512F, AVX-512DQ, and AVX-512BW are not supported")
 	}
 	testFastScan(t, accumulate_avx512, transfer_lut_hacc_avx512, accumulate_hacc_avx512)
+}
+
+func TestFastScanAVX512Dispatch(t *testing.T) {
+	hasAVX512F, hasAVX512DQ, hasAVX512BW := cpu.X86.HasAVX512F, cpu.X86.HasAVX512DQ, cpu.X86.HasAVX512BW
+	oldAccumulate, oldTransferLUTHACC, oldAccumulateHACC := accumulate, transferLUTHACC, accumulateHACC
+	t.Cleanup(func() {
+		cpu.X86.HasAVX512F, cpu.X86.HasAVX512DQ, cpu.X86.HasAVX512BW = hasAVX512F, hasAVX512DQ, hasAVX512BW
+		accumulate, transferLUTHACC, accumulateHACC = oldAccumulate, oldTransferLUTHACC, oldAccumulateHACC
+	})
+
+	cpu.X86.HasAVX512F, cpu.X86.HasAVX512DQ, cpu.X86.HasAVX512BW = true, true, true
+	initFastScan()
+	requireFunctionEqual(t, accumulate, accumulate_avx512)
+	requireFunctionEqual(t, transferLUTHACC, transfer_lut_hacc_avx512)
+	requireFunctionEqual(t, accumulateHACC, accumulate_hacc_avx512)
+}
+
+func requireFunctionEqual(t *testing.T, got, want any) {
+	t.Helper()
+	if reflect.ValueOf(got).Pointer() != reflect.ValueOf(want).Pointer() {
+		t.Fatalf("function pointers differ: got %x, want %x", reflect.ValueOf(got).Pointer(), reflect.ValueOf(want).Pointer())
+	}
 }
