@@ -22,7 +22,7 @@ import (
 )
 
 func TestScalarRotatorKernels(t *testing.T) {
-	testRotatorKernels(t,
+	testRotator(t,
 		func(flip []byte, data []float32) {
 			flipSignScalarKernel(unsafe.Pointer(&flip[0]), unsafe.Pointer(&data[0]), int64(len(data)))
 		},
@@ -33,10 +33,10 @@ func TestScalarRotatorKernels(t *testing.T) {
 }
 
 func TestRotatorDispatch(t *testing.T) {
-	testRotatorKernels(t, FlipSign, KacsWalk)
+	testRotator(t, FlipSign, KacsWalk)
 }
 
-func testRotatorKernels(
+func testRotator(
 	t *testing.T,
 	flipSign func([]byte, []float32),
 	kacsWalk func([]float32),

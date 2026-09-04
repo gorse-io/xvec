@@ -23,7 +23,7 @@ package simd
 import "golang.org/x/sys/cpu"
 
 func init() {
-	_, activeFlipSign, activeKacsWalk = selectAMD64RotatorKernels(
+	_, flipSign, kacsWalk = selectAMD64RotatorKernels(
 		cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ,
 		cpu.X86.HasAVX2,
 	)

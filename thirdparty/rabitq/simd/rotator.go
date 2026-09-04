@@ -30,21 +30,21 @@ const (
 )
 
 var (
-	activeFlipSign = flipSignScalarKernel
-	activeKacsWalk = kacsWalkScalarKernel
+	flipSign = flipSignScalarKernel
+	kacsWalk = kacsWalkScalarKernel
 )
 
 // FlipSign negates data elements selected by little-endian bits in flip.
 // The data length must be a positive multiple of 64, and flip must contain at
 // least len(data)/8 bytes.
 func FlipSign(flip []byte, data []float32) {
-	activeFlipSign(unsafe.Pointer(&flip[0]), unsafe.Pointer(&data[0]), int64(len(data)))
+	flipSign(unsafe.Pointer(&flip[0]), unsafe.Pointer(&data[0]), int64(len(data)))
 }
 
 // KacsWalk applies one Kac transform step in place. The data length must be a
 // positive multiple of 32.
 func KacsWalk(data []float32) {
-	activeKacsWalk(unsafe.Pointer(&data[0]), int64(len(data)))
+	kacsWalk(unsafe.Pointer(&data[0]), int64(len(data)))
 }
 
 func flipSignScalarKernel(flip, data unsafe.Pointer, dimension int64) {

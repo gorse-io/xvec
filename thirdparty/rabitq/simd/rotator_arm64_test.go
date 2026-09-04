@@ -22,7 +22,7 @@ import (
 )
 
 func TestRotatorNEON(t *testing.T) {
-	testRotatorKernels(t,
+	testRotator(t,
 		func(flip []byte, data []float32) {
 			flip_sign_neon(unsafe.Pointer(&flip[0]), unsafe.Pointer(&data[0]), int64(len(data)))
 		},

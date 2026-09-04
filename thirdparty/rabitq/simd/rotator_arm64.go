@@ -20,6 +20,6 @@ package simd
 //go:generate rm -f src/rotator_neon.o src/rotator_neon.s
 
 func init() {
-	activeFlipSign = flip_sign_neon
-	activeKacsWalk = kacs_walk_neon
+	flipSign = flip_sign_neon
+	kacsWalk = kacs_walk_neon
 }

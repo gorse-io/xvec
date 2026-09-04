@@ -28,7 +28,7 @@ func TestRotatorAVX2(t *testing.T) {
 	if !cpu.X86.HasAVX2 {
 		t.Skip("AVX2 is not supported")
 	}
-	testRotatorKernels(t,
+	testRotator(t,
 		func(flip []byte, data []float32) {
 			flip_sign_avx2(unsafe.Pointer(&flip[0]), unsafe.Pointer(&data[0]), int64(len(data)))
 		},
