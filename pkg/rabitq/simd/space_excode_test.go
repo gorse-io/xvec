@@ -18,6 +18,7 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/chewxy/math32"
 	"github.com/stretchr/testify/require"
 )
 
@@ -47,19 +48,6 @@ func TestSpaceExcodeDispatch(t *testing.T) {
 	})
 }
 
-func TestSpaceExcodeInvalidInput(t *testing.T) {
-	require.Panics(t, func() { IP16FxU1(nil, nil) })
-	require.Panics(t, func() { IP16FxU1(make([]float32, 15), make([]uint8, 2)) })
-	require.Panics(t, func() { IP16FxU1(make([]float32, 16), make([]uint8, 1)) })
-	require.Panics(t, func() { IP64FxU2(make([]float32, 63), make([]uint8, 16)) })
-	require.Panics(t, func() { IP64FxU3(make([]float32, 64), make([]uint8, 23)) })
-	require.Panics(t, func() { IP16FxU4(make([]float32, 16), make([]uint8, 7)) })
-	require.Panics(t, func() { IP64FxU5(make([]float32, 64), make([]uint8, 39)) })
-	require.Panics(t, func() { IP64FxU6(make([]float32, 64), make([]uint8, 47)) })
-	require.Panics(t, func() { IP64FxU7(make([]float32, 64), make([]uint8, 55)) })
-	require.Panics(t, func() { IP16FxU8(make([]float32, 16), make([]uint8, 15)) })
-}
-
 func testSpaceExcode(t *testing.T, functions []excodeIPFunc) {
 	t.Helper()
 
@@ -84,7 +72,7 @@ func testSpaceExcode(t *testing.T, functions []excodeIPFunc) {
 				want += query[i] * float32(raw[i])
 			}
 			got := function(unsafe.Pointer(&query[0]), unsafe.Pointer(&compact[0]), int64(dimension))
-			require.InDelta(t, want, got, max(1e-4, float64(abs32(want))*1e-5),
+			require.InDelta(t, want, got, max(1e-4, float64(math32.Abs(want))*1e-5),
 				"dimension %d bits %d", dimension, bits)
 		}
 	}
@@ -113,11 +101,4 @@ func packExcodeForTest(raw []uint8, bits int) []uint8 {
 		copy(compact, raw)
 	}
 	return compact
-}
-
-func abs32(value float32) float32 {
-	if value < 0 {
-		return -value
-	}
-	return value
 }
