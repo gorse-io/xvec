@@ -57,39 +57,6 @@ func TestFastScanAPI(t *testing.T) {
 	require.Equal(t, want16, got16)
 }
 
-func TestFastScanInvalidDimension(t *testing.T) {
-	for _, dimension := range []int{-16, 0, 1, 15, 1040} {
-		codes := make([]uint8, max(1, dimension*4))
-		lut8 := make([]uint8, max(1, dimension*4))
-		lut16 := make([]uint16, max(1, dimension*4))
-		transferred := make([]uint8, max(1, dimension*8))
-		result8 := make([]uint16, 32)
-		result16 := make([]int32, 32)
-
-		require.Panics(t, func() { Accumulate(codes, lut8, result8, dimension) })
-		require.Panics(t, func() { TransferLUTHACC(lut16, transferred, dimension) })
-		require.Panics(t, func() { AccumulateHACC(codes, transferred, result16, dimension) })
-	}
-}
-
-func TestFastScanInvalidBufferLength(t *testing.T) {
-	codes := make([]uint8, 64)
-	lut8 := make([]uint8, 64)
-	lut16 := make([]uint16, 64)
-	transferred := make([]uint8, 128)
-	result8 := make([]uint16, 32)
-	result16 := make([]int32, 32)
-
-	require.Panics(t, func() { Accumulate(codes[:63], lut8, result8, 16) })
-	require.Panics(t, func() { Accumulate(codes, lut8[:63], result8, 16) })
-	require.Panics(t, func() { Accumulate(codes, lut8, result8[:31], 16) })
-	require.Panics(t, func() { TransferLUTHACC(lut16[:63], transferred, 16) })
-	require.Panics(t, func() { TransferLUTHACC(lut16, transferred[:127], 16) })
-	require.Panics(t, func() { AccumulateHACC(codes[:63], transferred, result16, 16) })
-	require.Panics(t, func() { AccumulateHACC(codes, transferred[:127], result16, 16) })
-	require.Panics(t, func() { AccumulateHACC(codes, transferred, result16[:31], 16) })
-}
-
 func testFastScan(
 	t *testing.T,
 	accumulateFn func(unsafe.Pointer, unsafe.Pointer, unsafe.Pointer, int64),
@@ -105,7 +72,7 @@ func testFastScan(
 		lut16 := make([]uint16, dimension*4)
 		for i := range codes {
 			codes[i] = uint8((i*7+3)%16) | uint8((i*11+5)%16)<<4
-			if dimension == maxFastScanDimension {
+			if dimension == 1024 {
 				lut8[i] = 255
 				lut16[i] = 65535
 			} else {

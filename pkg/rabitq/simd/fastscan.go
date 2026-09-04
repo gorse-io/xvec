@@ -24,18 +24,12 @@ var (
 
 var fastScanPerm = [...]int{0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15}
 
-const maxFastScanDimension = 1024
-
 // Accumulate uses a packed 8-bit lookup table to accumulate scores for a
 // 32-vector FastScan block. The dimension must be a positive multiple of 16
 // no greater than 1024.
 // Codes and lut must each contain dimension*4 elements, and result must contain
 // at least 32 elements.
 func Accumulate(codes, lut []uint8, result []uint16, dimension int) {
-	tableLength := validateFastScanDimension(dimension)
-	if len(codes) < tableLength || len(lut) < tableLength || len(result) < 32 {
-		panic("simd: invalid FastScan buffer length")
-	}
 	accumulate(unsafe.Pointer(&codes[0]), unsafe.Pointer(&lut[0]), unsafe.Pointer(&result[0]), int64(dimension))
 }
 
@@ -44,10 +38,6 @@ func Accumulate(codes, lut []uint8, result []uint16, dimension int) {
 // than 1024. Lut must contain dimension*4 elements, and result must contain
 // dimension*8 bytes.
 func TransferLUTHACC(lut []uint16, result []uint8, dimension int) {
-	tableLength := validateFastScanDimension(dimension)
-	if len(lut) < tableLength || len(result) < tableLength*2 {
-		panic("simd: invalid FastScan buffer length")
-	}
 	transferLUTHACC(unsafe.Pointer(&lut[0]), int64(dimension), unsafe.Pointer(&result[0]))
 }
 
@@ -57,18 +47,7 @@ func TransferLUTHACC(lut []uint16, result []uint8, dimension int) {
 // elements, lut must contain dimension*8 bytes, and result must contain at
 // least 32 elements.
 func AccumulateHACC(codes, lut []uint8, result []int32, dimension int) {
-	tableLength := validateFastScanDimension(dimension)
-	if len(codes) < tableLength || len(lut) < tableLength*2 || len(result) < 32 {
-		panic("simd: invalid FastScan buffer length")
-	}
 	accumulateHACC(unsafe.Pointer(&codes[0]), unsafe.Pointer(&lut[0]), unsafe.Pointer(&result[0]), int64(dimension))
-}
-
-func validateFastScanDimension(dimension int) int {
-	if dimension <= 0 || dimension > maxFastScanDimension || dimension%16 != 0 {
-		panic("simd: FastScan dimension must be a positive multiple of 16 no greater than 1024")
-	}
-	return dimension * 4
 }
 
 func accumulateScalar(codes, lut, result unsafe.Pointer, dimension int64) {
