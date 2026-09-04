@@ -128,16 +128,16 @@ func PackExCode(values []uint8, exBits int) ([]byte, error) {
 		}
 		return []byte{}, nil
 	}
+	if len(values) == 0 {
+		return []byte{}, nil
+	}
 	maxv := uint8((1 << exBits) - 1)
 	for _, v := range values {
 		if v > maxv {
 			return nil, ErrInvalidArgument
 		}
 	}
-	out := make([]byte, len(values)/8*exBits)
-	for base := 0; base < len(values); base += 64 {
-		packExBlock(out[base*exBits/8:], values[base:base+64], exBits)
-	}
+	out := packExCodeKernel(values, exBits)
 	return out, nil
 }
 
@@ -149,7 +149,7 @@ func packExBlock(out, in []byte, bits int) {
 		}
 	case 2:
 		for i := 0; i < 16; i++ {
-			out[i] = in[i] | in[i+16]<<2 | in[i+32]<<4 | in[i+48]<<6
+			out[i] = in[i]&3 | (in[i+16]&3)<<2 | (in[i+32]&3)<<4 | (in[i+48]&3)<<6
 		}
 	case 3, 5, 7:
 		low := bits - 1
@@ -161,7 +161,7 @@ func packExBlock(out, in []byte, bits int) {
 	case 4:
 		for group := 0; group < 4; group++ {
 			for i := 0; i < 8; i++ {
-				out[group*8+i] = in[group*16+i] | in[group*16+i+8]<<4
+				out[group*8+i] = in[group*16+i]&15 | (in[group*16+i+8]&15)<<4
 			}
 		}
 	case 6:

@@ -30,13 +30,9 @@ func SelectExcodeIPFunc(exBits int) (ExcodeIPFunc, error) {
 				return 0, ErrNonFinite
 			}
 		}
-		values, err := UnpackExCode(packed, len(query), exBits)
-		if err != nil {
-			return 0, err
-		}
 		var sum float32
-		for i, v := range values {
-			sum += query[i] * float32(v)
+		if exBits != 0 {
+			sum = excodeIPKernel(query, packed, exBits)
 		}
 		if !isFinite(sum) {
 			return 0, ErrNonFinite
@@ -350,19 +346,20 @@ func SplitBatchEstimate(batch []byte, q *SplitBatchQuery) ([]DistanceResult, err
 	if err != nil {
 		return nil, err
 	}
+	accumulated := make([]int32, BatchSize)
+	for offset := 0; offset < len(q.query); offset += fastScanHACCChunkSize {
+		chunkDim := min(fastScanHACCChunkSize, len(q.query)-offset)
+		hcLUT := make([]byte, chunkDim*8)
+		fastScanTransferLUTHACCKernel(q.lut[offset*4:(offset+chunkDim)*4], hcLUT, chunkDim)
+		chunkAccumulated := make([]int32, BatchSize)
+		fastScanAccumulateHACCKernel(m.Code()[offset*4:(offset+chunkDim)*4], hcLUT, chunkAccumulated, chunkDim)
+		for lane := range accumulated {
+			accumulated[lane] += chunkAccumulated[lane]
+		}
+	}
 	out := make([]DistanceResult, BatchSize)
 	for lane := 0; lane < BatchSize; lane++ {
-		var accumulated uint64
-		for table := 0; table < len(q.query)/4; table++ {
-			var code int
-			for bit := 0; bit < 4; bit++ {
-				if batchBinaryBit(m.Code(), len(q.query), lane, table*4+bit) {
-					code |= 1 << (3 - bit)
-				}
-			}
-			accumulated += uint64(q.lut[table*16+code])
-		}
-		ip := q.delta*float32(accumulated) + q.sumVL
+		ip := q.delta*float32(accumulated[lane]) + q.sumVL
 		dist := m.FAdd(lane) + q.gAdd + m.FRescale(lane)*(ip+q.k1)
 		low := dist - m.FError(lane)*q.gError
 		if !isFinite(dist) || !isFinite(low) {

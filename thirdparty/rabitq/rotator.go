@@ -201,11 +201,7 @@ func (r *FHTKacRotator) Rotate(src []float32) ([]float32, error) {
 	return dst, nil
 }
 func flipSigns(data []float32, signs []byte) {
-	for i := range data {
-		if signs[i/8]&(1<<uint(i%8)) != 0 {
-			data[i] = -data[i]
-		}
-	}
+	flipSignKernel(signs, data)
 }
 func fht(data []float32) {
 	for w := 1; w < len(data); w <<= 1 {
@@ -224,6 +220,10 @@ func scale(data []float32, f float32) {
 	}
 }
 func kacWalk(data []float32) {
+	if len(data)%16 == 0 {
+		kacsWalkKernel(data)
+		return
+	}
 	half := len(data) / 2
 	base := len(data) % 2
 	off := base + half

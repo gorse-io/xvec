@@ -5,6 +5,10 @@ This package contains a Go port of algorithms and serialized layouts from:
     https://github.com/VectorDB-NTU/RaBitQ-Library
     Source revision: 540242ea0a68926f1b827bf1f9add844f07a427b
 
+The SIMD kernel surface additionally follows RaBitQ-Library revision:
+
+    bbf7c279d57019504d2bbb0ca6f0b60154ea2b73
+
 RaBitQ-Library is licensed under the Apache License, Version 2.0. The xvec
 repository is distributed under the same license; see the repository-level
 LICENSE file for the complete license text.
