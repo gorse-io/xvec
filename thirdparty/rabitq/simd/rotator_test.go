@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestScalarRotatorKernels(t *testing.T) {
+func TestRotatorScalar(t *testing.T) {
 	testRotator(t, flipSignScalar, kacsWalkScalar)
 }
 
