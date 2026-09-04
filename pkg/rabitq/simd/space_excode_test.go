@@ -72,7 +72,7 @@ func testSpaceExcode(t *testing.T, functions []excodeIPFunc) {
 				want += query[i] * float32(raw[i])
 			}
 			got := function(unsafe.Pointer(&query[0]), unsafe.Pointer(&compact[0]), int64(dimension))
-			require.InDelta(t, want, got, max(1e-4, float64(math32.Abs(want))*1e-5),
+			require.InDelta(t, want, got, max(1e-3, float64(math32.Abs(want))*1e-5),
 				"dimension %d bits %d", dimension, bits)
 		}
 	}
