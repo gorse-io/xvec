@@ -17,9 +17,15 @@
 package simd
 
 //go:generate go tool goat src/rotator_neon.c --target arm64 -O3 -o ../simd
-//go:generate rm -f src/rotator_neon.o src/rotator_neon.s
+//go:generate go tool goat src/space_neon.c --target arm64 -O3 -o ../simd
+//go:generate rm -f src/rotator_neon.o src/rotator_neon.s src/space_neon.o src/space_neon.s
 
 func init() {
 	flipSign = flip_sign_neon
 	kacsWalk = kacs_walk_neon
+	scalarQuantizeUint8 = scalar_quantize_uint8_neon
+	scalarQuantizeUint16 = scalar_quantize_uint16_neon
+	transposeBin = new_transpose_bin_neon
+	transposeBin512 = new_transpose_bin_512_neon
+	maskIPX0Q = mask_ip_x0_q_neon
 }
