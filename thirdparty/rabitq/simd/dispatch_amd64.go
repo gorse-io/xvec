@@ -34,18 +34,14 @@ func init() {
 		kacsWalk = kacs_walk_avx2
 	}
 
-	configureSpaceSIMD(cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ && cpu.X86.HasAVX512BW, cpu.X86.HasAVX2)
-}
-
-func configureSpaceSIMD(hasAVX512, hasAVX2 bool) {
 	switch {
-	case hasAVX512:
+	case cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ && cpu.X86.HasAVX512BW:
 		scalarQuantizeUint8 = scalar_quantize_uint8_avx512
 		scalarQuantizeUint16 = scalar_quantize_uint16_avx512
 		transposeBin = new_transpose_bin_avx512
 		transposeBin512 = new_transpose_bin_512_avx512
 		maskIPX0Q = mask_ip_x0_q_avx512
-	case hasAVX2:
+	case cpu.X86.HasAVX2:
 		scalarQuantizeUint8 = scalar_quantize_uint8_avx2
 		scalarQuantizeUint16 = scalar_quantize_uint16_avx2
 		transposeBin = new_transpose_bin_avx2

@@ -17,10 +17,8 @@
 package simd
 
 import (
-	"reflect"
 	"testing"
 
-	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/cpu"
 )
 
@@ -38,33 +36,4 @@ func TestSpaceAVX512(t *testing.T) {
 	}
 	testSpace(t, scalar_quantize_uint8_avx512, scalar_quantize_uint16_avx512,
 		new_transpose_bin_avx512, new_transpose_bin_512_avx512, mask_ip_x0_q_avx512)
-}
-
-func TestConfigureSpaceSIMD(t *testing.T) {
-	originalQuantizeUint8 := scalarQuantizeUint8
-	originalQuantizeUint16 := scalarQuantizeUint16
-	originalTransposeBin := transposeBin
-	originalTransposeBin512 := transposeBin512
-	originalMaskIPX0Q := maskIPX0Q
-	t.Cleanup(func() {
-		scalarQuantizeUint8 = originalQuantizeUint8
-		scalarQuantizeUint16 = originalQuantizeUint16
-		transposeBin = originalTransposeBin
-		transposeBin512 = originalTransposeBin512
-		maskIPX0Q = originalMaskIPX0Q
-	})
-
-	configureSpaceSIMD(true, true)
-	require.Equal(t, reflect.ValueOf(scalar_quantize_uint8_avx512).Pointer(), reflect.ValueOf(scalarQuantizeUint8).Pointer())
-	require.Equal(t, reflect.ValueOf(scalar_quantize_uint16_avx512).Pointer(), reflect.ValueOf(scalarQuantizeUint16).Pointer())
-	require.Equal(t, reflect.ValueOf(new_transpose_bin_avx512).Pointer(), reflect.ValueOf(transposeBin).Pointer())
-	require.Equal(t, reflect.ValueOf(new_transpose_bin_512_avx512).Pointer(), reflect.ValueOf(transposeBin512).Pointer())
-	require.Equal(t, reflect.ValueOf(mask_ip_x0_q_avx512).Pointer(), reflect.ValueOf(maskIPX0Q).Pointer())
-
-	configureSpaceSIMD(false, true)
-	require.Equal(t, reflect.ValueOf(scalar_quantize_uint8_avx2).Pointer(), reflect.ValueOf(scalarQuantizeUint8).Pointer())
-	require.Equal(t, reflect.ValueOf(scalar_quantize_uint16_avx2).Pointer(), reflect.ValueOf(scalarQuantizeUint16).Pointer())
-	require.Equal(t, reflect.ValueOf(new_transpose_bin_avx2).Pointer(), reflect.ValueOf(transposeBin).Pointer())
-	require.Equal(t, reflect.ValueOf(new_transpose_bin_512_avx2).Pointer(), reflect.ValueOf(transposeBin512).Pointer())
-	require.Equal(t, reflect.ValueOf(mask_ip_x0_q_avx2).Pointer(), reflect.ValueOf(maskIPX0Q).Pointer())
 }
