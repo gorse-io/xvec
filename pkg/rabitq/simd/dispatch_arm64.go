@@ -17,14 +17,21 @@
 package simd
 
 //go:generate go tool goat src/fastscan_neon.c --target arm64 -O3 -o ../simd
+//go:generate go tool goat src/pack_excode_neon.c --target arm64 -O3 -o ../simd
 //go:generate go tool goat src/rotator_neon.c --target arm64 -O3 -o ../simd
 //go:generate go tool goat src/space_neon.c --target arm64 -O3 -o ../simd
-//go:generate rm -f src/fastscan_neon.o src/fastscan_neon.s src/rotator_neon.o src/rotator_neon.s src/space_neon.o src/space_neon.s
+//go:generate rm -f src/fastscan_neon.o src/fastscan_neon.s src/pack_excode_neon.o src/pack_excode_neon.s src/rotator_neon.o src/rotator_neon.s src/space_neon.o src/space_neon.s
 
 func init() {
 	accumulate, transferLUTHACC, accumulateHACC = accumulate_neon, transfer_lut_hacc_neon, accumulate_hacc_neon
 	flipSign = flip_sign_neon
 	kacsWalk = kacs_walk_neon
+	pack2BitExcode = packing_2bit_excode_neon
+	pack3BitExcode = packing_3bit_excode_neon
+	pack4BitExcode = packing_4bit_excode_neon
+	pack5BitExcode = packing_5bit_excode_neon
+	pack6BitExcode = packing_6bit_excode_neon
+	pack7BitExcode = packing_7bit_excode_neon
 	scalarQuantizeUint8 = scalar_quantize_uint8_neon
 	scalarQuantizeUint16 = scalar_quantize_uint16_neon
 	transposeBin = new_transpose_bin_neon

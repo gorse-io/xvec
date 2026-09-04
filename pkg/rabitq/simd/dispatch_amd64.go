@@ -16,13 +16,15 @@
 
 package simd
 
+//go:generate go tool goat src/pack_excode_avx2.c --target amd64 -O3 -mavx2 -o ../simd
+//go:generate go tool goat src/pack_excode_avx512.c --target amd64 -O3 -mavx512f -mavx512dq -o ../simd
 //go:generate go tool goat src/rotator_avx2.c --target amd64 -O3 -mavx2 -o ../simd
 //go:generate go tool goat src/rotator_avx512.c --target amd64 -O3 -mavx512f -mavx512dq -o ../simd
 //go:generate go tool goat src/space_avx2.c --target amd64 -O3 -mavx2 -o ../simd
 //go:generate go tool goat src/space_avx512.c --target amd64 -O3 -mavx512f -mavx512dq -mavx512bw -o ../simd
 //go:generate go tool goat src/fastscan_avx2.c --target amd64 -O3 -mavx2 -o ../simd
 //go:generate go tool goat src/fastscan_avx512.c --target amd64 -O3 -mavx512f -mavx512dq -mavx512bw -o ../simd
-//go:generate rm -f src/fastscan_avx2.o src/fastscan_avx2.s src/fastscan_avx512.o src/fastscan_avx512.s src/rotator_avx2.o src/rotator_avx2.s src/rotator_avx512.o src/rotator_avx512.s src/space_avx2.o src/space_avx2.s src/space_avx512.o src/space_avx512.s
+//go:generate rm -f src/fastscan_avx2.o src/fastscan_avx2.s src/fastscan_avx512.o src/fastscan_avx512.s src/pack_excode_avx2.o src/pack_excode_avx2.s src/pack_excode_avx512.o src/pack_excode_avx512.s src/rotator_avx2.o src/rotator_avx2.s src/rotator_avx512.o src/rotator_avx512.s src/space_avx2.o src/space_avx2.s src/space_avx512.o src/space_avx512.s
 
 import "golang.org/x/sys/cpu"
 
@@ -41,6 +43,23 @@ func init() {
 	case cpu.X86.HasAVX2:
 		flipSign = flip_sign_avx2
 		kacsWalk = kacs_walk_avx2
+	}
+
+	switch {
+	case cpu.X86.HasAVX2 && cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ:
+		pack2BitExcode = packing_2bit_excode_avx512
+		pack3BitExcode = packing_3bit_excode_avx512
+		pack4BitExcode = packing_4bit_excode_avx512
+		pack5BitExcode = packing_5bit_excode_avx512
+		pack6BitExcode = packing_6bit_excode_avx512
+		pack7BitExcode = packing_7bit_excode_avx512
+	case cpu.X86.HasAVX2:
+		pack2BitExcode = packing_2bit_excode_avx2
+		pack3BitExcode = packing_3bit_excode_avx2
+		pack4BitExcode = packing_4bit_excode_avx2
+		pack5BitExcode = packing_5bit_excode_avx2
+		pack6BitExcode = packing_6bit_excode_avx2
+		pack7BitExcode = packing_7bit_excode_avx2
 	}
 
 	switch {
