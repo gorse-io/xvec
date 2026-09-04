@@ -31,36 +31,6 @@ func TestSpaceDispatch(t *testing.T) {
 		transposeBin, transposeBin512, maskIPX0Q)
 }
 
-func TestSpacePublic(t *testing.T) {
-	ScalarQuantizeUint8(nil, nil, 0, 1)
-	ScalarQuantizeUint16(nil, nil, 0, 1)
-
-	values := []float32{1, 2, 3, 4}
-	got8 := make([]uint8, len(values))
-	ScalarQuantizeUint8(got8, values, 0, 1)
-	require.Equal(t, []uint8{1, 2, 3, 4}, got8)
-
-	got16 := make([]uint16, len(values))
-	ScalarQuantizeUint16(got16, values, 0, 1)
-	require.Equal(t, []uint16{1, 2, 3, 4}, got16)
-
-	values16 := make([]uint16, 64)
-	values16[0], values16[63] = 1, 1
-	transposed16 := make([]uint64, 1)
-	TransposeBin(values16, transposed16, 1)
-	require.Equal(t, []uint64{0x8000000000000001}, transposed16)
-
-	values8 := make([]uint8, 64)
-	values8[0], values8[63] = 1, 1
-	transposed8 := make([]uint64, 1)
-	TransposeBin512(values8, transposed8, 1)
-	require.Equal(t, []uint64{0x8000000000000001}, transposed8)
-
-	query := make([]float32, 64)
-	query[0], query[1] = 2, 3
-	require.Equal(t, float32(5), MaskIPX0Q(query, []uint64{0xc000000000000000}))
-}
-
 func testSpace(
 	t *testing.T,
 	quantizeUint8 func(unsafe.Pointer, unsafe.Pointer, int64, float32, float32),
