@@ -14,11 +14,13 @@ avx2:
 	$(GOAT) src/pack_excode_avx2.c --target amd64 -O3 -mavx2 -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/rotator_avx2.c --target amd64 -O3 -mavx2 -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/space_avx2.c --target amd64 -O3 -mavx2 -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/space_excode_avx2.c --target amd64 -O3 -mavx2 -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/warmup_avx2.c --target amd64 -O3 -mavx2 -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/fastscan_avx2.go $(GOAT_OUTPUT_DIR)/fastscan_avx2.s .
 	$(MV) $(GOAT_OUTPUT_DIR)/pack_excode_avx2.go $(GOAT_OUTPUT_DIR)/pack_excode_avx2.s .
 	$(MV) $(GOAT_OUTPUT_DIR)/rotator_avx2.go $(GOAT_OUTPUT_DIR)/rotator_avx2.s .
 	$(MV) $(GOAT_OUTPUT_DIR)/space_avx2.go $(GOAT_OUTPUT_DIR)/space_avx2.s .
+	$(MV) $(GOAT_OUTPUT_DIR)/space_excode_avx2.go $(GOAT_OUTPUT_DIR)/space_excode_avx2.s .
 	$(MV) $(GOAT_OUTPUT_DIR)/warmup_avx2.go $(GOAT_OUTPUT_DIR)/warmup_avx2.s .
 
 avx512:
@@ -28,11 +30,13 @@ avx512:
 	$(GOAT) src/pack_excode_avx512.c --target amd64 -O3 -mavx512f -mavx512dq -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/rotator_avx512.c --target amd64 -O3 -mavx512f -mavx512dq -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/space_avx512.c --target amd64 -O3 -mavx512f -mavx512dq -mavx512bw -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/space_excode_avx512.c --target amd64 -O3 -mavx512f -mavx512dq -mavx512bw -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/warmup_avx512.c --target amd64 -O3 -mavx512f -mavx512vpopcntdq -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/fastscan_avx512.go $(GOAT_OUTPUT_DIR)/fastscan_avx512.s .
 	$(MV) $(GOAT_OUTPUT_DIR)/pack_excode_avx512.go $(GOAT_OUTPUT_DIR)/pack_excode_avx512.s .
 	$(MV) $(GOAT_OUTPUT_DIR)/rotator_avx512.go $(GOAT_OUTPUT_DIR)/rotator_avx512.s .
 	$(MV) $(GOAT_OUTPUT_DIR)/space_avx512.go $(GOAT_OUTPUT_DIR)/space_avx512.s .
+	$(MV) $(GOAT_OUTPUT_DIR)/space_excode_avx512.go $(GOAT_OUTPUT_DIR)/space_excode_avx512.s .
 	$(MV) $(GOAT_OUTPUT_DIR)/warmup_avx512.go $(GOAT_OUTPUT_DIR)/warmup_avx512.s .
 
 neon:
