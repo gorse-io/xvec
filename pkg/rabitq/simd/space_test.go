@@ -83,7 +83,8 @@ func testSpace(
 			for i := range values {
 				values[i] = uint16(i*1009 + 19)
 			}
-			want := transposeUint16Oracle(values, bits)
+			want := make([]uint64, dimension/64*bits)
+			transposeBinScalar(unsafe.Pointer(&values[0]), unsafe.Pointer(&want[0]), int64(dimension), int64(bits))
 			got := make([]uint64, len(want))
 			transpose16(unsafe.Pointer(&values[0]), unsafe.Pointer(&got[0]), int64(dimension), int64(bits))
 			require.Equal(t, want, got, "uint16 dimension %d bits %d", dimension, bits)
@@ -96,7 +97,8 @@ func testSpace(
 			for i := range values {
 				values[i] = uint8(i*29 + 11)
 			}
-			want := transposeUint8Oracle(values, bits)
+			want := make([]uint64, dimension/64*bits)
+			transposeBin512Scalar(unsafe.Pointer(&values[0]), unsafe.Pointer(&want[0]), int64(dimension), int64(bits))
 			got := make([]uint64, len(want))
 			transpose8(unsafe.Pointer(&values[0]), unsafe.Pointer(&got[0]), int64(dimension), int64(bits))
 			require.Equal(t, want, got, "uint8 dimension %d bits %d", dimension, bits)
@@ -116,37 +118,4 @@ func testSpace(
 	}
 	gotIP := maskIP(unsafe.Pointer(&query[0]), unsafe.Pointer(&mask[0]), int64(len(query)))
 	require.InDelta(t, wantIP, gotIP, 1e-5)
-}
-
-func transposeUint16Oracle(values []uint16, bits int) []uint64 {
-	result := make([]uint64, len(values)/64*bits)
-	for block := 0; block < len(values)/64; block++ {
-		for bit := 0; bit < bits; bit++ {
-			for i := 0; i < 64; i++ {
-				if values[block*64+i]&(1<<bit) != 0 {
-					result[block*bits+bit] |= uint64(1) << uint(63-i)
-				}
-			}
-		}
-	}
-	return result
-}
-
-func transposeUint8Oracle(values []uint8, bits int) []uint64 {
-	result := make([]uint64, len(values)/64*bits)
-	for block512 := 0; block512 < len(values); block512 += 512 {
-		blockSize := min(512, len(values)-block512)
-		chunks := blockSize / 64
-		outputBase := block512 / 64 * bits
-		for bit := 0; bit < bits; bit++ {
-			for chunk := 0; chunk < chunks; chunk++ {
-				for i := 0; i < 64; i++ {
-					if values[block512+chunk*64+i]&(1<<bit) != 0 {
-						result[outputBase+bit*chunks+chunk] |= uint64(1) << uint(63-i)
-					}
-				}
-			}
-		}
-	}
-	return result
 }
