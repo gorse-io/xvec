@@ -16,18 +16,8 @@
 
 package simd
 
-import (
-	"testing"
-	"unsafe"
-)
+import "testing"
 
 func TestRotatorNEON(t *testing.T) {
-	testRotator(t,
-		func(flip []byte, data []float32) {
-			flip_sign_neon(unsafe.Pointer(&flip[0]), unsafe.Pointer(&data[0]), int64(len(data)))
-		},
-		func(data []float32) {
-			kacs_walk_neon(unsafe.Pointer(&data[0]), int64(len(data)))
-		},
-	)
+	testRotator(t, flip_sign_neon, kacs_walk_neon)
 }

@@ -22,24 +22,17 @@ import (
 )
 
 func TestScalarRotatorKernels(t *testing.T) {
-	testRotator(t,
-		func(flip []byte, data []float32) {
-			flipSignScalar(unsafe.Pointer(&flip[0]), unsafe.Pointer(&data[0]), int64(len(data)))
-		},
-		func(data []float32) {
-			kacsWalkScalar(unsafe.Pointer(&data[0]), int64(len(data)))
-		},
-	)
+	testRotator(t, flipSignScalar, kacsWalkScalar)
 }
 
 func TestRotatorDispatch(t *testing.T) {
-	testRotator(t, FlipSign, KacsWalk)
+	testRotator(t, flipSign, kacsWalk)
 }
 
 func testRotator(
 	t *testing.T,
-	flipSign func([]byte, []float32),
-	kacsWalk func([]float32),
+	flipSign func(unsafe.Pointer, unsafe.Pointer, int64),
+	kacsWalk func(unsafe.Pointer, int64),
 ) {
 	t.Helper()
 
@@ -56,7 +49,7 @@ func testRotator(
 			}
 		}
 
-		flipSign(signs, data)
+		flipSign(unsafe.Pointer(&signs[0]), unsafe.Pointer(&data[0]), int64(len(data)))
 		require.Equal(t, want, data, "dimension %d", dimension)
 	}
 
@@ -70,7 +63,7 @@ func testRotator(
 			want[i], want[i+length/2] = x+y, x-y
 		}
 
-		kacsWalk(data)
+		kacsWalk(unsafe.Pointer(&data[0]), int64(len(data)))
 		require.Equal(t, want, data, "length %d", length)
 	}
 }
