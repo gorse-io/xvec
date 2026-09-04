@@ -16,6 +16,10 @@
 
 package simd
 
+//go:generate go tool goat src/rotator_avx2.c --target amd64 -O3 -mavx2 -o ../simd
+//go:generate go tool goat src/rotator_avx512.c --target amd64 -O3 -mavx512f -mavx512dq -o ../simd
+//go:generate rm -f src/rotator_avx2.o src/rotator_avx2.s src/rotator_avx512.o src/rotator_avx512.s
+
 import "golang.org/x/sys/cpu"
 
 func init() {

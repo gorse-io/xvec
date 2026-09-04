@@ -17,8 +17,6 @@ package simd
 
 import "unsafe"
 
-//go:generate make generate
-
 type flipSignKernel func(flip, data unsafe.Pointer, dimension int64)
 type kacsWalkKernel func(data unsafe.Pointer, length int64)
 
