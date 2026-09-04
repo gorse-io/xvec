@@ -17,10 +17,33 @@
 package simd
 
 import (
+	"reflect"
 	"testing"
 
 	"golang.org/x/sys/cpu"
 )
+
+func TestSelectWarmupIPX0Q512(t *testing.T) {
+	tests := []struct {
+		name               string
+		hasAVX512F         bool
+		hasAVX512VPOPCNTDQ bool
+		hasAVX2            bool
+		want               any
+	}{
+		{name: "AVX-512", hasAVX512F: true, hasAVX512VPOPCNTDQ: true, hasAVX2: true, want: warmup_ip_x0_q_512_avx512},
+		{name: "AVX2", hasAVX2: true, want: warmup_ip_x0_q_512_avx2},
+		{name: "scalar", want: warmupIPX0Q512Scalar},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := selectWarmupIPX0Q512(test.hasAVX512F, test.hasAVX512VPOPCNTDQ, test.hasAVX2)
+			if reflect.ValueOf(got).Pointer() != reflect.ValueOf(test.want).Pointer() {
+				t.Fatalf("unexpected warmup kernel")
+			}
+		})
+	}
+}
 
 func TestWarmupAVX2(t *testing.T) {
 	if !cpu.X86.HasAVX2 {
