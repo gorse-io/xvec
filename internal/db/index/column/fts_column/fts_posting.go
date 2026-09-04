@@ -23,10 +23,11 @@ import (
 	"math/bits"
 
 	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/parquet-go/bitpack"
 )
 
 const (
-	ftsPostingVersion         = uint16(1)
+	ftsPostingVersion         = uint16(2)
 	ftsPostingDocumentsBlock  = uint16(128)
 	ftsPostingHeaderSize      = 48
 	ftsPostingDirectorySize   = 12
@@ -156,10 +157,10 @@ func BuildFTSPostingList(ctx context.Context, postings []FTSPosting) (*FTSPostin
 		blockData[7] = widthTermFrequency
 		blockData[8] = widthDocumentLength
 		blockData[9] = widthPositionLength
-		blockData = append(blockData, packFTSUint32(documentDeltas, widthDocumentID)...)
-		blockData = append(blockData, packFTSUint32(termFrequencies, widthTermFrequency)...)
-		blockData = append(blockData, packFTSUint32(documentLengths, widthDocumentLength)...)
-		blockData = append(blockData, packFTSUint32(positionLengths, widthPositionLength)...)
+		blockData = appendFTSPackedUint32(blockData, documentDeltas, widthDocumentID)
+		blockData = appendFTSPackedUint32(blockData, termFrequencies, widthTermFrequency)
+		blockData = appendFTSPackedUint32(blockData, documentLengths, widthDocumentLength)
+		blockData = appendFTSPackedUint32(blockData, positionLengths, widthPositionLength)
 		blocks = append(blocks, encodedBlock{
 			maxDocumentID: blockPostings[len(blockPostings)-1].DocumentID,
 			data:          blockData,
@@ -335,9 +336,17 @@ func (l *FTSPostingList) validate(ctx context.Context, blocksOffset, positionsOf
 		cursor := uint64(metadata.blockOffset) + ftsPostingBlockHeaderSize
 		arrays := make([][]uint32, 4)
 		for arrayIndex, width := range widths {
-			length := ftsPackedByteSize(width, uint32(blockCount))
+			length := ftsPackedStorageSize(width, uint32(blockCount))
 			if cursor+length > uint64(positionsOffset) {
 				return fmt.Errorf("%w: block %d packed data is truncated", ErrCorruptFTSPosting, blockIndex)
+			}
+			packedSize := ftsPackedByteSize(width, uint32(blockCount))
+			if uint32(blockCount) == uint32(ftsPostingDocumentsBlock) {
+				for _, value := range l.data[cursor+packedSize : cursor+length] {
+					if value != 0 {
+						return fmt.Errorf("%w: block %d has nonzero SIMD padding", ErrCorruptFTSPosting, blockIndex)
+					}
+				}
 			}
 			arrays[arrayIndex] = unpackFTSUint32(l.data[cursor:cursor+length], width, uint32(blockCount))
 			cursor += length
@@ -597,17 +606,17 @@ func (i *FTSPostingIterator) loadBlock(blockIndex int) {
 	cursor := uint64(metadata.blockOffset) + ftsPostingBlockHeaderSize
 	countInt := int(count)
 	i.documentIDs = resizeFTSUint32(i.documentIDs, countInt)
-	documentIDBytes := ftsPackedByteSize(widths[0], uint32(count))
+	documentIDBytes := ftsPackedStorageSize(widths[0], uint32(count))
 	unpackFTSUint32Into(i.list.data[cursor:cursor+documentIDBytes], widths[0], i.documentIDs)
 	cursor += documentIDBytes
-	cursor += ftsPackedByteSize(widths[1], uint32(count))
-	cursor += ftsPackedByteSize(widths[2], uint32(count))
+	cursor += ftsPackedStorageSize(widths[1], uint32(count))
+	cursor += ftsPackedStorageSize(widths[2], uint32(count))
 	i.termFrequencies = i.termFrequencies[:0]
 	i.documentLengths = i.documentLengths[:0]
 	if i.decodePositions {
 		i.positionLengths = resizeFTSUint32(i.positionLengths, countInt)
 		i.positionOffsets = resizeFTSUint32(i.positionOffsets, countInt)
-		length := ftsPackedByteSize(widths[3], uint32(count))
+		length := ftsPackedStorageSize(widths[3], uint32(count))
 		unpackFTSUint32Into(i.list.data[cursor:cursor+length], widths[3], i.positionLengths)
 	} else {
 		i.positionLengths = nil
@@ -639,7 +648,7 @@ func (i *FTSPostingIterator) decodeTermFrequencies() {
 	count := len(i.documentIDs)
 	i.termFrequencies = resizeFTSUint32(i.termFrequencies, count)
 	offset, width := i.packedBlockArray(1)
-	length := ftsPackedByteSize(width, uint32(count))
+	length := ftsPackedStorageSize(width, uint32(count))
 	unpackFTSUint32Into(i.list.data[offset:offset+length], width, i.termFrequencies)
 }
 
@@ -650,7 +659,7 @@ func (i *FTSPostingIterator) decodeDocumentLengths() {
 	count := len(i.documentIDs)
 	i.documentLengths = resizeFTSUint32(i.documentLengths, count)
 	offset, width := i.packedBlockArray(2)
-	length := ftsPackedByteSize(width, uint32(count))
+	length := ftsPackedStorageSize(width, uint32(count))
 	unpackFTSUint32Into(i.list.data[offset:offset+length], width, i.documentLengths)
 }
 
@@ -660,7 +669,7 @@ func (i *FTSPostingIterator) packedBlockArray(arrayIndex int) (uint64, uint8) {
 	count := uint32(binary.LittleEndian.Uint16(header[4:6]))
 	offset := uint64(metadata.blockOffset) + ftsPostingBlockHeaderSize
 	for index := 0; index < arrayIndex; index++ {
-		offset += ftsPackedByteSize(header[6+index], count)
+		offset += ftsPackedStorageSize(header[6+index], count)
 	}
 	return offset, header[6+arrayIndex]
 }
@@ -766,6 +775,27 @@ func ftsPackedByteSize(width uint8, count uint32) uint64 {
 	return (uint64(width)*uint64(count) + 7) / 8
 }
 
+func ftsPackedStorageSize(width uint8, count uint32) uint64 {
+	size := ftsPackedByteSize(width, count)
+	if count == uint32(ftsPostingDocumentsBlock) {
+		size += bitpack.PaddingInt32
+	}
+	return size
+}
+
+func appendFTSPackedUint32(destination []byte, values []uint32, width uint8) []byte {
+	if len(values) != int(ftsPostingDocumentsBlock) {
+		return append(destination, packFTSUint32(values, width)...)
+	}
+	packedSize := ftsPackedByteSize(width, uint32(len(values)))
+	start := len(destination)
+	destination = append(destination, make([]byte, packedSize+bitpack.PaddingInt32)...)
+	if width > 0 {
+		bitpack.Pack(destination[start:start+int(packedSize)], values, uint(width))
+	}
+	return destination
+}
+
 func packFTSUint32(values []uint32, width uint8) []byte {
 	output := make([]byte, ftsPackedByteSize(width, uint32(len(values))))
 	if width == 0 {
@@ -797,6 +827,11 @@ func unpackFTSUint32(data []byte, width uint8, count uint32) []uint32 {
 func unpackFTSUint32Into(data []byte, width uint8, output []uint32) {
 	if width == 0 {
 		clear(output)
+		return
+	}
+	packedSize := ftsPackedByteSize(width, uint32(len(output)))
+	if len(output) == int(ftsPostingDocumentsBlock) && uint64(len(data)) >= packedSize+bitpack.PaddingInt32 {
+		bitpack.Unpack(output, data, uint(width))
 		return
 	}
 	mask := uint64(math.MaxUint32)
