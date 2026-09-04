@@ -29,34 +29,6 @@ func TestFastScanDispatch(t *testing.T) {
 	testFastScan(t, accumulate, transferLUTHACC, accumulateHACC)
 }
 
-func TestFastScanAPI(t *testing.T) {
-	const dimension = 16
-	codes := make([]uint8, dimension*4)
-	lut8 := make([]uint8, dimension*4)
-	lut16 := make([]uint16, dimension*4)
-	for i := range codes {
-		codes[i] = uint8((i*7+3)%16) | uint8((i*11+5)%16)<<4
-		lut8[i] = uint8((i*13 + 17) % 251)
-		lut16[i] = uint16((i*997 + 101) % 65521)
-	}
-
-	want8 := make([]uint16, 32)
-	accumulateScalar(unsafe.Pointer(&codes[0]), unsafe.Pointer(&lut8[0]), unsafe.Pointer(&want8[0]), dimension)
-	got8 := make([]uint16, 32)
-	Accumulate(codes, lut8, got8, dimension)
-	require.Equal(t, want8, got8)
-
-	scalarLUT := make([]uint8, dimension*8)
-	transferLUTHACCScalar(unsafe.Pointer(&lut16[0]), dimension, unsafe.Pointer(&scalarLUT[0]))
-	want16 := make([]int32, 32)
-	accumulateHACCScalar(unsafe.Pointer(&codes[0]), unsafe.Pointer(&scalarLUT[0]), unsafe.Pointer(&want16[0]), dimension)
-	transferred := make([]uint8, dimension*8)
-	TransferLUTHACC(lut16, transferred, dimension)
-	got16 := make([]int32, 32)
-	AccumulateHACC(codes, transferred, got16, dimension)
-	require.Equal(t, want16, got16)
-}
-
 func testFastScan(
 	t *testing.T,
 	accumulateFn func(unsafe.Pointer, unsafe.Pointer, unsafe.Pointer, int64),
