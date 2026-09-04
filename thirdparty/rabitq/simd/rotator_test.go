@@ -24,10 +24,10 @@ import (
 func TestScalarRotatorKernels(t *testing.T) {
 	testRotator(t,
 		func(flip []byte, data []float32) {
-			flipSignScalarKernel(unsafe.Pointer(&flip[0]), unsafe.Pointer(&data[0]), int64(len(data)))
+			flipSignScalar(unsafe.Pointer(&flip[0]), unsafe.Pointer(&data[0]), int64(len(data)))
 		},
 		func(data []float32) {
-			kacsWalkScalarKernel(unsafe.Pointer(&data[0]), int64(len(data)))
+			kacsWalkScalar(unsafe.Pointer(&data[0]), int64(len(data)))
 		},
 	)
 }

@@ -23,22 +23,12 @@ package simd
 import "golang.org/x/sys/cpu"
 
 func init() {
-	_, flipSign, kacsWalk = selectAMD64RotatorKernels(
-		cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ,
-		cpu.X86.HasAVX2,
-	)
-}
-
-func selectAMD64RotatorKernels(
-	hasAVX512 bool,
-	hasAVX2 bool,
-) (rotatorImplementation, flipSignKernel, kacsWalkKernel) {
 	switch {
-	case hasAVX512:
-		return rotatorAVX512, flip_sign_avx512, kacs_walk_avx512
-	case hasAVX2:
-		return rotatorAVX2, flip_sign_avx2, kacs_walk_avx2
-	default:
-		return rotatorScalar, flipSignScalarKernel, kacsWalkScalarKernel
+	case cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ:
+		flipSign = flip_sign_avx512
+		kacsWalk = kacs_walk_avx512
+	case cpu.X86.HasAVX2:
+		flipSign = flip_sign_avx2
+		kacsWalk = kacs_walk_avx2
 	}
 }

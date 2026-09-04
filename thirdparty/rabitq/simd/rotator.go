@@ -17,21 +17,9 @@ package simd
 
 import "unsafe"
 
-type flipSignKernel func(flip, data unsafe.Pointer, dimension int64)
-type kacsWalkKernel func(data unsafe.Pointer, length int64)
-
-type rotatorImplementation uint8
-
-const (
-	rotatorScalar rotatorImplementation = iota
-	rotatorAVX2
-	rotatorAVX512
-	rotatorNEON
-)
-
 var (
-	flipSign = flipSignScalarKernel
-	kacsWalk = kacsWalkScalarKernel
+	flipSign = flipSignScalar
+	kacsWalk = kacsWalkScalar
 )
 
 // FlipSign negates data elements selected by little-endian bits in flip.
@@ -47,30 +35,22 @@ func KacsWalk(data []float32) {
 	kacsWalk(unsafe.Pointer(&data[0]), int64(len(data)))
 }
 
-func flipSignScalarKernel(flip, data unsafe.Pointer, dimension int64) {
-	flipSignScalar(
-		unsafe.Slice((*byte)(flip), (dimension+7)/8),
-		unsafe.Slice((*float32)(data), dimension),
-	)
-}
-
-func kacsWalkScalarKernel(data unsafe.Pointer, length int64) {
-	kacsWalkScalar(unsafe.Slice((*float32)(data), length))
-}
-
-func flipSignScalar(flip []byte, data []float32) {
-	for i := range data {
-		if flip[i/8]&(1<<uint(i%8)) != 0 {
-			data[i] = -data[i]
+func flipSignScalar(flip, data unsafe.Pointer, dimension int64) {
+	flips := unsafe.Slice((*byte)(flip), (dimension+7)/8)
+	values := unsafe.Slice((*float32)(data), dimension)
+	for i := range values {
+		if flips[i/8]&(1<<uint(i%8)) != 0 {
+			values[i] = -values[i]
 		}
 	}
 }
 
-func kacsWalkScalar(data []float32) {
-	half := len(data) / 2
+func kacsWalkScalar(data unsafe.Pointer, length int64) {
+	values := unsafe.Slice((*float32)(data), length)
+	half := len(values) / 2
 	for i := range half {
-		x, y := data[i], data[i+half]
-		data[i] = x + y
-		data[i+half] = x - y
+		x, y := values[i], values[i+half]
+		values[i] = x + y
+		values[i+half] = x - y
 	}
 }
