@@ -28,14 +28,15 @@ package simd
 //go:generate go tool goat src/warmup_avx512.c --target amd64 -O3 -mavx512f -mavx512vpopcntdq -o ../simd
 //go:generate rm -f src/fastscan_avx2.o src/fastscan_avx2.s src/fastscan_avx512.o src/fastscan_avx512.s src/pack_excode_avx2.o src/pack_excode_avx2.s src/pack_excode_avx512.o src/pack_excode_avx512.s src/rotator_avx2.o src/rotator_avx2.s src/rotator_avx512.o src/rotator_avx512.s src/space_avx2.o src/space_avx2.s src/space_avx512.o src/space_avx512.s src/warmup_avx2.o src/warmup_avx2.s src/warmup_avx512.o src/warmup_avx512.s
 
-import (
-	"unsafe"
-
-	"golang.org/x/sys/cpu"
-)
+import "golang.org/x/sys/cpu"
 
 func init() {
-	warmupIPX0Q512 = selectWarmupIPX0Q512(cpu.X86.HasAVX512F, cpu.X86.HasAVX512VPOPCNTDQ, cpu.X86.HasAVX2)
+	switch {
+	case cpu.X86.HasAVX512F && cpu.X86.HasAVX512VPOPCNTDQ:
+		warmupIPX0Q512 = warmup_ip_x0_q_512_avx512
+	case cpu.X86.HasAVX2:
+		warmupIPX0Q512 = warmup_ip_x0_q_512_avx2
+	}
 
 	switch {
 	case cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ && cpu.X86.HasAVX512BW:
@@ -83,16 +84,5 @@ func init() {
 		transposeBin = new_transpose_bin_avx2
 		transposeBin512 = new_transpose_bin_512_avx2
 		maskIPX0Q = mask_ip_x0_q_avx2
-	}
-}
-
-func selectWarmupIPX0Q512(hasAVX512F, hasAVX512VPOPCNTDQ, hasAVX2 bool) func(unsafe.Pointer, unsafe.Pointer, float32, float32, int64, int64) float32 {
-	switch {
-	case hasAVX512F && hasAVX512VPOPCNTDQ:
-		return warmup_ip_x0_q_512_avx512
-	case hasAVX2:
-		return warmup_ip_x0_q_512_avx2
-	default:
-		return warmupIPX0Q512Scalar
 	}
 }
