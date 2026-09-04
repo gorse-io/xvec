@@ -26,21 +26,13 @@ package simd
 
 import "golang.org/x/sys/cpu"
 
-func initFastScan() {
+func init() {
 	switch {
 	case cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ && cpu.X86.HasAVX512BW:
-		accumulate = accumulate_avx512
-		transferLUTHACC = transfer_lut_hacc_avx512
-		accumulateHACC = accumulate_hacc_avx512
+		accumulate, transferLUTHACC, accumulateHACC = accumulate_avx512, transfer_lut_hacc_avx512, accumulate_hacc_avx512
 	case cpu.X86.HasAVX2:
-		accumulate = accumulate_avx2
-		transferLUTHACC = transfer_lut_hacc_avx2
-		accumulateHACC = accumulate_hacc_avx2
+		accumulate, transferLUTHACC, accumulateHACC = accumulate_avx2, transfer_lut_hacc_avx2, accumulate_hacc_avx2
 	}
-}
-
-func init() {
-	initFastScan()
 
 	switch {
 	case cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ:
