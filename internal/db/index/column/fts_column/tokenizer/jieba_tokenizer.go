@@ -23,7 +23,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
-	"github.com/gorse-io/xvec/thirdparty/jieba"
+	"github.com/gorse-io/xvec/pkg/jieba"
 )
 
 const (

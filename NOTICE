@@ -18,7 +18,7 @@ cppjieba
 Project: cppjieba
 Homepage: https://github.com/yanyiwu/cppjieba
 License:  MIT
-Used in:  thirdparty/jieba and
+Used in:  pkg/jieba and
           internal/db/index/column/fts_column/tokenizer/jieba_tokenizer.go
 
 The Jieba algorithms and resource-format behavior are ported from cppjieba
