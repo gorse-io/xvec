@@ -6,6 +6,7 @@ require (
 	github.com/RoaringBitmap/roaring/v2 v2.24.0
 	github.com/antlr4-go/antlr/v4 v4.13.1
 	github.com/blevesearch/mmap-go v1.2.0
+	github.com/chewxy/math32 v1.11.2
 	github.com/cockroachdb/pebble/v2 v2.1.6
 	github.com/gofrs/flock v0.13.0
 	github.com/parquet-go/parquet-go v0.30.1
