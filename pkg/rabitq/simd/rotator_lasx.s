@@ -3,7 +3,7 @@
 // versions:
 // 	clang   21.1.8 (6ubuntu1)
 // 	objdump 2.46
-// flags: -mlasx -fno-vectorize -fno-slp-vectorize -O3
+// flags: -mlasx -isystem /usr/lib/llvm-21/lib/clang/21/include -fno-vectorize -fno-slp-vectorize -O3
 // source: src/rotator_lasx.c
 
 TEXT ·flip_sign_lasx(SB), $0-24
