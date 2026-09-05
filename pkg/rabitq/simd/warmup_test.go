@@ -15,7 +15,6 @@
 package simd
 
 import (
-	"math/bits"
 	"testing"
 	"unsafe"
 
@@ -41,7 +40,7 @@ func testWarmup(t *testing.T, kernel func(unsafe.Pointer, unsafe.Pointer, float3
 			data, query := makeWarmupInput(dimension, queryBits)
 			for _, coefficient := range coefficients {
 				delta, vl := coefficient[0], coefficient[1]
-				want := warmupOracle(data, query, delta, vl, dimension, queryBits)
+				want := warmupIPX0Q512Scalar(unsafe.Pointer(&data[0]), unsafe.Pointer(&query[0]), delta, vl, int64(dimension), int64(queryBits))
 				got := kernel(unsafe.Pointer(&data[0]), unsafe.Pointer(&query[0]), delta, vl, int64(dimension), int64(queryBits))
 				require.Equal(t, want, got, "dimension %d query bits %d delta %v vl %v", dimension, queryBits, delta, vl)
 			}
@@ -60,24 +59,4 @@ func makeWarmupInput(dimension, queryBits int) ([]uint64, []uint64) {
 		query[i] = uint64(0xd6e8feb86659fd93) * uint64(i+3)
 	}
 	return data, query
-}
-
-func warmupOracle(data, query []uint64, delta, vl float32, dimension, queryBits int) float32 {
-	var ip, ppc uint64
-	chunks := dimension / 64
-	queryBase := 0
-	for block := 0; block < chunks; {
-		blockChunks := min(8, chunks-block)
-		for chunk := range blockChunks {
-			x := data[block+chunk]
-			ppc += uint64(bits.OnesCount64(x))
-			for bit := range queryBits {
-				y := query[queryBase+bit*blockChunks+chunk]
-				ip += uint64(bits.OnesCount64(x&y)) << bit
-			}
-		}
-		block += blockChunks
-		queryBase += blockChunks * queryBits
-	}
-	return delta*float32(ip) + vl*float32(ppc)
 }
