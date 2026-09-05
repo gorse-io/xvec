@@ -27,13 +27,6 @@ var warmupIPX0Q512 = warmupIPX0Q512Scalar
 // paddedDimension/64 elements, and query must contain at least
 // paddedDimension/64*queryBits elements.
 func WarmupIPX0Q512(data, query []uint64, delta, vl float32, paddedDimension, queryBits int) float32 {
-	if paddedDimension <= 0 || paddedDimension%64 != 0 || queryBits <= 0 || queryBits > 8 {
-		panic("simd: invalid warmup dimensions")
-	}
-	words := paddedDimension / 64
-	if len(data) < words || words > len(query)/queryBits {
-		panic("simd: warmup input is too short")
-	}
 	return warmupIPX0Q512(
 		unsafe.Pointer(&data[0]),
 		unsafe.Pointer(&query[0]),
