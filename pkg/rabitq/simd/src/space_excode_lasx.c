@@ -22,6 +22,12 @@ static inline float reduce_f32x8(__m256 value) {
            lanes[4] + lanes[5] + lanes[6] + lanes[7];
 }
 
+static inline __m256i load_u8x16_lasx(const uint8_t *source) {
+    const __m256i low = __lasx_xvldrepl_d(source, 0);
+    const __m256i high = __lasx_xvldrepl_d(source + 8, 0);
+    return __lasx_xvinsve0_d(low, high, 1);
+}
+
 // LASX port of VectorDB-NTU/RaBitQ-Library src/simd/space_excode_avx2.cpp and
 // space_excode_avx512.cpp at revision 540242ea0a68926f1b827bf1f9add844f07a427b.
 
@@ -71,19 +77,15 @@ static inline void contribute_ip_lasx(
         low[lane] = bytes[lane];
         high[lane] = bytes[lane + 8];
     }
-    *sum = __lasx_xvfadd_s(
-        *sum,
-        __lasx_xvfmul_s(
-            (__m256)__lasx_xvld(query, 0),
-            __lasx_xvffint_s_wu((__m256i)low)
-        )
+    *sum = __lasx_xvfmadd_s(
+        (__m256)__lasx_xvld(query, 0),
+        __lasx_xvffint_s_wu((__m256i)low),
+        *sum
     );
-    *sum = __lasx_xvfadd_s(
-        *sum,
-        __lasx_xvfmul_s(
-            (__m256)__lasx_xvld(query + 8, 0),
-            __lasx_xvffint_s_wu((__m256i)high)
-        )
+    *sum = __lasx_xvfmadd_s(
+        (__m256)__lasx_xvld(query + 8, 0),
+        __lasx_xvffint_s_wu((__m256i)high),
+        *sum
     );
 }
 
@@ -103,7 +105,7 @@ float ip64_fxu2_lasx(const float *query, const uint8_t *compact_code, int64_t di
     const __m256i mask = __lasx_xvrepli_b(3);
     __m256 sum = (__m256)__lasx_xvldi(0);
     for (int64_t i = 0; i < dim; i += 64) {
-        const __m256i compact = __lasx_xvld(compact_code, 0);
+        const __m256i compact = load_u8x16_lasx(compact_code);
         contribute_ip_lasx(__lasx_xvand_v(compact, mask), query + i, &sum);
         contribute_ip_lasx(__lasx_xvand_v(__lasx_xvsrli_b(compact, 2), mask), query + i + 16, &sum);
         contribute_ip_lasx(__lasx_xvand_v(__lasx_xvsrli_b(compact, 4), mask), query + i + 32, &sum);
@@ -118,7 +120,7 @@ float ip64_fxu3_lasx(const float *query, const uint8_t *compact_code, int64_t di
     const __m256i checker = bit_checker_lasx();
     __m256 sum = (__m256)__lasx_xvldi(0);
     for (int64_t i = 0; i < dim; i += 64) {
-        const __m256i compact = __lasx_xvld(compact_code, 0);
+        const __m256i compact = load_u8x16_lasx(compact_code);
         const uint8_t *top = compact_code + 16;
         contribute_ip_lasx(add_top_bits_lasx(__lasx_xvand_v(compact, mask), top, 0, 2, checker), query + i, &sum);
         contribute_ip_lasx(add_top_bits_lasx(__lasx_xvand_v(__lasx_xvsrli_b(compact, 2), mask), top, 1, 2, checker), query + i + 16, &sum);
@@ -133,7 +135,7 @@ float ip16_fxu4_lasx(const float *query, const uint8_t *compact_code, int64_t di
     const __m256i mask = __lasx_xvrepli_b(15);
     __m256 sum = (__m256)__lasx_xvldi(0);
     for (int64_t i = 0; i < dim; i += 16) {
-        const __m256i compact = __lasx_xvld(compact_code, 0);
+        const __m256i compact = __lasx_xvldrepl_d(compact_code, 0);
         const __m256i values = __lasx_xvinsve0_d(
             __lasx_xvand_v(compact, mask), __lasx_xvsrli_b(compact, 4), 1
         );
@@ -148,8 +150,8 @@ float ip64_fxu5_lasx(const float *query, const uint8_t *compact_code, int64_t di
     const __m256i checker = bit_checker_lasx();
     __m256 sum = (__m256)__lasx_xvldi(0);
     for (int64_t i = 0; i < dim; i += 64) {
-        const __m256i first = __lasx_xvld(compact_code, 0);
-        const __m256i second = __lasx_xvld(compact_code, 16);
+        const __m256i first = load_u8x16_lasx(compact_code);
+        const __m256i second = load_u8x16_lasx(compact_code + 16);
         const uint8_t *top = compact_code + 32;
         contribute_ip_lasx(add_top_bits_lasx(__lasx_xvand_v(first, mask), top, 0, 4, checker), query + i, &sum);
         contribute_ip_lasx(add_top_bits_lasx(__lasx_xvsrli_b(first, 4), top, 1, 4, checker), query + i + 16, &sum);
@@ -165,9 +167,9 @@ float ip64_fxu6_lasx(const float *query, const uint8_t *compact_code, int64_t di
     const __m256i mask2 = __lasx_xvrepli_b(0xc0);
     __m256 sum = (__m256)__lasx_xvldi(0);
     for (int64_t i = 0; i < dim; i += 64) {
-        const __m256i first = __lasx_xvld(compact_code, 0);
-        const __m256i second = __lasx_xvld(compact_code, 16);
-        const __m256i third = __lasx_xvld(compact_code, 32);
+        const __m256i first = load_u8x16_lasx(compact_code);
+        const __m256i second = load_u8x16_lasx(compact_code + 16);
+        const __m256i third = load_u8x16_lasx(compact_code + 32);
         const __m256i fourth = __lasx_xvor_v(
             __lasx_xvor_v(
                 __lasx_xvsrli_b(__lasx_xvand_v(first, mask2), 6),
@@ -190,9 +192,9 @@ float ip64_fxu7_lasx(const float *query, const uint8_t *compact_code, int64_t di
     const __m256i checker = bit_checker_lasx();
     __m256 sum = (__m256)__lasx_xvldi(0);
     for (int64_t i = 0; i < dim; i += 64) {
-        const __m256i first = __lasx_xvld(compact_code, 0);
-        const __m256i second = __lasx_xvld(compact_code, 16);
-        const __m256i third = __lasx_xvld(compact_code, 32);
+        const __m256i first = load_u8x16_lasx(compact_code);
+        const __m256i second = load_u8x16_lasx(compact_code + 16);
+        const __m256i third = load_u8x16_lasx(compact_code + 32);
         const uint8_t *top = compact_code + 48;
         const __m256i fourth = __lasx_xvor_v(
             __lasx_xvor_v(
@@ -213,7 +215,7 @@ float ip64_fxu7_lasx(const float *query, const uint8_t *compact_code, int64_t di
 float ip16_fxu8_lasx(const float *query, const uint8_t *code, int64_t dim) {
     __m256 sum = (__m256)__lasx_xvldi(0);
     for (int64_t i = 0; i < dim; i += 16) {
-        contribute_ip_lasx(__lasx_xvld(code, 0), query + i, &sum);
+        contribute_ip_lasx(load_u8x16_lasx(code), query + i, &sum);
         code += 16;
     }
     return reduce_f32x8(sum);
