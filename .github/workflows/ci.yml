@@ -101,7 +101,9 @@ jobs:
         run: |
           make -C internal/ailego/math test-rvv
           make -C internal/ailego/math_batch test-rvv
+          make -C pkg/rabitq/simd test-rvv
       - name: Test LoongArch LASX
         run: |
           make -C internal/ailego/math test-lasx
           make -C internal/ailego/math_batch test-lasx
+          make -C pkg/rabitq/simd test-lasx

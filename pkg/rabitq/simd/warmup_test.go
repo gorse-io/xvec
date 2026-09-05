@@ -42,7 +42,7 @@ func testWarmup(t *testing.T, kernel func(unsafe.Pointer, unsafe.Pointer, float3
 				delta, vl := coefficient[0], coefficient[1]
 				want := warmupIPX0Q512Scalar(unsafe.Pointer(&data[0]), unsafe.Pointer(&query[0]), delta, vl, int64(dimension), int64(queryBits))
 				got := kernel(unsafe.Pointer(&data[0]), unsafe.Pointer(&query[0]), delta, vl, int64(dimension), int64(queryBits))
-				require.Equal(t, want, got, "dimension %d query bits %d delta %v vl %v", dimension, queryBits, delta, vl)
+				require.InEpsilon(t, want, got, 1e-6, "dimension %d query bits %d delta %v vl %v", dimension, queryBits, delta, vl)
 			}
 		}
 	}

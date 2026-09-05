@@ -2,10 +2,21 @@ GO ?= go
 GOAT ?= $(GO) tool goat
 GOAT_OUTPUT_DIR ?= .goat/simd
 MV ?= mv
+CLANG_RESOURCE_DIR ?= $(shell clang -print-resource-dir)
+GOAT_RVV_INCLUDE ?= $(CLANG_RESOURCE_DIR)/include
+GOAT_LASX_FLAGS ?= -e=-ffreestanding -e=-isystem -e=$(CLANG_RESOURCE_DIR)/include -e=-fno-vectorize -e=-fno-slp-vectorize
+RVV_OBJDUMP ?= riscv64-linux-gnu-objdump
+LASX_OBJDUMP ?= loongarch64-linux-gnu-objdump
+RISCV64_QEMU ?= qemu-riscv64
+RISCV64_QEMU_FLAGS ?= -cpu max,v=true
+LOONG64_QEMU ?= qemu-loongarch64
+LOONG64_QEMU_FLAGS ?= -cpu max
+TEST_RVV_BINARY ?= .test-rvv.riscv64.test
+TEST_LASX_BINARY ?= .test-lasx.loong64.test
 
-.PHONY: generate avx2 avx512 neon clean
+.PHONY: generate avx2 avx512 neon rvv lasx clean test-rvv test-lasx
 
-generate: avx2 avx512 neon clean
+generate: avx2 avx512 neon rvv lasx clean
 
 avx2:
 	$(RM) -r $(GOAT_OUTPUT_DIR)
@@ -55,6 +66,40 @@ neon:
 	$(MV) $(GOAT_OUTPUT_DIR)/space_excode_neon.go $(GOAT_OUTPUT_DIR)/space_excode_neon.s .
 	$(MV) $(GOAT_OUTPUT_DIR)/warmup_neon.go $(GOAT_OUTPUT_DIR)/warmup_neon.s .
 
+rvv:
+	$(RM) -r $(GOAT_OUTPUT_DIR)
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(RVV_OBJDUMP) $(GOAT) src/fastscan_rvv.c --target riscv64 -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(RVV_OBJDUMP) $(GOAT) src/pack_excode_rvv.c --target riscv64 -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(RVV_OBJDUMP) $(GOAT) src/rotator_rvv.c --target riscv64 -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(RVV_OBJDUMP) $(GOAT) src/space_rvv.c --target riscv64 -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(RVV_OBJDUMP) $(GOAT) src/space_excode_rvv.c --target riscv64 -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(RVV_OBJDUMP) $(GOAT) src/warmup_rvv.c --target riscv64 -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
+
+lasx:
+	$(RM) -r $(GOAT_OUTPUT_DIR)
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/fastscan_lasx.c --target loong64 -O3 -mlasx $(GOAT_LASX_FLAGS) -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/pack_excode_lasx.c --target loong64 -O3 -mlasx $(GOAT_LASX_FLAGS) -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/rotator_lasx.c --target loong64 -O3 -mlasx $(GOAT_LASX_FLAGS) -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/space_lasx.c --target loong64 -O3 -mlasx $(GOAT_LASX_FLAGS) -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/space_excode_lasx.c --target loong64 -O3 -mlasx $(GOAT_LASX_FLAGS) -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/warmup_lasx.c --target loong64 -O3 -mlasx $(GOAT_LASX_FLAGS) -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
+
 clean:
 	$(RM) src/*.o src/*.s
 	$(RM) -r .goat
+
+test-rvv:
+	@set -e; \
+	trap '$(RM) ./$(TEST_RVV_BINARY)' EXIT; \
+	GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 $(GO) test -c -o $(TEST_RVV_BINARY) .; \
+	$(RISCV64_QEMU) $(RISCV64_QEMU_FLAGS) ./$(TEST_RVV_BINARY)
+
+test-lasx:
+	@set -e; \
+	trap '$(RM) ./$(TEST_LASX_BINARY)' EXIT; \
+	GOOS=linux GOARCH=loong64 CGO_ENABLED=0 $(GO) test -c -o $(TEST_LASX_BINARY) .; \
+	$(LOONG64_QEMU) $(LOONG64_QEMU_FLAGS) ./$(TEST_LASX_BINARY)
