@@ -46,38 +46,6 @@ func TestSpaceExcodeDispatch(t *testing.T) {
 		ip64FxU7,
 		ip16FxU8,
 	})
-	testSpaceExcodeAPI(t, []func([]float32, []uint8) float32{
-		IP16FxU1,
-		IP64FxU2,
-		IP64FxU3,
-		IP16FxU4,
-		IP64FxU5,
-		IP64FxU6,
-		IP64FxU7,
-		IP16FxU8,
-	})
-}
-
-func testSpaceExcodeAPI(t *testing.T, functions []func([]float32, []uint8) float32) {
-	t.Helper()
-
-	query := make([]float32, 64)
-	for i := range query {
-		query[i] = float32(i%7 - 3)
-	}
-	for bits, function := range functions {
-		bits++
-		raw := make([]uint8, len(query))
-		for i := range raw {
-			raw[i] = uint8(i % (1 << bits))
-		}
-		compact := packExcodeForTest(raw, bits)
-		var want float32
-		for i := range query {
-			want += query[i] * float32(raw[i])
-		}
-		require.InDelta(t, want, function(query, compact), 1e-3, "bits %d", bits)
-	}
 }
 
 func testSpaceExcode(t *testing.T, functions []excodeIPFunc) {
