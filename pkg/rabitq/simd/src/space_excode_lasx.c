@@ -12,7 +12,52 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "lasx_common.h"
+#include <stdint.h>
+
+typedef uint8_t u8x8 __attribute__((vector_size(8)));
+typedef uint8_t u8x16 __attribute__((vector_size(16)));
+typedef uint8_t u8x32 __attribute__((vector_size(32)));
+typedef uint16_t u16x16 __attribute__((vector_size(32)));
+typedef uint32_t u32x8 __attribute__((vector_size(32)));
+typedef int32_t i32x8 __attribute__((vector_size(32)));
+typedef uint64_t u64x4 __attribute__((vector_size(32)));
+typedef float f32x8 __attribute__((vector_size(32)));
+
+static inline u8x32 splat_u8x32(uint8_t value) {
+    return (u8x32){
+        value, value, value, value, value, value, value, value,
+        value, value, value, value, value, value, value, value,
+        value, value, value, value, value, value, value, value,
+        value, value, value, value, value, value, value, value,
+    };
+}
+
+static inline u8x32 load_u8x32(const void *source) {
+    u8x32 value;
+    __builtin_memcpy(&value, source, sizeof(value));
+    return value;
+}
+
+static inline f32x8 load_f32x8(const void *source) {
+    f32x8 value;
+    __builtin_memcpy(&value, source, sizeof(value));
+    return value;
+}
+
+static inline void store_f32x8(void *destination, f32x8 value) {
+    __builtin_memcpy(destination, &value, sizeof(value));
+}
+
+static inline float reduce_f32x8(f32x8 value) {
+    float lanes[8];
+    store_f32x8(lanes, value);
+    return lanes[0] + lanes[1] + lanes[2] + lanes[3] +
+           lanes[4] + lanes[5] + lanes[6] + lanes[7];
+}
+
+static inline f32x8 convert_u8x8_f32x8(u8x8 value) {
+    return __builtin_convertvector(value, f32x8);
+}
 
 // LASX port of VectorDB-NTU/RaBitQ-Library src/simd/space_excode_avx2.cpp and
 // space_excode_avx512.cpp at revision 540242ea0a68926f1b827bf1f9add844f07a427b.

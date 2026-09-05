@@ -4,7 +4,7 @@ GOAT_OUTPUT_DIR ?= .goat/simd
 MV ?= mv
 CLANG_RESOURCE_DIR ?= $(shell clang -print-resource-dir)
 GOAT_RVV_INCLUDE ?= $(CLANG_RESOURCE_DIR)/include
-GOAT_LASX_FLAGS ?= -e=-isystem -e=$(CLANG_RESOURCE_DIR)/include -e=-fno-vectorize -e=-fno-slp-vectorize
+GOAT_LASX_FLAGS ?= -e=-ffreestanding -e=-isystem -e=$(CLANG_RESOURCE_DIR)/include -e=-fno-vectorize -e=-fno-slp-vectorize
 RVV_OBJDUMP ?= riscv64-linux-gnu-objdump
 LASX_OBJDUMP ?= loongarch64-linux-gnu-objdump
 RISCV64_QEMU ?= qemu-riscv64

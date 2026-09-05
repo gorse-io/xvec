@@ -12,7 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "lasx_common.h"
+#include <stdint.h>
+
+typedef uint8_t u8x8 __attribute__((vector_size(8)));
+typedef uint8_t u8x16 __attribute__((vector_size(16)));
+typedef uint8_t u8x32 __attribute__((vector_size(32)));
+typedef uint16_t u16x16 __attribute__((vector_size(32)));
+typedef uint32_t u32x8 __attribute__((vector_size(32)));
+typedef int32_t i32x8 __attribute__((vector_size(32)));
+typedef uint64_t u64x4 __attribute__((vector_size(32)));
+typedef float f32x8 __attribute__((vector_size(32)));
+
+static inline u8x32 load_u8x32(const void *source) {
+    u8x32 value;
+    __builtin_memcpy(&value, source, sizeof(value));
+    return value;
+}
+
+static inline u8x16 load_u8x16(const void *source) {
+    u8x16 value;
+    __builtin_memcpy(&value, source, sizeof(value));
+    return value;
+}
+
+static inline void store_u8x32(void *destination, u8x32 value) {
+    __builtin_memcpy(destination, &value, sizeof(value));
+}
+
+static inline void store_u8x16(void *destination, u8x16 value) {
+    __builtin_memcpy(destination, &value, sizeof(value));
+}
 
 // LASX port of VectorDB-NTU/RaBitQ-Library pack-excode kernels at revision
 // 540242ea0a68926f1b827bf1f9add844f07a427b.
