@@ -12,51 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <lasxintrin.h>
 #include <stdint.h>
-
-typedef uint8_t u8x8 __attribute__((vector_size(8)));
-typedef uint8_t u8x16 __attribute__((vector_size(16)));
-typedef uint8_t u8x32 __attribute__((vector_size(32)));
-typedef uint16_t u16x16 __attribute__((vector_size(32)));
-typedef uint32_t u32x8 __attribute__((vector_size(32)));
-typedef int32_t i32x8 __attribute__((vector_size(32)));
-typedef uint64_t u64x4 __attribute__((vector_size(32)));
-typedef float f32x8 __attribute__((vector_size(32)));
-
-static inline f32x8 load_f32x8(const void *source) {
-    f32x8 value;
-    __builtin_memcpy(&value, source, sizeof(value));
-    return value;
-}
-
-static inline void store_f32x8(void *destination, f32x8 value) {
-    __builtin_memcpy(destination, &value, sizeof(value));
-}
 
 // LASX port of VectorDB-NTU/RaBitQ-Library rotator kernels at revision
 // 540242ea0a68926f1b827bf1f9add844f07a427b.
 
 void flip_sign_lasx(const uint8_t *flip, float *data, int64_t dim) {
     for (int64_t i = 0; i < dim; i += 8) {
-        u32x8 mask;
+        v8u32 mask;
         for (int lane = 0; lane < 8; ++lane) {
             mask[lane] = (flip[(i + lane) / 8] >> ((i + lane) % 8) & 1)
                 ? 0x80000000U
                 : 0;
         }
-        u32x8 values;
-        __builtin_memcpy(&values, data + i, sizeof(values));
-        values ^= mask;
-        __builtin_memcpy(data + i, &values, sizeof(values));
+        const __m256i values = __lasx_xvld(data + i, 0);
+        __lasx_xvst(__lasx_xvxor_v(values, (__m256i)mask), data + i, 0);
     }
 }
 
 void kacs_walk_lasx(float *data, int64_t len) {
     const int64_t half = len / 2;
     for (int64_t i = 0; i < half; i += 8) {
-        const f32x8 first = load_f32x8(data + i);
-        const f32x8 second = load_f32x8(data + half + i);
-        store_f32x8(data + i, first + second);
-        store_f32x8(data + half + i, first - second);
+        const __m256 first = (__m256)__lasx_xvld(data + i, 0);
+        const __m256 second = (__m256)__lasx_xvld(data + half + i, 0);
+        __lasx_xvst((__m256i)__lasx_xvfadd_s(first, second), data + i, 0);
+        __lasx_xvst((__m256i)__lasx_xvfsub_s(first, second), data + half + i, 0);
     }
 }

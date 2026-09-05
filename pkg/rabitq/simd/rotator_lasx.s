@@ -20,35 +20,37 @@ TEXT ·flip_sign_lasx(SB), $0-24
 	WORD $0x160003ea    // lu32i.d	$a6, 31
 	WORD $0x001500eb    // move	$a7, $a3
 	WORD $0x160001eb    // lu32i.d	$a7, 15
+	WORD $0x001500ec    // move	$t0, $a3
+	WORD $0x160000ec    // lu32i.d	$t0, 7
 	WORD $0x16000007    // lu32i.d	$a3, 0
 
 LBB0_2:
-	WORD $0x2800008c    // ld.b	$t0, $a0, 0
-	WORD $0x0200018d    // slti	$t1, $t0, 0
-	WORD $0x0343fd8e    // andi	$t2, $t0, 255
+	WORD $0x2800008d    // ld.b	$t1, $a0, 0
+	WORD $0x020001ae    // slti	$t2, $t1, 0
+	WORD $0x0343fdaf    // andi	$t3, $t1, 255
+	WORD $0x00417def    // slli.d	$t3, $t3, 31
+	WORD $0x004179b0    // slli.d	$t4, $t1, 30
+	WORD $0x0014a610    // and	$t4, $t4, $a5
+	WORD $0x004175b1    // slli.d	$t5, $t1, 29
+	WORD $0x0014aa31    // and	$t5, $t5, $a6
+	WORD $0x004171b2    // slli.d	$t6, $t1, 28
+	WORD $0x0014ae52    // and	$t6, $t6, $a7
+	WORD $0x00416db3    // slli.d	$t7, $t1, 27
+	WORD $0x0014b273    // and	$t7, $t7, $t0
+	WORD $0x004169b4    // slli.d	$t8, $t1, 26
+	WORD $0x00149e94    // and	$t8, $t8, $a3
+	WORD $0x004165ad    // slli.d	$t1, $t1, 25
+	WORD $0x00149dad    // and	$t1, $t1, $a3
 	WORD $0x00417dce    // slli.d	$t2, $t2, 31
-	WORD $0x0041798f    // slli.d	$t3, $t0, 30
-	WORD $0x0014a5ef    // and	$t3, $t3, $a5
-	WORD $0x00417590    // slli.d	$t4, $t0, 29
-	WORD $0x0014aa10    // and	$t4, $t4, $a6
-	WORD $0x00417191    // slli.d	$t5, $t0, 28
-	WORD $0x0014ae31    // and	$t5, $t5, $a7
-	WORD $0x00416d92    // slli.d	$t6, $t0, 27
-	WORD $0x00149e52    // and	$t6, $t6, $a3
-	WORD $0x00416993    // slli.d	$t7, $t0, 26
-	WORD $0x00149e73    // and	$t7, $t7, $a3
-	WORD $0x0041658c    // slli.d	$t0, $t0, 25
-	WORD $0x00149d8c    // and	$t0, $t0, $a3
-	WORD $0x00417dad    // slli.d	$t1, $t1, 31
-	WORD $0x76ebc1c0    // xvinsgr2vr.w	$xr0, $t2, 0
-	WORD $0x76ebc5e0    // xvinsgr2vr.w	$xr0, $t3, 1
-	WORD $0x76ebca00    // xvinsgr2vr.w	$xr0, $t4, 2
-	WORD $0x76ebce20    // xvinsgr2vr.w	$xr0, $t5, 3
-	WORD $0x76ebd240    // xvinsgr2vr.w	$xr0, $t6, 4
+	WORD $0x76ebc1e0    // xvinsgr2vr.w	$xr0, $t3, 0
+	WORD $0x76ebc600    // xvinsgr2vr.w	$xr0, $t4, 1
+	WORD $0x76ebca20    // xvinsgr2vr.w	$xr0, $t5, 2
+	WORD $0x76ebce40    // xvinsgr2vr.w	$xr0, $t6, 3
+	WORD $0x76ebd260    // xvinsgr2vr.w	$xr0, $t7, 4
 	WORD $0x2c8000a1    // xvld	$xr1, $a1, 0
-	WORD $0x76ebd660    // xvinsgr2vr.w	$xr0, $t7, 5
-	WORD $0x76ebd980    // xvinsgr2vr.w	$xr0, $t0, 6
-	WORD $0x76ebdda0    // xvinsgr2vr.w	$xr0, $t1, 7
+	WORD $0x76ebd680    // xvinsgr2vr.w	$xr0, $t8, 5
+	WORD $0x76ebd9a0    // xvinsgr2vr.w	$xr0, $t1, 6
+	WORD $0x76ebddc0    // xvinsgr2vr.w	$xr0, $t2, 7
 	WORD $0x75270020    // xvxor.v	$xr0, $xr1, $xr0
 	WORD $0x2cc000a0    // xvst	$xr0, $a1, 0
 	WORD $0x02c02108    // addi.d	$a4, $a4, 8
@@ -72,11 +74,12 @@ TEXT ·kacs_walk_lasx(SB), $0-16
 
 LBB1_2:
 	WORD $0x2c800080    // xvld	$xr0, $a0, 0
-	WORD $0x38481c81    // xvldx	$xr1, $a0, $a3
+	WORD $0x00109c88    // add.d	$a4, $a0, $a3
+	WORD $0x2c800101    // xvld	$xr1, $a4, 0
 	WORD $0x75308402    // xvfadd.s	$xr2, $xr0, $xr1
 	WORD $0x2cc00082    // xvst	$xr2, $a0, 0
 	WORD $0x75328400    // xvfsub.s	$xr0, $xr0, $xr1
-	WORD $0x384c1c80    // xvstx	$xr0, $a0, $a3
+	WORD $0x2cc00100    // xvst	$xr0, $a4, 0
 	WORD $0x02c020c6    // addi.d	$a2, $a2, 8
 	WORD $0x02c08084    // addi.d	$a0, $a0, 32
 	BLT  R6, R5, LBB1_2

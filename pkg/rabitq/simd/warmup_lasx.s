@@ -13,36 +13,38 @@ TEXT ·warmup_ip_x0_q_512_lasx(SB), $8-44
 	MOVF vl+20(FP), F1
 	MOVV padded_dimension+24(FP), R6
 	MOVV query_bits+32(FP), R7
-	WORD $0x02f70063                 // addi.d	$sp, $sp, -576
-	WORD $0x29c8e061                 // st.d	$ra, $sp, 568                   # 8-byte Folded Spill
-	WORD $0x29c8c075                 // st.d	$fp, $sp, 560                   # 8-byte Folded Spill
-	WORD $0x29c8a077                 // st.d	$s0, $sp, 552                   # 8-byte Folded Spill
-	WORD $0x29c88078                 // st.d	$s1, $sp, 544                   # 8-byte Folded Spill
-	WORD $0x29c86079                 // st.d	$s2, $sp, 536                   # 8-byte Folded Spill
-	WORD $0x02c90075                 // addi.d	$fp, $sp, 576
+	WORD $0x02fa8063                 // addi.d	$sp, $sp, -352
+	WORD $0x29c56061                 // st.d	$ra, $sp, 344                   # 8-byte Folded Spill
+	WORD $0x29c54075                 // st.d	$fp, $sp, 336                   # 8-byte Folded Spill
+	WORD $0x29c52077                 // st.d	$s0, $sp, 328                   # 8-byte Folded Spill
+	WORD $0x29c50078                 // st.d	$s1, $sp, 320                   # 8-byte Folded Spill
+	WORD $0x29c4e079                 // st.d	$s2, $sp, 312                   # 8-byte Folded Spill
+	WORD $0x29c4c07a                 // st.d	$s3, $sp, 304                   # 8-byte Folded Spill
+	WORD $0x29c4a07b                 // st.d	$s4, $sp, 296                   # 8-byte Folded Spill
+	WORD $0x02c58075                 // addi.d	$fp, $sp, 352
 	WORD $0x00840003                 // bstrins.d	$sp, $zero, 4, 0
-	WORD $0x77e00002                 // xvrepli.b	$xr2, 0
-	WORD $0x2cc38062                 // xvst	$xr2, $sp, 224
-	WORD $0x2cc40062                 // xvst	$xr2, $sp, 256
-	WORD $0x2cc48062                 // xvst	$xr2, $sp, 288
-	WORD $0x2cc50062                 // xvst	$xr2, $sp, 320
-	WORD $0x2cc58062                 // xvst	$xr2, $sp, 352
-	WORD $0x2cc60062                 // xvst	$xr2, $sp, 384
-	WORD $0x2cc68062                 // xvst	$xr2, $sp, 416
+	WORD $0x77e00003                 // xvldi	$xr3, 0
+	WORD $0x2cc08063                 // xvst	$xr3, $sp, 32
+	WORD $0x2cc10063                 // xvst	$xr3, $sp, 64
+	WORD $0x2cc18063                 // xvst	$xr3, $sp, 96
+	WORD $0x2cc20063                 // xvst	$xr3, $sp, 128
+	WORD $0x2cc28063                 // xvst	$xr3, $sp, 160
+	WORD $0x2cc30063                 // xvst	$xr3, $sp, 192
+	WORD $0x2cc38063                 // xvst	$xr3, $sp, 224
 	WORD $0x03810008                 // ori	$a4, $zero, 64
-	WORD $0x2cc70062                 // xvst	$xr2, $sp, 448
-	BLT  R6, R8, LBB0_30
+	WORD $0x2cc40063                 // xvst	$xr3, $sp, 256
+	BLT  R6, R8, LBB0_18
 	WORD $0x0049fcc8                 // srai.d	$a4, $a2, 63
 	WORD $0x0045e908                 // srli.d	$a4, $a4, 58
 	WORD $0x0010a0c6                 // add.d	$a2, $a2, $a4
 	WORD $0x004918c6                 // srai.d	$a2, $a2, 6
-	WORD $0x64023407                 // blez	$a3, .LBB0_18
+	WORD $0x6403c007                 // blez	$a3, .LBB0_30
 	WORD $0x00150008                 // move	$a4, $zero
 	WORD $0x03802009                 // ori	$a5, $zero, 8
 	WORD $0x03800c0a                 // ori	$a6, $zero, 3
 	WORD $0x0380080b                 // ori	$a7, $zero, 2
-	WORD $0x73e00003                 // vrepli.b	$vr3, 0
 	WORD $0x001500cc                 // move	$t0, $a2
+	WORD $0x77d40062                 // xvori.b	$xr2, $xr3, 0
 	JMP  LBB0_4
 
 LBB0_3:
@@ -50,7 +52,7 @@ LBB0_3:
 	WORD $0x002d15a5     // alsl.d	$a1, $t1, $a1, 3
 	WORD $0x02c02108     // addi.d	$a4, $a4, 8
 	WORD $0x02ffe18c     // addi.d	$t0, $t0, -8
-	BGE  R8, R6, LBB0_30
+	BGE  R8, R6, LBB0_19
 
 LBB0_4:
 	WORD $0x0011a0ce // sub.d	$t2, $a2, $a4
@@ -72,30 +74,30 @@ LBB0_4:
 	JMP  LBB0_7
 
 LBB0_6:
-	WORD $0x740b8882      // xvadd.d	$xr2, $xr4, $xr2
 	WORD $0x02c011ce      // addi.d	$t2, $t2, 4
+	WORD $0x02c08273      // addi.d	$t7, $t7, 32
 	WORD $0x02c08231      // addi.d	$t5, $t5, 32
 	WORD $0x02c08252      // addi.d	$t6, $t6, 32
-	WORD $0x02c08273      // addi.d	$t7, $t7, 32
 	BGE  R14, R13, LBB0_3
 
 LBB0_7:
 	WORD $0x0011b9b7       // sub.d	$s0, $t1, $t2
 	WORD $0x002d41d4       // alsl.d	$t8, $t2, $t4, 3
 	BGE  R10, R23, LBB0_10
-	WORD $0x2c800285       // xvld	$xr5, $t8, 0
-	WORD $0x769c2ca4       // xvpcnt.d	$xr4, $xr5
-	WORD $0x02c38074       // addi.d	$t8, $sp, 224
+	WORD $0x2c800284       // xvld	$xr4, $t8, 0
+	WORD $0x769c2c85       // xvpcnt.d	$xr5, $xr4
+	WORD $0x740b9442       // xvadd.d	$xr2, $xr2, $xr5
+	WORD $0x02c08074       // addi.d	$t8, $sp, 32
 	WORD $0x00150277       // move	$s0, $t7
 	WORD $0x001500f8       // move	$s1, $a3
 
 LBB0_9:
-	WORD $0x2c8002e6     // xvld	$xr6, $s0, 0
-	WORD $0x2c800287     // xvld	$xr7, $t8, 0
-	WORD $0x752614c6     // xvand.v	$xr6, $xr6, $xr5
-	WORD $0x769c2cc6     // xvpcnt.d	$xr6, $xr6
-	WORD $0x740b9cc6     // xvadd.d	$xr6, $xr6, $xr7
-	WORD $0x2cc00286     // xvst	$xr6, $t8, 0
+	WORD $0x2c8002e5     // xvld	$xr5, $s0, 0
+	WORD $0x2c800286     // xvld	$xr6, $t8, 0
+	WORD $0x75261485     // xvand.v	$xr5, $xr4, $xr5
+	WORD $0x769c2ca5     // xvpcnt.d	$xr5, $xr5
+	WORD $0x740b94c5     // xvadd.d	$xr5, $xr6, $xr5
+	WORD $0x2cc00285     // xvst	$xr5, $t8, 0
 	WORD $0x02ffff18     // addi.d	$s1, $s1, -1
 	WORD $0x02c08294     // addi.d	$t8, $t8, 32
 	WORD $0x0010bef7     // add.d	$s0, $s0, $t3
@@ -103,27 +105,34 @@ LBB0_9:
 	JMP  LBB0_6
 
 LBB0_10:
-	BEQ  R23, R10, LBB0_14
-	BNE  R23, R11, LBB0_16
-	WORD $0x2c000284       // vld	$vr4, $t8, 0
-	WORD $0x2c424063       // vst	$vr3, $sp, 144
-	WORD $0x2c420064       // vst	$vr4, $sp, 128
-	WORD $0x2c820065       // xvld	$xr5, $sp, 128
-	WORD $0x769c2ca4       // xvpcnt.d	$xr4, $xr5
-	WORD $0x02c38074       // addi.d	$t8, $sp, 224
-	WORD $0x00150237       // move	$s0, $t5
+	WORD $0x28c00298       // ld.d	$s1, $t8, 0
+	WORD $0x77d40064       // xvori.b	$xr4, $xr3, 0
+	WORD $0x76ebe304       // xvinsgr2vr.d	$xr4, $s1, 0
+	BLT  R23, R11, LBB0_14
+	WORD $0x28c02298       // ld.d	$s1, $t8, 8
+	WORD $0x76ebe704       // xvinsgr2vr.d	$xr4, $s1, 1
+	BNE  R23, R10, LBB0_16
+	WORD $0x28c04294       // ld.d	$t8, $t8, 16
+	WORD $0x76ebea84       // xvinsgr2vr.d	$xr4, $t8, 2
+	WORD $0x769c2c85       // xvpcnt.d	$xr5, $xr4
+	WORD $0x740b9442       // xvadd.d	$xr2, $xr2, $xr5
+	WORD $0x02c08074       // addi.d	$t8, $sp, 32
+	WORD $0x00150257       // move	$s0, $t6
 	WORD $0x001500f8       // move	$s1, $a3
 
 LBB0_13:
-	WORD $0x2c3fe2e6      // vld	$vr6, $s0, -8
-	WORD $0x2c41c063      // vst	$vr3, $sp, 112
-	WORD $0x2c418066      // vst	$vr6, $sp, 96
-	WORD $0x2c818066      // xvld	$xr6, $sp, 96
-	WORD $0x2c800287      // xvld	$xr7, $t8, 0
-	WORD $0x752614c6      // xvand.v	$xr6, $xr6, $xr5
-	WORD $0x769c2cc6      // xvpcnt.d	$xr6, $xr6
-	WORD $0x740b9cc6      // xvadd.d	$xr6, $xr6, $xr7
-	WORD $0x2cc00286      // xvst	$xr6, $t8, 0
+	WORD $0x28ffc2f9      // ld.d	$s2, $s0, -16
+	WORD $0x28ffe2fa      // ld.d	$s3, $s0, -8
+	WORD $0x77d40065      // xvori.b	$xr5, $xr3, 0
+	WORD $0x28c002fb      // ld.d	$s4, $s0, 0
+	WORD $0x76ebe325      // xvinsgr2vr.d	$xr5, $s2, 0
+	WORD $0x76ebe745      // xvinsgr2vr.d	$xr5, $s3, 1
+	WORD $0x2c800286      // xvld	$xr6, $t8, 0
+	WORD $0x76ebeb65      // xvinsgr2vr.d	$xr5, $s4, 2
+	WORD $0x75261485      // xvand.v	$xr5, $xr4, $xr5
+	WORD $0x769c2ca5      // xvpcnt.d	$xr5, $xr5
+	WORD $0x740b94c5      // xvadd.d	$xr5, $xr6, $xr5
+	WORD $0x2cc00285      // xvst	$xr5, $t8, 0
 	WORD $0x02ffff18      // addi.d	$s1, $s1, -1
 	WORD $0x02c08294      // addi.d	$t8, $t8, 32
 	WORD $0x0010bef7      // add.d	$s0, $s0, $t3
@@ -131,29 +140,21 @@ LBB0_13:
 	JMP  LBB0_6
 
 LBB0_14:
-	WORD $0x28c04297 // ld.d	$s0, $t8, 16
-	WORD $0x2c000284 // vld	$vr4, $t8, 0
-	WORD $0x29c16060 // st.d	$zero, $sp, 88
-	WORD $0x29c14077 // st.d	$s0, $sp, 80
-	WORD $0x2c410064 // vst	$vr4, $sp, 64
-	WORD $0x2c810065 // xvld	$xr5, $sp, 64
-	WORD $0x769c2ca4 // xvpcnt.d	$xr4, $xr5
-	WORD $0x02c38074 // addi.d	$t8, $sp, 224
-	WORD $0x00150257 // move	$s0, $t6
+	WORD $0x769c2c85 // xvpcnt.d	$xr5, $xr4
+	WORD $0x740b9442 // xvadd.d	$xr2, $xr2, $xr5
+	WORD $0x02c08074 // addi.d	$t8, $sp, 32
+	WORD $0x00150277 // move	$s0, $t7
 	WORD $0x001500f8 // move	$s1, $a3
 
 LBB0_15:
 	WORD $0x28c002f9      // ld.d	$s2, $s0, 0
-	WORD $0x2c3fc2e6      // vld	$vr6, $s0, -16
-	WORD $0x29c0e060      // st.d	$zero, $sp, 56
-	WORD $0x29c0c079      // st.d	$s2, $sp, 48
-	WORD $0x2c408066      // vst	$vr6, $sp, 32
-	WORD $0x2c808066      // xvld	$xr6, $sp, 32
-	WORD $0x2c800287      // xvld	$xr7, $t8, 0
-	WORD $0x752614c6      // xvand.v	$xr6, $xr6, $xr5
-	WORD $0x769c2cc6      // xvpcnt.d	$xr6, $xr6
-	WORD $0x740b9cc6      // xvadd.d	$xr6, $xr6, $xr7
-	WORD $0x2cc00286      // xvst	$xr6, $t8, 0
+	WORD $0x77d40065      // xvori.b	$xr5, $xr3, 0
+	WORD $0x2c800286      // xvld	$xr6, $t8, 0
+	WORD $0x76ebe325      // xvinsgr2vr.d	$xr5, $s2, 0
+	WORD $0x75261485      // xvand.v	$xr5, $xr4, $xr5
+	WORD $0x769c2ca5      // xvpcnt.d	$xr5, $xr5
+	WORD $0x740b94c5      // xvadd.d	$xr5, $xr6, $xr5
+	WORD $0x2cc00285      // xvst	$xr5, $t8, 0
 	WORD $0x02ffff18      // addi.d	$s1, $s1, -1
 	WORD $0x02c08294      // addi.d	$t8, $t8, 32
 	WORD $0x0010bef7      // add.d	$s0, $s0, $t3
@@ -161,29 +162,23 @@ LBB0_15:
 	JMP  LBB0_6
 
 LBB0_16:
-	WORD $0x28c00294 // ld.d	$t8, $t8, 0
-	WORD $0x29c78074 // st.d	$t8, $sp, 480
-	WORD $0x29c7a060 // st.d	$zero, $sp, 488
-	WORD $0x29c7c060 // st.d	$zero, $sp, 496
-	WORD $0x29c7e060 // st.d	$zero, $sp, 504
-	WORD $0x2c878065 // xvld	$xr5, $sp, 480
-	WORD $0x769c2ca4 // xvpcnt.d	$xr4, $xr5
-	WORD $0x02c38074 // addi.d	$t8, $sp, 224
-	WORD $0x00150277 // move	$s0, $t7
+	WORD $0x769c2c85 // xvpcnt.d	$xr5, $xr4
+	WORD $0x740b9442 // xvadd.d	$xr2, $xr2, $xr5
+	WORD $0x02c08074 // addi.d	$t8, $sp, 32
+	WORD $0x00150237 // move	$s0, $t5
 	WORD $0x001500f8 // move	$s1, $a3
 
 LBB0_17:
-	WORD $0x28c002f9      // ld.d	$s2, $s0, 0
-	WORD $0x29c78079      // st.d	$s2, $sp, 480
-	WORD $0x29c7a060      // st.d	$zero, $sp, 488
-	WORD $0x29c7c060      // st.d	$zero, $sp, 496
-	WORD $0x29c7e060      // st.d	$zero, $sp, 504
-	WORD $0x2c878066      // xvld	$xr6, $sp, 480
-	WORD $0x2c800287      // xvld	$xr7, $t8, 0
-	WORD $0x752614c6      // xvand.v	$xr6, $xr6, $xr5
-	WORD $0x769c2cc6      // xvpcnt.d	$xr6, $xr6
-	WORD $0x740b9cc6      // xvadd.d	$xr6, $xr6, $xr7
-	WORD $0x2cc00286      // xvst	$xr6, $t8, 0
+	WORD $0x28ffe2f9      // ld.d	$s2, $s0, -8
+	WORD $0x28c002fa      // ld.d	$s3, $s0, 0
+	WORD $0x77d40065      // xvori.b	$xr5, $xr3, 0
+	WORD $0x76ebe325      // xvinsgr2vr.d	$xr5, $s2, 0
+	WORD $0x2c800286      // xvld	$xr6, $t8, 0
+	WORD $0x76ebe745      // xvinsgr2vr.d	$xr5, $s3, 1
+	WORD $0x75261485      // xvand.v	$xr5, $xr4, $xr5
+	WORD $0x769c2ca5      // xvpcnt.d	$xr5, $xr5
+	WORD $0x740b94c5      // xvadd.d	$xr5, $xr6, $xr5
+	WORD $0x2cc00285      // xvst	$xr5, $t8, 0
 	WORD $0x02ffff18      // addi.d	$s1, $s1, -1
 	WORD $0x02c08294      // addi.d	$t8, $t8, 32
 	WORD $0x0010bef7      // add.d	$s0, $s0, $t3
@@ -191,114 +186,88 @@ LBB0_17:
 	JMP  LBB0_6
 
 LBB0_18:
-	WORD $0x00150005 // move	$a1, $zero
-	WORD $0x03802008 // ori	$a4, $zero, 8
-	WORD $0x03800409 // ori	$a5, $zero, 1
-	WORD $0x0380100a // ori	$a6, $zero, 4
-	WORD $0x0380080b // ori	$a7, $zero, 2
-	WORD $0x73e00003 // vrepli.b	$vr3, 0
-	WORD $0x03800c0c // ori	$t0, $zero, 3
-	WORD $0x001500cd // move	$t1, $a2
-	JMP  LBB0_20
+	WORD $0x77d40062 // xvori.b	$xr2, $xr3, 0
 
 LBB0_19:
-	WORD $0x02c020a5     // addi.d	$a1, $a1, 8
-	WORD $0x02c10084     // addi.d	$a0, $a0, 64
-	WORD $0x02ffe1ad     // addi.d	$t1, $t1, -8
-	BGE  R5, R6, LBB0_30
-
-LBB0_20:
-	WORD $0x001194d0      // sub.d	$t4, $a2, $a1
-	BLT  R16, R9, LBB0_19
-	WORD $0x0015000e      // move	$t2, $zero
-	WORD $0x020021af      // slti	$t3, $t1, 8
-	WORD $0x0013bd11      // masknez	$t5, $a4, $t3
-	WORD $0x00133daf      // maskeqz	$t3, $t1, $t3
-	WORD $0x001545ef      // or	$t3, $t3, $t5
-	WORD $0x02002211      // slti	$t5, $t4, 8
-	WORD $0x00134610      // maskeqz	$t4, $t4, $t5
-	WORD $0x0013c511      // masknez	$t5, $a4, $t5
-	WORD $0x00154610      // or	$t4, $t4, $t5
-	WORD $0x00150091      // move	$t5, $a0
-	JMP  LBB0_24
+	WORD $0x03800404     // ori	$a0, $zero, 1
+	BLT  R7, R4, LBB0_22
+	BNE  R7, R4, LBB0_23
+	WORD $0x00150004     // move	$a0, $zero
+	WORD $0x00150005     // move	$a1, $zero
+	JMP  LBB0_26
 
 LBB0_22:
-	WORD $0x2c800224 // xvld	$xr4, $t5, 0
+	WORD $0x0114a403 // movgr2fr.w	$fa3, $zero
+	JMP  LBB0_29
 
 LBB0_23:
-	WORD $0x769c2c84       // xvpcnt.d	$xr4, $xr4
-	WORD $0x740b8882       // xvadd.d	$xr2, $xr4, $xr2
-	WORD $0x02c011ce       // addi.d	$t2, $t2, 4
-	WORD $0x02c08231       // addi.d	$t5, $t5, 32
-	WORD $0x02fff1ef       // addi.d	$t3, $t3, -4
-	BGE  R14, R16, LBB0_19
+	WORD $0x00150006 // move	$a2, $zero
+	WORD $0x00150005 // move	$a1, $zero
+	WORD $0x00150008 // move	$a4, $zero
+	WORD $0x00fe04e4 // bstrpick.d	$a0, $a3, 62, 1
+	WORD $0x00410484 // slli.d	$a0, $a0, 1
+	WORD $0x02c10069 // addi.d	$a5, $sp, 64
 
 LBB0_24:
-	BGE  R15, R10, LBB0_22
-	BEQ  R15, R11, LBB0_28
-	BNE  R15, R12, LBB0_29
-	WORD $0x28c04232       // ld.d	$t6, $t5, 16
-	WORD $0x2c000224       // vld	$vr4, $t5, 0
-	WORD $0x29c2e060       // st.d	$zero, $sp, 184
-	WORD $0x29c2c072       // st.d	$t6, $sp, 176
-	WORD $0x2c428064       // vst	$vr4, $sp, 160
-	WORD $0x2c828064       // xvld	$xr4, $sp, 160
-	JMP  LBB0_23
+	WORD $0x28ff812a     // ld.d	$a6, $a5, -32
+	WORD $0x28c0012b     // ld.d	$a7, $a5, 0
+	WORD $0x28ffa12c     // ld.d	$t0, $a5, -24
+	WORD $0x28c0212d     // ld.d	$t1, $a5, 8
+	WORD $0x0010b14a     // add.d	$a6, $a6, $t0
+	WORD $0x0010b56b     // add.d	$a7, $a7, $t1
+	WORD $0x28ffc12c     // ld.d	$t0, $a5, -16
+	WORD $0x28c0412d     // ld.d	$t1, $a5, 16
+	WORD $0x28ffe12e     // ld.d	$t2, $a5, -8
+	WORD $0x28c0612f     // ld.d	$t3, $a5, 24
+	WORD $0x0010b14a     // add.d	$a6, $a6, $t0
+	WORD $0x0010b56b     // add.d	$a7, $a7, $t1
+	WORD $0x0010b94a     // add.d	$a6, $a6, $t2
+	WORD $0x0010bd6b     // add.d	$a7, $a7, $t3
+	WORD $0x0018994a     // sll.d	$a6, $a6, $a2
+	WORD $0x02c004cc     // addi.d	$t0, $a2, 1
+	WORD $0x0018b16b     // sll.d	$a7, $a7, $t0
+	WORD $0x00109545     // add.d	$a1, $a6, $a1
+	WORD $0x0010a168     // add.d	$a4, $a7, $a4
+	WORD $0x02c008c6     // addi.d	$a2, $a2, 2
+	WORD $0x02c10129     // addi.d	$a5, $a5, 64
+	BNE  R6, R4, LBB0_24
+	WORD $0x00109505     // add.d	$a1, $a4, $a1
+	BEQ  R7, R4, LBB0_28
+
+LBB0_26:
+	WORD $0x00411486 // slli.d	$a2, $a0, 5
+	WORD $0x02c08068 // addi.d	$a4, $sp, 32
+	WORD $0x0010a0c6 // add.d	$a2, $a2, $a4
+	WORD $0x02c040c6 // addi.d	$a2, $a2, 16
+
+LBB0_27:
+	WORD $0x28ffc0c8     // ld.d	$a4, $a2, -16
+	WORD $0x28ffe0c9     // ld.d	$a5, $a2, -8
+	WORD $0x28c000ca     // ld.d	$a6, $a2, 0
+	WORD $0x28c020cb     // ld.d	$a7, $a2, 8
+	WORD $0x0010a508     // add.d	$a4, $a4, $a5
+	WORD $0x0010a908     // add.d	$a4, $a4, $a6
+	WORD $0x0010ad08     // add.d	$a4, $a4, $a7
+	WORD $0x00189108     // sll.d	$a4, $a4, $a0
+	WORD $0x00109505     // add.d	$a1, $a4, $a1
+	WORD $0x02c00484     // addi.d	$a0, $a0, 1
+	WORD $0x02c080c6     // addi.d	$a2, $a2, 32
+	BNE  R7, R4, LBB0_27
 
 LBB0_28:
-	WORD $0x2c000224 // vld	$vr4, $t5, 0
-	WORD $0x2c434063 // vst	$vr3, $sp, 208
-	WORD $0x2c430064 // vst	$vr4, $sp, 192
-	WORD $0x2c830064 // xvld	$xr4, $sp, 192
-	JMP  LBB0_23
+	WORD $0x004504a4 // srli.d	$a0, $a1, 1
+	WORD $0x034004a6 // andi	$a2, $a1, 1
+	WORD $0x001510c4 // or	$a0, $a2, $a0
+	WORD $0x0114a883 // movgr2fr.d	$fa3, $a0
+	WORD $0x011d1863 // ffint.s.l	$fa3, $fa3
+	WORD $0x01008c63 // fadd.s	$fa3, $fa3, $fa3
+	WORD $0x020000a4 // slti	$a0, $a1, 0
+	WORD $0x0114a8a4 // movgr2fr.d	$fa4, $a1
+	WORD $0x011d1884 // ffint.s.l	$fa4, $fa4
+	WORD $0x0114d880 // movgr2cf	$fcc0, $a0
+	WORD $0x0d000c83 // fsel	$fa3, $fa4, $fa3, $fcc0
 
 LBB0_29:
-	WORD $0x28c00232 // ld.d	$t6, $t5, 0
-	WORD $0x29c78072 // st.d	$t6, $sp, 480
-	WORD $0x29c7a060 // st.d	$zero, $sp, 488
-	WORD $0x29c7c060 // st.d	$zero, $sp, 496
-	WORD $0x29c7e060 // st.d	$zero, $sp, 504
-	WORD $0x2c878064 // xvld	$xr4, $sp, 480
-	JMP  LBB0_23
-
-LBB0_30:
-	WORD $0x03800404     // ori	$a0, $zero, 1
-	BLT  R7, R4, LBB0_34
-	WORD $0x00150005     // move	$a1, $zero
-	WORD $0x00150004     // move	$a0, $zero
-	WORD $0x02c38066     // addi.d	$a2, $sp, 224
-
-LBB0_32:
-	WORD $0x2c8000c3     // xvld	$xr3, $a2, 0
-	WORD $0x76efe068     // xvpickve2gr.d	$a4, $xr3, 0
-	WORD $0x76efe469     // xvpickve2gr.d	$a5, $xr3, 1
-	WORD $0x0010a508     // add.d	$a4, $a4, $a5
-	WORD $0x76efe869     // xvpickve2gr.d	$a5, $xr3, 2
-	WORD $0x0010a508     // add.d	$a4, $a4, $a5
-	WORD $0x76efec69     // xvpickve2gr.d	$a5, $xr3, 3
-	WORD $0x0010a508     // add.d	$a4, $a4, $a5
-	WORD $0x00189508     // sll.d	$a4, $a4, $a1
-	WORD $0x00109104     // add.d	$a0, $a4, $a0
-	WORD $0x02c004a5     // addi.d	$a1, $a1, 1
-	WORD $0x02c080c6     // addi.d	$a2, $a2, 32
-	BNE  R7, R5, LBB0_32
-	WORD $0x00450485     // srli.d	$a1, $a0, 1
-	WORD $0x03400486     // andi	$a2, $a0, 1
-	WORD $0x001514c5     // or	$a1, $a2, $a1
-	WORD $0x0114a8a3     // movgr2fr.d	$fa3, $a1
-	WORD $0x011d1863     // ffint.s.l	$fa3, $fa3
-	WORD $0x01008c63     // fadd.s	$fa3, $fa3, $fa3
-	WORD $0x02000085     // slti	$a1, $a0, 0
-	WORD $0x0114a884     // movgr2fr.d	$fa4, $a0
-	WORD $0x011d1884     // ffint.s.l	$fa4, $fa4
-	WORD $0x0114d8a0     // movgr2cf	$fcc0, $a1
-	WORD $0x0d000c83     // fsel	$fa3, $fa4, $fa3, $fcc0
-	JMP  LBB0_35
-
-LBB0_34:
-	WORD $0x0114a403 // movgr2fr.w	$fa3, $zero
-
-LBB0_35:
 	WORD $0x76efe044       // xvpickve2gr.d	$a0, $xr2, 0
 	WORD $0x76efe445       // xvpickve2gr.d	$a1, $xr2, 1
 	WORD $0x00109484       // add.d	$a0, $a0, $a1
@@ -319,12 +288,70 @@ LBB0_35:
 	WORD $0x0d000882       // fsel	$fa2, $fa4, $fa2, $fcc0
 	WORD $0x01048821       // fmul.s	$fa1, $fa1, $fa2
 	WORD $0x08108c00       // fmadd.s	$fa0, $fa0, $fa3, $fa1
-	WORD $0x02f702a3       // addi.d	$sp, $fp, -576
-	WORD $0x28c86079       // ld.d	$s2, $sp, 536                   # 8-byte Folded Reload
-	WORD $0x28c88078       // ld.d	$s1, $sp, 544                   # 8-byte Folded Reload
-	WORD $0x28c8a077       // ld.d	$s0, $sp, 552                   # 8-byte Folded Reload
-	WORD $0x28c8c075       // ld.d	$fp, $sp, 560                   # 8-byte Folded Reload
-	WORD $0x28c8e061       // ld.d	$ra, $sp, 568                   # 8-byte Folded Reload
-	WORD $0x02c90063       // addi.d	$sp, $sp, 576
+	WORD $0x02fa82a3       // addi.d	$sp, $fp, -352
+	WORD $0x28c4a07b       // ld.d	$s4, $sp, 296                   # 8-byte Folded Reload
+	WORD $0x28c4c07a       // ld.d	$s3, $sp, 304                   # 8-byte Folded Reload
+	WORD $0x28c4e079       // ld.d	$s2, $sp, 312                   # 8-byte Folded Reload
+	WORD $0x28c50078       // ld.d	$s1, $sp, 320                   # 8-byte Folded Reload
+	WORD $0x28c52077       // ld.d	$s0, $sp, 328                   # 8-byte Folded Reload
+	WORD $0x28c54075       // ld.d	$fp, $sp, 336                   # 8-byte Folded Reload
+	WORD $0x28c56061       // ld.d	$ra, $sp, 344                   # 8-byte Folded Reload
+	WORD $0x02c58063       // addi.d	$sp, $sp, 352
 	MOVF F0, result+40(FP)
 	RET
+
+LBB0_30:
+	WORD $0x00150005 // move	$a1, $zero
+	WORD $0x03802008 // ori	$a4, $zero, 8
+	WORD $0x03800409 // ori	$a5, $zero, 1
+	WORD $0x0380100a // ori	$a6, $zero, 4
+	WORD $0x0380080b // ori	$a7, $zero, 2
+	WORD $0x03800c0c // ori	$t0, $zero, 3
+	WORD $0x001500cd // move	$t1, $a2
+	WORD $0x77d40062 // xvori.b	$xr2, $xr3, 0
+	JMP  LBB0_32
+
+LBB0_31:
+	WORD $0x02c020a5     // addi.d	$a1, $a1, 8
+	WORD $0x02c10084     // addi.d	$a0, $a0, 64
+	WORD $0x02ffe1ad     // addi.d	$t1, $t1, -8
+	BGE  R5, R6, LBB0_19
+
+LBB0_32:
+	WORD $0x001194d0      // sub.d	$t4, $a2, $a1
+	BLT  R16, R9, LBB0_31
+	WORD $0x0015000e      // move	$t2, $zero
+	WORD $0x020021af      // slti	$t3, $t1, 8
+	WORD $0x0013bd11      // masknez	$t5, $a4, $t3
+	WORD $0x00133daf      // maskeqz	$t3, $t1, $t3
+	WORD $0x001545ef      // or	$t3, $t3, $t5
+	WORD $0x02002211      // slti	$t5, $t4, 8
+	WORD $0x00134610      // maskeqz	$t4, $t4, $t5
+	WORD $0x0013c511      // masknez	$t5, $a4, $t5
+	WORD $0x00154610      // or	$t4, $t4, $t5
+	WORD $0x00150091      // move	$t5, $a0
+	JMP  LBB0_36
+
+LBB0_34:
+	WORD $0x2c800224 // xvld	$xr4, $t5, 0
+
+LBB0_35:
+	WORD $0x769c2c84       // xvpcnt.d	$xr4, $xr4
+	WORD $0x740b9042       // xvadd.d	$xr2, $xr2, $xr4
+	WORD $0x02c011ce       // addi.d	$t2, $t2, 4
+	WORD $0x02c08231       // addi.d	$t5, $t5, 32
+	WORD $0x02fff1ef       // addi.d	$t3, $t3, -4
+	BGE  R14, R16, LBB0_31
+
+LBB0_36:
+	BGE  R15, R10, LBB0_34
+	WORD $0x28c00232       // ld.d	$t6, $t5, 0
+	WORD $0x77d40064       // xvori.b	$xr4, $xr3, 0
+	WORD $0x76ebe244       // xvinsgr2vr.d	$xr4, $t6, 0
+	BLT  R15, R11, LBB0_35
+	WORD $0x28c02232       // ld.d	$t6, $t5, 8
+	WORD $0x76ebe644       // xvinsgr2vr.d	$xr4, $t6, 1
+	BNE  R15, R12, LBB0_35
+	WORD $0x28c04232       // ld.d	$t6, $t5, 16
+	WORD $0x76ebea44       // xvinsgr2vr.d	$xr4, $t6, 2
+	JMP  LBB0_35

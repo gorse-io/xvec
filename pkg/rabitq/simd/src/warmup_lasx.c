@@ -12,42 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <lasxintrin.h>
 #include <stdint.h>
-
-typedef uint8_t u8x8 __attribute__((vector_size(8)));
-typedef uint8_t u8x16 __attribute__((vector_size(16)));
-typedef uint8_t u8x32 __attribute__((vector_size(32)));
-typedef uint16_t u16x16 __attribute__((vector_size(32)));
-typedef uint32_t u32x8 __attribute__((vector_size(32)));
-typedef int32_t i32x8 __attribute__((vector_size(32)));
-typedef uint64_t u64x4 __attribute__((vector_size(32)));
-typedef float f32x8 __attribute__((vector_size(32)));
-
-static inline u64x4 load_u64x4(const void *source) {
-    u64x4 value;
-    __builtin_memcpy(&value, source, sizeof(value));
-    return value;
-}
 
 // LASX port of VectorDB-NTU/RaBitQ-Library warmup kernels at revision
 // 540242ea0a68926f1b827bf1f9add844f07a427b.
 
-static inline u64x4 load_partial_u64x4(const uint64_t *source, int64_t count) {
+static inline __m256i load_partial_u64x4(const uint64_t *source, int64_t count) {
     if (count >= 4) {
-        return load_u64x4(source);
+        return __lasx_xvld(source, 0);
     }
-    if (count == 3) {
-        return (u64x4){source[0], source[1], source[2], 0};
+    __m256i value = __lasx_xvldi(0);
+    value = __lasx_xvinsgr2vr_d(value, source[0], 0);
+    if (count >= 2) {
+        value = __lasx_xvinsgr2vr_d(value, source[1], 1);
     }
-    if (count == 2) {
-        return (u64x4){source[0], source[1], 0, 0};
+    if (count >= 3) {
+        value = __lasx_xvinsgr2vr_d(value, source[2], 2);
     }
-    volatile uint64_t lanes[4];
-    lanes[0] = source[0];
-    lanes[1] = 0;
-    lanes[2] = 0;
-    lanes[3] = 0;
-    return load_u64x4((const uint64_t *)lanes);
+    return value;
 }
 
 float warmup_ip_x0_q_512_lasx(
@@ -58,34 +41,44 @@ float warmup_ip_x0_q_512_lasx(
     int64_t padded_dimension,
     int64_t query_bits
 ) {
-    u64x4 accumulated_popcount = (u64x4){0};
-    volatile u64x4 accumulated_bits[8];
-    for (int bit = 0; bit < 8; ++bit) {
-        accumulated_bits[bit] = (u64x4){0};
-    }
+    __m256i accumulated_popcount = __lasx_xvldi(0);
+    __m256i accumulated_bits[8];
+    accumulated_bits[0] = __lasx_xvldi(0);
+    accumulated_bits[1] = __lasx_xvldi(0);
+    accumulated_bits[2] = __lasx_xvldi(0);
+    accumulated_bits[3] = __lasx_xvldi(0);
+    accumulated_bits[4] = __lasx_xvldi(0);
+    accumulated_bits[5] = __lasx_xvldi(0);
+    accumulated_bits[6] = __lasx_xvldi(0);
+    accumulated_bits[7] = __lasx_xvldi(0);
     const int64_t words = padded_dimension / 64;
     for (int64_t block = 0; block < words; block += 8) {
         const int64_t block_words = words - block < 8 ? words - block : 8;
         for (int64_t group = 0; group < block_words; group += 4) {
             const int64_t group_words = block_words - group < 4 ? block_words - group : 4;
-            const u64x4 data_values = load_partial_u64x4(data + block + group, group_words);
-            accumulated_popcount += __builtin_elementwise_popcount(data_values);
+            const __m256i data_values = load_partial_u64x4(data + block + group, group_words);
+            accumulated_popcount = __lasx_xvadd_d(
+                accumulated_popcount, __lasx_xvpcnt_d(data_values)
+            );
             for (int64_t bit = 0; bit < query_bits; ++bit) {
-                const u64x4 query_values = load_partial_u64x4(
+                const __m256i query_values = load_partial_u64x4(
                     query + bit * block_words + group, group_words
                 );
-                accumulated_bits[bit] +=
-                    __builtin_elementwise_popcount(data_values & query_values);
+                accumulated_bits[bit] = __lasx_xvadd_d(
+                    accumulated_bits[bit],
+                    __lasx_xvpcnt_d(__lasx_xvand_v(data_values, query_values))
+                );
             }
         }
         query += block_words * query_bits;
     }
 
-    const uint64_t popcount = accumulated_popcount[0] + accumulated_popcount[1] +
-                              accumulated_popcount[2] + accumulated_popcount[3];
+    const v4u64 popcount_lanes = (v4u64)accumulated_popcount;
+    const uint64_t popcount = popcount_lanes[0] + popcount_lanes[1] +
+                              popcount_lanes[2] + popcount_lanes[3];
     uint64_t ip = 0;
     for (int64_t bit = 0; bit < query_bits; ++bit) {
-        const u64x4 lanes = accumulated_bits[bit];
+        const v4u64 lanes = (v4u64)accumulated_bits[bit];
         ip += (lanes[0] + lanes[1] + lanes[2] + lanes[3]) << bit;
     }
     return __builtin_fmaf(delta, (float)ip, vl * (float)popcount);
