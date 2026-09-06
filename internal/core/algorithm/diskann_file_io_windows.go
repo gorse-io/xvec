@@ -64,7 +64,7 @@ func openDiskANNDirectReader(path string) (diskANNReaderAt, error) {
 		diskANNWindowsShareMode,
 		nil,
 		windows.OPEN_EXISTING,
-		windows.FILE_ATTRIBUTE_READONLY|windows.FILE_FLAG_NO_BUFFERING,
+		windows.FILE_ATTRIBUTE_READONLY,
 		0,
 	)
 	if err != nil {
@@ -219,19 +219,19 @@ func (r *windowsDiskANNReader) ReadBatchAt(
 	canceled := false
 	seen := make([]bool, submitted)
 	for completed < submitted {
+		if !canceled {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				resultErr = ctxErr
+				cancelDiskANNIO(r.file)
+				canceled = true
+			}
+		}
 		var transferred uint32
 		var key uintptr
 		var completion *windows.Overlapped
 		err := windows.GetQueuedCompletionStatus(r.port, &transferred, &key, &completion, diskANNWindowsCompletionWait)
 		if completion == nil {
 			if errors.Is(err, windows.WAIT_TIMEOUT) {
-				if !canceled {
-					if ctxErr := ctx.Err(); ctxErr != nil {
-						resultErr = ctxErr
-						cancelDiskANNIO(r.file)
-						canceled = true
-					}
-				}
 				continue
 			}
 			if resultErr == nil {

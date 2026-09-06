@@ -41,6 +41,11 @@ func TestWindowsDiskANNReaderUsesIOCP(t *testing.T) {
 
 	_, ok := reader.(*windowsDiskANNReader)
 	require.True(t, ok, "ordinary Windows DiskANN files must use IOCP")
+	header := make([]byte, DiskANNSectorSize)
+	n, err := reader.ReadAt(header, 0)
+	require.NoError(t, err)
+	require.Equal(t, len(header), n)
+	require.Equal(t, contents[:DiskANNSectorSize], header)
 
 	buffers := [][]byte{make([]byte, DiskANNSectorSize), make([]byte, DiskANNSectorSize)}
 	err = reader.(diskANNBatchReader).ReadBatchAt(context.Background(), []DiskANNReadRequest{
