@@ -1025,7 +1025,7 @@ func OpenDiskANNIndexWithMmap(ctx context.Context, path string, cacheCapacity, w
 	if cacheCapacity < 0 || workers < 0 {
 		return nil, fmt.Errorf("%w: negative runtime option", ErrInvalidDiskANNOptions)
 	}
-	reader, err := ioutil.OpenReaderAt(path, useMmap)
+	reader, err := openDiskANNReaderAt(path, useMmap)
 	if err != nil {
 		return nil, fmt.Errorf("core: open DiskANN file: %w", err)
 	}
@@ -1258,7 +1258,7 @@ func openDiskANNIndexReader(
 			return nil, err
 		}
 	}
-	nodeSection := io.NewSectionReader(reader, meta.sections.nodesOffset, meta.sections.nodesLength)
+	nodeSection := newDiskANNSectionReader(reader, meta.sections.nodesOffset, meta.sections.nodesLength)
 	nodeReader, err := OpenDiskANNNodeReader(ctx, nodeSection, meta.sections.nodesLength, cacheCapacity, workers)
 	if err != nil {
 		return nil, fmt.Errorf("core: open DiskANN node section: %w", err)
