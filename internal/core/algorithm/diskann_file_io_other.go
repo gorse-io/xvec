@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !windows
+//go:build !linux && !windows
 
 package core
 
 import "github.com/gorse-io/xvec/internal/ailego/io"
 
-func openDiskANNDirectReader(path string) (diskANNReaderAt, error) {
+func openDiskANNDirectReader(path string, _ int) (diskANNReaderAt, error) {
 	return ioutil.OpenReaderAt(path, false)
 }

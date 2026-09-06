@@ -1025,7 +1025,7 @@ func OpenDiskANNIndexWithMmap(ctx context.Context, path string, cacheCapacity, w
 	if cacheCapacity < 0 || workers < 0 {
 		return nil, fmt.Errorf("%w: negative runtime option", ErrInvalidDiskANNOptions)
 	}
-	reader, err := openDiskANNReaderAt(path, useMmap)
+	reader, err := openDiskANNReaderAt(path, useMmap, workers)
 	if err != nil {
 		return nil, fmt.Errorf("core: open DiskANN file: %w", err)
 	}

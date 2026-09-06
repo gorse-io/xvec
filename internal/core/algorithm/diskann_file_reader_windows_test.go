@@ -35,7 +35,7 @@ func TestWindowsDiskANNReaderUsesIOCP(t *testing.T) {
 	}
 	require.NoError(t, os.WriteFile(path, contents, 0o600))
 
-	reader, err := openDiskANNReaderAt(path, false)
+	reader, err := openDiskANNReaderAt(path, false, 2)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, reader.Close()) }()
 
@@ -61,7 +61,7 @@ func TestWindowsDiskANNReaderCancellationAndShortRead(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "diskann.dat")
 	require.NoError(t, os.WriteFile(path, make([]byte, 2*DiskANNSectorSize), 0o600))
 
-	reader, err := openDiskANNReaderAt(path, false)
+	reader, err := openDiskANNReaderAt(path, false, 2)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, reader.Close()) }()
 	batch := reader.(diskANNBatchReader)

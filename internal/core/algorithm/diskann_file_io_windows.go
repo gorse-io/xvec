@@ -49,7 +49,7 @@ type windowsDiskANNReader struct {
 	closed bool
 }
 
-func openDiskANNDirectReader(path string) (diskANNReaderAt, error) {
+func openDiskANNDirectReader(path string, _ int) (diskANNReaderAt, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
