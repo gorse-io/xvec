@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,8 +63,8 @@ func TestIVFRaBitQBuildSearchAndReopen(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 8, index.Len())
 	require.Equal(t, 2, index.NList())
-	for position, code := range index.codes {
-		require.Contains(t, index.base.lists[code.Cluster()].positions, position,
+	for position, list := range index.base.listForPosition {
+		require.Contains(t, index.base.lists[list].positions, position,
 			"RaBitQ centroid and IVF list assignment differ")
 	}
 
@@ -75,6 +76,15 @@ func TestIVFRaBitQBuildSearchAndReopen(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, results, 3)
 	require.Contains(t, []uint64{results[0].Key, results[1].Key, results[2].Key}, uint64(3))
+
+	extremeQuery := make([]float32, 64)
+	for i := range extremeQuery {
+		extremeQuery[i] = 1e20
+	}
+	_, err = index.SearchIVFRaBitQ(ctx, extremeQuery, IVFRaBitQSearchOptions{
+		SearchOptions: SearchOptions{TopK: 3}, NProbe: 2,
+	})
+	require.Error(t, err)
 
 	path := filepath.Join(t.TempDir(), "ivf-rabitq.idx")
 	require.NoError(t, index.Save(ctx, path))
@@ -110,6 +120,15 @@ func TestIVFRaBitQSmallIndexUsesEncodedBruteForce(t *testing.T) {
 	require.Equal(t, uint64(2), results[0].Key)
 }
 
+func TestIVFRaBitQLaneRejectsNonFiniteDistance(t *testing.T) {
+	query := &raBitQBatchQuery{}
+	distance, err := (ivfRaBitQLane{estimate: 1}).fullDistance(query)
+	require.NoError(t, err)
+	require.Equal(t, float32(1), distance)
+	_, err = (ivfRaBitQLane{estimate: float32(math.Inf(1))}).fullDistance(query)
+	require.Error(t, err)
+}
+
 func TestIVFRaBitQValidationRejectsListCodeMismatch(t *testing.T) {
 	ctx := context.Background()
 	options := DefaultIVFRaBitQBuildOptions(MetricL2)
@@ -123,7 +142,7 @@ func TestIVFRaBitQValidationRejectsListCodeMismatch(t *testing.T) {
 	}
 	index, err := builder.Build(ctx)
 	require.NoError(t, err)
-	index.base.listForPosition[0] = (index.codes[0].Cluster() + 1) % index.NList()
+	index.base.listForPosition[0] = (index.base.listForPosition[0] + 1) % index.NList()
 	require.ErrorIs(t, validateIVFRaBitQIndex(ctx, index), ErrInvalidIVFRaBitQFile)
 }
 

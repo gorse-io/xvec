@@ -25,6 +25,7 @@ import (
 
 	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
+	"github.com/gorse-io/xvec/pkg/rabitq"
 )
 
 const (
@@ -114,7 +115,8 @@ type RaBitQModel struct {
 	rotatedCentroids [][]float32
 	rotationSigns    []byte
 	extraScale       float64
-	rotator          *FHTRotator
+	rotator          rabitq.Rotator
+	queryConfig      rabitq.RaBitQConfig
 	fingerprint      uint64
 }
 
@@ -171,13 +173,7 @@ func TrainRaBitQ(ctx context.Context, vectors [][]float32, options RaBitQOptions
 	}
 	extraScale := float64(0)
 	if options.TotalBits > 1 {
-		extraScale, err = trainRaBitQExtraScale(
-			ctx, paddedDimension, options.TotalBits-1, options.Workers,
-			options.Seed^0x7261626974717363,
-		)
-		if err != nil {
-			return nil, err
-		}
+		extraScale = rabitq.FasterConfig(paddedDimension, options.TotalBits).TConst
 	}
 	return RestoreRaBitQModel(RaBitQModelState{
 		Dimension: dimension, Metric: options.Metric, TotalBits: options.TotalBits,
@@ -216,8 +212,11 @@ func RestoreRaBitQModel(state RaBitQModelState) (*RaBitQModel, error) {
 	if len(state.RotationSigns) != wantSigns {
 		return nil, fmt.Errorf("%w: got %d rotation-sign bytes, want %d", ErrInvalidRaBitQModel, len(state.RotationSigns), wantSigns)
 	}
-	rotator, err := newRaBitQPaddedRotator(state.Dimension, paddedDimension, state.RotationSigns)
+	rotator, err := rabitq.ChooseRotator(state.Dimension, rabitq.FhtKacRotator, paddedDimension)
 	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidRaBitQModel, err)
+	}
+	if err := rotator.Load(state.RotationSigns); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidRaBitQModel, err)
 	}
 	centroids := cloneVectors(state.Centroids)
@@ -233,7 +232,7 @@ func RestoreRaBitQModel(state RaBitQModelState) (*RaBitQModel, error) {
 		metric: state.Metric, totalBits: state.TotalBits, extraBits: extraBits,
 		centroids: centroids, rotatedCentroids: rotatedCentroids,
 		rotationSigns: slices.Clone(state.RotationSigns), extraScale: state.ExtraScale,
-		rotator: rotator,
+		rotator: rotator, queryConfig: rabitq.FasterConfig(paddedDimension, rabitq.SplitSingleQueryNumBits),
 	}
 	m.fingerprint = fingerprintRaBitQModel(m)
 	return m, nil
@@ -293,20 +292,19 @@ func (m *RaBitQModel) Centroids() [][]float32 {
 	return cloneVectors(m.centroids)
 }
 
+func (m *RaBitQModel) rabitqMetric() rabitq.MetricType {
+	if m.metric == MetricL2 {
+		return rabitq.MetricL2
+	}
+	return rabitq.MetricIP
+}
+
 // Encode converts one vector into an immutable split RaBitQ code.
 func (m *RaBitQModel) Encode(vector []float32) (RaBitQCode, error) {
 	if err := m.validate(); err != nil {
 		return RaBitQCode{}, err
 	}
-	prepared, err := prepareRaBitQVector(vector, m.dimension, m.metric)
-	if err != nil {
-		return RaBitQCode{}, err
-	}
-	metric := m.metric
-	if metric == MetricCosine {
-		metric = MetricIP
-	}
-	cluster, _, err := nearestCentroid(metric, m.centroids, prepared)
+	prepared, cluster, err := m.prepareAndCluster(vector)
 	if err != nil {
 		return RaBitQCode{}, err
 	}
@@ -323,6 +321,22 @@ func (m *RaBitQModel) Encode(vector []float32) (RaBitQCode, error) {
 	}
 	code.modelFingerprint = m.fingerprint
 	return code, nil
+}
+
+func (m *RaBitQModel) prepareAndCluster(vector []float32) ([]float32, int, error) {
+	prepared, err := prepareRaBitQVector(vector, m.dimension, m.metric)
+	if err != nil {
+		return nil, 0, err
+	}
+	metric := m.metric
+	if metric == MetricCosine {
+		metric = MetricIP
+	}
+	cluster, _, err := nearestCentroid(metric, m.centroids, prepared)
+	if err != nil {
+		return nil, 0, err
+	}
+	return prepared, cluster, nil
 }
 
 // EncodeBatch converts vectors concurrently while preserving input order.
@@ -363,9 +377,10 @@ type RaBitQQuery struct {
 	extraBits        int
 	paddedDimension  int
 	rotated          []float32
-	sum              float64
-	gAdd             []float64
-	gError           []float64
+	single           *rabitq.SplitSingleQuery
+	ipFunc           rabitq.ExcodeIPFunc
+	gAdd             []float32
+	gError           []float32
 }
 
 // PrepareQuery rotates a query and precomputes all centroid-dependent terms.
@@ -381,30 +396,103 @@ func (m *RaBitQModel) PrepareQuery(vector []float32) (*RaBitQQuery, error) {
 	if err != nil {
 		return nil, err
 	}
+	single, err := rabitq.NewSplitSingleQuery(rotated, m.paddedDimension, m.extraBits, m.queryConfig, m.rabitqMetric())
+	if err != nil {
+		return nil, fmt.Errorf("core: prepare split-single RaBitQ query: %w", err)
+	}
+	ipFunc, err := rabitq.SelectExcodeIPFunc(m.extraBits)
+	if err != nil {
+		return nil, fmt.Errorf("core: select RaBitQ extra-code kernel: %w", err)
+	}
 	query := &RaBitQQuery{
 		modelFingerprint: m.fingerprint, metric: m.metric,
 		totalBits: m.totalBits, extraBits: m.extraBits,
-		paddedDimension: m.paddedDimension, rotated: rotated,
-		gAdd: make([]float64, len(m.centroids)), gError: make([]float64, len(m.centroids)),
-	}
-	for _, value := range rotated {
-		query.sum += float64(value)
+		paddedDimension: m.paddedDimension, rotated: rotated, single: single, ipFunc: ipFunc,
+		gAdd: make([]float32, len(m.centroids)), gError: make([]float32, len(m.centroids)),
 	}
 	for cluster, centroid := range m.rotatedCentroids {
-		var squaredDistance, dot float64
-		for index, value := range rotated {
-			difference := float64(value) - float64(centroid[index])
-			squaredDistance += difference * difference
-			dot += float64(value) * float64(centroid[index])
+		query.gError[cluster], err = raBitQResidualNorm(rotated, centroid)
+		if err != nil {
+			return nil, err
 		}
-		query.gError[cluster] = math.Sqrt(squaredDistance)
 		if m.metric == MetricL2 {
-			query.gAdd[cluster] = squaredDistance
+			query.gAdd[cluster] = query.gError[cluster] * query.gError[cluster]
+			if math.IsInf(float64(query.gAdd[cluster]), 0) {
+				return nil, fmt.Errorf("core: RaBitQ query-to-centroid squared distance is not representable")
+			}
 		} else {
-			query.gAdd[cluster] = -dot
+			query.gAdd[cluster] = -rabitq.DotProduct(rotated, centroid)
 		}
 	}
 	return query, nil
+}
+
+// raBitQBatchQuery is the IVF query path. One FastScan LUT is reused while
+// cluster-specific g factors are swapped before scanning each list.
+type raBitQBatchQuery struct {
+	paddedDimension int
+	extraBits       int
+	batch           *rabitq.SplitBatchQuery
+	ipFunc          rabitq.ExcodeIPFunc
+	residualNorm    []float32
+	centroidIP      []float32
+}
+
+func (m *RaBitQModel) prepareBatchQuery(vector []float32) (*raBitQBatchQuery, error) {
+	if err := m.validate(); err != nil {
+		return nil, err
+	}
+	prepared, err := prepareRaBitQVector(vector, m.dimension, m.metric)
+	if err != nil {
+		return nil, err
+	}
+	rotated, err := rotateRaBitQVector(m.rotator, m.dimension, m.paddedDimension, prepared)
+	if err != nil {
+		return nil, err
+	}
+	batch, err := rabitq.NewSplitBatchQuery(rotated, m.paddedDimension, m.extraBits, m.rabitqMetric(), true)
+	if err != nil {
+		return nil, fmt.Errorf("core: prepare split-batch RaBitQ query: %w", err)
+	}
+	ipFunc, err := rabitq.SelectExcodeIPFunc(m.extraBits)
+	if err != nil {
+		return nil, fmt.Errorf("core: select RaBitQ extra-code kernel: %w", err)
+	}
+	query := &raBitQBatchQuery{
+		paddedDimension: m.paddedDimension, extraBits: m.extraBits,
+		batch: batch, ipFunc: ipFunc, residualNorm: make([]float32, len(m.rotatedCentroids)),
+	}
+	if m.metric != MetricL2 {
+		query.centroidIP = make([]float32, len(m.rotatedCentroids))
+	}
+	for cluster, centroid := range m.rotatedCentroids {
+		query.residualNorm[cluster], err = raBitQResidualNorm(rotated, centroid)
+		if err != nil {
+			return nil, err
+		}
+		if m.metric == MetricL2 && math.IsInf(float64(query.residualNorm[cluster]*query.residualNorm[cluster]), 0) {
+			return nil, fmt.Errorf("core: RaBitQ query-to-centroid squared distance is not representable")
+		}
+		if m.metric != MetricL2 {
+			query.centroidIP[cluster] = rabitq.DotProduct(rotated, centroid)
+			if math.IsNaN(float64(query.centroidIP[cluster])) || math.IsInf(float64(query.centroidIP[cluster]), 0) {
+				return nil, fmt.Errorf("core: RaBitQ query-to-centroid inner product is not representable")
+			}
+		}
+	}
+	return query, nil
+}
+
+func (q *raBitQBatchQuery) prepareCluster(cluster int) error {
+	if q == nil || q.batch == nil || cluster < 0 || cluster >= len(q.residualNorm) {
+		return ErrInvalidRaBitQCode
+	}
+	if len(q.centroidIP) == 0 {
+		q.batch.SetGAdd(q.residualNorm[cluster])
+	} else {
+		q.batch.SetGAdd(q.residualNorm[cluster], q.centroidIP[cluster])
+	}
+	return nil
 }
 
 // RaBitQEstimate is a lower-is-better approximate distance and the baseline's
@@ -422,11 +510,10 @@ func (q *RaBitQQuery) EstimateCoarse(code RaBitQCode) (RaBitQEstimate, error) {
 	if err := q.validateCode(code); err != nil {
 		return RaBitQEstimate{}, err
 	}
-	dot := raBitQBinaryDot(code.binaryCode, q.rotated)
-	centered := dot - .5*q.sum
-	distance := code.coarseAdd + q.gAdd[code.cluster] + code.coarseRescale*centered
-	errorBound := code.coarseError * q.gError[code.cluster]
-	return makeRaBitQEstimate(distance, errorBound)
+	_, distance, lower := rabitq.SplitSingleEstDist(
+		code.binData, q.single, q.paddedDimension, q.gAdd[code.cluster], q.gError[code.cluster],
+	)
+	return makeRaBitQEstimate(distance, lower)
 }
 
 // Estimate evaluates all configured bits. For a one-bit model it is identical
@@ -435,18 +522,16 @@ func (q *RaBitQQuery) Estimate(code RaBitQCode) (RaBitQEstimate, error) {
 	if err := q.validateCode(code); err != nil {
 		return RaBitQEstimate{}, err
 	}
-	if q.extraBits == 0 {
-		return q.EstimateCoarse(code)
-	}
-	dot := raBitQFullCodeDot(code, q.rotated)
-	center := -(float64(uint64(1)<<q.extraBits) - .5)
-	distance := code.fullAdd + q.gAdd[code.cluster] + code.fullRescale*(dot+center*q.sum)
-	errorBound := code.coarseError * q.gError[code.cluster] / float64(uint64(1)<<q.extraBits)
-	return makeRaBitQEstimate(distance, errorBound)
+	distance, lower, _ := rabitq.SplitSingleFullDist(
+		code.binData, code.exData, q.ipFunc, q.single, q.paddedDimension, q.extraBits,
+		q.gAdd[code.cluster], q.gError[code.cluster],
+	)
+	return makeRaBitQEstimate(distance, lower)
 }
 
 func (q *RaBitQQuery) validateCode(code RaBitQCode) error {
-	if q == nil || q.paddedDimension <= 0 || len(q.rotated) != q.paddedDimension || len(q.gAdd) == 0 || len(q.gAdd) != len(q.gError) {
+	if q == nil || q.paddedDimension <= 0 || len(q.rotated) != q.paddedDimension || q.single == nil || q.ipFunc == nil ||
+		len(q.gAdd) == 0 || len(q.gAdd) != len(q.gError) {
 		return ErrInvalidRaBitQModel
 	}
 	if err := code.validate(); err != nil {
@@ -461,18 +546,17 @@ func (q *RaBitQQuery) validateCode(code RaBitQCode) error {
 	return nil
 }
 
-func makeRaBitQEstimate(distance, errorBound float64) (RaBitQEstimate, error) {
-	if math.IsNaN(distance) || math.IsInf(distance, 0) || math.IsNaN(errorBound) || math.IsInf(errorBound, 0) || errorBound < 0 {
+func makeRaBitQEstimate(distance, lower float32) (RaBitQEstimate, error) {
+	errorBound := distance - lower
+	if math.IsNaN(float64(distance)) || math.IsInf(float64(distance), 0) ||
+		math.IsNaN(float64(errorBound)) || math.IsInf(float64(errorBound), 0) || errorBound < 0 {
 		return RaBitQEstimate{}, ErrInvalidRaBitQCode
 	}
-	if math.Abs(distance) > math.MaxFloat32 || errorBound > math.MaxFloat32 {
+	upper := distance + errorBound
+	if math.IsNaN(float64(upper)) || math.IsInf(float64(upper), 0) {
 		return RaBitQEstimate{}, ErrQuantizationOverflow
 	}
-	lower, upper := distance-errorBound, distance+errorBound
-	if lower < -math.MaxFloat32 || upper > math.MaxFloat32 {
-		return RaBitQEstimate{}, ErrQuantizationOverflow
-	}
-	return RaBitQEstimate{Distance: float32(distance), LowerBound: float32(lower), UpperBound: float32(upper)}, nil
+	return RaBitQEstimate{Distance: distance, LowerBound: lower, UpperBound: upper}, nil
 }
 
 func (m *RaBitQModel) validate() error {
@@ -512,17 +596,48 @@ func prepareRaBitQVector(vector []float32, dimension int, metric Metric) ([]floa
 }
 
 func normalizeRaBitQVector(vector []float32) {
-	var normSquared float64
+	var scale float64
 	for _, value := range vector {
-		normSquared += float64(value) * float64(value)
+		absolute := math.Abs(float64(value))
+		if absolute > scale {
+			scale = absolute
+		}
 	}
-	if normSquared == 0 {
+	if scale == 0 {
 		return
 	}
-	inverse := float32(1 / math.Sqrt(normSquared))
-	for index := range vector {
-		vector[index] *= inverse
+	var scaledNormSquared float64
+	for _, value := range vector {
+		scaled := float64(value) / scale
+		scaledNormSquared += scaled * scaled
 	}
+	norm := scale * math.Sqrt(scaledNormSquared)
+	for index := range vector {
+		vector[index] = float32(float64(vector[index]) / norm)
+	}
+}
+
+func raBitQResidualNorm(left, right []float32) (float32, error) {
+	var scale float64
+	for index := range left {
+		difference := math.Abs(float64(left[index]) - float64(right[index]))
+		if difference > scale {
+			scale = difference
+		}
+	}
+	if scale == 0 {
+		return 0, nil
+	}
+	var scaledNormSquared float64
+	for index := range left {
+		difference := (float64(left[index]) - float64(right[index])) / scale
+		scaledNormSquared += difference * difference
+	}
+	norm := scale * math.Sqrt(scaledNormSquared)
+	if math.IsNaN(norm) || math.IsInf(norm, 0) || norm > math.MaxFloat32 {
+		return 0, fmt.Errorf("core: RaBitQ query-to-centroid distance is not representable")
+	}
+	return float32(norm), nil
 }
 
 func sampleRaBitQTraining(ctx context.Context, vectors [][]float32, sampleCount int, seed uint64) ([][]float32, error) {
@@ -552,28 +667,15 @@ func sampleRaBitQTraining(ctx context.Context, vectors [][]float32, sampleCount 
 	return result, nil
 }
 
-func newRaBitQPaddedRotator(dimension, paddedDimension int, signs []byte) (*FHTRotator, error) {
-	if paddedDimension < dimension || paddedDimension%64 != 0 {
-		return nil, ErrInvalidRotator
-	}
-	bytesPerRound := paddedDimension / 8
-	if len(signs) != 4*bytesPerRound {
-		return nil, ErrInvalidSigns
-	}
-	truncated := floorPowerOfTwo(dimension)
-	return &FHTRotator{
-		dimension: paddedDimension, truncated: truncated, bytesPerRound: bytesPerRound,
-		inverseSqrtSize: 1 / float32(math.Sqrt(float64(float32(truncated)))), signs: slices.Clone(signs),
-	}, nil
-}
-
-func rotateRaBitQVector(rotator *FHTRotator, dimension, paddedDimension int, vector []float32) ([]float32, error) {
+func rotateRaBitQVector(rotator rabitq.Rotator, dimension, paddedDimension int, vector []float32) ([]float32, error) {
 	if len(vector) != dimension {
 		return nil, mathutil.ErrDimensionMismatch
 	}
-	padded := make([]float32, paddedDimension)
-	copy(padded, vector)
-	return rotator.Rotate(padded)
+	rotated := make([]float32, paddedDimension)
+	if err := rotator.Rotate(vector, rotated); err != nil {
+		return nil, err
+	}
+	return rotated, nil
 }
 
 func roundUpRaBitQDimension(dimension int) int {

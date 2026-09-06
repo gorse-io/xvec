@@ -16,6 +16,7 @@ package rabitq
 
 import (
 	"container/heap"
+	"encoding/binary"
 	"fmt"
 	"math"
 
@@ -88,12 +89,19 @@ func QuantizeSplitSingle(data, centroid []float32, paddedDim, exBits int, binDat
 	scratch.reset(data[:paddedDim], centroid[:paddedDim])
 	bin := NewBinDataMap(binData, paddedDim)
 	fAdd, fRescale, fError := oneBitFactors(scratch.residual, centroid[:paddedDim], scratch.signs, metric)
+	if !finiteFactors(fAdd, fRescale, fError) {
+		return fmt.Errorf("rabitq: one-bit factors are not representable")
+	}
 	bin.SetFAdd(fAdd)
 	bin.SetFRescale(fRescale)
 	bin.SetFError(fError)
 	packBinary(scratch.signs, bin.BinCode())
 	if exBits > 0 {
-		quantizeExtra(scratch, centroid[:paddedDim], exBits, NewExDataMap(exData, paddedDim, exBits), metric, config)
+		ex := NewExDataMap(exData, paddedDim, exBits)
+		quantizeExtra(scratch, centroid[:paddedDim], exBits, ex, metric, config)
+		if !finiteFactors(ex.FAddEx(), ex.FRescaleEx()) {
+			return fmt.Errorf("rabitq: extra-bit factors are not representable")
+		}
 	}
 	return nil
 }
@@ -126,13 +134,20 @@ func QuantizeSplitBatch(data, centroid []float32, numPoints, paddedDim, exBits i
 		vec := data[row*paddedDim : (row+1)*paddedDim]
 		scratch.reset(vec, centroid[:paddedDim])
 		fAdd, fRescale, fError := oneBitFactors(scratch.residual, centroid[:paddedDim], scratch.signs, metric)
+		if !finiteFactors(fAdd, fRescale, fError) {
+			return fmt.Errorf("rabitq: one-bit factors for row %d are not representable", row)
+		}
 		batch.SetFAdd(row, fAdd)
 		batch.SetFRescale(row, fRescale)
 		batch.SetFError(row, fError)
 		packBinary8(scratch.signs, compact[row*paddedDim/8:])
 		if exBits > 0 {
 			off := row * ExDataBytes(paddedDim, exBits)
-			quantizeExtra(scratch, centroid[:paddedDim], exBits, NewExDataMap(exData[off:], paddedDim, exBits), metric, config)
+			ex := NewExDataMap(exData[off:], paddedDim, exBits)
+			quantizeExtra(scratch, centroid[:paddedDim], exBits, ex, metric, config)
+			if !finiteFactors(ex.FAddEx(), ex.FRescaleEx()) {
+				return fmt.Errorf("rabitq: extra-bit factors for row %d are not representable", row)
+			}
 		}
 	}
 	packFastScan(compact, numPoints, paddedDim, batch.BinCode())
@@ -161,12 +176,29 @@ func (s *quantizeScratch) reset(data, centroid []float32) {
 		}
 	}
 }
-func normSqr(v []float32) float32 {
-	var s float32
+func normSqr(v []float32) float64 {
+	var s float64
 	for _, x := range v {
-		s += x * x
+		s += float64(x) * float64(x)
 	}
 	return s
+}
+
+func dotProduct64(a, b []float32) float64 {
+	var sum float64
+	for i := range a {
+		sum += float64(a[i]) * float64(b[i])
+	}
+	return sum
+}
+
+func finiteFactors(values ...float32) bool {
+	for _, value := range values {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			return false
+		}
+	}
+	return true
 }
 
 func oneBitFactors(residual, centroid []float32, signs []byte, metric MetricType) (float32, float32, float32) {
@@ -177,23 +209,23 @@ func oneBitFactors(residual, centroid []float32, signs []byte, metric MetricType
 		}
 		return 0, 0, 0
 	}
-	var ipResidual, ipCentroid, codeNorm float32
+	var ipResidual, ipCentroid, codeNorm float64
 	for i, code := range signs {
-		x := float32(code) - 0.5
-		ipResidual += residual[i] * x
-		ipCentroid += centroid[i] * x
+		x := float64(code) - 0.5
+		ipResidual += float64(residual[i]) * x
+		ipCentroid += float64(centroid[i]) * x
 		codeNorm += x * x
 	}
-	l2 := float32(math.Sqrt(float64(l2s)))
-	errArg := ((l2s*codeNorm)/(ipResidual*ipResidual) - 1) / float32(len(residual)-1)
+	l2 := math.Sqrt(l2s)
+	errArg := ((l2s*codeNorm)/(ipResidual*ipResidual) - 1) / float64(len(residual)-1)
 	if errArg < 0 && errArg > -1e-5 {
 		errArg = 0
 	}
-	tmpError := l2 * constEpsilon * float32(math.Sqrt(float64(errArg)))
+	tmpError := l2 * float64(constEpsilon) * math.Sqrt(errArg)
 	if metric == MetricL2 {
-		return l2s + 2*l2s*ipCentroid/ipResidual, -2 * l2s / ipResidual, 2 * tmpError
+		return float32(l2s + 2*l2s*ipCentroid/ipResidual), float32(-2 * l2s / ipResidual), float32(2 * tmpError)
 	}
-	return 1 - DotProduct(residual, centroid) + l2s*ipCentroid/ipResidual, -l2s / ipResidual, tmpError
+	return float32(1 - dotProduct64(residual, centroid) + l2s*ipCentroid/ipResidual), float32(-l2s / ipResidual), float32(tmpError)
 }
 
 func quantizeExtra(scratch *quantizeScratch, centroid []float32, exBits int, out ExDataMap, metric MetricType, config RaBitQConfig) {
@@ -206,10 +238,10 @@ func quantizeExtra(scratch *quantizeScratch, centroid []float32, exBits int, out
 		packExcode(raw, out.ExCode(), exBits)
 		return
 	}
-	l2 := float32(math.Sqrt(float64(l2s)))
+	l2 := math.Sqrt(l2s)
 	magnitudes := scratch.magnitudes
 	for i, v := range residual {
-		magnitudes[i] = float32(math.Abs(float64(v))) / l2
+		magnitudes[i] = float32(math.Abs(float64(v)) / l2)
 	}
 	t := config.TConst
 	if t <= 0 {
@@ -243,20 +275,20 @@ func quantizeExtra(scratch *quantizeScratch, centroid []float32, exBits int, out
 		}
 	}
 	cb := -float32((uint32(1)<<uint(exBits))-1) - 0.5
-	var ipResidual, ipCentroid, codeNorm float32
+	var ipResidual, ipCentroid, codeNorm float64
 	for i, c := range combined {
-		x := float32(c) + cb
-		ipResidual += residual[i] * x
-		ipCentroid += centroid[i] * x
+		x := float64(float32(c) + cb)
+		ipResidual += float64(residual[i]) * x
+		ipCentroid += float64(centroid[i]) * x
 		codeNorm += x * x
 	}
 	_ = codeNorm
 	if metric == MetricL2 {
-		out.SetFAddEx(l2s + 2*l2s*ipCentroid/ipResidual)
-		out.SetFRescaleEx(ipnormInv * -2 * l2)
+		out.SetFAddEx(float32(l2s + 2*l2s*ipCentroid/ipResidual))
+		out.SetFRescaleEx(float32(float64(ipnormInv) * -2 * l2))
 	} else {
-		out.SetFAddEx(1 - DotProduct(residual, centroid) + l2s*ipCentroid/ipResidual)
-		out.SetFRescaleEx(ipnormInv * -l2)
+		out.SetFAddEx(float32(1 - dotProduct64(residual, centroid) + l2s*ipCentroid/ipResidual))
+		out.SetFRescaleEx(float32(float64(ipnormInv) * -l2))
 	}
 	packExcode(raw, out.ExCode(), exBits)
 }
@@ -362,10 +394,14 @@ func bestRescaleFactorValues[T magnitude](m []T, bits int) float64 {
 }
 func packBinary(raw, out []byte) {
 	clear(out)
-	for i, v := range raw {
-		if v != 0 {
-			out[i/8] |= 1 << uint(7-i%8)
+	for block := 0; block < len(raw); block += 64 {
+		var word uint64
+		for i, value := range raw[block : block+64] {
+			if value != 0 {
+				word |= uint64(1) << uint(63-i)
+			}
 		}
+		binary.LittleEndian.PutUint64(out[block/8:], word)
 	}
 }
 func packBinary8(raw, out []byte) {

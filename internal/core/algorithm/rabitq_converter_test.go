@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/pkg/rabitq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,7 +34,7 @@ func TestRaBitQPinnedLibraryFixture(t *testing.T) {
 	}
 	wantValues := []uint16{
 		61, 64, 61, 65, 62, 67, 63, 61, 65, 62, 66, 64, 60, 64, 62, 65,
-		63, 66, 64, 61, 66, 62, 67, 0, 60, 65, 61, 66, 63, 61, 64, 62,
+		63, 66, 64, 61, 66, 62, 67, 63, 60, 65, 61, 66, 63, 61, 64, 62,
 		65, 63, 67, 63, 61, 65, 62, 66, 64, 60, 65, 62, 66, 63, 66, 64,
 		61, 65, 62, 67, 63, 61, 65, 62, 66, 63, 60, 64, 62, 65, 63, 66,
 	}
@@ -52,13 +53,15 @@ func TestRaBitQPinnedLibraryFixture(t *testing.T) {
 		code.modelFingerprint = 1
 		values, err := code.QuantizedValues()
 		require.NoError(t, err)
-		require.True(t, slices.Equal(values, wantValues))
+		require.Equal(t, wantValues, values)
 
-		assertRaBitQClose(t, "coarse add", code.coarseAdd, test.coarseAdd, 2e-6)
-		assertRaBitQClose(t, "coarse rescale", code.coarseRescale, test.coarseRescale, 2e-6)
-		assertRaBitQClose(t, "coarse error", code.coarseError, test.coarseError, 2e-6)
-		assertRaBitQClose(t, "full add", code.fullAdd, test.fullAdd, 2e-6)
-		assertRaBitQClose(t, "full rescale", code.fullRescale, test.fullRescale, 2e-6)
+		bin := rabitq.NewBinDataMap(code.binData, code.paddedDimension)
+		ex := rabitq.NewExDataMap(code.exData, code.paddedDimension, code.totalBits-1)
+		assertRaBitQClose(t, "coarse add", float64(bin.FAdd()), test.coarseAdd, 2e-6)
+		assertRaBitQClose(t, "coarse rescale", float64(bin.FRescale()), test.coarseRescale, 2e-6)
+		assertRaBitQClose(t, "coarse error", float64(bin.FError()), test.coarseError, 2e-6)
+		assertRaBitQClose(t, "full add", float64(ex.FAddEx()), test.fullAdd, 2e-6)
+		assertRaBitQClose(t, "full rescale", float64(ex.FRescaleEx()), test.fullRescale, 2e-6)
 	}
 }
 
@@ -142,7 +145,7 @@ func TestRaBitQFullEstimateImprovesCoarseQuality(t *testing.T) {
 			upperCovered++
 		}
 	}
-	require.True(t, fullError < coarseError*.35)
+	require.Less(t, fullError, coarseError*.35, "coarse error=%v full error=%v", coarseError, fullError)
 	{
 		lowerCoverage, upperCoverage := float64(lowerCovered)/float64(len(codes)), float64(upperCovered)/float64(len(codes))
 		require.True(t, lowerCoverage >= .80)
@@ -175,7 +178,7 @@ func TestRaBitQIPCosineAndZeroResidual(t *testing.T) {
 		if metric == MetricIP {
 			exact = 1 - exact
 		}
-		require.InDelta(t, exact, estimate.Distance, .08)
+		require.InDelta(t, exact, estimate.Distance, .08, "metric=%d", metric)
 	}
 
 	centroid := raBitQTestVectors(1, 64)[0]
@@ -360,6 +363,33 @@ func BenchmarkRaBitQEncodeEstimate(b *testing.B) {
 	})
 }
 
+func TestNormalizeRaBitQVectorHandlesFiniteExtremes(t *testing.T) {
+	for _, magnitude := range []float32{1e20, 1e-40} {
+		vector := make([]float32, 64)
+		for i := range vector {
+			vector[i] = magnitude
+		}
+		normalizeRaBitQVector(vector)
+		var normSquared float64
+		for _, value := range vector {
+			require.False(t, math.IsNaN(float64(value)))
+			require.False(t, math.IsInf(float64(value), 0))
+			normSquared += float64(value) * float64(value)
+		}
+		require.InDelta(t, 1, normSquared, 1e-6)
+	}
+}
+
+func TestRaBitQBatchQueryAllowsRepresentableLargeInnerProduct(t *testing.T) {
+	model := fixtureRaBitQModel(t, MetricIP)
+	vector := make([]float32, 64)
+	for i := range vector {
+		vector[i] = 1e20
+	}
+	_, err := model.prepareBatchQuery(vector)
+	require.NoError(t, err)
+}
+
 func fixtureRaBitQModel(t testing.TB, metric Metric) *RaBitQModel {
 	t.Helper()
 	return fixtureRaBitQModelWithSigns(t, metric, 0)
@@ -409,6 +439,17 @@ func raBitQGaussianVectors(count, dimension int, seed uint64) [][]float32 {
 		}
 	}
 	return vectors
+}
+
+func raBitQNormalPair(random *splitMix64) (float64, float64) {
+	left := random.float64()
+	if left <= 0 {
+		left = math.SmallestNonzeroFloat64
+	}
+	right := random.float64()
+	radius := math.Sqrt(-2 * math.Log(left))
+	angle := 2 * math.Pi * right
+	return radius * math.Cos(angle), radius * math.Sin(angle)
 }
 
 func assertRaBitQClose(t testing.TB, name string, got, want, tolerance float64) {

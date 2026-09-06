@@ -27,6 +27,7 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/gorse-io/xvec/internal/ailego/io"
+	"github.com/gorse-io/xvec/pkg/rabitq"
 )
 
 var ErrInvalidHNSWRaBitQOptions = errors.New("core: invalid HNSW-RaBitQ build options")
@@ -198,11 +199,7 @@ func trainHNSWRaBitQModel(ctx context.Context, dimension int, vectors [][]float3
 	}
 	extraScale := float64(0)
 	if options.TotalBits > 1 {
-		var err error
-		extraScale, err = trainRaBitQExtraScale(ctx, padded, options.TotalBits-1, options.Workers, options.Seed^0x7261626974717363)
-		if err != nil {
-			return nil, err
-		}
+		extraScale = rabitq.FasterConfig(padded, options.TotalBits).TConst
 	}
 	return RestoreRaBitQModel(RaBitQModelState{
 		Dimension: dimension, Metric: options.Metric, TotalBits: options.TotalBits,
@@ -857,8 +854,8 @@ func cloneRaBitQCodes(source []RaBitQCode) []RaBitQCode {
 	result := make([]RaBitQCode, len(source))
 	for index, code := range source {
 		result[index] = code
-		result[index].binaryCode = slices.Clone(code.binaryCode)
-		result[index].extraCode = slices.Clone(code.extraCode)
+		result[index].binData = slices.Clone(code.binData)
+		result[index].exData = slices.Clone(code.exData)
 	}
 	return result
 }
@@ -924,9 +921,8 @@ var (
 )
 
 const (
-	hnswRaBitQFileVersion = 1
+	hnswRaBitQFileVersion = 2
 	hnswRaBitQHeaderSize  = 128
-	hnswRaBitQFactorBytes = 5 * 8
 )
 
 var (
@@ -1050,11 +1046,8 @@ func encodeHNSWRaBitQIndex(ctx context.Context, index *HNSWRaBitQIndex) ([]byte,
 		}
 		start := len(payload)
 		payload = binary.LittleEndian.AppendUint32(payload, uint32(code.cluster))
-		for _, factor := range [...]float64{code.coarseAdd, code.coarseRescale, code.coarseError, code.fullAdd, code.fullRescale} {
-			payload = binary.LittleEndian.AppendUint64(payload, math.Float64bits(factor))
-		}
-		payload = append(payload, code.binaryCode...)
-		payload = append(payload, code.extraCode...)
+		payload = append(payload, code.binData...)
+		payload = append(payload, code.exData...)
 		if len(payload)-start != recordSize {
 			return nil, fmt.Errorf("%w: internal code record length", ErrInvalidHNSWRaBitQFile)
 		}
@@ -1188,8 +1181,8 @@ func decodeHNSWRaBitQIndex(ctx context.Context, encoded []byte) (*HNSWRaBitQInde
 		return nil, fmt.Errorf("%w: invalid code payload length", ErrInvalidHNSWRaBitQFile)
 	}
 	codes := make([]RaBitQCode, count)
-	binaryBytes := model.paddedDimension / 8
-	extraBytes := model.paddedDimension * model.extraBits / 8
+	binBytes := rabitq.BinDataBytes(model.paddedDimension)
+	extraBytes := rabitq.ExDataBytes(model.paddedDimension, model.extraBits)
 	for position := range codes {
 		if position&255 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -1201,20 +1194,13 @@ func decodeHNSWRaBitQIndex(ctx context.Context, encoded []byte) (*HNSWRaBitQInde
 		if cluster >= uint64(model.Len()) {
 			return nil, fmt.Errorf("%w: code cluster out of range", ErrInvalidHNSWRaBitQFile)
 		}
-		factors := [5]float64{}
-		for factorIndex := range factors {
-			factors[factorIndex] = math.Float64frombits(binary.LittleEndian.Uint64(payload[offset : offset+8]))
-			offset += 8
-		}
 		code := RaBitQCode{
 			modelFingerprint: model.fingerprint, cluster: int(cluster),
 			paddedDimension: model.paddedDimension, totalBits: model.totalBits,
-			coarseAdd: factors[0], coarseRescale: factors[1], coarseError: factors[2],
-			fullAdd: factors[3], fullRescale: factors[4],
-			binaryCode: slicesCloneBytes(payload[offset : offset+binaryBytes]),
+			binData: slicesCloneBytes(payload[offset : offset+binBytes]),
 		}
-		offset += binaryBytes
-		code.extraCode = slicesCloneBytes(payload[offset : offset+extraBytes])
+		offset += binBytes
+		code.exData = slicesCloneBytes(payload[offset : offset+extraBytes])
 		offset += extraBytes
 		if err := code.validate(); err != nil {
 			return nil, fmt.Errorf("%w: invalid code factors", ErrInvalidHNSWRaBitQFile)
@@ -1279,7 +1265,7 @@ func hnswRaBitQCodeRecordSize(paddedDimension, totalBits int) int {
 	if paddedDimension < MinRaBitQDimension || paddedDimension%64 != 0 || totalBits < 1 || totalBits > 9 {
 		return 0
 	}
-	return 4 + hnswRaBitQFactorBytes + paddedDimension/8 + paddedDimension*(totalBits-1)/8
+	return 4 + rabitq.BinDataBytes(paddedDimension) + rabitq.ExDataBytes(paddedDimension, totalBits-1)
 }
 
 func slicesCloneBytes(source []byte) []byte {
