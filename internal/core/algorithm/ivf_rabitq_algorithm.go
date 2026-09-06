@@ -29,10 +29,11 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/gorse-io/xvec/internal/ailego/io"
+	"github.com/gorse-io/xvec/pkg/rabitq"
 )
 
 const (
-	ivfRaBitQFormatVersion       = 1
+	ivfRaBitQFormatVersion       = 2
 	ivfRaBitQHeaderSize          = 32
 	ivfRaBitQReadChunkSize       = 64 << 10
 	maxIVFRaBitQFileSize         = 1 << 30
@@ -100,7 +101,7 @@ func (o IVFRaBitQBuildOptions) raBitQOptions() RaBitQOptions {
 	}
 }
 
-// IVFRaBitQBuilder builds an IVF layout and one RaBitQ code per vector.
+// IVFRaBitQBuilder builds an IVF layout and FastScan-packed RaBitQ list data.
 type IVFRaBitQBuilder struct {
 	mu        sync.Mutex
 	dimension int
@@ -172,15 +173,15 @@ func (b *IVFRaBitQBuilder) Build(ctx context.Context) (*IVFRaBitQIndex, error) {
 	if err != nil {
 		return nil, fmt.Errorf("core: train IVF-RaBitQ model: %w", err)
 	}
-	codes, err := model.EncodeBatch(ctx, vectors, b.options.Workers)
-	if err != nil {
-		return nil, fmt.Errorf("core: encode IVF-RaBitQ vectors: %w", err)
-	}
-	base, err := buildIVFBaseFromRaBitQ(ctx, b.dimension, b.options.ivfOptions(), b.keys, b.vectors, b.positions, model, codes)
+	base, err := buildIVFBaseFromRaBitQ(ctx, b.dimension, b.options.ivfOptions(), b.keys, b.vectors, b.positions, model)
 	if err != nil {
 		return nil, err
 	}
-	index := &IVFRaBitQIndex{options: b.options, base: base, model: model, codes: codes}
+	listCodes, err := buildIVFRaBitQListCodes(ctx, base, model)
+	if err != nil {
+		return nil, fmt.Errorf("core: encode IVF-RaBitQ FastScan lists: %w", err)
+	}
+	index := &IVFRaBitQIndex{options: b.options, base: base, model: model, listCodes: listCodes}
 	if err := validateIVFRaBitQIndex(ctx, index); err != nil {
 		return nil, err
 	}
@@ -200,7 +201,6 @@ func buildIVFBaseFromRaBitQ(
 	vectors []float32,
 	positions map[uint64]int,
 	raBitQ *RaBitQModel,
-	codes []RaBitQCode,
 ) (*IVFIndex, error) {
 	base := &IVFIndex{
 		dimension: dimension, options: options, keys: slices.Clone(keys), vectors: slices.Clone(vectors),
@@ -217,13 +217,16 @@ func buildIVFBaseFromRaBitQ(
 	}
 	base.lists = make([]ivfList, len(state.Centroids))
 	base.listForPosition = make([]int, len(keys))
-	for position, code := range codes {
+	for position, vector := range denseVectorViews(base.vectors, dimension) {
 		if position&1023 == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 		}
-		cluster := code.Cluster()
+		_, cluster, err := raBitQ.prepareAndCluster(vector)
+		if err != nil {
+			return nil, fmt.Errorf("core: assign IVF-RaBitQ vector %d: %w", position, err)
+		}
 		if cluster < 0 || cluster >= len(base.lists) {
 			return nil, fmt.Errorf("core: build IVF-RaBitQ lists: code %d has cluster %d", position, cluster)
 		}
@@ -237,13 +240,63 @@ func buildIVFBaseFromRaBitQ(
 	return base, nil
 }
 
+type ivfRaBitQListCodes struct {
+	batchData []byte
+	exData    []byte
+}
+
+func buildIVFRaBitQListCodes(ctx context.Context, base *IVFIndex, model *RaBitQModel) ([]ivfRaBitQListCodes, error) {
+	listCount := model.Len()
+	result := make([]ivfRaBitQListCodes, listCount)
+	if len(base.keys) == 0 {
+		return result, nil
+	}
+	batchBytes := rabitq.BatchDataBytes(model.paddedDimension)
+	exBytes := rabitq.ExDataBytes(model.paddedDimension, model.extraBits)
+	for cluster, list := range base.lists {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		count := len(list.positions)
+		storage := &result[cluster]
+		storage.batchData = make([]byte, (count+rabitq.BatchSize-1)/rabitq.BatchSize*batchBytes)
+		storage.exData = make([]byte, count*exBytes)
+		for offset := 0; offset < count; offset += rabitq.BatchSize {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			numPoints := min(rabitq.BatchSize, count-offset)
+			rotated := make([]float32, numPoints*model.paddedDimension)
+			for lane, position := range list.positions[offset : offset+numPoints] {
+				start := position * base.dimension
+				prepared, err := prepareRaBitQVector(base.vectors[start:start+base.dimension], model.dimension, model.metric)
+				if err != nil {
+					return nil, err
+				}
+				if err := model.rotator.Rotate(prepared, rotated[lane*model.paddedDimension:(lane+1)*model.paddedDimension]); err != nil {
+					return nil, err
+				}
+			}
+			batchID := offset / rabitq.BatchSize
+			if err := rabitq.QuantizeSplitBatch(
+				rotated, model.rotatedCentroids[cluster], numPoints, model.paddedDimension, model.extraBits,
+				storage.batchData[batchID*batchBytes:(batchID+1)*batchBytes], storage.exData[offset*exBytes:(offset+numPoints)*exBytes],
+				model.rabitqMetric(), rabitq.RaBitQConfig{TConst: model.extraScale},
+			); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return result, nil
+}
+
 // IVFRaBitQIndex combines IVF candidate selection with RaBitQ scoring.
 type IVFRaBitQIndex struct {
-	mu      sync.RWMutex
-	options IVFRaBitQBuildOptions
-	base    *IVFIndex
-	model   *RaBitQModel
-	codes   []RaBitQCode
+	mu        sync.RWMutex
+	options   IVFRaBitQBuildOptions
+	base      *IVFIndex
+	model     *RaBitQModel
+	listCodes []ivfRaBitQListCodes
 }
 
 func (i *IVFRaBitQIndex) Dimension() int {
@@ -329,50 +382,38 @@ func (i *IVFRaBitQIndex) SearchIVFRaBitQGroups(
 	}
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	prepared, err := i.model.PrepareQuery(vector)
+	query, err := i.model.prepareBatchQuery(vector)
 	if err != nil {
 		return nil, fmt.Errorf("core: prepare IVF-RaBitQ group-by query: %w", err)
 	}
-	positions := make([]int, 0, len(i.codes))
-	if search.Linear || len(i.codes) <= ivfRaBitQBruteForceThreshold {
-		for position := range i.codes {
-			positions = append(positions, position)
-		}
-	} else {
-		lists, err := i.base.ProbedLists(ctx, vector, search.NProbe)
-		if err != nil {
-			return nil, fmt.Errorf("core: probe IVF-RaBitQ group-by lists: %w", err)
-		}
-		for _, list := range lists {
-			positions = append(positions, i.base.lists[list].positions...)
-		}
+	lists, err := i.raBitQSearchLists(ctx, vector, search.NProbe, search.Linear)
+	if err != nil {
+		return nil, fmt.Errorf("core: probe IVF-RaBitQ group-by lists: %w", err)
 	}
 	accumulator := newGroupAccumulator(i.options.Metric, groups.TopKPerGroup)
-	for offset, position := range positions {
-		if offset&255 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-		}
-		key := i.base.keys[position]
+	err = i.visitRaBitQLists(ctx, query, lists, func(lane ivfRaBitQLane) error {
+		key := i.base.keys[lane.position]
 		if groups.Filter != nil && !groups.Filter(key) {
-			continue
+			return nil
 		}
-		estimate, err := prepared.Estimate(i.codes[position])
+		score, err := lane.fullDistance(query)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		score := estimate.Distance
 		if i.options.Metric == MetricIP {
 			score = 1 - score
 		}
 		if !scoreWithinRadius(i.options.Metric, score, groups.Radius) {
-			continue
+			return nil
 		}
 		value, ok := groups.Resolve(key)
 		if ok {
 			accumulator.add(value, Result{Key: key, Score: score})
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return accumulator.finish(groups.GroupCount), nil
 }
@@ -402,31 +443,103 @@ func (i *IVFRaBitQIndex) search(ctx context.Context, vector []float32, options I
 	if err := validateIVFRaBitQIndex(ctx, i); err != nil {
 		return nil, err
 	}
-	prepared, err := i.model.PrepareQuery(vector)
+	query, err := i.model.prepareBatchQuery(vector)
 	if err != nil {
 		return nil, fmt.Errorf("core: prepare IVF-RaBitQ query: %w", err)
 	}
-	if options.TopK == 0 || len(i.codes) == 0 {
+	if options.TopK == 0 || len(i.base.keys) == 0 {
 		return []Result{}, nil
 	}
-	positions := make([]int, 0, len(i.codes))
-	if options.Linear || len(i.codes) <= ivfRaBitQBruteForceThreshold {
-		for position := range i.codes {
-			positions = append(positions, position)
-		}
-	} else {
-		lists, err := i.base.ProbedLists(ctx, vector, options.NProbe)
-		if err != nil {
-			return nil, fmt.Errorf("core: probe IVF-RaBitQ lists: %w", err)
-		}
-		for _, list := range lists {
-			positions = append(positions, i.base.lists[list].positions...)
-		}
+	lists, err := i.raBitQSearchLists(ctx, vector, options.NProbe, options.Linear)
+	if err != nil {
+		return nil, fmt.Errorf("core: probe IVF-RaBitQ lists: %w", err)
 	}
-	return i.scanPositions(ctx, prepared, positions, options.SearchOptions)
+	return i.scanLists(ctx, query, lists, options.SearchOptions)
 }
 
-func (i *IVFRaBitQIndex) scanPositions(ctx context.Context, query *RaBitQQuery, positions []int, options SearchOptions) ([]Result, error) {
+func (i *IVFRaBitQIndex) raBitQSearchLists(ctx context.Context, vector []float32, nprobe int, linear bool) ([]int, error) {
+	if linear || len(i.base.keys) <= ivfRaBitQBruteForceThreshold {
+		lists := make([]int, len(i.base.lists))
+		for list := range lists {
+			lists[list] = list
+		}
+		return lists, nil
+	}
+	return i.base.ProbedLists(ctx, vector, nprobe)
+}
+
+type ivfRaBitQLane struct {
+	position            int
+	estimate, lower, ip float32
+	exData              []byte
+}
+
+func (l ivfRaBitQLane) fullDistance(query *raBitQBatchQuery) (float32, error) {
+	var distance float32
+	if query.extraBits == 0 {
+		distance = l.estimate
+	} else {
+		distance = rabitq.SplitDistanceBoosting(
+			l.exData, query.ipFunc, query.batch, query.paddedDimension, query.extraBits, l.ip,
+		)
+	}
+	if !finiteFloat32(distance) {
+		return 0, fmt.Errorf("%w: non-finite IVF-RaBitQ distance", ErrInvalidRaBitQCode)
+	}
+	return distance, nil
+}
+
+func (i *IVFRaBitQIndex) visitRaBitQLists(
+	ctx context.Context,
+	query *raBitQBatchQuery,
+	lists []int,
+	visit func(ivfRaBitQLane) error,
+) error {
+	batchBytes := rabitq.BatchDataBytes(i.model.paddedDimension)
+	exBytes := rabitq.ExDataBytes(i.model.paddedDimension, i.model.extraBits)
+	estimates := make([]float32, rabitq.BatchSize)
+	lowers := make([]float32, rabitq.BatchSize)
+	ips := make([]float32, rabitq.BatchSize)
+	for _, cluster := range lists {
+		if cluster < 0 || cluster >= len(i.base.lists) || cluster >= len(i.listCodes) {
+			return fmt.Errorf("%w: cluster %d out of range", ErrInvalidIVFRaBitQFile, cluster)
+		}
+		if err := query.prepareCluster(cluster); err != nil {
+			return err
+		}
+		positions := i.base.lists[cluster].positions
+		storage := i.listCodes[cluster]
+		for offset := 0; offset < len(positions); offset += rabitq.BatchSize {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			batchID := offset / rabitq.BatchSize
+			rabitq.SplitBatchEstDist(
+				storage.batchData[batchID*batchBytes:(batchID+1)*batchBytes], query.batch,
+				i.model.paddedDimension, estimates, lowers, ips, true,
+			)
+			batchSize := min(rabitq.BatchSize, len(positions)-offset)
+			for lane := 0; lane < batchSize; lane++ {
+				if !finiteFloat32(estimates[lane]) || !finiteFloat32(lowers[lane]) || !finiteFloat32(ips[lane]) {
+					return fmt.Errorf("%w: non-finite IVF-RaBitQ estimate", ErrInvalidRaBitQCode)
+				}
+				item := ivfRaBitQLane{
+					position: positions[offset+lane], estimate: estimates[lane], lower: lowers[lane], ip: ips[lane],
+				}
+				if exBytes > 0 {
+					exOffset := (offset + lane) * exBytes
+					item.exData = storage.exData[exOffset : exOffset+exBytes]
+				}
+				if err := visit(item); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (i *IVFRaBitQIndex) scanLists(ctx context.Context, query *raBitQBatchQuery, lists []int, options SearchOptions) ([]Result, error) {
 	better := func(left, right hnswScoredNode) bool {
 		if left.score == right.score {
 			return i.base.keys[left.position] < i.base.keys[right.position]
@@ -435,31 +548,35 @@ func (i *IVFRaBitQIndex) scanPositions(ctx context.Context, query *RaBitQQuery, 
 	}
 	worse := func(left, right hnswScoredNode) bool { return better(right, left) }
 	selected := container.NewHeap(worse)
-	for offset, position := range positions {
-		if offset&255 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
+	err := i.visitRaBitQLists(ctx, query, lists, func(lane ivfRaBitQLane) error {
+		key := i.base.keys[lane.position]
+		if options.Filter != nil && !options.Filter(key) {
+			return nil
 		}
-		estimate, err := query.Estimate(i.codes[position])
+		if worstNode, ok := selected.Peek(); query.extraBits > 0 && selected.Len() >= options.TopK && ok && lane.lower >= worstNode.score {
+			return nil
+		}
+		score, err := lane.fullDistance(query)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		score := estimate.Distance
 		publicScore := score
 		if i.options.Metric == MetricIP {
 			publicScore = 1 - score
 		}
-		key := i.base.keys[position]
-		if (options.Filter != nil && !options.Filter(key)) || !scoreWithinRadius(i.options.Metric, publicScore, options.Radius) {
-			continue
+		if !scoreWithinRadius(i.options.Metric, publicScore, options.Radius) {
+			return nil
 		}
-		node := hnswScoredNode{position: position, score: score}
+		node := hnswScoredNode{position: lane.position, score: score}
 		if selected.Len() < options.TopK {
 			selected.Push(node)
 		} else if worstNode, ok := selected.Peek(); ok && better(node, worstNode) {
 			selected.Replace(node)
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	nodes := selected.Values()
 	slices.SortFunc(nodes, func(left, right hnswScoredNode) int {
@@ -495,24 +612,48 @@ func validateIVFRaBitQIndex(ctx context.Context, index *IVFRaBitQIndex) error {
 	if index.model.metric != index.options.Metric || index.model.totalBits != index.options.TotalBits {
 		return fmt.Errorf("%w: RaBitQ model options mismatch", ErrInvalidIVFRaBitQFile)
 	}
-	if len(index.codes) != len(index.base.keys) || index.base.dimension != index.model.dimension {
+	if index.base.dimension != index.model.dimension || len(index.listCodes) != index.model.Len() {
 		return fmt.Errorf("%w: generation size mismatch", ErrInvalidIVFRaBitQFile)
 	}
 	if index.base.options != index.options.ivfOptions() {
 		return fmt.Errorf("%w: IVF options mismatch", ErrInvalidIVFRaBitQFile)
 	}
-	for position, code := range index.codes {
-		if position&255 == 0 {
+	if len(index.base.keys) != 0 && len(index.listCodes) != len(index.base.lists) {
+		return fmt.Errorf("%w: list/code count mismatch", ErrInvalidIVFRaBitQFile)
+	}
+	batchBytes := rabitq.BatchDataBytes(index.model.paddedDimension)
+	exBytes := rabitq.ExDataBytes(index.model.paddedDimension, index.model.extraBits)
+	for cluster, storage := range index.listCodes {
+		if cluster&255 == 0 {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 		}
-		if err := code.validate(); err != nil || code.modelFingerprint != index.model.fingerprint ||
-			code.Cluster() != index.base.listForPosition[position] {
-			return fmt.Errorf("%w: invalid code %d", ErrInvalidIVFRaBitQFile, position)
+		count := 0
+		if cluster < len(index.base.lists) {
+			count = len(index.base.lists[cluster].positions)
+		}
+		if len(storage.batchData) != (count+rabitq.BatchSize-1)/rabitq.BatchSize*batchBytes || len(storage.exData) != count*exBytes {
+			return fmt.Errorf("%w: invalid FastScan storage for list %d", ErrInvalidIVFRaBitQFile, cluster)
+		}
+		for offset := 0; offset < count; offset += rabitq.BatchSize {
+			batchID := offset / rabitq.BatchSize
+			batch := rabitq.NewBatchDataMap(storage.batchData[batchID*batchBytes:], index.model.paddedDimension)
+			batchSize := min(rabitq.BatchSize, count-offset)
+			for lane := 0; lane < batchSize; lane++ {
+				if !validRaBitQFactors(batch.FAdd(lane), batch.FRescale(lane), batch.FError(lane)) || batch.FError(lane) < 0 {
+					return fmt.Errorf("%w: invalid one-bit factors in list %d lane %d", ErrInvalidIVFRaBitQFile, cluster, offset+lane)
+				}
+				if exBytes > 0 {
+					ex := rabitq.NewExDataMap(storage.exData[(offset+lane)*exBytes:], index.model.paddedDimension, index.model.extraBits)
+					if !validRaBitQFactors(ex.FAddEx(), ex.FRescaleEx()) {
+						return fmt.Errorf("%w: invalid extra-bit factors in list %d lane %d", ErrInvalidIVFRaBitQFile, cluster, offset+lane)
+					}
+				}
+			}
 		}
 	}
-	if len(index.codes) != 0 {
+	if len(index.base.keys) != 0 {
 		state := index.model.State()
 		if len(state.Centroids) != len(index.base.model.centroids) {
 			return fmt.Errorf("%w: centroid count mismatch", ErrInvalidIVFRaBitQFile)
@@ -526,24 +667,24 @@ func validateIVFRaBitQIndex(ctx context.Context, index *IVFRaBitQIndex) error {
 	return nil
 }
 
-type diskIVFRaBitQCode struct {
-	ModelFingerprint uint64  `json:"model_fingerprint"`
-	Cluster          int     `json:"cluster"`
-	PaddedDimension  int     `json:"padded_dimension"`
-	TotalBits        int     `json:"total_bits"`
-	BinaryCode       []byte  `json:"binary_code"`
-	ExtraCode        []byte  `json:"extra_code"`
-	CoarseAdd        float64 `json:"coarse_add"`
-	CoarseRescale    float64 `json:"coarse_rescale"`
-	CoarseError      float64 `json:"coarse_error"`
-	FullAdd          float64 `json:"full_add"`
-	FullRescale      float64 `json:"full_rescale"`
+func validRaBitQFactors(factors ...float32) bool {
+	for _, factor := range factors {
+		if !finiteFloat32(factor) {
+			return false
+		}
+	}
+	return true
+}
+
+type diskIVFRaBitQListCodes struct {
+	BatchData []byte `json:"batch_data"`
+	ExtraData []byte `json:"extra_data,omitempty"`
 }
 type diskIVFRaBitQ struct {
-	Options IVFRaBitQBuildOptions `json:"options"`
-	Base    []byte                `json:"base"`
-	Model   RaBitQModelState      `json:"model"`
-	Codes   []diskIVFRaBitQCode   `json:"codes"`
+	Options   IVFRaBitQBuildOptions    `json:"options"`
+	Base      []byte                   `json:"base"`
+	Model     RaBitQModelState         `json:"model"`
+	ListCodes []diskIVFRaBitQListCodes `json:"list_codes"`
 }
 
 func (i *IVFRaBitQIndex) Save(ctx context.Context, path string) error {
@@ -568,17 +709,13 @@ func (i *IVFRaBitQIndex) Save(ctx context.Context, path string) error {
 	if err != nil {
 		return fmt.Errorf("core: encode IVF-RaBitQ base: %w", err)
 	}
-	codes := make([]diskIVFRaBitQCode, len(i.codes))
-	for position, code := range i.codes {
-		codes[position] = diskIVFRaBitQCode{
-			ModelFingerprint: code.modelFingerprint, Cluster: code.cluster,
-			PaddedDimension: code.paddedDimension, TotalBits: code.totalBits,
-			BinaryCode: slices.Clone(code.binaryCode), ExtraCode: slices.Clone(code.extraCode),
-			CoarseAdd: code.coarseAdd, CoarseRescale: code.coarseRescale,
-			CoarseError: code.coarseError, FullAdd: code.fullAdd, FullRescale: code.fullRescale,
+	listCodes := make([]diskIVFRaBitQListCodes, len(i.listCodes))
+	for cluster, codes := range i.listCodes {
+		listCodes[cluster] = diskIVFRaBitQListCodes{
+			BatchData: slices.Clone(codes.batchData), ExtraData: slices.Clone(codes.exData),
 		}
 	}
-	payload, err := json.Marshal(diskIVFRaBitQ{Options: i.options, Base: base, Model: i.model.State(), Codes: codes})
+	payload, err := json.Marshal(diskIVFRaBitQ{Options: i.options, Base: base, Model: i.model.State(), ListCodes: listCodes})
 	if err != nil {
 		return fmt.Errorf("core: encode IVF-RaBitQ payload: %w", err)
 	}
@@ -699,17 +836,13 @@ func OpenIVFRaBitQIndex(ctx context.Context, path string) (*IVFRaBitQIndex, erro
 	if err != nil {
 		return nil, fmt.Errorf("%w: restore model: %v", ErrInvalidIVFRaBitQFile, err)
 	}
-	codes := make([]RaBitQCode, len(disk.Codes))
-	for position, code := range disk.Codes {
-		codes[position] = RaBitQCode{
-			modelFingerprint: code.ModelFingerprint, cluster: code.Cluster,
-			paddedDimension: code.PaddedDimension, totalBits: code.TotalBits,
-			binaryCode: slices.Clone(code.BinaryCode), extraCode: slices.Clone(code.ExtraCode),
-			coarseAdd: code.CoarseAdd, coarseRescale: code.CoarseRescale,
-			coarseError: code.CoarseError, fullAdd: code.FullAdd, fullRescale: code.FullRescale,
+	listCodes := make([]ivfRaBitQListCodes, len(disk.ListCodes))
+	for cluster, codes := range disk.ListCodes {
+		listCodes[cluster] = ivfRaBitQListCodes{
+			batchData: slices.Clone(codes.BatchData), exData: slices.Clone(codes.ExtraData),
 		}
 	}
-	index := &IVFRaBitQIndex{options: disk.Options, base: base, model: model, codes: codes}
+	index := &IVFRaBitQIndex{options: disk.Options, base: base, model: model, listCodes: listCodes}
 	if err := validateIVFRaBitQIndex(ctx, index); err != nil {
 		return nil, err
 	}

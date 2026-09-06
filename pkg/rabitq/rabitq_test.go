@@ -286,6 +286,58 @@ func TestQuantizeSplitSingleLayoutAndEstimators(t *testing.T) {
 	}
 }
 
+func TestQuantizeSplitSingleUsesUint64BitOrder(t *testing.T) {
+	const dim, exBits = 64, 2
+	data := make([]float32, dim)
+	data[0] = 2
+	for i := 1; i < dim; i++ {
+		data[i] = -1
+	}
+	centroid := make([]float32, dim)
+	binData := make([]byte, BinDataBytes(dim))
+	exData := make([]byte, ExDataBytes(dim, exBits))
+	if err := QuantizeSplitSingle(data, centroid, dim, exBits, binData, exData, MetricL2, FasterConfig(dim, exBits+1)); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := binary.LittleEndian.Uint64(NewBinDataMap(binData, dim).BinCode()), uint64(1)<<63; got != want {
+		t.Fatalf("binary word = %#016x, want %#016x", got, want)
+	}
+	query, err := NewSplitSingleQuery(data, dim, exBits, FasterConfig(dim, SplitSingleQueryNumBits), MetricL2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, _, _ := SplitSingleFullDist(binData, exData, mustIP(t, exBits), query, dim, exBits, EuclideanSqr(data, centroid), 0)
+	if !close32(full, 0) {
+		t.Fatalf("self distance = %v, want 0", full)
+	}
+}
+
+func TestQuantizeSplitRejectsUnrepresentableFactors(t *testing.T) {
+	const dim = 64
+	data := make([]float32, dim)
+	for i := range data {
+		data[i] = 1e20
+	}
+	centroid := make([]float32, dim)
+	binData := make([]byte, BinDataBytes(dim))
+	if err := QuantizeSplitSingle(data, centroid, dim, 0, binData, nil, MetricL2, RaBitQConfig{}); err == nil {
+		t.Fatal("expected unrepresentable single-vector factors to be rejected")
+	}
+
+	batchData := make([]byte, BatchDataBytes(dim))
+	if err := QuantizeSplitBatch(data, centroid, 1, dim, 0, batchData, nil, MetricL2, RaBitQConfig{}); err == nil {
+		t.Fatal("expected unrepresentable batch factors to be rejected")
+	}
+
+	if err := QuantizeSplitSingle(data, centroid, dim, 0, binData, nil, MetricIP, RaBitQConfig{}); err != nil {
+		t.Fatalf("representable inner-product factors were rejected: %v", err)
+	}
+	bin := NewBinDataMap(binData, dim)
+	if !finiteFactors(bin.FAdd(), bin.FRescale(), bin.FError()) {
+		t.Fatal("inner-product factors are not finite")
+	}
+}
+
 func mustIP(t *testing.T, bits int) ExcodeIPFunc {
 	t.Helper()
 	fn, err := SelectExcodeIPFunc(bits)
