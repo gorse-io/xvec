@@ -32,11 +32,11 @@ type diskANNBatchReader interface {
 	ReadBatchAt(context.Context, []DiskANNReadRequest, [][]byte) error
 }
 
-func openDiskANNReaderAt(path string, useMmap bool) (diskANNReaderAt, error) {
+func openDiskANNReaderAt(path string, useMmap bool, workers int) (diskANNReaderAt, error) {
 	if useMmap {
 		return ioutil.OpenReaderAt(path, true)
 	}
-	return openDiskANNDirectReader(path)
+	return openDiskANNDirectReader(path, workers)
 }
 
 type diskANNSectionReader struct {
