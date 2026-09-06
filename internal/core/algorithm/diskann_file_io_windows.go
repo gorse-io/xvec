@@ -128,7 +128,7 @@ func (r *windowsDiskANNReader) ReadAt(buffer []byte, offset int64) (int, error) 
 	if len(buffer) == 0 {
 		return 0, nil
 	}
-	buffered, err := reOpenDiskANNFile(r.stable, windows.FILE_ATTRIBUTE_NORMAL)
+	buffered, err := reOpenDiskANNFile(r.stable, 0)
 	if err != nil {
 		return 0, err
 	}
