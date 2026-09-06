@@ -49,16 +49,24 @@ func ParallelReadAt(ctx context.Context, reader io.ReaderAt, requests []DiskANNR
 		return nil, err
 	}
 	result := make([][]byte, len(requests))
+	for index, request := range requests {
+		if request.Offset < 0 || request.Length <= 0 {
+			return nil, fmt.Errorf("core: invalid ReaderAt request %d", index)
+		}
+		result[index] = make([]byte, request.Length)
+	}
+	if batch, ok := reader.(diskANNBatchReader); ok {
+		if err := batch.ReadBatchAt(ctx, requests, result); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
 	err := parallel.ParallelFor(ctx, len(requests), workers, func(ctx context.Context, index int) error {
 		request := requests[index]
-		if request.Offset < 0 || request.Length <= 0 {
-			return fmt.Errorf("core: invalid ReaderAt request %d", index)
-		}
-		buffer := make([]byte, request.Length)
+		buffer := result[index]
 		if err := readFullAt(ctx, reader, buffer, request.Offset); err != nil {
 			return fmt.Errorf("core: ReaderAt request %d: %w", index, err)
 		}
-		result[index] = buffer
 		return nil
 	})
 	if err != nil {
