@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/parquet-go/bitpack"
 	"github.com/stretchr/testify/require"
 )
 
@@ -105,6 +106,57 @@ func TestFTSPostingListBlockRoundTrip(t *testing.T) {
 		require.Equal(t, string(ftsPostingMagic[:]), string(got[0:4]),
 			"Bytes did not return an independent copy")
 	}
+}
+
+func TestFTSPostingListSIMDFullBlockLayout(t *testing.T) {
+	postings := makeFTSPostingTestData(int(ftsPostingDocumentsBlock) + 1)
+	list, err := BuildFTSPostingList(context.Background(), postings)
+	require.NoError(t, err)
+
+	data := list.Bytes()
+	require.Equal(t, uint16(2), binary.LittleEndian.Uint16(data[4:6]))
+
+	firstBlock := list.blocks[0]
+	header := data[firstBlock.blockOffset : firstBlock.blockOffset+ftsPostingBlockHeaderSize]
+	require.Equal(t, ftsPostingDocumentsBlock, binary.LittleEndian.Uint16(header[4:6]))
+
+	wantArrays := makeFTSPostingBlockArrays(postings[:ftsPostingDocumentsBlock])
+	cursor := uint64(firstBlock.blockOffset) + ftsPostingBlockHeaderSize
+	for arrayIndex, want := range wantArrays {
+		width := header[6+arrayIndex]
+		packedSize := ftsPackedByteSize(width, uint32(len(want)))
+		end := cursor + packedSize
+		paddingEnd := end + bitpack.PaddingInt32
+		require.LessOrEqual(t, paddingEnd, uint64(len(data)))
+		require.Equal(t, make([]byte, bitpack.PaddingInt32), data[end:paddingEnd])
+
+		got := make([]uint32, len(want))
+		bitpack.Unpack(got, data[cursor:paddingEnd], uint(width))
+		require.Equal(t, want, got)
+		cursor = paddingEnd
+	}
+	require.Equal(t, uint64(list.blocks[1].blockOffset), cursor)
+
+	tailHeader := data[list.blocks[1].blockOffset : list.blocks[1].blockOffset+ftsPostingBlockHeaderSize]
+	tailEnd := uint64(list.blocks[1].blockOffset) + ftsPostingBlockHeaderSize
+	for arrayIndex := range wantArrays {
+		tailEnd += ftsPackedByteSize(tailHeader[6+arrayIndex], 1)
+	}
+	require.Equal(t, uint64(list.positionsOffset), tailEnd,
+		"partial posting blocks must retain the compact scalar layout")
+}
+
+func TestFTSPostingListRejectsPreviousVersion(t *testing.T) {
+	list, err := BuildFTSPostingList(context.Background(), makeFTSPostingTestData(1))
+	require.NoError(t, err)
+
+	data := list.Bytes()
+	binary.LittleEndian.PutUint16(data[4:6], 1)
+	repairFTSPostingCRCs(data)
+
+	opened, err := OpenFTSPostingList(context.Background(), data)
+	require.Nil(t, opened)
+	require.ErrorIs(t, err, ErrCorruptFTSPosting)
 }
 
 func TestFTSPostingIteratorAdvance(t *testing.T) {
@@ -201,6 +253,14 @@ func TestFTSPostingListCorruption(t *testing.T) {
 		"bit width": func(data []byte) []byte {
 			blockOffset := binary.LittleEndian.Uint32(data[20:24])
 			data[blockOffset+6] = 33
+			repairFTSPostingCRCs(data)
+			return data
+		},
+		"SIMD padding": func(data []byte) []byte {
+			blockOffset := binary.LittleEndian.Uint32(data[20:24])
+			width := data[blockOffset+6]
+			paddingOffset := uint64(blockOffset) + ftsPostingBlockHeaderSize + ftsPackedByteSize(width, uint32(ftsPostingDocumentsBlock))
+			data[paddingOffset] = 1
 			repairFTSPostingCRCs(data)
 			return data
 		},
@@ -373,6 +433,26 @@ func makeFTSPostingTestData(count int) []FTSPosting {
 		}
 	}
 	return postings
+}
+
+func makeFTSPostingBlockArrays(postings []FTSPosting) [4][]uint32 {
+	var arrays [4][]uint32
+	for index, posting := range postings {
+		if index == 0 {
+			arrays[0] = append(arrays[0], 0)
+		} else {
+			arrays[0] = append(arrays[0], posting.DocumentID-postings[index-1].DocumentID)
+		}
+		arrays[1] = append(arrays[1], posting.TermFrequency)
+		arrays[2] = append(arrays[2], posting.DocumentLength)
+
+		encoded, err := appendFTSPositionDeltas(context.Background(), nil, posting.Positions)
+		if err != nil {
+			panic(err)
+		}
+		arrays[3] = append(arrays[3], uint32(len(encoded)))
+	}
+	return arrays
 }
 
 func cloneFTSPostings(postings []FTSPosting) []FTSPosting {
