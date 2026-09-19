@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -59,6 +60,9 @@ func TestSQLiteVecBackendLoadAndSearch(t *testing.T) {
 	ids, err := engine.search(context.Background(), benchmarkQuery{Vector: []float32{0.9, 0.1}})
 	require.NoError(t, err)
 	require.Equal(t, []string{"10", "20"}, ids)
+
+	_, err = engine.search(context.Background(), benchmarkQuery{Vector: []float32{1}})
+	require.ErrorContains(t, err, "query sqlite-vec")
 }
 
 func TestSQLiteVecVectorBytes(t *testing.T) {
@@ -73,4 +77,48 @@ func TestOpenSQLiteVecQueryEngineRejectsMissingDatabase(t *testing.T) {
 		Path: filepath.Join(t.TempDir(), "missing.db"),
 	})
 	require.ErrorContains(t, err, "does not exist")
+}
+
+func TestOpenSQLiteVecQueryEngineRejectsInvalidDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid.db")
+	require.NoError(t, os.WriteFile(path, []byte("not sqlite"), 0o600))
+	_, _, err := openSQLiteVecQueryEngine(benchConfig{Path: path})
+	require.ErrorContains(t, err, "ping sqlite-vec")
+}
+
+func TestSQLiteVecBackendRejectsInvalidTrainingRows(t *testing.T) {
+	testCases := []struct {
+		name string
+		rows []vectorParquetRow
+		err  string
+	}{
+		{
+			name: "dimension",
+			rows: []vectorParquetRow{{ID: 1, Embedding: []float32{1}}},
+			err:  "has dimension 1, want 2",
+		},
+		{
+			name: "duplicate ID",
+			rows: []vectorParquetRow{
+				{ID: 1, Embedding: []float32{1, 0}},
+				{ID: 1, Embedding: []float32{0, 1}},
+			},
+			err: "insert sqlite-vec vector 1",
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			datasetDir := t.TempDir()
+			require.NoError(t, parquet.WriteFile(filepath.Join(datasetDir, "train.parquet"), testCase.rows))
+			_, err := loadSQLiteVecDataset(context.Background(), benchConfig{
+				Path:       filepath.Join(t.TempDir(), "bench.db"),
+				DatasetDir: datasetDir,
+				BatchSize:  2,
+				caseSpec: benchmarkCase{
+					Workload: workloadVector, Dimension: 2, Metric: "l2", TrainFiles: []string{"train.parquet"},
+				},
+			}, &bytes.Buffer{})
+			require.ErrorContains(t, err, testCase.err)
+		})
+	}
 }

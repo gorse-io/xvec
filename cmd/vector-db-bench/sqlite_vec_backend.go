@@ -91,7 +91,7 @@ func loadSQLiteVecDataset(ctx context.Context, config benchConfig, log io.Writer
 			if err != nil {
 				return fmt.Errorf("prepare sqlite-vec insert: %w", err)
 			}
-			defer statement.Close()
+			defer func() { _ = statement.Close() }()
 			for _, row := range rows {
 				if len(row.Embedding) != config.caseSpec.Dimension {
 					return fmt.Errorf("training vector %d has dimension %d, want %d", row.ID, len(row.Embedding), config.caseSpec.Dimension)
@@ -171,7 +171,7 @@ func (e sqliteVecQueryEngine) search(ctx context.Context, query benchmarkQuery) 
 	if err != nil {
 		return nil, fmt.Errorf("query sqlite-vec: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids := make([]string, 0, e.k)
 	for rows.Next() {
 		var id int64
@@ -182,6 +182,9 @@ func (e sqliteVecQueryEngine) search(ctx context.Context, query benchmarkQuery) 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate sqlite-vec results: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close sqlite-vec results: %w", err)
 	}
 	return ids, nil
 }
