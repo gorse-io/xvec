@@ -128,6 +128,36 @@ func TestHNSWBlockHeapExpandsEvictedEqualDistanceCandidate(t *testing.T) {
 	}, got)
 }
 
+func TestHNSWBlockHeapCancellationAndEqualResult(t *testing.T) {
+	distance, err := MetricL2.Distance()
+	require.NoError(t, err)
+	index := &HNSWIndex{
+		dimension: 1,
+		options:   HNSWBuildOptions{Metric: MetricL2, M: 2, EFConstruction: 2},
+		distance:  distance,
+		keys:      []uint64{1, 1},
+		vectors:   []float32{0, 0},
+		neighbors: [][][]int{{{1}}, {{0}}},
+	}
+	visited := acquireHNSWVisited(len(index.keys))
+	defer releaseHNSWVisited(visited)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = index.searchHNSWBaseBlockHeap(
+		ctx, []float32{0}, 0, 0, 2,
+		HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EF: 2}, visited,
+	)
+	require.ErrorIs(t, err, context.Canceled)
+
+	got, err := index.searchHNSWBaseBlockHeap(
+		context.Background(), []float32{0}, 0, 0, 2,
+		HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EF: 2}, visited,
+	)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+}
+
 func TestHNSWBuildOptionsAndValidation(t *testing.T) {
 	t.Parallel()
 	defaults := DefaultHNSWBuildOptions(MetricCosine)

@@ -163,6 +163,14 @@ func TestBlockHeapRewindSkipsCheckedPrefix(t *testing.T) {
 func TestCompareBlockHeapCandidatesEqual(t *testing.T) {
 	candidate := blockHeapCandidate{id: 1, distance: 2}
 	require.Zero(t, compareBlockHeapCandidates(candidate, candidate))
+	require.Negative(t, compareBlockHeapCandidates(
+		blockHeapCandidate{id: 1, tie: 3, distance: 2},
+		blockHeapCandidate{id: 2, tie: 3, distance: 2},
+	))
+	require.Positive(t, compareBlockHeapCandidates(
+		blockHeapCandidate{id: 2, tie: 3, distance: 2},
+		blockHeapCandidate{id: 1, tie: 3, distance: 2},
+	))
 }
 
 func TestBlockHeapBreaksDistanceTiesByID(t *testing.T) {
