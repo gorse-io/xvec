@@ -145,6 +145,26 @@ func TestBlockHeapMatchesFullSortAcrossResetAndVariableBlocks(t *testing.T) {
 	}
 }
 
+func TestBlockHeapRewindSkipsCheckedPrefix(t *testing.T) {
+	var heap BlockHeap
+	heap.Reset(4, 2)
+	heap.PushBlock([]float32{1, 3}, []uint32{1, 3})
+
+	id, ok := heap.Pop()
+	require.True(t, ok)
+	require.Equal(t, uint32(1), id)
+
+	heap.PushBlock([]float32{2}, []uint32{2})
+	id, ok = heap.Pop()
+	require.True(t, ok)
+	require.Equal(t, uint32(2), id)
+}
+
+func TestCompareBlockHeapCandidatesEqual(t *testing.T) {
+	candidate := blockHeapCandidate{id: 1, distance: 2}
+	require.Zero(t, compareBlockHeapCandidates(candidate, candidate))
+}
+
 func TestBlockHeapBreaksDistanceTiesByID(t *testing.T) {
 	blocks := []struct {
 		distances []float32
