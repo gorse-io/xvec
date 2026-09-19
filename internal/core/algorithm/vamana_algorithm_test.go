@@ -17,6 +17,7 @@ package core
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -58,6 +59,61 @@ func TestVamanaSearchGraphScoresNeighborsInBatches(t *testing.T) {
 	require.Equal(t, 3, scoreAtCalls)
 	require.Equal(t, 1, batchCalls)
 	require.Equal(t, []Result{{Key: 11, Score: 1.25}, {Key: 12, Score: 2.25}}, results)
+}
+
+func TestVamanaSearchGraphScoreErrors(t *testing.T) {
+	sentinel := errors.New("score failed")
+	keys := []uint64{10, 11}
+	neighbors := [][]int{{1}, nil}
+	options := VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EFSearch: 2}
+
+	t.Run("batch", func(t *testing.T) {
+		batch := acquireDenseDistanceBatch(1)
+		defer releaseDenseDistanceBatch(batch)
+		_, err := searchVamanaGraph(
+			context.Background(), MetricL2, keys, neighbors, 0, options,
+			func(int) (float32, error) { return 0, nil },
+			func([]int, []float32) error { return sentinel }, nil, batch,
+		)
+		require.ErrorIs(t, err, sentinel)
+		require.ErrorContains(t, err, "score Vamana neighbor batch")
+	})
+
+	t.Run("scalar", func(t *testing.T) {
+		batch := acquireDenseDistanceBatch(1)
+		defer releaseDenseDistanceBatch(batch)
+		_, err := searchVamanaGraph(
+			context.Background(), MetricL2, keys, neighbors, 0, options,
+			func(position int) (float32, error) {
+				if position == 1 {
+					return 0, sentinel
+				}
+				return 0, nil
+			}, nil, nil, batch,
+		)
+		require.ErrorIs(t, err, sentinel)
+		require.ErrorContains(t, err, "score Vamana node 1")
+	})
+
+	t.Run("rerank", func(t *testing.T) {
+		batch := acquireDenseDistanceBatch(1)
+		defer releaseDenseDistanceBatch(batch)
+		_, err := searchVamanaGraph(
+			context.Background(), MetricL2, keys, neighbors, 0, options,
+			func(position int) (float32, error) {
+				if position == 1 {
+					return 0, sentinel
+				}
+				return 0, nil
+			},
+			func(_ []int, scores []float32) error {
+				scores[0] = 1
+				return nil
+			}, nil, batch,
+		)
+		require.ErrorIs(t, err, sentinel)
+		require.ErrorContains(t, err, "rerank Vamana result")
+	})
 }
 
 func TestVamanaBuildOptionsGraphDeterminismAndOwnership(t *testing.T) {
@@ -494,7 +550,7 @@ func TestVamanaConcurrentAddSearchSaveAndOpen(t *testing.T) {
 }
 
 func TestScalarQuantizedVamanaSearch(t *testing.T) {
-	inputs := hnswBuildInputs(180)
+	inputs := hnswBuildInputs(DefaultVamanaBruteForceThreshold + 1)
 	options := DefaultVamanaBuildOptions(MetricL2)
 	options.MaxDegree, options.SearchListSize = 8, 32
 	base := buildVamana(t, inputs, options)
@@ -505,7 +561,7 @@ func TestScalarQuantizedVamanaSearch(t *testing.T) {
 	require.NoError(t, err)
 
 	query := []float32{7.25, 11.5, 1.1}
-	search := VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 15, Filter: func(key uint64) bool { return key%2 == 1 }}, EFSearch: 80}
+	search := VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 15, Filter: func(key uint64) bool { return key%2 == 1 }}, EFSearch: len(inputs)}
 	got, err := index.SearchVamana(context.Background(), query, search)
 	require.NoError(t, err)
 

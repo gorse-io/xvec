@@ -76,3 +76,25 @@ func TestDenseDistancesOneToMany(t *testing.T) {
 		}
 	}
 }
+
+func TestDenseDistancesRejectInvalidMetric(t *testing.T) {
+	err := denseDistances(Metric(255), []float32{1}, [][]float32{{1}}, 0, nil, make([]float32, 1))
+	require.Error(t, err)
+}
+
+func TestDenseDistanceBatchRelease(t *testing.T) {
+	vector := []float32{1}
+	batch := &denseDistanceBatch{
+		positions:  make([]int, 0, maxPooledDistanceBatchCapacity+1),
+		vectors:    append(make([][]float32, 0, maxPooledDistanceBatchCapacity+1), vector),
+		magnitudes: make([]float32, 0, maxPooledDistanceBatchCapacity+1),
+		scores:     make([]float32, 0, maxPooledDistanceBatchCapacity+1),
+	}
+
+	releaseDenseDistanceBatch(batch)
+
+	require.Nil(t, batch.positions)
+	require.Nil(t, batch.vectors)
+	require.Nil(t, batch.magnitudes)
+	require.Nil(t, batch.scores)
+}
