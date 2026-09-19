@@ -14,7 +14,11 @@
 
 package mathbatch
 
-import "math"
+import (
+	"math"
+
+	mathutil "github.com/gorse-io/xvec/internal/ailego/math"
+)
 
 type batch2Kernel func(query, first, second []float32) (firstProduct, secondProduct float32)
 type batch4Kernel func(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32)
@@ -43,6 +47,13 @@ func InnerProducts4(query, first, second, third, fourth []float32) (firstProduct
 	return kernels.dot4(query, first, second, third, fourth)
 }
 
+// InnerProducts computes inner products from one query to every candidate.
+// The output must have room for every candidate. Vectors are unchecked and
+// must have at least the query dimension.
+func InnerProducts(query []float32, candidates [][]float32, output []float32) {
+	batchOneToMany(query, candidates, output, kernels.dot2, kernels.dot4, mathutil.InnerProduct)
+}
+
 // SquaredEuclideanDistances2 computes squared Euclidean distance from one
 // query to two candidates while sharing each query load.
 func SquaredEuclideanDistances2(query, first, second []float32) (firstDistance, secondDistance float32) {
@@ -53,6 +64,13 @@ func SquaredEuclideanDistances2(query, first, second []float32) (firstDistance, 
 // query to four candidates while sharing each query load.
 func SquaredEuclideanDistances4(query, first, second, third, fourth []float32) (firstDistance, secondDistance, thirdDistance, fourthDistance float32) {
 	return kernels.l2Squared4(query, first, second, third, fourth)
+}
+
+// SquaredEuclideanDistances computes squared Euclidean distances from one
+// query to every candidate. The output must have room for every candidate.
+// Vectors are unchecked and must have at least the query dimension.
+func SquaredEuclideanDistances(query []float32, candidates [][]float32, output []float32) {
+	batchOneToMany(query, candidates, output, kernels.l2Squared2, kernels.l2Squared4, mathutil.L2Squared)
 }
 
 // EuclideanDistances2 computes Euclidean distance from one query to two
@@ -70,6 +88,16 @@ func EuclideanDistances4(query, first, second, third, fourth []float32) (firstDi
 		float32(math.Sqrt(float64(secondDistance))),
 		float32(math.Sqrt(float64(thirdDistance))),
 		float32(math.Sqrt(float64(fourthDistance)))
+}
+
+// EuclideanDistances computes Euclidean distances from one query to every
+// candidate. The output must have room for every candidate. Vectors are
+// unchecked and must have at least the query dimension.
+func EuclideanDistances(query []float32, candidates [][]float32, output []float32) {
+	SquaredEuclideanDistances(query, candidates, output)
+	for index := range candidates {
+		output[index] = float32(math.Sqrt(float64(output[index])))
+	}
 }
 
 // CosineDistances2WithMagnitudes computes cosine distance from one query to two
@@ -94,6 +122,46 @@ func CosineDistances4WithMagnitudes(
 		cosineDistanceFromProduct(secondProduct, queryMagnitude, secondMagnitude),
 		cosineDistanceFromProduct(thirdProduct, queryMagnitude, thirdMagnitude),
 		cosineDistanceFromProduct(fourthProduct, queryMagnitude, fourthMagnitude)
+}
+
+// CosineDistancesWithMagnitudes computes cosine distances from one query to
+// every candidate while reusing cached magnitudes. Candidate magnitudes and
+// output must have room for every candidate. Vectors are unchecked and must
+// have at least the query dimension.
+func CosineDistancesWithMagnitudes(
+	query []float32,
+	candidates [][]float32,
+	queryMagnitude float32,
+	candidateMagnitudes []float32,
+	output []float32,
+) {
+	InnerProducts(query, candidates, output)
+	for index := range candidates {
+		output[index] = cosineDistanceFromProduct(output[index], queryMagnitude, candidateMagnitudes[index])
+	}
+}
+
+func batchOneToMany(
+	query []float32,
+	candidates [][]float32,
+	output []float32,
+	batch2 batch2Kernel,
+	batch4 batch4Kernel,
+	single func(left, right []float32) float32,
+) {
+	index := 0
+	for ; index+4 <= len(candidates); index += 4 {
+		output[index], output[index+1], output[index+2], output[index+3] = batch4(
+			query, candidates[index], candidates[index+1], candidates[index+2], candidates[index+3],
+		)
+	}
+	if index+2 <= len(candidates) {
+		output[index], output[index+1] = batch2(query, candidates[index], candidates[index+1])
+		index += 2
+	}
+	if index < len(candidates) {
+		output[index] = single(query, candidates[index])
+	}
 }
 
 func cosineDistanceFromProduct(product, leftMagnitude, rightMagnitude float32) float32 {

@@ -58,6 +58,96 @@ func TestCosineDistancesWithMagnitudes(t *testing.T) {
 	}
 }
 
+func TestInnerProductsOneToMany(t *testing.T) {
+	t.Parallel()
+	testOneToMany(t, func(query []float32, candidates [][]float32, output []float32) {
+		InnerProducts(query, candidates, output)
+	}, innerProductOracle)
+}
+
+func TestSquaredEuclideanDistancesOneToMany(t *testing.T) {
+	t.Parallel()
+	testOneToMany(t, func(query []float32, candidates [][]float32, output []float32) {
+		SquaredEuclideanDistances(query, candidates, output)
+	}, squaredEuclideanOracle)
+}
+
+func TestEuclideanDistancesOneToMany(t *testing.T) {
+	t.Parallel()
+	testOneToMany(t, func(query []float32, candidates [][]float32, output []float32) {
+		EuclideanDistances(query, candidates, output)
+	}, func(left, right []float32) float32 {
+		return float32(math.Sqrt(float64(squaredEuclideanOracle(left, right))))
+	})
+}
+
+func TestCosineDistancesOneToManyWithMagnitudes(t *testing.T) {
+	t.Parallel()
+	query := []float32{1, 2, 3}
+	candidates := [][]float32{{4, 5, 6}, {-1, 0, 1}, {1, 2, 3}, {0, 0, 0}, {3, 2, 1}}
+	candidateMagnitudes := make([]float32, len(candidates))
+	for index := range candidates {
+		candidateMagnitudes[index] = magnitude(candidates[index])
+	}
+	output := make([]float32, len(candidates))
+
+	CosineDistancesWithMagnitudes(query, candidates, magnitude(query), candidateMagnitudes, output)
+
+	for index := range candidates {
+		require.InDelta(t, cosineDistance(query, candidates[index]), output[index], 1e-6)
+	}
+}
+
+func TestOneToManyDistancesDoNotAllocate(t *testing.T) {
+	query := []float32{0.2, 0.9, -0.4, 0.7}
+	candidates := [][]float32{
+		{0.3, 0.5, 0.8, -0.1},
+		{0.1, -0.3, 0.4, 0.9},
+		{-0.2, 0.6, 0.5, 0.2},
+		{0.7, 0.1, -0.8, 0.4},
+		{0.5, -0.4, 0.2, 0.3},
+	}
+	output := make([]float32, len(candidates))
+
+	require.Zero(t, testing.AllocsPerRun(100, func() {
+		InnerProducts(query, candidates, output)
+		SquaredEuclideanDistances(query, candidates, output)
+	}))
+}
+
+func testOneToMany(
+	t *testing.T,
+	distance func(query []float32, candidates [][]float32, output []float32),
+	oracle func(left, right []float32) float32,
+) {
+	t.Helper()
+	for _, dimension := range []int{1, 3, 7, 8, 17, 127} {
+		for _, count := range []int{0, 1, 2, 3, 4, 5, 7, 8, 9} {
+			t.Run(fmt.Sprintf("dimension_%d/count_%d", dimension, count), func(t *testing.T) {
+				random := rand.New(rand.NewSource(int64(dimension*31 + count)))
+				query := make([]float32, dimension)
+				for index := range query {
+					query[index] = random.Float32()*2 - 1
+				}
+				candidates := make([][]float32, count)
+				for candidate := range candidates {
+					candidates[candidate] = make([]float32, dimension)
+					for index := range candidates[candidate] {
+						candidates[candidate][index] = random.Float32()*2 - 1
+					}
+				}
+				output := make([]float32, count)
+
+				distance(query, candidates, output)
+
+				for index := range candidates {
+					requireFloat32Close(t, oracle(query, candidates[index]), output[index])
+				}
+			})
+		}
+	}
+}
+
 func magnitude(vector []float32) float32 {
 	return float32(math.Sqrt(float64(innerProductOracle(vector, vector))))
 }
@@ -182,6 +272,36 @@ func TestInnerProductsDoNotAllocateOrMutate(t *testing.T) {
 	require.Equal(t, candidateCopy, candidate)
 }
 
+func BenchmarkSquaredEuclideanDistancesOneToMany(b *testing.B) {
+	const candidatesCount = 32
+	for _, dimension := range []int{128, 768} {
+		query := make([]float32, dimension)
+		candidates := make([][]float32, candidatesCount)
+		for candidate := range candidates {
+			candidates[candidate] = make([]float32, dimension)
+			for index := range query {
+				query[index] = float32(index%17)/17 - 0.5
+				candidates[candidate][index] = float32((index+candidate)%23)/23 - 0.5
+			}
+		}
+		output := make([]float32, candidatesCount)
+		b.Run(fmt.Sprintf("Sequential/%d", dimension), func(b *testing.B) {
+			for b.Loop() {
+				for index := range candidates {
+					output[index] = mathutil.L2Squared(query, candidates[index])
+				}
+			}
+			benchmarkOutput = output
+		})
+		b.Run(fmt.Sprintf("OneToMany/%d", dimension), func(b *testing.B) {
+			for b.Loop() {
+				SquaredEuclideanDistances(query, candidates, output)
+			}
+			benchmarkOutput = output
+		})
+	}
+}
+
 func BenchmarkInnerProducts(b *testing.B) {
 	for _, dimension := range []int{128, 768, 1536} {
 		query := make([]float32, dimension)
@@ -257,6 +377,7 @@ func requireFloat32Close(t *testing.T, expected, actual float32) {
 }
 
 var (
+	benchmarkOutput       []float32
 	benchmarkFirst        float32
 	benchmarkSecond       float32
 	benchmarkThird        float32

@@ -78,3 +78,38 @@ func TestHNSWVisitedPoolReusesAllocation(t *testing.T) {
 	})
 	require.Zero(t, allocations)
 }
+
+func TestHNSWVisitedResetBatchScratch(t *testing.T) {
+	vector := []float32{1}
+	visited := &hnswVisited{
+		batchPositions:  append(make([]int, 0, 2), 1),
+		batchVectors:    append(make([][]float32, 0, 2), vector),
+		batchMagnitudes: append(make([]float32, 0, 2), 1),
+		batchScores:     append(make([]float32, 0, 2), 1),
+	}
+
+	visited.resetBatch()
+
+	require.Empty(t, visited.batchPositions)
+	require.Empty(t, visited.batchVectors)
+	require.Empty(t, visited.batchMagnitudes)
+	require.Empty(t, visited.batchScores)
+	require.Equal(t, 2, cap(visited.batchVectors))
+	require.Nil(t, visited.batchVectors[:cap(visited.batchVectors)][0])
+}
+
+func TestHNSWVisitedResetBatchScratchDropsOversizedBuffers(t *testing.T) {
+	visited := &hnswVisited{
+		batchPositions:  make([]int, 0, maxPooledDistanceBatchCapacity+1),
+		batchVectors:    make([][]float32, 0, maxPooledDistanceBatchCapacity+1),
+		batchMagnitudes: make([]float32, 0, maxPooledDistanceBatchCapacity+1),
+		batchScores:     make([]float32, 0, maxPooledDistanceBatchCapacity+1),
+	}
+
+	visited.resetBatch()
+
+	require.Zero(t, cap(visited.batchPositions))
+	require.Zero(t, cap(visited.batchVectors))
+	require.Zero(t, cap(visited.batchMagnitudes))
+	require.Zero(t, cap(visited.batchScores))
+}

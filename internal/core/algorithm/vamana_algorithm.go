@@ -1217,10 +1217,23 @@ func (i *VamanaIndex) searchVamana(ctx context.Context, query []float32, options
 	scoreAt := func(position int) (float32, error) {
 		return i.queryDistanceAt(query, queryMagnitude, position)
 	}
+	batch := acquireDenseDistanceBatch(i.options.MaxDegree)
+	defer releaseDenseDistanceBatch(batch)
+	scoreBatch := func(positions []int, scores []float32) error {
+		batch.vectors = batch.vectors[:0]
+		batch.magnitudes = batch.magnitudes[:0]
+		for _, position := range positions {
+			batch.vectors = append(batch.vectors, i.vectorAt(position))
+			if i.options.Metric == MetricCosine {
+				batch.magnitudes = append(batch.magnitudes, i.vectorMagnitudes[position])
+			}
+		}
+		return denseDistances(i.options.Metric, query, batch.vectors, queryMagnitude, batch.magnitudes, scores)
+	}
 	prefetch := func(neighbors []int) {
 		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
 	}
-	return searchVamanaGraph(ctx, i.options.Metric, i.keys, i.neighbors, i.entryPoint, options, scoreAt, prefetch)
+	return searchVamanaGraph(ctx, i.options.Metric, i.keys, i.neighbors, i.entryPoint, options, scoreAt, scoreBatch, prefetch, batch)
 }
 
 func searchVamanaGraph(
@@ -1231,7 +1244,9 @@ func searchVamanaGraph(
 	entry int,
 	options VamanaSearchOptions,
 	scoreAt func(int) (float32, error),
+	scoreBatch func([]int, []float32) error,
 	prefetch func([]int),
+	batch *denseDistanceBatch,
 ) ([]Result, error) {
 	capacity := min(len(keys), max(options.TopK, options.EFSearch))
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, left, right) }
@@ -1268,16 +1283,33 @@ func searchVamanaGraph(
 		if prefetch != nil {
 			prefetch(adjacent)
 		}
+		batch.positions = batch.positions[:0]
+		batch.scores = batch.scores[:0]
 		for _, neighbor := range adjacent {
 			if visited[neighbor] {
 				continue
 			}
 			visited[neighbor] = true
-			score, err := scoreAt(neighbor)
-			if err != nil {
-				return nil, fmt.Errorf("core: score Vamana node %d: %w", neighbor, err)
+			batch.positions = append(batch.positions, neighbor)
+			batch.scores = append(batch.scores, 0)
+		}
+		if len(batch.positions) != 0 {
+			if scoreBatch != nil {
+				if err := scoreBatch(batch.positions, batch.scores); err != nil {
+					return nil, fmt.Errorf("core: score Vamana neighbor batch: %w", err)
+				}
+			} else {
+				for index, neighbor := range batch.positions {
+					score, err := scoreAt(neighbor)
+					if err != nil {
+						return nil, fmt.Errorf("core: score Vamana node %d: %w", neighbor, err)
+					}
+					batch.scores[index] = score
+				}
 			}
-			node := hnswScoredNode{position: neighbor, score: score}
+		}
+		for index, neighbor := range batch.positions {
+			node := hnswScoredNode{position: neighbor, score: batch.scores[index]}
 			worst, hasWorst = accepted.Peek()
 			if accepted.Len() < capacity || !hasWorst || !metric.Better(worst.score, node.score) {
 				frontier.Push(node)
@@ -1291,6 +1323,15 @@ func searchVamanaGraph(
 		}
 	}
 	resultNodes := accepted.Values()
+	if scoreBatch != nil {
+		for index := range resultNodes {
+			score, err := scoreAt(resultNodes[index].position)
+			if err != nil {
+				return nil, fmt.Errorf("core: rerank Vamana result: %w", err)
+			}
+			resultNodes[index].score = score
+		}
+	}
 	slices.SortFunc(resultNodes, func(left, right hnswScoredNode) int {
 		if resultBetter(left, right) {
 			return -1

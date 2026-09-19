@@ -178,7 +178,9 @@ func (i *ScalarQuantizedVamanaIndex) search(
 	prefetch := func(neighbors []int) {
 		prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
 	}
-	return searchVamanaGraph(ctx, i.vectors.metric, i.vectors.keys, i.base.neighbors, i.base.entryPoint, options, scoreAt, prefetch)
+	batch := acquireDenseDistanceBatch(i.base.options.MaxDegree)
+	defer releaseDenseDistanceBatch(batch)
+	return searchVamanaGraph(ctx, i.vectors.metric, i.vectors.keys, i.base.neighbors, i.base.entryPoint, options, scoreAt, nil, prefetch, batch)
 }
 
 var (
