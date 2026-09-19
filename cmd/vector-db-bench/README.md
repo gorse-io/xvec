@@ -1,9 +1,12 @@
 # vector-db-bench
 
 `vector-db-bench` is a native Go benchmark driver for comparing
-[xvec](https://github.com/gorse-io/xvec) and
-[zvec-go](https://github.com/zvec-ai/zvec-go). It follows the VectorDBBench
-vector and full-text search performance workloads:
+[xvec](https://github.com/gorse-io/xvec),
+[zvec-go](https://github.com/zvec-ai/zvec-go), and
+[sqlite-vec](https://github.com/asg017/sqlite-vec) through the CGo-free
+[`modernc.org/sqlite/vec`](https://gitlab.com/cznic/sqlite/-/tree/master/vec)
+package. It follows the VectorDBBench vector and full-text search performance
+workloads:
 
 - Cohere, LAION, BioASQ, and OpenAI Parquet datasets;
 - MS MARCO and HotpotQA BM25 datasets with semantic qrels;
@@ -24,8 +27,9 @@ the database collection.
 CGO_ENABLED=0 go build -o vector-db-bench ./cmd/vector-db-bench
 ```
 
-The pure-Go build keeps xvec and zvec-go in one binary without linking zvec at
-build time. Running the `zvec` backend requires the zvec C API shared library.
+The pure-Go build keeps xvec, zvec-go, and sqlite-vec in one binary without
+linking zvec at build time. Running the `zvec` backend requires the zvec C API
+shared library.
 Download the archive for your platform from the
 [zvec-go v0.6.0 release](https://github.com/zvec-ai/zvec-go/releases/tag/v0.6.0),
 extract it, and point `ZVEC_LIBRARY_PATH` to the extracted library or its
@@ -138,6 +142,23 @@ To rerun only the search phases against that collection:
   --skip-load \
   --output result-cohere-1m-search.json
 ```
+
+Run the exact Flat workload against sqlite-vec with the `sqlite-vec` backend:
+
+```bash
+./vector-db-bench sqlite-vec \
+  --path ./Performance768D1M-sqlite-vec.db \
+  --case-type Performance768D1M \
+  --index-type flat \
+  --num-concurrency 12,14,16,18,20 \
+  --output result-sqlite-vec-cohere-1m.json
+```
+
+sqlite-vec supports only Flat vector search in this driver. Full-text
+workloads, inner-product metrics, quantization, refinement, and all non-Flat
+index types are rejected during configuration validation rather than silently
+running a different workload. The default result database label is
+`sqlite-vec`.
 
 ## Cohere 10M example
 

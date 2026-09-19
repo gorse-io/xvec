@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -158,6 +159,45 @@ func TestParseConfigFlat(t *testing.T) {
 	}, &bytes.Buffer{})
 	require.NoError(t, err)
 	require.Equal(t, indexFlat, config.IndexType)
+}
+
+func TestParseConfigSQLiteVec(t *testing.T) {
+	config, err := parseConfig([]string{
+		backendSQLiteVec, "--path", filepath.Join(t.TempDir(), "bench.db"), "--index-type", indexFlat,
+	}, &bytes.Buffer{})
+	require.NoError(t, err)
+	require.Equal(t, backendSQLiteVec, config.Backend)
+	require.Equal(t, backendSQLiteVec, config.DBLabel)
+
+	_, err = parseConfig([]string{
+		backendSQLiteVec, "--path", filepath.Join(t.TempDir(), "bench.db"), "--index-type", indexHNSW,
+	}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "sqlite-vec supports only flat indexes")
+
+	_, err = parseConfig([]string{
+		backendSQLiteVec, "--path", filepath.Join(t.TempDir(), "bench.db"), "--index-type", indexFlat,
+		"--quantize-type", "int8",
+	}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "sqlite-vec does not support quantization")
+
+	_, err = parseConfig([]string{
+		backendSQLiteVec, "--path", filepath.Join(t.TempDir(), "bench.db"), "--index-type", indexFlat,
+		"--is-using-refiner",
+	}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "sqlite-vec does not support refinement")
+
+	_, err = parseConfig([]string{
+		backendSQLiteVec, "--path", filepath.Join(t.TempDir(), "bench.db"),
+		"--case-type", caseCustom, "--dataset-dir", t.TempDir(), "--dimension", "3",
+		"--metric", "ip", "--train-files", "train.parquet", "--index-type", indexFlat,
+	}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "sqlite-vec does not support metric")
+
+	_, err = parseConfig([]string{
+		backendSQLiteVec, "--path", filepath.Join(t.TempDir(), "bench.db"),
+		"--case-type", caseFTSBm25Performance, "--index-type", indexFlat,
+	}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "sqlite-vec does not support full-text workloads")
 }
 
 func TestParseConfigIVF(t *testing.T) {
