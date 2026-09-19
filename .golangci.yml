@@ -4,7 +4,7 @@ linters:
   exclusions:
     rules:
       # Snowball stemmers are generated from upstream language definitions.
-      - path: thirdparty/snowball/
+      - path: pkg/snowball/
         linters:
           - staticcheck
         text: SA4004
