@@ -30,6 +30,141 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestVamanaBlockHeapSearchUsesInnerProductOrdering(t *testing.T) {
+	keys := []uint64{30, 10, 20}
+	neighbors := [][]int{{1, 2}, {0}, {0}}
+	scores := []float32{1, 3, 2}
+	scoreAt := func(position int) (float32, error) { return scores[position], nil }
+	batch := acquireDenseDistanceBatch(2)
+	defer releaseDenseDistanceBatch(batch)
+
+	got, err := searchVamanaGraphBlockHeap(
+		context.Background(), MetricIP, keys, neighbors, 0,
+		VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EFSearch: 2},
+		scoreAt, nil, nil, batch,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 10, Score: 3}, {Key: 20, Score: 2}}, got)
+}
+
+func TestVamanaRadiusSearchCanCrossOutOfRadiusBridge(t *testing.T) {
+	keys := []uint64{10, 20, 30}
+	neighbors := [][]int{{1}, {2}, nil}
+	scores := []float32{1, 100, 0}
+	scoreAt := func(position int) (float32, error) { return scores[position], nil }
+	batch := acquireDenseDistanceBatch(1)
+	defer releaseDenseDistanceBatch(batch)
+
+	got, err := searchVamanaGraph(
+		context.Background(), MetricL2, keys, neighbors, 0,
+		VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 1, Radius: 0.5}, EFSearch: 1},
+		scoreAt, nil, nil, batch,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 30, Score: 0}}, got)
+}
+
+func TestVamanaBlockHeapExpandsEvictedEqualDistanceCandidate(t *testing.T) {
+	keys := []uint64{1, 30, 2, 10, 3}
+	neighbors := [][]int{{2, 1}, {4}, {3}, nil, nil}
+	scores := []float32{0, 1, 0.25, 1, 0.0625}
+	scoreAt := func(position int) (float32, error) { return scores[position], nil }
+	batch := acquireDenseDistanceBatch(3)
+	defer releaseDenseDistanceBatch(batch)
+
+	got, err := searchVamanaGraphBlockHeap(
+		context.Background(), MetricL2, keys, neighbors, 0,
+		VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 3}, EFSearch: 3},
+		scoreAt, nil, nil, batch,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 1, Score: 0}, {Key: 3, Score: 0.0625}, {Key: 2, Score: 0.25}}, got)
+}
+
+func TestVamanaBlockHeapSearchErrorsAndTies(t *testing.T) {
+	errExpected := fmt.Errorf("expected scoring error")
+	options := VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 1}, EFSearch: 1}
+
+	t.Run("entry", func(t *testing.T) {
+		batch := acquireDenseDistanceBatch(1)
+		defer releaseDenseDistanceBatch(batch)
+		_, err := searchVamanaGraphBlockHeap(
+			context.Background(), MetricL2, []uint64{1}, [][]int{nil}, 0, options,
+			func(int) (float32, error) { return 0, errExpected }, nil, nil, batch,
+		)
+		require.ErrorIs(t, err, errExpected)
+	})
+
+	t.Run("canceled", func(t *testing.T) {
+		batch := acquireDenseDistanceBatch(1)
+		defer releaseDenseDistanceBatch(batch)
+		ctx, cancel := context.WithCancel(context.Background())
+		_, err := searchVamanaGraphBlockHeap(
+			ctx, MetricL2, []uint64{1}, [][]int{nil}, 0, options,
+			func(int) (float32, error) { cancel(); return 0, nil }, nil, nil, batch,
+		)
+		require.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("batch", func(t *testing.T) {
+		batch := acquireDenseDistanceBatch(1)
+		defer releaseDenseDistanceBatch(batch)
+		_, err := searchVamanaGraphBlockHeap(
+			context.Background(), MetricL2, []uint64{1, 2}, [][]int{{1}, nil}, 0, options,
+			func(int) (float32, error) { return 0, nil },
+			func([]int, []float32) error { return errExpected }, nil, batch,
+		)
+		require.ErrorIs(t, err, errExpected)
+	})
+
+	t.Run("neighbor", func(t *testing.T) {
+		batch := acquireDenseDistanceBatch(1)
+		defer releaseDenseDistanceBatch(batch)
+		_, err := searchVamanaGraphBlockHeap(
+			context.Background(), MetricL2, []uint64{1, 2}, [][]int{{1}, nil}, 0, options,
+			func(position int) (float32, error) {
+				if position == 1 {
+					return 0, errExpected
+				}
+				return 0, nil
+			}, nil, nil, batch,
+		)
+		require.ErrorIs(t, err, errExpected)
+	})
+
+	t.Run("rerank", func(t *testing.T) {
+		batch := acquireDenseDistanceBatch(1)
+		defer releaseDenseDistanceBatch(batch)
+		calls := 0
+		_, err := searchVamanaGraphBlockHeap(
+			context.Background(), MetricL2, []uint64{1}, [][]int{nil}, 0, options,
+			func(int) (float32, error) {
+				calls++
+				if calls > 1 {
+					return 0, errExpected
+				}
+				return 0, nil
+			}, nil, nil, batch,
+		)
+		require.ErrorIs(t, err, errExpected)
+	})
+
+	t.Run("equal_results", func(t *testing.T) {
+		batch := acquireDenseDistanceBatch(2)
+		defer releaseDenseDistanceBatch(batch)
+		got, err := searchVamanaGraphBlockHeap(
+			context.Background(), MetricL2, []uint64{2, 1}, [][]int{{1}, {0}}, 0,
+			VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EFSearch: 2},
+			func(int) (float32, error) { return 1, nil }, nil, nil, batch,
+		)
+		require.NoError(t, err)
+		require.Equal(t, []Result{{Key: 1, Score: 1}, {Key: 2, Score: 1}}, got)
+	})
+}
+
 func TestVamanaSearchGraphScoresNeighborsInBatches(t *testing.T) {
 	keys := []uint64{10, 11, 12}
 	neighbors := [][]int{{1, 2}, nil, nil}
@@ -537,16 +672,26 @@ func BenchmarkVamanaSearch(b *testing.B) {
 	options.MaxDegree, options.SearchListSize, options.MaxOcclusionSize = 16, 80, 160
 	index := buildVamana(b, inputs, options)
 	query := inputs[713].Vector
-	search := VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 10}, EFSearch: 100}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		{
-			_, err := index.SearchVamana(context.Background(), query, search)
-			if err != nil {
-				require.NoError(b, err)
+	for _, ef := range []int{100, 256, 512, 1024, 2048} {
+		b.Run(fmt.Sprintf("ef_%d", ef), func(b *testing.B) {
+			for _, benchmark := range []struct {
+				name   string
+				filter CandidateFilter
+			}{
+				{name: "unfiltered_dispatch"},
+				{name: "filtered_fallback", filter: func(uint64) bool { return true }},
+			} {
+				b.Run(benchmark.name, func(b *testing.B) {
+					search := VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 10, Filter: benchmark.filter}, EFSearch: ef}
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						_, err := index.SearchVamana(context.Background(), query, search)
+						require.NoError(b, err)
+					}
+				})
 			}
-		}
+		})
 	}
 }
 

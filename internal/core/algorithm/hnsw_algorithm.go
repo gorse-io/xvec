@@ -901,6 +901,9 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 }
 
 func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryMagnitude float32, entry, capacity int, options HNSWSearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
+	if options.Filter == nil && options.Radius == 0 && capacity <= maxBlockHeapSearchCapacity {
+		return i.searchHNSWBaseBlockHeap(ctx, query, queryMagnitude, entry, capacity, options, visited)
+	}
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(i.options.Metric, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.hnswResultNodeBetter(right, left) }
 	frontier := container.NewHeap(better)
@@ -997,6 +1000,125 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryMa
 		return 0
 	})
 	return result, nil
+}
+
+func (i *HNSWIndex) searchHNSWBaseBlockHeap(ctx context.Context, query []float32, queryMagnitude float32, entry, capacity int, options HNSWSearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
+	visited.reset(len(i.keys))
+	degree := min(i.maxDegree(0), max(0, len(i.keys)-1), initialDistanceBatchCapacity)
+	if cap(visited.batchIDs) < degree {
+		visited.batchIDs = make([]uint32, 0, degree)
+	}
+	if cap(visited.batchTies) < degree {
+		visited.batchTies = make([]uint64, 0, degree)
+	}
+	if cap(visited.batchVectors) < degree {
+		visited.batchVectors = make([][]float32, 0, degree)
+	}
+	if cap(visited.batchMagnitudes) < degree {
+		visited.batchMagnitudes = make([]float32, 0, degree)
+	}
+	if cap(visited.batchScores) < degree {
+		visited.batchScores = make([]float32, 0, degree)
+	}
+	useCachedMagnitudes := i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys)
+
+	score, err := i.queryDistanceAt(query, queryMagnitude, entry)
+	if err != nil {
+		return nil, fmt.Errorf("core: score HNSW entry point: %w", err)
+	}
+	visited.blockHeap.Reset(capacity, degree)
+	entryDistance := blockHeapDistance(i.options.Metric, score)
+	entryID := uint32(entry)
+	entryTie := i.keys[entry]
+	visited.blockHeap.pushBlockWithTies([]float32{entryDistance}, []uint32{entryID}, []uint64{entryTie})
+	visited.overflow = visited.overflow[:0]
+	overflowCursor := 0
+	visited.mark(entry)
+
+	for visited.blockHeap.HasNext() || overflowCursor < len(visited.overflow) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var current uint32
+		if visited.blockHeap.HasNext() {
+			current, _ = visited.blockHeap.Pop()
+		} else {
+			current = visited.overflow[overflowCursor]
+			overflowCursor++
+		}
+		if visited.expanded(int(current)) {
+			continue
+		}
+		visited.markExpanded(int(current))
+		neighbors := i.neighbors[int(current)][0]
+		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
+		visited.batchIDs = visited.batchIDs[:0]
+		visited.batchTies = visited.batchTies[:0]
+		visited.batchVectors = visited.batchVectors[:0]
+		visited.batchMagnitudes = visited.batchMagnitudes[:0]
+		visited.batchScores = visited.batchScores[:0]
+		for _, neighbor := range neighbors {
+			if visited.seen(neighbor) {
+				continue
+			}
+			visited.mark(neighbor)
+			visited.batchIDs = append(visited.batchIDs, uint32(neighbor))
+			visited.batchTies = append(visited.batchTies, i.keys[neighbor])
+			visited.batchVectors = append(visited.batchVectors, i.vectorAt(neighbor))
+			visited.batchScores = append(visited.batchScores, 0)
+			if useCachedMagnitudes {
+				visited.batchMagnitudes = append(visited.batchMagnitudes, i.vectorMagnitudes[neighbor])
+			}
+		}
+		if err := denseDistances(
+			i.options.Metric, query, visited.batchVectors, queryMagnitude,
+			visited.batchMagnitudes, visited.batchScores,
+		); err != nil {
+			return nil, fmt.Errorf("core: score HNSW neighbor batch: %w", err)
+		}
+		normalizeBlockHeapDistances(i.options.Metric, visited.batchScores)
+		visited.blockHeap.pushBlockWithTies(visited.batchScores, visited.batchIDs, visited.batchTies)
+		visited.overflow = appendBlockHeapBoundaryTies(&visited.blockHeap, visited.batchScores, visited.batchIDs, visited.batchTies, visited.overflow)
+	}
+
+	result := make([]hnswScoredNode, 0, min(options.TopK, visited.blockHeap.Len()))
+	for index := 0; index < visited.blockHeap.Len(); index++ {
+		position := int(visited.blockHeap.ID(index))
+		score, err := i.queryDistanceAt(query, queryMagnitude, position)
+		if err != nil {
+			return nil, fmt.Errorf("core: rerank HNSW result: %w", err)
+		}
+		node := hnswScoredNode{position: position, score: score}
+		if i.acceptHNSWResult(node, options.SearchOptions) {
+			result = append(result, node)
+		}
+	}
+	slices.SortFunc(result, func(left, right hnswScoredNode) int {
+		if i.hnswResultNodeBetter(left, right) {
+			return -1
+		}
+		if i.hnswResultNodeBetter(right, left) {
+			return 1
+		}
+		return 0
+	})
+	return result, nil
+}
+
+func blockHeapDistance(metric Metric, score float32) float32 {
+	if metric == MetricIP {
+		return -score
+	}
+	return score
+}
+
+func normalizeBlockHeapDistances(metric Metric, scores []float32) {
+	if metric != MetricIP {
+		return
+	}
+	for index := range scores {
+		scores[index] = -scores[index]
+	}
 }
 
 func (i *HNSWIndex) hnswResultNodeBetter(left, right hnswScoredNode) bool {

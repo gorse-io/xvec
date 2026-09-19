@@ -31,9 +31,13 @@ var denseDistanceBatchPool = sync.Pool{
 
 type denseDistanceBatch struct {
 	positions  []int
+	ids        []uint32
+	ties       []uint64
+	overflow   []uint32
 	vectors    [][]float32
 	magnitudes []float32
 	scores     []float32
+	blockHeap  BlockHeap
 }
 
 func acquireDenseDistanceBatch(capacity int) *denseDistanceBatch {
@@ -41,6 +45,12 @@ func acquireDenseDistanceBatch(capacity int) *denseDistanceBatch {
 	capacity = min(capacity, initialDistanceBatchCapacity)
 	if cap(batch.positions) < capacity {
 		batch.positions = make([]int, 0, capacity)
+	}
+	if cap(batch.ids) < capacity {
+		batch.ids = make([]uint32, 0, capacity)
+	}
+	if cap(batch.ties) < capacity {
+		batch.ties = make([]uint64, 0, capacity)
 	}
 	if cap(batch.vectors) < capacity {
 		batch.vectors = make([][]float32, 0, capacity)
@@ -57,11 +67,18 @@ func acquireDenseDistanceBatch(capacity int) *denseDistanceBatch {
 func releaseDenseDistanceBatch(batch *denseDistanceBatch) {
 	clear(batch.vectors[:cap(batch.vectors)])
 	batch.positions = batch.positions[:0]
+	batch.ids = batch.ids[:0]
+	batch.ties = batch.ties[:0]
+	batch.overflow = batch.overflow[:0]
 	batch.vectors = batch.vectors[:0]
 	batch.magnitudes = batch.magnitudes[:0]
 	batch.scores = batch.scores[:0]
-	if cap(batch.positions) > maxPooledDistanceBatchCapacity || cap(batch.vectors) > maxPooledDistanceBatchCapacity || cap(batch.magnitudes) > maxPooledDistanceBatchCapacity || cap(batch.scores) > maxPooledDistanceBatchCapacity {
+	batch.blockHeap.release(maxPooledDistanceBatchCapacity)
+	if cap(batch.positions) > maxPooledDistanceBatchCapacity || cap(batch.ids) > maxPooledDistanceBatchCapacity || cap(batch.ties) > maxPooledDistanceBatchCapacity || cap(batch.overflow) > maxPooledDistanceBatchCapacity || cap(batch.vectors) > maxPooledDistanceBatchCapacity || cap(batch.magnitudes) > maxPooledDistanceBatchCapacity || cap(batch.scores) > maxPooledDistanceBatchCapacity {
 		batch.positions = nil
+		batch.ids = nil
+		batch.ties = nil
+		batch.overflow = nil
 		batch.vectors = nil
 		batch.magnitudes = nil
 		batch.scores = nil

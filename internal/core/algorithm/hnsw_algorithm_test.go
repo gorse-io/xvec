@@ -32,6 +32,132 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestHNSWBlockHeapBaseSearchUsesMetricOrdering(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		metric  Metric
+		query   float32
+		vectors []float32
+		want    []Result
+	}{
+		{
+			name: "l2", metric: MetricL2, query: 0, vectors: []float32{10, 1, 2},
+			want: []Result{{Key: 10, Score: 1}, {Key: 20, Score: 4}},
+		},
+		{
+			name: "inner_product", metric: MetricIP, query: 1, vectors: []float32{1, 3, 2},
+			want: []Result{{Key: 10, Score: 3}, {Key: 20, Score: 2}},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			distance, err := test.metric.Distance()
+			require.NoError(t, err)
+			index := &HNSWIndex{
+				dimension: 1,
+				options:   HNSWBuildOptions{Metric: test.metric, M: 2, EFConstruction: 2},
+				distance:  distance,
+				keys:      []uint64{30, 10, 20},
+				vectors:   test.vectors,
+				neighbors: [][][]int{{{1, 2}}, {{0}}, {{0}}},
+			}
+			visited := acquireHNSWVisited(len(index.keys))
+			defer releaseHNSWVisited(visited)
+
+			got, err := index.searchHNSWBaseBlockHeap(
+				context.Background(), []float32{test.query}, 0, 0, 2,
+				HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EF: 2}, visited,
+			)
+			require.NoError(t, err)
+			require.Len(t, got, len(test.want))
+			results := make([]Result, len(got))
+			for position, candidate := range got {
+				results[position] = Result{Key: index.keys[candidate.position], Score: candidate.score}
+			}
+			require.Equal(t, test.want, results)
+		})
+	}
+}
+
+func TestHNSWRadiusSearchCanCrossOutOfRadiusBridge(t *testing.T) {
+	distance, err := MetricL2.Distance()
+	require.NoError(t, err)
+	index := &HNSWIndex{
+		dimension: 1,
+		options:   HNSWBuildOptions{Metric: MetricL2, M: 2, EFConstruction: 2},
+		distance:  distance,
+		keys:      []uint64{10, 20, 30},
+		vectors:   []float32{1, 10, 0},
+		neighbors: [][][]int{{{1}}, {{2}}, {nil}},
+	}
+	visited := acquireHNSWVisited(len(index.keys))
+	defer releaseHNSWVisited(visited)
+
+	got, err := index.searchHNSWBase(
+		context.Background(), []float32{0}, 0, 0, 1,
+		HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 1, Radius: 0.5}, EF: 1}, visited,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, []hnswScoredNode{{position: 2, score: 0}}, got)
+}
+
+func TestHNSWBlockHeapExpandsEvictedEqualDistanceCandidate(t *testing.T) {
+	distance, err := MetricL2.Distance()
+	require.NoError(t, err)
+	index := &HNSWIndex{
+		dimension: 1,
+		options:   HNSWBuildOptions{Metric: MetricL2, M: 2, EFConstruction: 3},
+		distance:  distance,
+		keys:      []uint64{1, 30, 2, 10, 3},
+		vectors:   []float32{0, 1, 0.5, 1, 0.25},
+		neighbors: [][][]int{{{2, 1}}, {{4}}, {{3}}, {nil}, {nil}},
+	}
+	visited := acquireHNSWVisited(len(index.keys))
+	defer releaseHNSWVisited(visited)
+
+	got, err := index.searchHNSWBaseBlockHeap(
+		context.Background(), []float32{0}, 0, 0, 3,
+		HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 3}, EF: 3}, visited,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, []hnswScoredNode{
+		{position: 0, score: 0},
+		{position: 4, score: 0.0625},
+		{position: 2, score: 0.25},
+	}, got)
+}
+
+func TestHNSWBlockHeapCancellationAndEqualResult(t *testing.T) {
+	distance, err := MetricL2.Distance()
+	require.NoError(t, err)
+	index := &HNSWIndex{
+		dimension: 1,
+		options:   HNSWBuildOptions{Metric: MetricL2, M: 2, EFConstruction: 2},
+		distance:  distance,
+		keys:      []uint64{1, 1},
+		vectors:   []float32{0, 0},
+		neighbors: [][][]int{{{1}}, {{0}}},
+	}
+	visited := acquireHNSWVisited(len(index.keys))
+	defer releaseHNSWVisited(visited)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = index.searchHNSWBaseBlockHeap(
+		ctx, []float32{0}, 0, 0, 2,
+		HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EF: 2}, visited,
+	)
+	require.ErrorIs(t, err, context.Canceled)
+
+	got, err := index.searchHNSWBaseBlockHeap(
+		context.Background(), []float32{0}, 0, 0, 2,
+		HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EF: 2}, visited,
+	)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+}
+
 func TestHNSWBuildOptionsAndValidation(t *testing.T) {
 	t.Parallel()
 	defaults := DefaultHNSWBuildOptions(MetricCosine)
@@ -873,16 +999,26 @@ func BenchmarkHNSWSearch(b *testing.B) {
 	inputs := hnswBuildInputs(10000)
 	index := buildSearchHNSW(b, MetricL2, inputs, 16, 120)
 	query := inputs[4321].Vector
-	options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 10}, EF: 100}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		{
-			_, err := index.SearchHNSW(context.Background(), query, options)
-			if err != nil {
-				require.NoError(b, err)
+	for _, ef := range []int{100, 256, 512, 1024, 2048} {
+		b.Run(fmt.Sprintf("ef_%d", ef), func(b *testing.B) {
+			for _, benchmark := range []struct {
+				name   string
+				filter CandidateFilter
+			}{
+				{name: "unfiltered_dispatch"},
+				{name: "filtered_fallback", filter: func(uint64) bool { return true }},
+			} {
+				b.Run(benchmark.name, func(b *testing.B) {
+					options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 10, Filter: benchmark.filter}, EF: ef}
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						_, err := index.SearchHNSW(context.Background(), query, options)
+						require.NoError(b, err)
+					}
+				})
 			}
-		}
+		})
 	}
 }
 

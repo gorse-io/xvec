@@ -76,3 +76,19 @@ func TestDenseDistancesOneToMany(t *testing.T) {
 		}
 	}
 }
+
+func TestReleaseDenseDistanceBatchDropsOversizedBlockHeap(t *testing.T) {
+	batch := &denseDistanceBatch{
+		ids:      make([]uint32, 0, maxPooledDistanceBatchCapacity+1),
+		ties:     make([]uint64, 0, maxPooledDistanceBatchCapacity+1),
+		overflow: make([]uint32, 0, maxPooledDistanceBatchCapacity+1),
+	}
+	batch.blockHeap.Reset(maxPooledDistanceBatchCapacity+1, 1)
+
+	releaseDenseDistanceBatch(batch)
+
+	require.Zero(t, cap(batch.blockHeap.data))
+	require.Zero(t, cap(batch.ids))
+	require.Zero(t, cap(batch.ties))
+	require.Zero(t, cap(batch.overflow))
+}

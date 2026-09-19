@@ -105,6 +105,7 @@ func TestHNSWVisitedResetBatchScratchDropsOversizedBuffers(t *testing.T) {
 		batchMagnitudes: make([]float32, 0, maxPooledDistanceBatchCapacity+1),
 		batchScores:     make([]float32, 0, maxPooledDistanceBatchCapacity+1),
 	}
+	visited.blockHeap.Reset(maxPooledDistanceBatchCapacity+1, 1)
 
 	visited.resetBatch()
 
@@ -112,4 +113,5 @@ func TestHNSWVisitedResetBatchScratchDropsOversizedBuffers(t *testing.T) {
 	require.Zero(t, cap(visited.batchVectors))
 	require.Zero(t, cap(visited.batchMagnitudes))
 	require.Zero(t, cap(visited.batchScores))
+	require.Zero(t, cap(visited.blockHeap.data))
 }
