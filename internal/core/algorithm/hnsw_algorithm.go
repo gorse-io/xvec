@@ -980,6 +980,13 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryMa
 		}
 	}
 	result := accepted.Values()
+	for index := range result {
+		score, err := i.queryDistanceAt(query, queryMagnitude, result[index].position)
+		if err != nil {
+			return nil, fmt.Errorf("core: rerank HNSW result: %w", err)
+		}
+		result[index].score = score
+	}
 	slices.SortFunc(result, func(left, right hnswScoredNode) int {
 		if i.hnswResultNodeBetter(left, right) {
 			return -1

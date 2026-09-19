@@ -1323,6 +1323,15 @@ func searchVamanaGraph(
 		}
 	}
 	resultNodes := accepted.Values()
+	if scoreBatch != nil {
+		for index := range resultNodes {
+			score, err := scoreAt(resultNodes[index].position)
+			if err != nil {
+				return nil, fmt.Errorf("core: rerank Vamana result: %w", err)
+			}
+			resultNodes[index].score = score
+		}
+	}
 	slices.SortFunc(resultNodes, func(left, right hnswScoredNode) int {
 		if resultBetter(left, right) {
 			return -1

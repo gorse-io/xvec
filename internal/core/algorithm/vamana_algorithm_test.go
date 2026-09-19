@@ -33,12 +33,11 @@ import (
 func TestVamanaSearchGraphScoresNeighborsInBatches(t *testing.T) {
 	keys := []uint64{10, 11, 12}
 	neighbors := [][]int{{1, 2}, nil, nil}
-	entryScores := 0
+	scoreAtCalls := 0
 	batchCalls := 0
 	scoreAt := func(position int) (float32, error) {
-		entryScores++
-		require.Equal(t, 0, position)
-		return 10, nil
+		scoreAtCalls++
+		return []float32{10, 1.25, 2.25}[position], nil
 	}
 	scoreBatch := func(positions []int, scores []float32) error {
 		batchCalls++
@@ -56,9 +55,9 @@ func TestVamanaSearchGraphScoresNeighborsInBatches(t *testing.T) {
 	)
 
 	require.NoError(t, err)
-	require.Equal(t, 1, entryScores)
+	require.Equal(t, 3, scoreAtCalls)
 	require.Equal(t, 1, batchCalls)
-	require.Equal(t, []Result{{Key: 11, Score: 1}, {Key: 12, Score: 2}}, results)
+	require.Equal(t, []Result{{Key: 11, Score: 1.25}, {Key: 12, Score: 2.25}}, results)
 }
 
 func TestVamanaBuildOptionsGraphDeterminismAndOwnership(t *testing.T) {
