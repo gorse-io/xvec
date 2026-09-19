@@ -16,6 +16,7 @@ package core
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -1249,6 +1250,9 @@ func searchVamanaGraph(
 	batch *denseDistanceBatch,
 ) ([]Result, error) {
 	capacity := min(len(keys), max(options.TopK, options.EFSearch))
+	if options.Filter == nil && options.Radius == 0 && capacity <= maxBlockHeapSearchCapacity {
+		return searchVamanaGraphBlockHeap(ctx, metric, keys, neighbors, entry, options, scoreAt, scoreBatch, prefetch, batch)
+	}
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, left, right) }
 	resultBetter := func(left, right hnswScoredNode) bool {
 		if left.score == right.score {
@@ -1347,6 +1351,114 @@ func searchVamanaGraph(
 	results := make([]Result, len(resultNodes))
 	for position, node := range resultNodes {
 		results[position] = Result{Key: keys[node.position], Score: node.score}
+	}
+	return results, nil
+}
+
+func searchVamanaGraphBlockHeap(
+	ctx context.Context,
+	metric Metric,
+	keys []uint64,
+	neighbors [][]int,
+	entry int,
+	options VamanaSearchOptions,
+	scoreAt func(int) (float32, error),
+	scoreBatch func([]int, []float32) error,
+	prefetch func([]int),
+	batch *denseDistanceBatch,
+) ([]Result, error) {
+	capacity := min(len(keys), max(options.TopK, options.EFSearch))
+	batch.blockHeap.Reset(capacity, cap(batch.positions))
+	states := make([]uint8, len(keys))
+	score, err := scoreAt(entry)
+	if err != nil {
+		return nil, fmt.Errorf("core: score Vamana entry point: %w", err)
+	}
+	entryDistance := blockHeapDistance(metric, score)
+	entryID := uint32(entry)
+	entryTie := keys[entry]
+	batch.blockHeap.pushBlockWithTies([]float32{entryDistance}, []uint32{entryID}, []uint64{entryTie})
+	batch.overflow = batch.overflow[:0]
+	overflowCursor := 0
+	states[entry] = 1
+
+	for batch.blockHeap.HasNext() || overflowCursor < len(batch.overflow) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var current uint32
+		if batch.blockHeap.HasNext() {
+			current, _ = batch.blockHeap.Pop()
+		} else {
+			current = batch.overflow[overflowCursor]
+			overflowCursor++
+		}
+		if states[current] == 2 {
+			continue
+		}
+		states[current] = 2
+		adjacent := neighbors[int(current)]
+		if prefetch != nil {
+			prefetch(adjacent)
+		}
+		batch.positions = batch.positions[:0]
+		batch.ids = batch.ids[:0]
+		batch.ties = batch.ties[:0]
+		batch.scores = batch.scores[:0]
+		for _, neighbor := range adjacent {
+			if states[neighbor] != 0 {
+				continue
+			}
+			states[neighbor] = 1
+			batch.positions = append(batch.positions, neighbor)
+			batch.ids = append(batch.ids, uint32(neighbor))
+			batch.ties = append(batch.ties, keys[neighbor])
+			batch.scores = append(batch.scores, 0)
+		}
+		if len(batch.positions) == 0 {
+			continue
+		}
+		if scoreBatch != nil {
+			if err := scoreBatch(batch.positions, batch.scores); err != nil {
+				return nil, fmt.Errorf("core: score Vamana neighbor batch: %w", err)
+			}
+		} else {
+			for index, neighbor := range batch.positions {
+				score, err := scoreAt(neighbor)
+				if err != nil {
+					return nil, fmt.Errorf("core: score Vamana node %d: %w", neighbor, err)
+				}
+				batch.scores[index] = score
+			}
+		}
+		normalizeBlockHeapDistances(metric, batch.scores)
+		batch.blockHeap.pushBlockWithTies(batch.scores, batch.ids, batch.ties)
+		batch.overflow = appendBlockHeapBoundaryTies(&batch.blockHeap, batch.scores, batch.ids, batch.ties, batch.overflow)
+	}
+
+	results := make([]Result, 0, min(options.TopK, batch.blockHeap.Len()))
+	for index := 0; index < batch.blockHeap.Len(); index++ {
+		position := int(batch.blockHeap.ID(index))
+		score, err := scoreAt(position)
+		if err != nil {
+			return nil, fmt.Errorf("core: rerank Vamana result: %w", err)
+		}
+		node := hnswScoredNode{position: position, score: score}
+		if acceptVamanaNode(metric, keys, node, options.SearchOptions) {
+			results = append(results, Result{Key: keys[position], Score: score})
+		}
+	}
+	slices.SortFunc(results, func(left, right Result) int {
+		if left.Score == right.Score {
+			return cmp.Compare(left.Key, right.Key)
+		}
+		if metric.Better(left.Score, right.Score) {
+			return -1
+		}
+		return 1
+	})
+	if len(results) > options.TopK {
+		results = results[:options.TopK]
 	}
 	return results, nil
 }

@@ -192,6 +192,7 @@ func TestBlockHeapValidatesArguments(t *testing.T) {
 
 	heap.Reset(2, 2)
 	require.Panics(t, func() { heap.PushBlock([]float32{1}, nil) })
+	require.Panics(t, func() { heap.pushBlockWithTies([]float32{1}, []uint32{1}, nil) })
 	require.Panics(t, func() { heap.Sorted(-1) })
 	require.Panics(t, func() { heap.ID(-1) })
 	require.Panics(t, func() { heap.Distance(heap.Len()) })
@@ -209,6 +210,51 @@ func TestBlockHeapReusesPushStorage(t *testing.T) {
 		heap.PushBlock(distances, ids)
 	})
 	require.Zero(t, allocations)
+}
+
+func TestAppendBlockHeapBoundaryTiesOnlyAppendsOmittedCandidates(t *testing.T) {
+	var heap BlockHeap
+	heap.Reset(2, 2)
+	heap.pushBlockWithTies([]float32{1, 1}, []uint32{1, 2}, []uint64{10, 20})
+
+	distances := []float32{1, 1}
+	ids := []uint32{3, 4}
+	ties := []uint64{15, 30}
+	heap.pushBlockWithTies(distances, ids, ties)
+
+	require.Equal(t, []uint32{2, 4}, appendBlockHeapBoundaryTies(&heap, distances, ids, ties, nil))
+}
+
+func TestAppendBlockHeapBoundaryTiesPreservesEvictedUncheckedCandidate(t *testing.T) {
+	var heap BlockHeap
+	heap.Reset(3, 3)
+	heap.pushBlockWithTies(
+		[]float32{0, 0.5, 1},
+		[]uint32{1, 2, 3},
+		[]uint64{1, 2, 30},
+	)
+	_, ok := heap.Pop()
+	require.True(t, ok)
+
+	distances := []float32{1}
+	ids := []uint32{4}
+	ties := []uint64{10}
+	heap.pushBlockWithTies(distances, ids, ties)
+
+	require.Equal(t, []uint32{3}, appendBlockHeapBoundaryTies(&heap, distances, ids, ties, nil))
+}
+
+func TestBlockHeapReleaseDropsOversizedStorage(t *testing.T) {
+	var heap BlockHeap
+	heap.Reset(8, 8)
+	heap.PushBlock([]float32{1, 2, 3, 4}, []uint32{1, 2, 3, 4})
+	heap.release(4)
+
+	require.Zero(t, cap(heap.data))
+	require.Zero(t, cap(heap.temporary))
+	require.Zero(t, cap(heap.evicted))
+	require.Zero(t, heap.Cap())
+	require.False(t, heap.HasNext())
 }
 
 type blockHeapTestCandidate struct {

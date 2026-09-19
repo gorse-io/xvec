@@ -19,14 +19,19 @@ import (
 	"slices"
 )
 
+// maxBlockHeapSearchCapacity bounds the linear merge cost of BlockHeap.
+// Benchmarks show the dual-heap traversal is faster above this capacity.
+const maxBlockHeapSearchCapacity = 256
+
 type blockHeapCandidate struct {
 	id       uint32
+	tie      uint64
 	distance float32
 	checked  bool
 }
 
 // BlockHeap retains the closest candidates ordered by ascending distance, then
-// ascending ID, while accepting candidates in blocks. Popped candidates remain
+// ascending tie key and ID, while accepting candidates in blocks. Popped candidates remain
 // retained and are skipped by subsequent pops, including after a later block
 // rewinds the cursor.
 //
@@ -34,6 +39,7 @@ type blockHeapCandidate struct {
 type BlockHeap struct {
 	data      []blockHeapCandidate
 	temporary []blockHeapCandidate
+	evicted   []blockHeapCandidate
 	capacity  int
 	cursor    int
 }
@@ -48,9 +54,8 @@ func (h *BlockHeap) Reset(capacity, blockSize int) {
 	if blockSize < 0 {
 		panic("core: negative block heap block size")
 	}
-	reserve := max(capacity, blockSize) + blockSize
-	if cap(h.data) < reserve {
-		h.data = make([]blockHeapCandidate, 0, reserve)
+	if cap(h.data) < capacity {
+		h.data = make([]blockHeapCandidate, 0, capacity)
 	} else {
 		h.data = h.data[:0]
 	}
@@ -59,7 +64,32 @@ func (h *BlockHeap) Reset(capacity, blockSize int) {
 	} else {
 		h.temporary = h.temporary[:0]
 	}
+	if cap(h.evicted) < blockSize {
+		h.evicted = make([]blockHeapCandidate, 0, blockSize)
+	} else {
+		h.evicted = h.evicted[:0]
+	}
 	h.capacity = capacity
+	h.cursor = 0
+}
+
+func (h *BlockHeap) release(maxCapacity int) {
+	if cap(h.data) > maxCapacity {
+		h.data = nil
+	} else {
+		h.data = h.data[:0]
+	}
+	if cap(h.temporary) > maxCapacity {
+		h.temporary = nil
+	} else {
+		h.temporary = h.temporary[:0]
+	}
+	if cap(h.evicted) > maxCapacity {
+		h.evicted = nil
+	} else {
+		h.evicted = h.evicted[:0]
+	}
+	h.capacity = 0
 	h.cursor = 0
 }
 
@@ -70,6 +100,18 @@ func (h *BlockHeap) PushBlock(distances []float32, ids []uint32) {
 	if len(distances) != len(ids) {
 		panic("core: block heap distance and id lengths differ")
 	}
+	h.pushBlock(distances, ids, nil)
+}
+
+func (h *BlockHeap) pushBlockWithTies(distances []float32, ids []uint32, ties []uint64) {
+	if len(distances) != len(ids) || len(distances) != len(ties) {
+		panic("core: block heap distance, id, and tie lengths differ")
+	}
+	h.pushBlock(distances, ids, ties)
+}
+
+func (h *BlockHeap) pushBlock(distances []float32, ids []uint32, ties []uint64) {
+	h.evicted = h.evicted[:0]
 	if h.capacity == 0 || len(distances) == 0 {
 		return
 	}
@@ -78,14 +120,14 @@ func (h *BlockHeap) PushBlock(distances []float32, ids []uint32) {
 	if len(h.data) == h.capacity {
 		worst := h.data[len(h.data)-1]
 		for index, distance := range distances {
-			candidate := blockHeapCandidate{id: ids[index], distance: distance}
+			candidate := newBlockHeapCandidate(ids[index], distance, ties, index)
 			if compareBlockHeapCandidates(candidate, worst) < 0 {
 				h.temporary = append(h.temporary, candidate)
 			}
 		}
 	} else {
 		for index, distance := range distances {
-			h.temporary = append(h.temporary, blockHeapCandidate{id: ids[index], distance: distance})
+			h.temporary = append(h.temporary, newBlockHeapCandidate(ids[index], distance, ties, index))
 		}
 	}
 	if len(h.temporary) == 0 {
@@ -99,6 +141,35 @@ func (h *BlockHeap) PushBlock(distances []float32, ids []uint32) {
 	h.mergeTemporary()
 	h.rewind()
 	h.temporary = h.temporary[:0]
+}
+
+func newBlockHeapCandidate(id uint32, distance float32, ties []uint64, index int) blockHeapCandidate {
+	tie := uint64(id)
+	if ties != nil {
+		tie = ties[index]
+	}
+	return blockHeapCandidate{id: id, tie: tie, distance: distance}
+}
+
+// appendBlockHeapBoundaryTies keeps equal-distance candidates available for
+// graph expansion when the result tie-break excludes them from a full heap.
+func appendBlockHeapBoundaryTies(h *BlockHeap, distances []float32, ids []uint32, ties []uint64, overflow []uint32) []uint32 {
+	if h.Len() == 0 || h.Len() != h.Cap() {
+		return overflow
+	}
+	worst := h.data[h.Len()-1]
+	for _, candidate := range h.evicted {
+		if candidate.distance == worst.distance {
+			overflow = append(overflow, candidate.id)
+		}
+	}
+	for index, distance := range distances {
+		candidate := newBlockHeapCandidate(ids[index], distance, ties, index)
+		if distance == worst.distance && compareBlockHeapCandidates(candidate, worst) > 0 {
+			overflow = append(overflow, ids[index])
+		}
+	}
+	return overflow
 }
 
 // HasNext reports whether an unpopped retained candidate remains.
@@ -180,6 +251,9 @@ func (h *BlockHeap) mergeTemporary() {
 
 	for write >= h.capacity {
 		if compareBlockHeapCandidates(h.data[i], h.temporary[j]) > 0 {
+			if !h.data[i].checked {
+				h.evicted = append(h.evicted, h.data[i])
+			}
 			i--
 		} else {
 			j--
@@ -215,6 +289,10 @@ func compareBlockHeapCandidates(left, right blockHeapCandidate) int {
 	case left.distance < right.distance:
 		return -1
 	case left.distance > right.distance:
+		return 1
+	case left.tie < right.tie:
+		return -1
+	case left.tie > right.tie:
 		return 1
 	case left.id < right.id:
 		return -1

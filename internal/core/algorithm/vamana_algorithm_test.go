@@ -30,6 +30,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestVamanaBlockHeapSearchUsesInnerProductOrdering(t *testing.T) {
+	keys := []uint64{30, 10, 20}
+	neighbors := [][]int{{1, 2}, {0}, {0}}
+	scores := []float32{1, 3, 2}
+	scoreAt := func(position int) (float32, error) { return scores[position], nil }
+	batch := acquireDenseDistanceBatch(2)
+	defer releaseDenseDistanceBatch(batch)
+
+	got, err := searchVamanaGraphBlockHeap(
+		context.Background(), MetricIP, keys, neighbors, 0,
+		VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EFSearch: 2},
+		scoreAt, nil, nil, batch,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 10, Score: 3}, {Key: 20, Score: 2}}, got)
+}
+
+func TestVamanaRadiusSearchCanCrossOutOfRadiusBridge(t *testing.T) {
+	keys := []uint64{10, 20, 30}
+	neighbors := [][]int{{1}, {2}, nil}
+	scores := []float32{1, 100, 0}
+	scoreAt := func(position int) (float32, error) { return scores[position], nil }
+	batch := acquireDenseDistanceBatch(1)
+	defer releaseDenseDistanceBatch(batch)
+
+	got, err := searchVamanaGraph(
+		context.Background(), MetricL2, keys, neighbors, 0,
+		VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 1, Radius: 0.5}, EFSearch: 1},
+		scoreAt, nil, nil, batch,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 30, Score: 0}}, got)
+}
+
 func TestVamanaSearchGraphScoresNeighborsInBatches(t *testing.T) {
 	keys := []uint64{10, 11, 12}
 	neighbors := [][]int{{1, 2}, nil, nil}
@@ -537,16 +573,26 @@ func BenchmarkVamanaSearch(b *testing.B) {
 	options.MaxDegree, options.SearchListSize, options.MaxOcclusionSize = 16, 80, 160
 	index := buildVamana(b, inputs, options)
 	query := inputs[713].Vector
-	search := VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 10}, EFSearch: 100}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		{
-			_, err := index.SearchVamana(context.Background(), query, search)
-			if err != nil {
-				require.NoError(b, err)
+	for _, ef := range []int{100, 256, 512, 1024, 2048} {
+		b.Run(fmt.Sprintf("ef_%d", ef), func(b *testing.B) {
+			for _, benchmark := range []struct {
+				name   string
+				filter CandidateFilter
+			}{
+				{name: "unfiltered_dispatch"},
+				{name: "filtered_fallback", filter: func(uint64) bool { return true }},
+			} {
+				b.Run(benchmark.name, func(b *testing.B) {
+					search := VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 10, Filter: benchmark.filter}, EFSearch: ef}
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						_, err := index.SearchVamana(context.Background(), query, search)
+						require.NoError(b, err)
+					}
+				})
 			}
-		}
+		})
 	}
 }
 

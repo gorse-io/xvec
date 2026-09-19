@@ -76,3 +76,12 @@ func TestDenseDistancesOneToMany(t *testing.T) {
 		}
 	}
 }
+
+func TestReleaseDenseDistanceBatchDropsOversizedBlockHeap(t *testing.T) {
+	batch := new(denseDistanceBatch)
+	batch.blockHeap.Reset(maxPooledDistanceBatchCapacity+1, 1)
+
+	releaseDenseDistanceBatch(batch)
+
+	require.Zero(t, cap(batch.blockHeap.data))
+}
