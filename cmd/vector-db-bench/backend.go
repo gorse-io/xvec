@@ -35,6 +35,8 @@ func loadBenchmarkDataset(ctx context.Context, config benchConfig, log io.Writer
 		return loadXvecDataset(ctx, config, log)
 	case backendZvec:
 		return loadZvecDataset(ctx, config, log)
+	case backendSQLiteVec:
+		return loadSQLiteVecDataset(ctx, config, log)
 	default:
 		return loadMetrics{}, fmt.Errorf("unsupported backend %q", config.Backend)
 	}
@@ -52,6 +54,8 @@ func openBenchmarkQueryEngine(ctx context.Context, config benchConfig) (benchmar
 		return newXvecQueryEngine(collection, config), collection, nil
 	case backendZvec:
 		return openZvecQueryEngine(config)
+	case backendSQLiteVec:
+		return openSQLiteVecQueryEngine(config)
 	default:
 		return nil, nil, fmt.Errorf("unsupported backend %q", config.Backend)
 	}

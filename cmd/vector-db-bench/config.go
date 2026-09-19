@@ -29,6 +29,7 @@ import (
 const (
 	backendXvec      = "xvec"
 	backendZvec      = "zvec"
+	backendSQLiteVec = "sqlite-vec"
 	indexFlat        = "flat"
 	indexHNSW        = "hnsw"
 	indexIVF         = "ivf"
@@ -130,11 +131,11 @@ type benchConfig struct {
 func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	var config benchConfig
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return benchConfig{}, errors.New("backend is required: xvec or zvec")
+		return benchConfig{}, errors.New("backend is required: xvec, zvec, or sqlite-vec")
 	}
 	config.Backend = strings.ToLower(args[0])
-	if config.Backend != backendXvec && config.Backend != backendZvec {
-		return benchConfig{}, fmt.Errorf("unsupported backend %q: use xvec or zvec", args[0])
+	if config.Backend != backendXvec && config.Backend != backendZvec && config.Backend != backendSQLiteVec {
+		return benchConfig{}, fmt.Errorf("unsupported backend %q: use xvec, zvec, or sqlite-vec", args[0])
 	}
 	flags := flag.NewFlagSet("vector-db-bench", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -185,7 +186,11 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	flags.BoolVar(&config.SkipConcurrentSearch, "skip-search-concurrent", false, "skip sustained concurrent search")
 	flags.BoolVar(&config.DryRun, "dry-run", false, "validate and print configuration without downloading or running")
 	flags.StringVar(&config.Output, "output", "", "write result JSON to this file; empty writes JSON to stdout")
-	flags.StringVar(&config.DBLabel, "db-label", config.Backend+"-go", "label stored in the result")
+	defaultDBLabel := config.Backend + "-go"
+	if config.Backend == backendSQLiteVec {
+		defaultDBLabel = backendSQLiteVec
+	}
+	flags.StringVar(&config.DBLabel, "db-label", defaultDBLabel, "label stored in the result")
 	flags.StringVar(&config.Note, "note", "", "non-sensitive run context stored in the result")
 	operationTimeout := flags.String("operation-timeout", "0", "whole-run timeout; zero disables it")
 	flags.Int64Var(&config.Seed, "seed", 0, "deterministic concurrent-query seed")
@@ -324,6 +329,23 @@ func (c benchConfig) validate() error {
 	case "", "none", "fp16", "int8", "int4":
 	default:
 		return fmt.Errorf("unsupported quantize-type %q", c.Quantize)
+	}
+	if c.Backend == backendSQLiteVec {
+		if c.caseSpec.Workload == workloadFullText {
+			return errors.New("sqlite-vec does not support full-text workloads")
+		}
+		if !strings.EqualFold(c.IndexType, indexFlat) {
+			return errors.New("sqlite-vec supports only flat indexes")
+		}
+		if c.caseSpec.Metric != "cosine" && c.caseSpec.Metric != "l2" {
+			return fmt.Errorf("sqlite-vec does not support metric %q", c.caseSpec.Metric)
+		}
+		if c.Quantize != "" && !strings.EqualFold(c.Quantize, "none") {
+			return errors.New("sqlite-vec does not support quantization")
+		}
+		if c.UseRefiner {
+			return errors.New("sqlite-vec does not support refinement")
+		}
 	}
 	if _, err := url.ParseRequestURI(strings.TrimRight(c.DatasetBaseURL, "/")); err != nil {
 		return fmt.Errorf("invalid dataset-base-url: %w", err)
