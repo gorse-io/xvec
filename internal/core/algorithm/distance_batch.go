@@ -14,7 +14,60 @@
 
 package core
 
-import "github.com/gorse-io/xvec/internal/ailego/math_batch"
+import (
+	"sync"
+
+	"github.com/gorse-io/xvec/internal/ailego/math_batch"
+)
+
+const (
+	initialDistanceBatchCapacity   = 256
+	maxPooledDistanceBatchCapacity = 4096
+)
+
+var denseDistanceBatchPool = sync.Pool{
+	New: func() any { return new(denseDistanceBatch) },
+}
+
+type denseDistanceBatch struct {
+	positions  []int
+	vectors    [][]float32
+	magnitudes []float32
+	scores     []float32
+}
+
+func acquireDenseDistanceBatch(capacity int) *denseDistanceBatch {
+	batch := denseDistanceBatchPool.Get().(*denseDistanceBatch)
+	capacity = min(capacity, initialDistanceBatchCapacity)
+	if cap(batch.positions) < capacity {
+		batch.positions = make([]int, 0, capacity)
+	}
+	if cap(batch.vectors) < capacity {
+		batch.vectors = make([][]float32, 0, capacity)
+	}
+	if cap(batch.magnitudes) < capacity {
+		batch.magnitudes = make([]float32, 0, capacity)
+	}
+	if cap(batch.scores) < capacity {
+		batch.scores = make([]float32, 0, capacity)
+	}
+	return batch
+}
+
+func releaseDenseDistanceBatch(batch *denseDistanceBatch) {
+	clear(batch.vectors[:cap(batch.vectors)])
+	batch.positions = batch.positions[:0]
+	batch.vectors = batch.vectors[:0]
+	batch.magnitudes = batch.magnitudes[:0]
+	batch.scores = batch.scores[:0]
+	if cap(batch.positions) > maxPooledDistanceBatchCapacity || cap(batch.vectors) > maxPooledDistanceBatchCapacity || cap(batch.magnitudes) > maxPooledDistanceBatchCapacity || cap(batch.scores) > maxPooledDistanceBatchCapacity {
+		batch.positions = nil
+		batch.vectors = nil
+		batch.magnitudes = nil
+		batch.scores = nil
+	}
+	denseDistanceBatchPool.Put(batch)
+}
 
 func denseDistances2(metric Metric, query, first, second []float32) (float32, float32) {
 	if metric == MetricIP {
@@ -28,4 +81,41 @@ func denseDistances4(metric Metric, query, first, second, third, fourth []float3
 		return mathbatch.InnerProducts4(query, first, second, third, fourth)
 	}
 	return mathbatch.SquaredEuclideanDistances4(query, first, second, third, fourth)
+}
+
+func denseDistances(
+	metric Metric,
+	query []float32,
+	candidates [][]float32,
+	queryMagnitude float32,
+	candidateMagnitudes []float32,
+	output []float32,
+) error {
+	switch metric {
+	case MetricL2:
+		mathbatch.SquaredEuclideanDistances(query, candidates, output)
+	case MetricIP:
+		mathbatch.InnerProducts(query, candidates, output)
+	case MetricCosine:
+		if len(candidateMagnitudes) == len(candidates) {
+			mathbatch.CosineDistancesWithMagnitudes(query, candidates, queryMagnitude, candidateMagnitudes, output)
+			break
+		}
+		distance, err := metric.Distance()
+		if err != nil {
+			return err
+		}
+		for index := range candidates {
+			output[index] = distance(query, candidates[index])
+		}
+	default:
+		distance, err := metric.Distance()
+		if err != nil {
+			return err
+		}
+		for index := range candidates {
+			output[index] = distance(query, candidates[index])
+		}
+	}
+	return nil
 }

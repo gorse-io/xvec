@@ -15,7 +15,22 @@ func acquireHNSWVisited(size int) *hnswVisited {
 }
 
 func releaseHNSWVisited(visited *hnswVisited) {
+	visited.resetBatch()
 	hnswVisitedPool.Put(visited)
+}
+
+func (v *hnswVisited) resetBatch() {
+	clear(v.batchVectors[:cap(v.batchVectors)])
+	v.batchPositions = v.batchPositions[:0]
+	v.batchVectors = v.batchVectors[:0]
+	v.batchMagnitudes = v.batchMagnitudes[:0]
+	v.batchScores = v.batchScores[:0]
+	if cap(v.batchPositions) > maxPooledDistanceBatchCapacity || cap(v.batchVectors) > maxPooledDistanceBatchCapacity || cap(v.batchMagnitudes) > maxPooledDistanceBatchCapacity || cap(v.batchScores) > maxPooledDistanceBatchCapacity {
+		v.batchPositions = nil
+		v.batchVectors = nil
+		v.batchMagnitudes = nil
+		v.batchScores = nil
+	}
 }
 
 // hnswVisited tracks graph visits without clearing the full node-sized buffer
@@ -24,6 +39,11 @@ func releaseHNSWVisited(visited *hnswVisited) {
 type hnswVisited struct {
 	marks      []uint8
 	generation uint8
+
+	batchPositions  []int
+	batchVectors    [][]float32
+	batchMagnitudes []float32
+	batchScores     []float32
 }
 
 func (v *hnswVisited) reset(size int) {

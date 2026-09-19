@@ -30,6 +30,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestVamanaSearchGraphScoresNeighborsInBatches(t *testing.T) {
+	keys := []uint64{10, 11, 12}
+	neighbors := [][]int{{1, 2}, nil, nil}
+	entryScores := 0
+	batchCalls := 0
+	scoreAt := func(position int) (float32, error) {
+		entryScores++
+		require.Equal(t, 0, position)
+		return 10, nil
+	}
+	scoreBatch := func(positions []int, scores []float32) error {
+		batchCalls++
+		require.Equal(t, []int{1, 2}, positions)
+		scores[0], scores[1] = 1, 2
+		return nil
+	}
+
+	batch := acquireDenseDistanceBatch(2)
+	defer releaseDenseDistanceBatch(batch)
+	results, err := searchVamanaGraph(
+		context.Background(), MetricL2, keys, neighbors, 0,
+		VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EFSearch: 2},
+		scoreAt, scoreBatch, nil, batch,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, 1, entryScores)
+	require.Equal(t, 1, batchCalls)
+	require.Equal(t, []Result{{Key: 11, Score: 1}, {Key: 12, Score: 2}}, results)
+}
+
 func TestVamanaBuildOptionsGraphDeterminismAndOwnership(t *testing.T) {
 	defaults := DefaultVamanaBuildOptions(MetricCosine)
 	require.True(t, defaults.MaxDegree == 64)

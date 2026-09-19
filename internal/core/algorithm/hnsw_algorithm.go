@@ -906,6 +906,20 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryMa
 	frontier := container.NewHeap(better)
 	accepted := container.NewHeap(worse)
 	visited.reset(len(i.keys))
+	degree := min(i.maxDegree(0), max(0, len(i.keys)-1), initialDistanceBatchCapacity)
+	if cap(visited.batchPositions) < degree {
+		visited.batchPositions = make([]int, 0, degree)
+	}
+	if cap(visited.batchVectors) < degree {
+		visited.batchVectors = make([][]float32, 0, degree)
+	}
+	if cap(visited.batchMagnitudes) < degree {
+		visited.batchMagnitudes = make([]float32, 0, degree)
+	}
+	if cap(visited.batchScores) < degree {
+		visited.batchScores = make([]float32, 0, degree)
+	}
+	useCachedMagnitudes := i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys)
 
 	score, err := i.queryDistanceAt(query, queryMagnitude, entry)
 	if err != nil {
@@ -929,16 +943,30 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryMa
 		}
 		neighbors := i.neighbors[current.position][0]
 		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
+		visited.batchPositions = visited.batchPositions[:0]
+		visited.batchVectors = visited.batchVectors[:0]
+		visited.batchMagnitudes = visited.batchMagnitudes[:0]
+		visited.batchScores = visited.batchScores[:0]
 		for _, neighbor := range neighbors {
 			if visited.seen(neighbor) {
 				continue
 			}
 			visited.mark(neighbor)
-			score, err := i.queryDistanceAt(query, queryMagnitude, neighbor)
-			if err != nil {
-				return nil, fmt.Errorf("core: score HNSW node %d: %w", neighbor, err)
+			visited.batchPositions = append(visited.batchPositions, neighbor)
+			visited.batchVectors = append(visited.batchVectors, i.vectorAt(neighbor))
+			visited.batchScores = append(visited.batchScores, 0)
+			if useCachedMagnitudes {
+				visited.batchMagnitudes = append(visited.batchMagnitudes, i.vectorMagnitudes[neighbor])
 			}
-			node := hnswScoredNode{position: neighbor, score: score}
+		}
+		if err := denseDistances(
+			i.options.Metric, query, visited.batchVectors, queryMagnitude,
+			visited.batchMagnitudes, visited.batchScores,
+		); err != nil {
+			return nil, fmt.Errorf("core: score HNSW neighbor batch: %w", err)
+		}
+		for index, neighbor := range visited.batchPositions {
+			node := hnswScoredNode{position: neighbor, score: visited.batchScores[index]}
 			worst, hasWorst = accepted.Peek()
 			if accepted.Len() < capacity || !hasWorst || !i.options.Metric.Better(worst.score, node.score) {
 				frontier.Push(node)

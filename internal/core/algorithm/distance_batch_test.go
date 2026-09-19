@@ -17,6 +17,7 @@ package core
 import (
 	"testing"
 
+	mathutil "github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,6 +37,42 @@ func TestDenseDistanceBatches(t *testing.T) {
 		)
 		for index, actual := range []float32{first, second, third, fourth} {
 			require.Equal(t, distance(query, candidates[index]), actual)
+		}
+	}
+}
+
+func TestDenseDistancesOneToManyWithoutCachedMagnitudes(t *testing.T) {
+	query := []float32{1, 2, 3}
+	candidates := [][]float32{{4, 5, 6}, {-1, 0, 1}, {0, 0, 0}}
+	output := make([]float32, len(candidates))
+
+	err := denseDistances(MetricCosine, query, candidates, 0, nil, output)
+
+	require.NoError(t, err)
+	for index := range candidates {
+		require.InDelta(t, mathutil.CosineDistance(query, candidates[index]), output[index], 1e-6)
+	}
+}
+
+func TestDenseDistancesOneToMany(t *testing.T) {
+	query := []float32{1, 2, 3}
+	candidates := [][]float32{{4, 5, 6}, {-1, 0, 1}, {1, 2, 3}, {0, 0, 0}, {3, 2, 1}}
+	queryMagnitude := mathutil.L2Magnitude(query)
+	candidateMagnitudes := make([]float32, len(candidates))
+	for index := range candidates {
+		candidateMagnitudes[index] = mathutil.L2Magnitude(candidates[index])
+	}
+
+	for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine} {
+		distance, err := metric.Distance()
+		require.NoError(t, err)
+		output := make([]float32, len(candidates))
+
+		err = denseDistances(metric, query, candidates, queryMagnitude, candidateMagnitudes, output)
+
+		require.NoError(t, err)
+		for index := range candidates {
+			require.InDelta(t, distance(query, candidates[index]), output[index], 1e-6)
 		}
 	}
 }
