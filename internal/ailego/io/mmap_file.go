@@ -87,6 +87,7 @@ type mmapReaderAt struct {
 	data   mmap.MMap
 	size   int64
 	closed bool
+	unmap  func() error
 }
 
 func (r *mmapReaderAt) ReadAt(dst []byte, off int64) (int, error) {
@@ -123,8 +124,15 @@ func (r *mmapReaderAt) Close() error {
 	if r.closed {
 		return nil
 	}
+	unmap := r.unmap
+	if unmap == nil {
+		unmap = r.data.Unmap
+	}
+	if err := unmap(); err != nil {
+		return err
+	}
 	r.closed = true
-	return r.data.Unmap()
+	return nil
 }
 
 func maxInt() int { return int(^uint(0) >> 1) }
