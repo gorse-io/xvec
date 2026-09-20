@@ -22,6 +22,7 @@ import (
 	"slices"
 	"sync"
 
+	mmap "github.com/blevesearch/mmap-go"
 	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/gorse-io/xvec/internal/ailego/math_batch"
@@ -77,6 +78,11 @@ type DenseFlatIndex struct {
 	vectors    []float32
 	magnitudes []float32
 	positions  map[uint64]int
+	readOnly   bool
+	closed     bool
+	backing    []byte
+	mapping    mmap.MMap
+	unmap      func() error
 }
 
 // NewDenseFlatIndex constructs an empty exact index.
@@ -157,6 +163,12 @@ func (i *DenseFlatIndex) Reserve(count int) error {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.closed {
+		return ErrDenseFlatClosed
+	}
+	if i.readOnly {
+		return ErrDenseFlatReadOnly
+	}
 	if count <= cap(i.keys) && count*i.dimension <= cap(i.vectors) &&
 		(i.metric != MetricCosine || count <= cap(i.magnitudes)) {
 		return nil
@@ -204,6 +216,20 @@ func (i *DenseFlatIndex) Len() int {
 	return len(i.keys)
 }
 
+// Contains reports whether key has a vector in the index.
+func (i *DenseFlatIndex) Contains(key uint64) bool {
+	if i == nil {
+		return false
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.closed {
+		return false
+	}
+	_, found := i.positions[key]
+	return found
+}
+
 // Add clones and appends one finite vector. Keys are unique for the lifetime
 // of an index so deterministic tie-breaking remains unambiguous.
 func (i *DenseFlatIndex) Add(ctx context.Context, key uint64, vector []float32) error {
@@ -228,6 +254,12 @@ func (i *DenseFlatIndex) Add(ctx context.Context, key uint64, vector []float32) 
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.closed {
+		return ErrDenseFlatClosed
+	}
+	if i.readOnly {
+		return ErrDenseFlatReadOnly
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -295,6 +327,9 @@ func (i *DenseFlatIndex) search(ctx context.Context, query []float32, options Se
 	}
 	i.mu.RLock()
 	defer i.mu.RUnlock()
+	if i.closed {
+		return nil, ErrDenseFlatClosed
+	}
 	if i.metric == MetricCosine {
 		return i.searchCosine(ctx, query, options)
 	}
@@ -916,6 +951,9 @@ func (i *DenseFlatIndex) SearchGroups(ctx context.Context, query []float32, opti
 	accumulator := newGroupAccumulator(i.metric, options.TopKPerGroup)
 	i.mu.RLock()
 	defer i.mu.RUnlock()
+	if i.closed {
+		return nil, ErrDenseFlatClosed
+	}
 	for position, key := range i.keys {
 		if err := ctx.Err(); err != nil {
 			return nil, err
