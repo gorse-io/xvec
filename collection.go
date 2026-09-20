@@ -121,9 +121,10 @@ type Collection struct {
 }
 
 type collectionRuntimeKey struct {
-	schemaHash [sha256.Size]byte
-	count      int
-	maxDocID   uint64
+	schemaHash       [sha256.Size]byte
+	artifactIdentity [sha256.Size]byte
+	count            int
+	maxDocID         uint64
 }
 
 type collectionRuntimeIndexes struct {
@@ -387,12 +388,50 @@ func collectionRuntimeKeyFor(schema CollectionSchema, documents []Document) (col
 	return key, nil
 }
 
+func collectionRuntimeKeyWithArtifacts(
+	key collectionRuntimeKey,
+	metadata common.SegmentMetadata,
+	snapshots []common.SegmentIndexSnapshotMetadata,
+) collectionRuntimeKey {
+	for _, snapshot := range snapshots {
+		if snapshot.SegmentID != metadata.ID || snapshot.SchemaSHA256 != hex.EncodeToString(key.schemaHash[:]) ||
+			snapshot.DocumentCount != uint64(key.count) || snapshot.MinDocumentID != metadata.MinDocID ||
+			snapshot.MaxDocumentID != metadata.MaxDocID {
+			continue
+		}
+		// Artifact files are immutable and every publication writes fresh random
+		// paths. Their framed path set is therefore the per-segment artifact
+		// generation identity; using the global manifest generation would also
+		// invalidate unchanged segments after unrelated writes.
+		digest := sha256.New()
+		var length [8]byte
+		writeString := func(value string) {
+			binary.LittleEndian.PutUint64(length[:], uint64(len(value)))
+			_, _ = digest.Write(length[:])
+			_, _ = digest.Write([]byte(value))
+		}
+		for _, artifact := range snapshot.Artifacts {
+			writeString(artifact.Field)
+			writeString(artifact.Kind)
+			writeString(artifact.File)
+		}
+		copy(key.artifactIdentity[:], digest.Sum(nil))
+		break
+	}
+	return key
+}
+
 func collectionIndexArtifactKey(field, kind string) string {
 	return field + "\x00" + kind
 }
 
 func collectionVectorArtifactKind(indexType IndexType) string {
 	return "vector-" + strconv.FormatUint(uint64(indexType), 10)
+}
+
+func isPersistedDenseFlat(field FieldSchema, spec collectionVectorIndex) bool {
+	return field.DataType.IsDenseVector() && spec.indexType == IndexTypeFlat &&
+		spec.quantize == QuantizeTypeUndefined
 }
 
 func (c *Collection) segmentRuntimeIndexesLocked(
@@ -403,6 +442,7 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 		segmentID uint64
 		key       collectionRuntimeKey
 	}
+	snapshots := c.store.Manifest().SegmentIndexSnapshots
 	requested := make([]requestedRuntime, 0, len(segments))
 	for _, segment := range segments {
 		if len(segment.documents) == 0 {
@@ -412,6 +452,7 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 		if err != nil {
 			return nil, err
 		}
+		key = collectionRuntimeKeyWithArtifacts(key, segment.metadata, snapshots)
 		requested = append(requested, requestedRuntime{segmentID: segment.metadata.ID, key: key})
 	}
 
@@ -460,12 +501,13 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 		if err != nil {
 			return fail(err)
 		}
+		key = collectionRuntimeKeyWithArtifacts(key, segment.metadata, snapshots)
 		if cached := previous[segment.metadata.ID]; cached != nil && cached.key == key {
 			next[segment.metadata.ID] = cached
 			ordered = append(ordered, cached)
 			continue
 		}
-		artifacts := c.segmentIndexArtifactPaths(segment.metadata, key)
+		artifacts := c.segmentIndexArtifactPaths(segment.metadata, key, snapshots)
 		indexes, err := buildCollectionRuntimeIndexes(
 			ctx, c.schema, segment.documents, c.queryWorkers(), c.options.MaxBufferSize,
 			c.options.EnableMmap, artifacts,
@@ -492,12 +534,16 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 	return ordered, nil
 }
 
-func (c *Collection) segmentIndexArtifactPaths(metadata common.SegmentMetadata, key collectionRuntimeKey) map[string]string {
+func (c *Collection) segmentIndexArtifactPaths(
+	metadata common.SegmentMetadata,
+	key collectionRuntimeKey,
+	snapshots []common.SegmentIndexSnapshotMetadata,
+) map[string]string {
 	paths := make(map[string]string)
 	if c == nil || c.store == nil {
 		return paths
 	}
-	for _, snapshot := range c.store.Manifest().SegmentIndexSnapshots {
+	for _, snapshot := range snapshots {
 		if snapshot.SegmentID != metadata.ID || snapshot.SchemaSHA256 != hex.EncodeToString(key.schemaHash[:]) ||
 			snapshot.DocumentCount != uint64(key.count) || snapshot.MinDocumentID != metadata.MinDocID ||
 			snapshot.MaxDocumentID != metadata.MaxDocID {
@@ -538,6 +584,41 @@ func openCollectionDenseArtifact(
 		}
 	}
 	switch spec.indexType {
+	case IndexTypeFlat:
+		if spec.quantize != QuantizeTypeUndefined || !field.DataType.IsDenseVector() {
+			return nil, fmt.Errorf("unsupported persisted dense Flat collection index")
+		}
+		index, openErr := core.OpenDenseFlatIndexWithMmap(ctx, path, useMmap)
+		if openErr != nil {
+			return nil, openErr
+		}
+		candidateCount, candidateErr := collectionDenseCandidateCount(ctx, field, documents)
+		if candidateErr != nil {
+			return nil, errors.Join(candidateErr, index.Close())
+		}
+		if index.Dimension() != int(field.Dimension) || index.Metric() != spec.metric || index.Len() != candidateCount {
+			mismatch := fmt.Errorf(
+				"dense Flat artifact does not match collection snapshot: dimension=%d metric=%v count=%d",
+				index.Dimension(), index.Metric(), index.Len(),
+			)
+			return nil, errors.Join(mismatch, index.Close())
+		}
+		for position, document := range documents {
+			if position&1023 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, errors.Join(err, index.Close())
+				}
+			}
+			value, found := document.Fields[field.Name]
+			if !found || value == nil {
+				continue
+			}
+			if !index.Contains(document.DocID) {
+				mismatch := errors.New("dense Flat artifact keys do not match collection snapshot")
+				return nil, errors.Join(mismatch, index.Close())
+			}
+		}
+		return index, nil
 	case IndexTypeHNSW:
 		if spec.quantize == QuantizeTypeUndefined {
 			return core.OpenHNSWIndex(ctx, path)
@@ -735,7 +816,7 @@ func collectionSchemaNeedsSegmentIndexArtifacts(schema CollectionSchema, path st
 			if err != nil {
 				return false, err
 			}
-			if spec.indexType != IndexTypeFlat {
+			if spec.indexType != IndexTypeFlat || isPersistedDenseFlat(field, spec) {
 				return true, nil
 			}
 			continue
@@ -752,7 +833,9 @@ func (c *Collection) segmentIndexSnapshotFilesExist(metadata common.SegmentMetad
 		snapshot.DocumentCount != uint64(key.count) || snapshot.MinDocumentID != metadata.MinDocID || snapshot.MaxDocumentID != metadata.MaxDocID {
 		return false
 	}
+	present := make(map[string]struct{}, len(snapshot.Artifacts))
 	for _, artifact := range snapshot.Artifacts {
+		present[collectionIndexArtifactKey(artifact.Field, artifact.Kind)] = struct{}{}
 		info, err := os.Lstat(filepath.Join(c.path, filepath.FromSlash(artifact.File)))
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
 			return false
@@ -762,6 +845,22 @@ func (c *Collection) segmentIndexSnapshotFilesExist(metadata common.SegmentMetad
 				return false
 			}
 		} else if !info.Mode().IsRegular() {
+			return false
+		}
+	}
+	for _, field := range c.schema.Fields {
+		if !field.DataType.IsVector() {
+			continue
+		}
+		spec, err := resolveCollectionVectorIndex(field, "validate segment index snapshot", c.path)
+		if err != nil {
+			return false
+		}
+		if !isPersistedDenseFlat(field, spec) {
+			continue
+		}
+		expected := collectionIndexArtifactKey(field.Name, collectionVectorArtifactKind(IndexTypeFlat))
+		if _, found := present[expected]; !found {
 			return false
 		}
 	}
@@ -824,7 +923,7 @@ func (c *Collection) writeSegmentRuntimeArtifacts(ctx context.Context, segmentID
 			if err != nil {
 				return fail(err)
 			}
-			if spec.indexType == IndexTypeFlat {
+			if spec.indexType == IndexTypeFlat && !isPersistedDenseFlat(field, spec) {
 				continue
 			}
 			kind := collectionVectorArtifactKind(spec.indexType)
@@ -938,13 +1037,18 @@ func buildCollectionIndexes(
 				return fail(err)
 			}
 			if artifactOnly {
-				if spec.indexType == IndexTypeFlat {
+				if spec.indexType == IndexTypeFlat && !isPersistedDenseFlat(field, spec) {
 					continue
 				}
 				if field.DataType.IsDenseVector() {
-					native, buildErr := buildCollectionDenseNative(ctx, schema.Name, field, documents, spec, workers, maxBufferSize)
-					if buildErr != nil {
-						return fail(buildErr)
+					var native collectionDenseIndex
+					if spec.indexType == IndexTypeFlat {
+						native, err = buildDenseFlatIndex(ctx, field, spec.metric, documents)
+					} else {
+						native, err = buildCollectionDenseNative(ctx, schema.Name, field, documents, spec, workers, maxBufferSize)
+					}
+					if err != nil {
+						return fail(err)
 					}
 					indexes.denseNative[field.Name] = native
 				} else {
@@ -957,6 +1061,21 @@ func buildCollectionIndexes(
 				continue
 			}
 			if field.DataType.IsDenseVector() {
+				if isPersistedDenseFlat(field, spec) {
+					artifact := artifacts[collectionIndexArtifactKey(field.Name, collectionVectorArtifactKind(spec.indexType))]
+					if artifact != "" {
+						flat, openErr := openCollectionDenseArtifact(
+							ctx, artifact, schema.Name, field, documents, spec, workers, maxBufferSize, useMmap,
+						)
+						if openErr != nil {
+							return fail(openErr)
+						}
+						indexes.denseExact[field.Name] = flat
+						indexes.denseFlat[field.Name] = flat
+						indexes.denseNative[field.Name] = flat
+						continue
+					}
+				}
 				var exact collectionDenseIndex
 				if spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined && field.DataType == DataTypeVectorFP32 {
 					candidates, candidateErr := collectionDenseBorrowedCandidates(ctx, field, documents)

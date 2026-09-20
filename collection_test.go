@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -367,6 +368,21 @@ func TestCollectionSchemaNeedsSegmentIndexArtifacts(t *testing.T) {
 	)
 	needsArtifacts, err := collectionSchemaNeedsSegmentIndexArtifacts(flat, "")
 	require.NoError(t, err)
+	require.True(t, needsArtifacts)
+
+	sparseFlat := NewCollectionSchema("sparse_flat",
+		FieldSchema{Name: "embedding", DataType: DataTypeSparseVectorFP32, Index: NewFlatIndexParams(MetricTypeCosine)},
+	)
+	needsArtifacts, err = collectionSchemaNeedsSegmentIndexArtifacts(sparseFlat, "")
+	require.NoError(t, err)
+	require.False(t, needsArtifacts)
+
+	quantizedFlat := flat.Clone()
+	quantizedParams := NewFlatIndexParams(MetricTypeCosine)
+	quantizedParams.Quantize = QuantizeTypeFP16
+	quantizedFlat.Fields[1].Index = quantizedParams
+	needsArtifacts, err = collectionSchemaNeedsSegmentIndexArtifacts(quantizedFlat, "")
+	require.NoError(t, err)
 	require.False(t, needsArtifacts)
 
 	hnsw := flat.Clone()
@@ -471,6 +487,281 @@ func TestCollectionPersistsAndReopensSnapshotIndexes(t *testing.T) {
 	defer func() { require.NoError(t, collection.Close()) }()
 	_, err = collection.Query(ctx, VectorQuery{Filter: "rating >= 2", TopK: 10})
 	require.ErrorIs(t, err, sqlengine.ErrCorruptInvertedIndex)
+}
+
+func TestCollectionPersistsAndReopensExactDenseFlatArtifact(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "persisted-dense-flat")
+	schema := NewCollectionSchema("persisted_dense_flat", FieldSchema{
+		Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2,
+		Index: NewFlatIndexParams(MetricTypeCosine),
+	})
+	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
+	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+	require.NoError(t, err)
+	_, err = collection.Insert(ctx, []Document{
+		{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{1, 0}}},
+		{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{0.8, 0.2}}},
+		{PrimaryKey: "c", Fields: map[string]any{"embedding": VectorFP32{0, 1}}},
+	})
+	require.NoError(t, err)
+
+	query := VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 3}
+	results, err := collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b", "c"}, documentKeys(results))
+	require.Len(t, collection.segmentIndexes, 1)
+	var memoryFlat *core.DenseFlatIndex
+	for _, runtime := range collection.segmentIndexes {
+		memoryFlat, _ = runtime.indexes.denseNative["embedding"].(*core.DenseFlatIndex)
+	}
+	require.NotNil(t, memoryFlat)
+	require.NoError(t, memoryFlat.Reserve(0))
+
+	require.NoError(t, collection.Flush(ctx))
+	manifest := collection.store.Manifest()
+	require.Len(t, manifest.SegmentIndexSnapshots, 1)
+	require.Len(t, manifest.SegmentIndexSnapshots[0].Artifacts, 1)
+	artifact := manifest.SegmentIndexSnapshots[0].Artifacts[0]
+	require.Equal(t, "embedding", artifact.Field)
+	require.Equal(t, collectionVectorArtifactKind(IndexTypeFlat), artifact.Kind)
+	artifactPath := filepath.Join(path, filepath.FromSlash(artifact.File))
+	info, err := os.Stat(artifactPath)
+	require.NoError(t, err)
+	require.True(t, info.Mode().IsRegular())
+	if runtime.GOOS != "windows" {
+		require.Zero(t, info.Mode().Perm()&0o077)
+	}
+
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b", "c"}, documentKeys(results))
+	segmentRuntime := collection.segmentIndexes[manifest.PersistedSegments[0].ID]
+	require.NotNil(t, segmentRuntime)
+	artifactFlat, ok := segmentRuntime.indexes.denseNative["embedding"].(*core.DenseFlatIndex)
+	require.True(t, ok)
+	require.NotSame(t, memoryFlat, artifactFlat, "publishing the artifact must invalidate the document-backed runtime")
+	require.Same(t, artifactFlat, segmentRuntime.indexes.denseFlat["embedding"])
+	require.Same(t, artifactFlat, segmentRuntime.indexes.denseExact["embedding"])
+	require.ErrorIs(t, artifactFlat.Reserve(0), core.ErrDenseFlatReadOnly)
+	if runtime.GOOS == "linux" {
+		maps, readErr := os.ReadFile("/proc/self/maps")
+		require.NoError(t, readErr)
+		require.Contains(t, string(maps), artifactPath)
+	}
+	require.NoError(t, collection.Close())
+	if runtime.GOOS == "linux" {
+		maps, readErr := os.ReadFile("/proc/self/maps")
+		require.NoError(t, readErr)
+		require.False(t, strings.Contains(string(maps), artifactPath))
+	}
+
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	require.NoError(t, err)
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b", "c"}, documentKeys(results))
+	segmentRuntime = collection.segmentIndexes[manifest.PersistedSegments[0].ID]
+	require.NotNil(t, segmentRuntime)
+	artifactFlat, ok = segmentRuntime.indexes.denseNative["embedding"].(*core.DenseFlatIndex)
+	require.True(t, ok)
+	require.ErrorIs(t, artifactFlat.Reserve(0), core.ErrDenseFlatReadOnly)
+	require.NoError(t, collection.Close())
+}
+
+func TestCollectionRejectsMissingOrCorruptDenseFlatArtifact(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+		check  func(*testing.T, error)
+	}{
+		{
+			name: "missing",
+			mutate: func(t *testing.T, path string) {
+				require.NoError(t, os.Remove(path))
+			},
+			check: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, os.ErrNotExist)
+			},
+		},
+		{
+			name: "wrong_keys",
+			mutate: func(t *testing.T, path string) {
+				index, err := core.NewDenseFlatIndex(2, core.MetricL2)
+				require.NoError(t, err)
+				require.NoError(t, index.Add(context.Background(), 100, []float32{1, 0}))
+				require.NoError(t, index.Add(context.Background(), 101, []float32{0, 1}))
+				require.NoError(t, index.Save(context.Background(), path))
+			},
+			check: func(t *testing.T, err error) {
+				require.ErrorContains(t, err, "keys do not match collection snapshot")
+			},
+		},
+		{
+			name: "corrupt",
+			mutate: func(t *testing.T, path string) {
+				data, err := os.ReadFile(path)
+				require.NoError(t, err)
+				require.NotEmpty(t, data)
+				data[len(data)-1] ^= 0xff
+				require.NoError(t, os.WriteFile(path, data, 0o600))
+			},
+			check: func(t *testing.T, err error) {
+				require.ErrorContains(t, err, "dense Flat artifact checksum mismatch")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), test.name)
+			schema := NewCollectionSchema("dense_flat_damage", FieldSchema{
+				Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2,
+				Index: NewFlatIndexParams(MetricTypeL2),
+			})
+			schema.MaxDocsPerSegment = MinMaxDocsPerSegment
+			collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+			require.NoError(t, err)
+			_, err = collection.Insert(ctx, []Document{
+				{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{1, 0}}},
+				{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{0, 1}}},
+			})
+			require.NoError(t, err)
+			require.NoError(t, collection.Flush(ctx))
+			manifest := collection.store.Manifest()
+			require.Len(t, manifest.SegmentIndexSnapshots, 1)
+			require.Len(t, manifest.SegmentIndexSnapshots[0].Artifacts, 1)
+			artifactPath := filepath.Join(path, filepath.FromSlash(manifest.SegmentIndexSnapshots[0].Artifacts[0].File))
+			require.NoError(t, collection.Close())
+			test.mutate(t, artifactPath)
+
+			collection, err = Open(ctx, path, NewCollectionOptions())
+			require.NoError(t, err)
+			defer func() { require.NoError(t, collection.Close()) }()
+			_, err = collection.Query(ctx, VectorQuery{
+				Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2,
+			})
+			require.Error(t, err)
+			test.check(t, err)
+		})
+	}
+}
+
+func TestCollectionUpgradesSnapshotMissingDenseFlatArtifact(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "missing-dense-flat-metadata")
+	schema := NewCollectionSchema("missing_dense_flat_metadata",
+		FieldSchema{Name: "text", DataType: DataTypeString, Index: NewFTSIndexParams()},
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2, Index: NewFlatIndexParams(MetricTypeL2)},
+	)
+	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
+	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+	require.NoError(t, err)
+	_, err = collection.Insert(ctx, []Document{
+		{PrimaryKey: "a", Fields: map[string]any{"text": "red apple", "embedding": VectorFP32{1, 0}}},
+		{PrimaryKey: "b", Fields: map[string]any{"text": "green apple", "embedding": VectorFP32{0, 1}}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, collection.Flush(ctx))
+	manifest := collection.store.Manifest()
+	require.Len(t, manifest.SegmentIndexSnapshots, 1)
+	require.Len(t, manifest.SegmentIndexSnapshots[0].Artifacts, 2)
+	var flatPath string
+	kept := make([]common.IndexArtifactMetadata, 0, 1)
+	for _, artifact := range manifest.SegmentIndexSnapshots[0].Artifacts {
+		if artifact.Kind == collectionVectorArtifactKind(IndexTypeFlat) {
+			flatPath = filepath.Join(path, filepath.FromSlash(artifact.File))
+			continue
+		}
+		kept = append(kept, artifact)
+	}
+	require.NotEmpty(t, flatPath)
+	require.Len(t, kept, 1)
+	require.NoError(t, collection.Close())
+
+	versions, err := common.OpenVersionManager(ctx, path)
+	require.NoError(t, err)
+	_, err = versions.Update(ctx, func(manifest *common.Manifest) error {
+		manifest.SegmentIndexSnapshots[0].Artifacts = kept
+		return nil
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(flatPath))
+
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	require.NoError(t, err)
+	query := VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2}
+	results, err := collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, documentKeys(results))
+	persistedSegment := collection.store.Manifest().PersistedSegments[0]
+	memoryFlat, ok := collection.segmentIndexes[persistedSegment.ID].indexes.denseNative["embedding"].(*core.DenseFlatIndex)
+	require.True(t, ok)
+	require.NoError(t, memoryFlat.Reserve(0))
+
+	require.NoError(t, collection.Flush(ctx))
+	manifest = collection.store.Manifest()
+	require.Len(t, manifest.SegmentIndexSnapshots, 1)
+	artifactKinds := make(map[string]string)
+	for _, artifact := range manifest.SegmentIndexSnapshots[0].Artifacts {
+		artifactKinds[artifact.Field] = artifact.Kind
+	}
+	require.Equal(t, collectionFTSArtifactKind, artifactKinds["text"])
+	require.Equal(t, collectionVectorArtifactKind(IndexTypeFlat), artifactKinds["embedding"])
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, documentKeys(results))
+	artifactFlat, ok := collection.segmentIndexes[persistedSegment.ID].indexes.denseNative["embedding"].(*core.DenseFlatIndex)
+	require.True(t, ok)
+	require.NotSame(t, memoryFlat, artifactFlat)
+	require.ErrorIs(t, artifactFlat.Reserve(0), core.ErrDenseFlatReadOnly)
+	require.NoError(t, collection.Close())
+}
+
+func TestCollectionDenseFlatArtifactsRespectUpdateAndDelete(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "dense-flat-update-delete")
+	schema := NewCollectionSchema("dense_flat_update_delete", FieldSchema{
+		Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2,
+		Index: NewFlatIndexParams(MetricTypeL2),
+	})
+	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
+	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+	require.NoError(t, err)
+	_, err = collection.Insert(ctx, []Document{
+		{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{1, 0}}},
+		{PrimaryKey: "b", Fields: map[string]any{"embedding": VectorFP32{0, 1}}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, collection.Flush(ctx))
+	require.NoError(t, collection.Close())
+
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	require.NoError(t, err)
+	query := VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2}
+	results, err := collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, documentKeys(results))
+	_, err = collection.Update(ctx, []Document{
+		{PrimaryKey: "a", Fields: map[string]any{"embedding": VectorFP32{-1, 0}}},
+	})
+	require.NoError(t, err)
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "a"}, documentKeys(results))
+	_, err = collection.Delete(ctx, []string{"b"})
+	require.NoError(t, err)
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"a"}, documentKeys(results))
+	require.NoError(t, collection.Flush(ctx))
+	require.NoError(t, collection.Close())
+
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	require.NoError(t, err)
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"a"}, documentKeys(results))
+	require.NoError(t, collection.Close())
 }
 
 func TestCollectionRebuildsMissingOptionalSegmentIndexSnapshots(t *testing.T) {
@@ -669,6 +960,17 @@ func TestBuildCollectionArtifactIndexesOmitsQueryOnlyDenseIndexes(t *testing.T) 
 	require.Empty(t, indexes.denseExact)
 	require.Empty(t, indexes.denseFlat)
 	require.NotNil(t, indexes.denseNative["embedding"])
+
+	flatSchema := NewCollectionSchema("artifact_flat", FieldSchema{
+		Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 2,
+		Index: NewFlatIndexParams(MetricTypeL2),
+	})
+	flatIndexes, err := buildCollectionArtifactIndexes(ctx, flatSchema, documents, 1, 0)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, flatIndexes.Close()) }()
+	require.Empty(t, flatIndexes.denseExact)
+	require.Empty(t, flatIndexes.denseFlat)
+	require.IsType(t, (*core.DenseFlatIndex)(nil), flatIndexes.denseNative["embedding"])
 }
 
 func TestBuildCollectionRuntimeIndexesDefersDiskANNFlat(t *testing.T) {
