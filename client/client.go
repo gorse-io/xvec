@@ -58,6 +58,8 @@ func Dial(ctx context.Context, target string, options ...DialOption) (*Client, e
 		),
 	}
 	dialOptions = append(dialOptions, options...)
+	// DialContext is required to preserve context-aware dialing and WithBlock semantics.
+	//nolint:staticcheck // Supported throughout gRPC 1.x; grpc.NewClient has different semantics.
 	conn, err := grpc.DialContext(ctx, target, dialOptions...)
 	if err != nil {
 		return nil, grpcapi.ErrorFromStatus(err)

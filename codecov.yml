@@ -6,3 +6,4 @@ ignore:
   - "pkg/snowball/**"
   - "internal/db/sqlengine/antlr/sql_lexer.go"
   - "internal/db/sqlengine/antlr/sql_parser.go"
+  - "internal/proto/**"

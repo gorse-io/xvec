@@ -39,6 +39,8 @@ func TestClientServerEndToEnd(t *testing.T) {
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- grpcServer.Serve(listener) }()
 
+	// DialContext keeps this test's bufconn setup aligned with the public Dial path.
+	//nolint:staticcheck // Supported throughout gRPC 1.x; grpc.NewClient has different semantics.
 	connection, err := grpc.DialContext(ctx, "bufconn",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
