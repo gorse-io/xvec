@@ -365,6 +365,12 @@ func TestWriteResponseIgnoresAggregateWithoutFailedResult(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestWriteResponseRejectsNilResult(t *testing.T) {
+	results, err := WriteResponseFromProto(&xvecv1.WriteResponse{Results: []*xvecv1.WriteResult{nil}})
+	require.Nil(t, results)
+	require.ErrorIs(t, err, xvec.ErrInternal)
+}
+
 func TestErrorToStatusDoesNotEraseNonNilOKError(t *testing.T) {
 	err := ErrorToStatus(&xvec.Error{Code: xvec.ErrorCodeOK, Message: "invalid OK error"})
 	require.Error(t, err)
@@ -373,6 +379,11 @@ func TestErrorToStatusDoesNotEraseNonNilOKError(t *testing.T) {
 
 func TestErrorFromProtoDoesNotAcceptNonNilOKError(t *testing.T) {
 	err := ErrorFromProto(&xvecv1.Error{Code: xvecv1.ErrorCode_ERROR_CODE_OK, Message: "invalid OK error"})
+	require.Equal(t, xvec.ErrorCodeUnknown, err.Code)
+}
+
+func TestErrorFromProtoMapsUnknownCode(t *testing.T) {
+	err := ErrorFromProto(&xvecv1.Error{Code: xvecv1.ErrorCode(999), Message: "invalid code"})
 	require.Equal(t, xvec.ErrorCodeUnknown, err.Code)
 }
 

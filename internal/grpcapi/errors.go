@@ -35,7 +35,7 @@ func ErrorFromProto(message *xvecv1.Error) *xvec.Error {
 		return nil
 	}
 	code := xvec.ErrorCode(message.Code)
-	if code == xvec.ErrorCodeOK {
+	if code == xvec.ErrorCodeOK || !code.Valid() {
 		code = xvec.ErrorCodeUnknown
 	}
 	return &xvec.Error{Code: code, Op: message.Op, Path: message.Path, Message: message.Message}
@@ -160,6 +160,9 @@ func WriteResponseFromProto(message *xvecv1.WriteResponse) ([]xvec.WriteResult, 
 	results := make([]xvec.WriteResult, len(message.Results))
 	causes := make([]error, 0)
 	for i := range message.Results {
+		if message.Results[i] == nil {
+			return nil, &xvec.Error{Code: xvec.ErrorCodeInternal, Op: "decode protobuf", Message: "write response contains a nil result"}
+		}
 		results[i] = WriteResultFromProto(message.Results[i])
 		if results[i].Err != nil {
 			causes = append(causes, results[i].Err)

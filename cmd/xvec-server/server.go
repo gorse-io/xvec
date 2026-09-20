@@ -92,6 +92,7 @@ func serveGRPC(ctx context.Context, shutdownTimeout time.Duration, grpcServer gr
 
 	select {
 	case err := <-serveErr:
+		grpcServer.Stop()
 		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			return fmt.Errorf("serve gRPC: %w", err)
 		}

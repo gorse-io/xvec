@@ -143,6 +143,21 @@ func (s *stuckGRPCServer) GracefulStop() {
 }
 func (s *stuckGRPCServer) Stop() { close(s.stopCalled) }
 
+type failedGRPCServer struct {
+	stopCalled bool
+}
+
+func (*failedGRPCServer) Serve(net.Listener) error { return errors.New("accept failed") }
+func (*failedGRPCServer) GracefulStop()            {}
+func (s *failedGRPCServer) Stop()                  { s.stopCalled = true }
+
+func TestServeFailureStopsActiveTransports(t *testing.T) {
+	grpcServer := &failedGRPCServer{}
+	err := serveGRPC(context.Background(), time.Second, grpcServer, newBlockingListener())
+	require.EqualError(t, err, "serve gRPC: accept failed")
+	require.True(t, grpcServer.stopCalled)
+}
+
 func TestShutdownForcesStopAtDeadline(t *testing.T) {
 	server := &stuckGRPCServer{gracefulStarted: make(chan struct{}), stopCalled: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
