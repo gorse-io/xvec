@@ -15,6 +15,8 @@ require (
 	github.com/zvec-ai/zvec-go v0.7.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
+	google.golang.org/grpc v1.64.0
+	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.59.1-0.20260918114324-b63dd6062c4a
 )
 
@@ -37,7 +39,7 @@ require (
 	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/getsentry/sentry-go v0.27.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/golang/protobuf v1.5.3 // indirect
+	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorse-io/goat v0.2.2-0.20260904114525-f9a441e62a1a // indirect
@@ -66,8 +68,9 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/twpayne/go-geom v1.6.1 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
+	golang.org/x/net v0.23.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
-	google.golang.org/protobuf v1.34.2 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

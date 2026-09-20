@@ -1,0 +1,256 @@
+// Copyright 2026-present the xvec project
+// Licensed under the Apache License, Version 2.0.
+
+syntax = "proto3";
+
+package xvec.v1;
+
+option go_package = "github.com/gorse-io/xvec/internal/proto/xvec/v1;xvecv1";
+
+import "google/protobuf/empty.proto";
+
+// Numeric values intentionally match the public Go/C++ API.
+enum IndexType {
+  INDEX_TYPE_UNDEFINED = 0;
+  INDEX_TYPE_HNSW = 1;
+  INDEX_TYPE_IVF = 2;
+  INDEX_TYPE_FLAT = 3;
+  INDEX_TYPE_DISKANN = 5;
+  INDEX_TYPE_VAMANA = 6;
+  INDEX_TYPE_IVF_RABITQ = 7;
+  INDEX_TYPE_INVERT = 10;
+  INDEX_TYPE_FTS = 11;
+}
+
+enum DataType {
+  DATA_TYPE_UNDEFINED = 0;
+  DATA_TYPE_BINARY = 1;
+  DATA_TYPE_STRING = 2;
+  DATA_TYPE_BOOL = 3;
+  DATA_TYPE_INT32 = 4;
+  DATA_TYPE_INT64 = 5;
+  DATA_TYPE_UINT32 = 6;
+  DATA_TYPE_UINT64 = 7;
+  DATA_TYPE_FLOAT = 8;
+  DATA_TYPE_DOUBLE = 9;
+  DATA_TYPE_VECTOR_BINARY32 = 20;
+  DATA_TYPE_VECTOR_BINARY64 = 21;
+  DATA_TYPE_VECTOR_FP16 = 22;
+  DATA_TYPE_VECTOR_FP32 = 23;
+  DATA_TYPE_VECTOR_FP64 = 24;
+  DATA_TYPE_VECTOR_INT4 = 25;
+  DATA_TYPE_VECTOR_INT8 = 26;
+  DATA_TYPE_VECTOR_INT16 = 27;
+  DATA_TYPE_SPARSE_VECTOR_FP16 = 30;
+  DATA_TYPE_SPARSE_VECTOR_FP32 = 31;
+  DATA_TYPE_ARRAY_BINARY = 40;
+  DATA_TYPE_ARRAY_STRING = 41;
+  DATA_TYPE_ARRAY_BOOL = 42;
+  DATA_TYPE_ARRAY_INT32 = 43;
+  DATA_TYPE_ARRAY_INT64 = 44;
+  DATA_TYPE_ARRAY_UINT32 = 45;
+  DATA_TYPE_ARRAY_UINT64 = 46;
+  DATA_TYPE_ARRAY_FLOAT = 47;
+  DATA_TYPE_ARRAY_DOUBLE = 48;
+}
+
+enum QuantizeType {
+  QUANTIZE_TYPE_UNDEFINED = 0;
+  QUANTIZE_TYPE_FP16 = 1;
+  QUANTIZE_TYPE_INT8 = 2;
+  QUANTIZE_TYPE_INT4 = 3;
+  QUANTIZE_TYPE_RABITQ = 4;
+}
+
+enum MetricType {
+  METRIC_TYPE_UNDEFINED = 0;
+  METRIC_TYPE_L2 = 1;
+  METRIC_TYPE_IP = 2;
+  METRIC_TYPE_COSINE = 3;
+  METRIC_TYPE_MIPSL2 = 4;
+}
+
+enum ErrorCode {
+  ERROR_CODE_OK = 0;
+  ERROR_CODE_NOT_FOUND = 1;
+  ERROR_CODE_ALREADY_EXISTS = 2;
+  ERROR_CODE_INVALID_ARGUMENT = 3;
+  ERROR_CODE_PERMISSION_DENIED = 4;
+  ERROR_CODE_FAILED_PRECONDITION = 5;
+  ERROR_CODE_RESOURCE_EXHAUSTED = 6;
+  ERROR_CODE_UNAVAILABLE = 7;
+  ERROR_CODE_INTERNAL = 8;
+  ERROR_CODE_NOT_SUPPORTED = 9;
+  ERROR_CODE_UNKNOWN = 10;
+}
+
+enum WriteOperation {
+  WRITE_OPERATION_INSERT = 0;
+  WRITE_OPERATION_UPSERT = 1;
+  WRITE_OPERATION_UPDATE = 2;
+}
+
+message QuantizerParams { bool enable_rotate = 1; }
+message InvertIndexParams { bool enable_range_optimization = 1; bool enable_extended_wildcard = 2; }
+message FlatIndexParams { MetricType metric = 1; QuantizeType quantize = 2; QuantizerParams quantizer = 3; }
+message HNSWIndexParams { MetricType metric = 1; int64 m = 2; int64 ef_construction = 3; QuantizeType quantize = 4; bool use_contiguous_memory = 5; QuantizerParams quantizer = 6; }
+message IVFRaBitQIndexParams { MetricType metric = 1; int64 nlist = 2; int64 total_bits = 3; int64 sample_count = 4; }
+message IVFIndexParams { MetricType metric = 1; int64 nlist = 2; int64 niterations = 3; bool use_soar = 4; QuantizeType quantize = 5; QuantizerParams quantizer = 6; }
+message DiskANNIndexParams { MetricType metric = 1; int64 max_degree = 2; int64 list_size = 3; int64 pq_chunks = 4; QuantizeType quantize = 5; QuantizerParams quantizer = 6; }
+message VamanaIndexParams { MetricType metric = 1; int64 max_degree = 2; int64 search_list_size = 3; float alpha = 4; int64 max_occlusion_size = 5; bool saturate_graph = 6; bool use_contiguous_memory = 7; bool use_id_map = 8; QuantizeType quantize = 9; QuantizerParams quantizer = 10; }
+message FTSIndexParams { string tokenizer = 1; repeated string filters = 2; string extra_params = 3; }
+message IndexParams {
+  oneof kind {
+    InvertIndexParams invert = 1;
+    FlatIndexParams flat = 2;
+    HNSWIndexParams hnsw = 3;
+    IVFRaBitQIndexParams ivf_rabitq = 4;
+    IVFIndexParams ivf = 5;
+    DiskANNIndexParams diskann = 6;
+    VamanaIndexParams vamana = 7;
+    FTSIndexParams fts = 8;
+  }
+}
+
+message QueryOptions { float radius = 1; bool linear = 2; bool use_refiner = 3; }
+message FlatQueryParams { QueryOptions options = 1; float scale_factor = 2; }
+message HNSWQueryParams { QueryOptions options = 1; int64 ef = 2; uint32 prefetch_offset = 3; uint32 prefetch_lines = 4; }
+message IVFRaBitQQueryParams { QueryOptions options = 1; int64 nprobe = 2; float scale_factor = 3; }
+message IVFQueryParams { QueryOptions options = 1; int64 nprobe = 2; float scale_factor = 3; }
+message DiskANNQueryParams { QueryOptions options = 1; int64 list_size = 2; }
+message VamanaQueryParams { QueryOptions options = 1; int64 ef_search = 2; uint32 prefetch_offset = 3; uint32 prefetch_lines = 4; }
+message FTSQueryParams { string default_operator = 1; }
+message QueryParams {
+  oneof kind {
+    FlatQueryParams flat = 1;
+    HNSWQueryParams hnsw = 2;
+    IVFRaBitQQueryParams ivf_rabitq = 3;
+    IVFQueryParams ivf = 4;
+    DiskANNQueryParams diskann = 5;
+    VamanaQueryParams vamana = 6;
+    FTSQueryParams fts = 7;
+  }
+}
+
+message FieldSchema { string name = 1; DataType data_type = 2; bool nullable = 3; uint32 dimension = 4; IndexParams index = 5; }
+message CollectionSchema { string name = 1; repeated FieldSchema fields = 2; uint64 max_docs_per_segment = 3; }
+
+message NullValue {}
+message BytesArray { repeated bytes values = 1; }
+message StringArray { repeated string values = 1; }
+message BoolArray { repeated bool values = 1; }
+message Int32Array { repeated int32 values = 1; }
+message Int64Array { repeated int64 values = 1; }
+message Uint32Array { repeated uint32 values = 1; }
+message Uint64Array { repeated uint64 values = 1; }
+message FloatArray { repeated float values = 1; }
+message DoubleArray { repeated double values = 1; }
+message Int32Vector { repeated int32 values = 1; }
+message Int64Vector { repeated int64 values = 1; }
+message SparseFP16Vector { repeated uint32 indices = 1; repeated uint32 values = 2; }
+message SparseFP32Vector { repeated uint32 indices = 1; repeated float values = 2; }
+message Value {
+  oneof kind {
+    NullValue null_value = 1;
+    bytes binary_value = 2;
+    string string_value = 3;
+    bool bool_value = 4;
+    int32 int32_value = 5;
+    int64 int64_value = 6;
+    uint32 uint32_value = 7;
+    uint64 uint64_value = 8;
+    float float_value = 9;
+    double double_value = 10;
+    BytesArray binary_array = 11;
+    StringArray string_array = 12;
+    BoolArray bool_array = 13;
+    Int32Array int32_array = 14;
+    Int64Array int64_array = 15;
+    Uint32Array uint32_array = 16;
+    Uint64Array uint64_array = 17;
+    FloatArray float_array = 18;
+    DoubleArray double_array = 19;
+    Uint32Array vector_binary32 = 20;
+    Uint64Array vector_binary64 = 21;
+    Uint32Array vector_fp16 = 22;
+    FloatArray vector_fp32 = 23;
+    DoubleArray vector_fp64 = 24;
+    Int32Vector vector_int4 = 25;
+    Int32Vector vector_int8 = 26;
+    Int32Vector vector_int16 = 27;
+    SparseFP16Vector sparse_vector_fp16 = 30;
+    SparseFP32Vector sparse_vector_fp32 = 31;
+  }
+}
+message FieldEntry { string name = 1; Value value = 2; }
+message Document { string primary_key = 1; repeated FieldEntry fields = 2; float score = 3; uint64 doc_id = 4; }
+message Projection { repeated string output_fields = 1; bool output_fields_set = 2; bool include_vectors = 3; }
+
+message RRFReranker { int64 rank_constant = 1; }
+message WeightedReranker { repeated double weights = 1; }
+message Reranker { oneof kind { RRFReranker rrf = 1; WeightedReranker weighted = 2; } }
+message FTSClause { oneof kind { string query = 1; string match = 2; } }
+message FilterOnly {}
+message QueryTarget {
+  oneof kind {
+    Value vector = 1;
+    string primary_key = 2;
+    FTSClause fts = 3;
+    FilterOnly filter_only = 4;
+  }
+}
+message VectorQuery { string field = 1; QueryTarget target = 2; int64 top_k = 3; string filter = 4; Projection projection = 5; QueryParams params = 6; }
+message SubQuery { string field = 1; QueryTarget target = 2; QueryParams params = 3; int64 num_candidates = 4; }
+message MultiQuery { repeated SubQuery queries = 1; int64 top_k = 2; string filter = 3; Projection projection = 4; Reranker reranker = 5; }
+message GroupByQuery { string field = 1; QueryTarget target = 2; string filter = 3; Projection projection = 4; QueryParams params = 5; string group_by_field = 6; int64 group_count = 7; int64 top_k_per_group = 8; }
+message GroupResult { string value = 1; repeated Document documents = 2; }
+
+message Error { ErrorCode code = 1; string op = 2; string path = 3; string message = 4; }
+message BatchWriteError { reserved 1; repeated Error causes = 2; }
+message WriteResult { string primary_key = 1; uint64 doc_id = 2; Error error = 3; }
+
+message CollectionRef { string collection = 1; }
+message CreateCollectionRequest { CollectionSchema schema = 1; optional bool enable_mmap = 2; }
+message ListCollectionsResponse { repeated string collections = 1; }
+message CollectionStats { uint64 document_count = 1; map<string, float> index_completeness = 2; uint64 immutable_segments = 3; uint64 mutable_documents = 4; uint64 deleted_documents = 5; uint64 storage_memory_bytes = 6; }
+message AddColumnRequest { string collection = 1; FieldSchema field = 2; string expression = 3; int64 concurrency = 4; }
+message AlterColumnRequest { string collection = 1; string column = 2; string rename = 3; optional FieldSchema field = 4; int64 concurrency = 5; }
+message DropColumnRequest { string collection = 1; string column = 2; }
+message CreateIndexRequest { string collection = 1; string field = 2; IndexParams index = 3; int64 concurrency = 4; }
+message DropIndexRequest { string collection = 1; string field = 2; }
+message OptimizeRequest { string collection = 1; int64 concurrency = 2; }
+message WriteRequest { string collection = 1; WriteOperation operation = 2; repeated Document documents = 3; }
+message WriteResponse { repeated WriteResult results = 1; BatchWriteError error = 2; }
+message DeleteRequest { string collection = 1; repeated string primary_keys = 2; }
+message DeleteByFilterRequest { string collection = 1; string filter = 2; }
+message FetchRequest { string collection = 1; repeated string primary_keys = 2; Projection projection = 3; }
+message FetchResult { uint32 index = 1; bool found = 2; Document document = 3; }
+message QueryRequest { string collection = 1; VectorQuery query = 2; }
+message MultiQueryRequest { string collection = 1; MultiQuery query = 2; }
+message GroupByQueryRequest { string collection = 1; GroupByQuery query = 2; }
+message IterateRequest { string collection = 1; Projection projection = 2; }
+message QueryResponse { repeated Document documents = 1; }
+message GroupByQueryResponse { repeated GroupResult groups = 1; }
+
+service XvecService {
+  rpc CreateCollection(CreateCollectionRequest) returns (CollectionSchema);
+  rpc DropCollection(CollectionRef) returns (google.protobuf.Empty);
+  rpc ListCollections(google.protobuf.Empty) returns (ListCollectionsResponse);
+  rpc GetSchema(CollectionRef) returns (CollectionSchema);
+  rpc GetStats(CollectionRef) returns (CollectionStats);
+  rpc Flush(CollectionRef) returns (google.protobuf.Empty);
+  rpc Optimize(OptimizeRequest) returns (google.protobuf.Empty);
+  rpc AddColumn(AddColumnRequest) returns (CollectionSchema);
+  rpc AlterColumn(AlterColumnRequest) returns (CollectionSchema);
+  rpc DropColumn(DropColumnRequest) returns (CollectionSchema);
+  rpc CreateIndex(CreateIndexRequest) returns (google.protobuf.Empty);
+  rpc DropIndex(DropIndexRequest) returns (google.protobuf.Empty);
+  rpc Write(WriteRequest) returns (WriteResponse);
+  rpc Delete(DeleteRequest) returns (WriteResponse);
+  rpc DeleteByFilter(DeleteByFilterRequest) returns (google.protobuf.Empty);
+  rpc Fetch(FetchRequest) returns (stream FetchResult);
+  rpc Query(QueryRequest) returns (stream QueryResponse);
+  rpc MultiQuery(MultiQueryRequest) returns (stream QueryResponse);
+  rpc GroupByQuery(GroupByQueryRequest) returns (stream GroupByQueryResponse);
+  rpc Iterate(IterateRequest) returns (stream QueryResponse);
+}
