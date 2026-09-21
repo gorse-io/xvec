@@ -397,9 +397,11 @@ func (i *IVFIndex) List(list int) ([]Candidate, error) {
 	result := make([]Candidate, len(positions))
 	for index, position := range positions {
 		start := position * i.dimension
-		vector := slices.Clone(i.vectors[start : start+i.dimension])
+		var vector []float32
 		if i.fp16 {
 			vector = float32VectorFromFP16(i.vectorsFP16[start : start+i.dimension])
+		} else {
+			vector = slices.Clone(i.vectors[start : start+i.dimension])
 		}
 		result[index] = Candidate{
 			Key:    i.keys[position],

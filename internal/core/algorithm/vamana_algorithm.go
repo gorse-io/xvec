@@ -1630,7 +1630,11 @@ func (i *VamanaIndex) Add(ctx context.Context, key uint64, vector []float32) err
 		i.mu.RUnlock()
 		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
 	}
-	if len(i.vectors) > maxPlatformInt()-i.dimension {
+	vectorCount := len(i.vectors)
+	if i.fp16 {
+		vectorCount = len(i.vectorsFP16)
+	}
+	if vectorCount > maxPlatformInt()-i.dimension {
 		i.mu.RUnlock()
 		return ErrVamanaCapacity
 	}
@@ -1642,9 +1646,21 @@ func (i *VamanaIndex) Add(ctx context.Context, key uint64, vector []float32) err
 	position := len(working.keys)
 	working.positions[key] = position
 	working.keys = append(working.keys, key)
-	working.vectors = append(working.vectors, vector...)
+	if working.fp16 {
+		encoded, err := denseVectorFP16(vector)
+		if err != nil {
+			return fmt.Errorf("core: encode incremental Vamana FP16 vector: %w", err)
+		}
+		working.vectorsFP16 = append(working.vectorsFP16, encoded...)
+	} else {
+		working.vectors = append(working.vectors, vector...)
+	}
 	if working.options.Metric == MetricCosine {
-		working.vectorMagnitudes = append(working.vectorMagnitudes, mathutil.L2Magnitude(vector))
+		if working.fp16 {
+			working.vectorMagnitudes = append(working.vectorMagnitudes, mathutil.L2MagnitudeFP16(working.vectorFP16At(position)))
+		} else {
+			working.vectorMagnitudes = append(working.vectorMagnitudes, mathutil.L2Magnitude(vector))
+		}
 	}
 	working.neighbors = append(working.neighbors, nil)
 	working.neighborDistances = append(working.neighborDistances, nil)
@@ -1667,7 +1683,7 @@ func (i *VamanaIndex) Add(ctx context.Context, key uint64, vector []float32) err
 		i.mu.Unlock()
 		return err
 	}
-	i.keys, i.vectors, i.vectorMagnitudes, i.positions = working.keys, working.vectors, working.vectorMagnitudes, working.positions
+	i.keys, i.vectors, i.vectorsFP16, i.vectorMagnitudes, i.positions = working.keys, working.vectors, working.vectorsFP16, working.vectorMagnitudes, working.positions
 	i.neighbors, i.neighborDistances, i.entryPoint = working.neighbors, working.neighborDistances, working.entryPoint
 	i.mu.Unlock()
 	return nil

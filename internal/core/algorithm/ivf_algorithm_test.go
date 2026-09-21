@@ -43,6 +43,16 @@ func TestIVFFP16BuildSearchAndPersistence(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, index.vectors)
 	require.Len(t, index.vectorsFP16, len(exactCandidates)*2)
+	listed := make(map[uint64][]float32, len(exactCandidates))
+	for list := range index.NList() {
+		candidates, err := index.List(list)
+		require.NoError(t, err)
+		for _, candidate := range candidates {
+			listed[candidate.Key] = candidate.Vector
+		}
+	}
+	require.Len(t, listed, len(exactCandidates))
+	require.Equal(t, []float32{1, 0}, listed[30])
 
 	results, err := index.SearchIVF(context.Background(), []float32{1, 0}, IVFSearchOptions{
 		SearchOptions: SearchOptions{TopK: 3}, NProbe: 2,
