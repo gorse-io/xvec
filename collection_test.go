@@ -1488,6 +1488,87 @@ func TestCollectionDenseHNSWQueryControlsAndRecall(t *testing.T) {
 	}
 }
 
+func TestCollectionHNSWRaBitQQueryOptimizeAndReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "hnsw-rabitq")
+	indexParams := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	indexParams.M = 8
+	indexParams.EFConstruction = 40
+	indexParams.NumClusters = 8
+	schema := NewCollectionSchema("hnsw_rabitq_collection",
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 64, Index: indexParams},
+		FieldSchema{Name: "rating", DataType: DataTypeInt32},
+	)
+	collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+	require.NoError(t, err)
+
+	documents := annRaBitQDocuments(300)
+	_, err = collection.Insert(ctx, documents)
+	require.NoError(t, err)
+	queryVector := documents[73].Fields["embedding"].(VectorFP32)
+	exact := exactDenseDocumentResults(t, documents, queryVector, core.MetricL2, 15)
+
+	queryParams := NewHNSWRaBitQQueryParams()
+	queryParams.EF = 300
+	query := VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 15, Params: queryParams}
+	approximate, err := collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, documentRecall(approximate, exact), .85)
+
+	queryParams.Linear = true
+	query.Params = queryParams
+	linear, err := collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, linear, 15)
+	queryParams.EF = 1
+	query.Params = queryParams
+	linearLowEF, err := collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, linear, linearLowEF)
+
+	queryParams.EF = 300
+	queryParams.Linear = false
+	queryParams.UseRefiner = true
+	query.Params = queryParams
+	refined, err := collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, documentKeys(exact), documentKeys(refined))
+	require.Equal(t, documentScores(exact), documentScores(refined))
+
+	queryParams.ScaleFactor = 2
+	query.Params = queryParams
+	scaled, err := collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, documentKeys(exact), documentKeys(scaled))
+	require.Equal(t, documentScores(exact), documentScores(scaled))
+
+	groupParams := NewHNSWRaBitQQueryParams()
+	groupParams.EF = 300
+	groups, err := collection.GroupByQuery(ctx, GroupByVectorQuery{
+		Field: "embedding", DenseVector: queryVector, Params: groupParams,
+		GroupByField: "rating", GroupCount: 3, TopKPerGroup: 2,
+	})
+	require.NoError(t, err)
+	require.Len(t, groups, 3)
+	groupParams.UseRefiner = true
+	_, err = collection.GroupByQuery(ctx, GroupByVectorQuery{
+		Field: "embedding", DenseVector: queryVector, Params: groupParams,
+		GroupByField: "rating", GroupCount: 3, TopKPerGroup: 2,
+	})
+	require.ErrorIs(t, err, ErrNotSupported)
+
+	require.NoError(t, collection.Optimize(ctx, OptimizeOptions{Concurrency: 2}))
+	require.NoError(t, collection.Close())
+	collection, err = Open(ctx, path, NewCollectionOptions())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, collection.Close()) }()
+	reopened, err := collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, refined, reopened)
+	field, _ := collection.Schema().Field("embedding")
+	require.Equal(t, IndexTypeHNSWRaBitQ, field.IndexType())
+}
+
 func TestCollectionIVFRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "rabitq")

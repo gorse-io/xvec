@@ -35,6 +35,7 @@ const (
 	DefaultIVFNIterations = 10
 
 	DefaultRaBitQTotalBits = 7
+	DefaultRaBitQClusters  = 16
 	MaxRaBitQTotalBits     = 9
 
 	DefaultDiskANNMaxDegree = 100
@@ -142,6 +143,52 @@ func (p HNSWIndexParams) Validate() error {
 func (p HNSWIndexParams) cloneIndexParams() IndexParams { return p }
 func (p HNSWIndexParams) vectorConfig() vectorIndexConfig {
 	return vectorIndexConfig{p.Metric, p.Quantize, p.Quantizer}
+}
+
+// HNSWRaBitQIndexParams configures an HNSW graph backed by RaBitQ codes.
+type HNSWRaBitQIndexParams struct {
+	Metric         MetricType
+	TotalBits      int
+	NumClusters    int
+	SampleCount    int
+	M              int
+	EFConstruction int
+}
+
+func NewHNSWRaBitQIndexParams(metric MetricType) HNSWRaBitQIndexParams {
+	return HNSWRaBitQIndexParams{
+		Metric: metric, TotalBits: DefaultRaBitQTotalBits, NumClusters: DefaultRaBitQClusters,
+		M: DefaultHNSWM, EFConstruction: DefaultHNSWEFConstruction,
+	}
+}
+
+func (HNSWRaBitQIndexParams) IndexType() IndexType { return IndexTypeHNSWRaBitQ }
+func (p HNSWRaBitQIndexParams) Validate() error {
+	if err := validateVectorIndexParams(
+		p.IndexType(), vectorIndexConfig{metric: p.Metric, quantize: QuantizeTypeRaBitQ},
+	); err != nil {
+		return err
+	}
+	if p.TotalBits != 0 && (p.TotalBits < 1 || p.TotalBits > MaxRaBitQTotalBits) {
+		return invalidArgument("validate HNSW RaBitQ index params", "TotalBits must be zero or in [1, %d]", MaxRaBitQTotalBits)
+	}
+	if p.NumClusters < 0 {
+		return invalidArgument("validate HNSW RaBitQ index params", "NumClusters cannot be negative")
+	}
+	if p.SampleCount < 0 {
+		return invalidArgument("validate HNSW RaBitQ index params", "SampleCount cannot be negative")
+	}
+	if p.M <= 0 || p.M > MaxHNSWM {
+		return invalidArgument("validate HNSW RaBitQ index params", "M must be in [1, %d]", MaxHNSWM)
+	}
+	if p.EFConstruction < p.M {
+		return invalidArgument("validate HNSW RaBitQ index params", "EFConstruction must be at least M")
+	}
+	return nil
+}
+func (p HNSWRaBitQIndexParams) cloneIndexParams() IndexParams { return p }
+func (p HNSWRaBitQIndexParams) vectorConfig() vectorIndexConfig {
+	return vectorIndexConfig{metric: p.Metric, quantize: QuantizeTypeRaBitQ}
 }
 
 // IVFRaBitQIndexParams configures an IVF index backed by RaBitQ codes.
@@ -364,8 +411,8 @@ func validateVectorIndexParams(indexType IndexType, config vectorIndexConfig) er
 	if !config.quantize.Valid() {
 		return invalidArgument("validate vector index params", "invalid quantization %s", config.quantize)
 	}
-	if config.quantize == QuantizeTypeRaBitQ && indexType != IndexTypeIVFRaBitQ {
-		return invalidArgument("validate vector index params", "RaBitQ quantization requires an IVF_RABITQ index")
+	if config.quantize == QuantizeTypeRaBitQ && indexType != IndexTypeHNSWRaBitQ && indexType != IndexTypeIVFRaBitQ {
+		return invalidArgument("validate vector index params", "RaBitQ quantization requires an HNSW_RABITQ or IVF_RABITQ index")
 	}
 	if config.quantizer.EnableRotate && config.quantize != QuantizeTypeInt8 && config.quantize != QuantizeTypeInt4 {
 		return invalidArgument("validate vector index params", "rotation is only valid with INT8 or INT4 quantization")

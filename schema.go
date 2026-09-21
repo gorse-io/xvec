@@ -160,15 +160,15 @@ func (f FieldSchema) validateVectorField() error {
 		return invalidArgument("validate field schema", "dense vector field %q cannot use index %s", f.Name, indexType)
 	}
 
-	if indexType == IndexTypeIVFRaBitQ {
+	if indexType == IndexTypeHNSWRaBitQ || indexType == IndexTypeIVFRaBitQ {
 		if f.Dimension < MinRaBitQDimensions || f.Dimension > MaxRaBitQDimensions {
-			return invalidArgument("validate field schema", "IVF_RABITQ dimension must be in [%d, %d]", MinRaBitQDimensions, MaxRaBitQDimensions)
+			return invalidArgument("validate field schema", "%s dimension must be in [%d, %d]", indexType, MinRaBitQDimensions, MaxRaBitQDimensions)
 		}
 		if f.DataType != DataTypeVectorFP32 {
-			return invalidArgument("validate field schema", "IVF_RABITQ requires VECTOR_FP32")
+			return invalidArgument("validate field schema", "%s requires VECTOR_FP32", indexType)
 		}
 		if vectorConfig.metric != MetricTypeL2 && vectorConfig.metric != MetricTypeIP && vectorConfig.metric != MetricTypeCosine {
-			return invalidArgument("validate field schema", "IVF_RABITQ supports only L2, IP, and COSINE")
+			return invalidArgument("validate field schema", "%s supports only L2, IP, and COSINE", indexType)
 		}
 	}
 	if indexType == IndexTypeDiskANN && f.DataType != DataTypeVectorFP32 && f.DataType != DataTypeVectorFP16 {
@@ -471,6 +471,8 @@ func encodeDiskIndexType(indexType IndexType) (uint32, error) {
 		return 2, nil
 	case IndexTypeFlat:
 		return 3, nil
+	case IndexTypeHNSWRaBitQ:
+		return 4, nil
 	case IndexTypeDiskANN:
 		return 5, nil
 	case IndexTypeVamana:
@@ -494,6 +496,8 @@ func decodeDiskIndexType(code uint32) (IndexType, error) {
 		return IndexTypeIVF, nil
 	case 3:
 		return IndexTypeFlat, nil
+	case 4:
+		return IndexTypeHNSWRaBitQ, nil
 	case 5:
 		return IndexTypeDiskANN, nil
 	case 6:
@@ -518,6 +522,8 @@ func decodeDiskIndexParams(indexType IndexType, encoded []byte) (IndexParams, er
 		target = &IVFIndexParams{}
 	case IndexTypeFlat:
 		target = &FlatIndexParams{}
+	case IndexTypeHNSWRaBitQ:
+		target = &HNSWRaBitQIndexParams{}
 	case IndexTypeIVFRaBitQ:
 		target = &IVFRaBitQIndexParams{}
 	case IndexTypeDiskANN:

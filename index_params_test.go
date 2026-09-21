@@ -25,6 +25,7 @@ func TestIndexParamsDefaultsValidate(t *testing.T) {
 		NewInvertIndexParams(),
 		NewFlatIndexParams(MetricTypeIP),
 		NewHNSWIndexParams(MetricTypeL2),
+		NewHNSWRaBitQIndexParams(MetricTypeL2),
 		NewIVFRaBitQIndexParams(MetricTypeCosine),
 		NewIVFIndexParams(MetricTypeIP),
 		NewDiskANNIndexParams(MetricTypeL2),
@@ -43,6 +44,22 @@ func TestIVFRaBitQZeroTotalBitsUsesNativeDefault(t *testing.T) {
 	params := NewIVFRaBitQIndexParams(MetricTypeL2)
 	params.TotalBits = 0
 	assert.NoError(t, params.Validate())
+}
+
+func TestHNSWRaBitQDefaultsAndValidation(t *testing.T) {
+	params := NewHNSWRaBitQIndexParams(MetricTypeCosine)
+	assert.Equal(t, MetricTypeCosine, params.Metric)
+	assert.Equal(t, DefaultRaBitQTotalBits, params.TotalBits)
+	assert.Equal(t, DefaultRaBitQClusters, params.NumClusters)
+	assert.Equal(t, DefaultHNSWM, params.M)
+	assert.Equal(t, DefaultHNSWEFConstruction, params.EFConstruction)
+	assert.NoError(t, params.Validate())
+	params.TotalBits = 0
+	params.NumClusters = 0
+	assert.NoError(t, params.Validate())
+
+	params.TotalBits = MaxRaBitQTotalBits + 1
+	assert.ErrorIs(t, params.Validate(), ErrInvalidArgument)
 }
 
 func TestIndexParamsRejectInvalidValues(t *testing.T) {

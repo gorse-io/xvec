@@ -177,6 +177,7 @@ func TestCollectionSchemaCodecRoundTripIndexParameters(t *testing.T) {
 	indexParameters := []IndexParams{
 		NewFlatIndexParams(MetricTypeIP),
 		NewHNSWIndexParams(MetricTypeL2),
+		NewHNSWRaBitQIndexParams(MetricTypeL2),
 		NewIVFRaBitQIndexParams(MetricTypeCosine),
 		NewIVFIndexParams(MetricTypeIP),
 		NewDiskANNIndexParams(MetricTypeL2),
