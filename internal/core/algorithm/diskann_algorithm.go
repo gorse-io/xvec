@@ -88,16 +88,28 @@ func (o DiskANNBuildOptions) Validate() error {
 
 // DiskANNBuilder collects original vectors for one immutable disk graph.
 type DiskANNBuilder struct {
-	mu        sync.Mutex
-	dimension int
-	options   DiskANNBuildOptions
-	keys      []uint64
-	vectors   []float32
-	positions map[uint64]int
-	built     bool
+	mu          sync.Mutex
+	dimension   int
+	options     DiskANNBuildOptions
+	keys        []uint64
+	vectors     []float32
+	vectorsFP16 []uint16
+	fp16        bool
+	positions   map[uint64]int
+	built       bool
 }
 
 func NewDiskANNBuilder(dimension int, options DiskANNBuildOptions) (*DiskANNBuilder, error) {
+	return newDiskANNBuilder(dimension, options, false)
+}
+
+// NewDiskANNBuilderFP16 constructs a builder that retains original vectors in
+// IEEE 754 binary16 form. Graph and PQ construction may expand them temporarily.
+func NewDiskANNBuilderFP16(dimension int, options DiskANNBuildOptions) (*DiskANNBuilder, error) {
+	return newDiskANNBuilder(dimension, options, true)
+}
+
+func newDiskANNBuilder(dimension int, options DiskANNBuildOptions, fp16 bool) (*DiskANNBuilder, error) {
 	if dimension <= 0 || dimension > MaxRotationDimension {
 		return nil, fmt.Errorf("%w: got %d", ErrInvalidDimension, dimension)
 	}
@@ -107,7 +119,7 @@ func NewDiskANNBuilder(dimension int, options DiskANNBuildOptions) (*DiskANNBuil
 	if options.PQChunks > dimension {
 		return nil, fmt.Errorf("%w: PQChunks cannot exceed dimension", ErrInvalidDiskANNOptions)
 	}
-	return &DiskANNBuilder{dimension: dimension, options: options, positions: make(map[uint64]int)}, nil
+	return &DiskANNBuilder{dimension: dimension, options: options, fp16: fp16, positions: make(map[uint64]int)}, nil
 }
 
 // Reserve preallocates storage for at least count total vectors. It does not
@@ -124,18 +136,29 @@ func (b *DiskANNBuilder) Reserve(count int) error {
 	if b.built {
 		return ErrBuilderClosed
 	}
-	if count <= cap(b.keys) && count*b.dimension <= cap(b.vectors) {
+	vectorCapacity := cap(b.vectors)
+	if b.fp16 {
+		vectorCapacity = cap(b.vectorsFP16)
+	}
+	if count <= cap(b.keys) && count*b.dimension <= vectorCapacity {
 		return nil
 	}
 	reservedKeys := make([]uint64, len(b.keys), max(count, len(b.keys)))
 	copy(reservedKeys, b.keys)
-	reservedVectors := make([]float32, len(b.vectors), max(count*b.dimension, len(b.vectors)))
-	copy(reservedVectors, b.vectors)
+	var reservedVectors []float32
+	var reservedVectorsFP16 []uint16
+	if b.fp16 {
+		reservedVectorsFP16 = make([]uint16, len(b.vectorsFP16), max(count*b.dimension, len(b.vectorsFP16)))
+		copy(reservedVectorsFP16, b.vectorsFP16)
+	} else {
+		reservedVectors = make([]float32, len(b.vectors), max(count*b.dimension, len(b.vectors)))
+		copy(reservedVectors, b.vectors)
+	}
 	reservedPositions := make(map[uint64]int, max(count, len(b.positions)))
 	for key, position := range b.positions {
 		reservedPositions[key] = position
 	}
-	b.keys, b.vectors, b.positions = reservedKeys, reservedVectors, reservedPositions
+	b.keys, b.vectors, b.vectorsFP16, b.positions = reservedKeys, reservedVectors, reservedVectorsFP16, reservedPositions
 	return nil
 }
 
@@ -164,12 +187,24 @@ func (b *DiskANNBuilder) Add(ctx context.Context, key uint64, vector []float32) 
 	if _, found := b.positions[key]; found {
 		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
 	}
-	if uint64(len(b.keys)) >= math.MaxUint32 || len(b.vectors) > maxPlatformInt()-b.dimension {
+	vectorLength := len(b.vectors)
+	if b.fp16 {
+		vectorLength = len(b.vectorsFP16)
+	}
+	if uint64(len(b.keys)) >= math.MaxUint32 || vectorLength > maxPlatformInt()-b.dimension {
 		return ErrDiskANNCapacity
+	}
+	if b.fp16 {
+		encoded, err := denseVectorFP16(vector)
+		if err != nil {
+			return fmt.Errorf("core: encode DiskANN FP16 vector: %w", err)
+		}
+		b.vectorsFP16 = append(b.vectorsFP16, encoded...)
+	} else {
+		b.vectors = append(b.vectors, vector...)
 	}
 	b.positions[key] = len(b.keys)
 	b.keys = append(b.keys, key)
-	b.vectors = append(b.vectors, vector...)
 	return nil
 }
 
@@ -192,6 +227,17 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 		return nil, ErrBuilderClosed
 	}
 
+	vectorStorage := b.vectors
+	if b.fp16 {
+		if len(b.keys) > maxPlatformInt()/b.dimension {
+			return nil, ErrDiskANNCapacity
+		}
+		vectorStorage = make([]float32, len(b.keys)*b.dimension)
+		for position := range b.keys {
+			start := position * b.dimension
+			copy(vectorStorage[start:start+b.dimension], float32VectorFromFP16(b.vectorsFP16[start:start+b.dimension]))
+		}
+	}
 	vectors := make([][]float32, len(b.keys))
 	for position := range b.keys {
 		if position&255 == 0 {
@@ -200,14 +246,14 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 			}
 		}
 		start := position * b.dimension
-		vectors[position] = b.vectors[start : start+b.dimension]
+		vectors[position] = vectorStorage[start : start+b.dimension]
 	}
 	traversalMetric := diskANNTraversalMetric(b.options.Metric)
 	var prepared [][]float32
 	var preparedStorage []float32
 	var err error
 	graphMetric := b.options.Metric
-	graphStorage := b.vectors
+	graphStorage := vectorStorage
 	if b.options.Metric == MetricCosine {
 		prepared, preparedStorage, traversalMetric, err = prepareDiskANNPQVectors(ctx, vectors, b.options.Metric)
 		if err != nil {
@@ -237,7 +283,7 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 
 	index := &DiskANNIndex{
 		dimension: b.dimension, metric: b.options.Metric, options: b.options,
-		keys: slices.Clone(b.keys), positions: cloneUint64Positions(b.positions), entryPoint: graph.entryPoint,
+		keys: slices.Clone(b.keys), positions: cloneUint64Positions(b.positions), entryPoint: graph.entryPoint, fp16: b.fp16,
 	}
 	index.traversalMetric = traversalMetric
 	if len(vectors) != 0 {
@@ -279,6 +325,9 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 	}
 
 	layout, err := NewDiskANNLayout(b.options.Metric, len(b.keys), b.dimension, b.options.MaxDegree)
+	if b.fp16 {
+		layout, err = newDiskANNFP16Layout(b.options.Metric, len(b.keys), b.dimension, b.options.MaxDegree)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -298,22 +347,28 @@ func (b *DiskANNBuilder) Build(ctx context.Context) (*DiskANNIndex, error) {
 			nodes[position].Neighbors[offset] = uint32(neighbor)
 		}
 	}
-	nodeArtifact, err := encodeDiskANNNodeFile(ctx, layout, nodes)
+	var nodeArtifact []byte
+	if b.fp16 {
+		nodeArtifact, err = encodeDiskANNFP16NodeFile(ctx, layout, nodes)
+	} else {
+		nodeArtifact, err = encodeDiskANNNodeFile(ctx, layout, nodes)
+	}
 	if err != nil {
 		return nil, err
 	}
-	nodeReader, err := OpenDiskANNNodeReader(
-		ctx, bytes.NewReader(nodeArtifact), int64(len(nodeArtifact)), b.options.CacheCapacity, b.options.Workers,
-	)
+	if b.fp16 {
+		index.nodesFP16, err = openDiskANNFP16NodeReader(ctx, bytes.NewReader(nodeArtifact), int64(len(nodeArtifact)), b.options.CacheCapacity, b.options.Workers)
+	} else {
+		index.nodes, err = OpenDiskANNNodeReader(ctx, bytes.NewReader(nodeArtifact), int64(len(nodeArtifact)), b.options.CacheCapacity, b.options.Workers)
+	}
 	if err != nil {
 		return nil, err
 	}
-	index.nodes = nodeReader
 	if err := validateDiskANNIndex(ctx, index); err != nil {
 		return nil, err
 	}
 	b.built = true
-	b.keys, b.vectors, b.positions = nil, nil, nil
+	b.keys, b.vectors, b.vectorsFP16, b.positions = nil, nil, nil, nil
 	return index, nil
 }
 
@@ -418,6 +473,301 @@ func (o DiskANNSearchOptions) Validate() error {
 	return nil
 }
 
+const (
+	diskANNFP16NodeFileVersion = 2
+	diskANNFP16NodeMarker      = 1
+)
+
+type diskANNFP16Node struct {
+	ID        uint32
+	Vector    []uint16
+	Neighbors []uint32
+}
+
+type diskANNFP16Cache struct {
+	mu       sync.Mutex
+	capacity int
+	items    map[uint32]diskANNFP16Node
+	order    []uint32
+	stats    DiskANNCacheStats
+}
+
+func newDiskANNFP16Cache(capacity int) (*diskANNFP16Cache, error) {
+	if capacity < 0 {
+		return nil, errors.New("core: negative DiskANN FP16 cache capacity")
+	}
+	return &diskANNFP16Cache{capacity: capacity, items: make(map[uint32]diskANNFP16Node)}, nil
+}
+
+func cloneDiskANNFP16Node(node diskANNFP16Node) diskANNFP16Node {
+	return diskANNFP16Node{ID: node.ID, Vector: slices.Clone(node.Vector), Neighbors: slices.Clone(node.Neighbors)}
+}
+
+func (c *diskANNFP16Cache) get(id uint32, clone bool) (diskANNFP16Node, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	node, found := c.items[id]
+	if !found {
+		c.stats.Misses++
+		return diskANNFP16Node{}, false
+	}
+	c.stats.Hits++
+	for position, cachedID := range c.order {
+		if cachedID == id {
+			copy(c.order[1:position+1], c.order[:position])
+			c.order[0] = id
+			break
+		}
+	}
+	if clone {
+		node = cloneDiskANNFP16Node(node)
+	}
+	return node, true
+}
+
+func (c *diskANNFP16Cache) put(node diskANNFP16Node) {
+	if c.capacity == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, found := c.items[node.ID]; found {
+		c.items[node.ID] = cloneDiskANNFP16Node(node)
+		for position, cachedID := range c.order {
+			if cachedID == node.ID {
+				copy(c.order[1:position+1], c.order[:position])
+				c.order[0] = node.ID
+				return
+			}
+		}
+	}
+	c.items[node.ID] = cloneDiskANNFP16Node(node)
+	c.order = append([]uint32{node.ID}, c.order...)
+	if len(c.order) > c.capacity {
+		delete(c.items, c.order[len(c.order)-1])
+		c.order = c.order[:len(c.order)-1]
+		c.stats.Evictions++
+	}
+}
+
+func (c *diskANNFP16Cache) statsSnapshot() DiskANNCacheStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stats
+}
+
+func (c *diskANNFP16Cache) Capacity() int { return c.capacity }
+
+type diskANNFP16NodeReader struct {
+	reader  io.ReaderAt
+	layout  DiskANNLayout
+	cache   *diskANNFP16Cache
+	workers int
+}
+
+func newDiskANNFP16Layout(metric Metric, count, dimension, maxDegree int) (DiskANNLayout, error) {
+	if !metric.Valid() || count < 0 || uint64(count) > math.MaxUint32 || dimension <= 0 || dimension > MaxRotationDimension || maxDegree <= 0 || uint64(maxDegree) > math.MaxUint32 {
+		return DiskANNLayout{}, ErrInvalidDiskANNLayout
+	}
+	record64 := uint64(dimension)*2 + 4 + uint64(maxDegree)*4 + 4
+	if record64 > uint64(maxPlatformInt()) || record64 > math.MaxUint32 {
+		return DiskANNLayout{}, ErrInvalidDiskANNLayout
+	}
+	recordSize := int(record64)
+	nodesPerSector, sectorsPerNode := DiskANNSectorSize/recordSize, 1
+	var sectors uint64
+	if nodesPerSector > 0 {
+		sectors = (uint64(count) + uint64(nodesPerSector) - 1) / uint64(nodesPerSector)
+	} else {
+		sectorsPerNode = (recordSize + DiskANNSectorSize - 1) / DiskANNSectorSize
+		if uint64(count) > math.MaxUint64/uint64(sectorsPerNode) {
+			return DiskANNLayout{}, ErrInvalidDiskANNLayout
+		}
+		sectors = uint64(count) * uint64(sectorsPerNode)
+	}
+	if sectors > math.MaxInt64/DiskANNSectorSize {
+		return DiskANNLayout{}, ErrInvalidDiskANNLayout
+	}
+	return DiskANNLayout{
+		metric: metric, count: count, dimension: dimension, maxDegree: maxDegree,
+		recordSize: recordSize, nodesPerSector: nodesPerSector, sectorsPerNode: sectorsPerNode,
+		dataOffset: diskANNNodeHeaderSize, dataLength: int64(sectors * DiskANNSectorSize),
+	}, nil
+}
+
+func encodeDiskANNFP16NodeFile(ctx context.Context, layout DiskANNLayout, nodes []DiskANNNode) ([]byte, error) {
+	if ctx == nil {
+		return nil, errors.New("core: nil DiskANN FP16 encode context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(nodes) != layout.count || layout.TotalLength() > int64(maxPlatformInt()) {
+		return nil, ErrInvalidDiskANNLayout
+	}
+	data := make([]byte, int(layout.dataLength))
+	for position, node := range nodes {
+		if position&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		if node.ID != uint32(position) || len(node.Vector) != layout.dimension || len(node.Neighbors) > layout.maxDegree {
+			return nil, ErrInvalidDiskANNNode
+		}
+		record := make([]byte, layout.recordSize)
+		offset := 0
+		encoded, err := denseVectorFP16(node.Vector)
+		if err != nil {
+			return nil, err
+		}
+		for _, value := range encoded {
+			binary.LittleEndian.PutUint16(record[offset:], value)
+			offset += 2
+		}
+		binary.LittleEndian.PutUint32(record[offset:], uint32(len(node.Neighbors)))
+		offset += 4
+		seen := make(map[uint32]struct{}, len(node.Neighbors))
+		for _, neighbor := range node.Neighbors {
+			if uint64(neighbor) >= uint64(layout.count) || neighbor == node.ID {
+				return nil, ErrInvalidDiskANNNode
+			}
+			if _, found := seen[neighbor]; found {
+				return nil, ErrInvalidDiskANNNode
+			}
+			seen[neighbor] = struct{}{}
+			binary.LittleEndian.PutUint32(record[offset:], neighbor)
+			offset += 4
+		}
+		binary.LittleEndian.PutUint32(record[len(record)-4:], hashutil.CRC32C(record[:len(record)-4]))
+		spec, _ := layout.readSpec(node.ID)
+		start := int(spec.offset-layout.dataOffset) + spec.recordOffset
+		copy(data[start:start+layout.recordSize], record)
+	}
+	layout.dataCRC = hashutil.CRC32C(data)
+	header := layout.encodeHeader()
+	binary.LittleEndian.PutUint16(header[8:10], diskANNFP16NodeFileVersion)
+	header[69] = diskANNFP16NodeMarker
+	binary.LittleEndian.PutUint32(header[diskANNNodeHeaderCRCPos:], hashutil.CRC32C(header[:diskANNNodeHeaderCRCPos]))
+	return append(header, data...), nil
+}
+
+func decodeDiskANNFP16Layout(header []byte, fileSize int64) (DiskANNLayout, error) {
+	if len(header) != diskANNNodeHeaderSize || !bytes.Equal(header[:8], diskANNNodeMagic[:]) ||
+		binary.LittleEndian.Uint16(header[8:10]) != diskANNFP16NodeFileVersion || header[69] != diskANNFP16NodeMarker {
+		return DiskANNLayout{}, ErrInvalidDiskANNLayout
+	}
+	if binary.LittleEndian.Uint16(header[10:12]) != diskANNNodeHeaderSize || binary.LittleEndian.Uint32(header[12:16]) != 0 ||
+		!allZeroBytes(header[70:72]) || !allZeroBytes(header[76:diskANNNodeHeaderCRCPos]) {
+		return DiskANNLayout{}, ErrInvalidDiskANNLayout
+	}
+	if got, want := hashutil.CRC32C(header[:diskANNNodeHeaderCRCPos]), binary.LittleEndian.Uint32(header[diskANNNodeHeaderCRCPos:]); got != want {
+		return DiskANNLayout{}, ErrDiskANNChecksumMismatch
+	}
+	total, dataOffset, dataLength, count := binary.LittleEndian.Uint64(header[16:24]), binary.LittleEndian.Uint64(header[24:32]), binary.LittleEndian.Uint64(header[32:40]), binary.LittleEndian.Uint64(header[40:48])
+	if total > math.MaxInt64 || dataOffset != diskANNNodeHeaderSize || dataLength > math.MaxInt64 || total != dataOffset+dataLength || int64(total) != fileSize || count > math.MaxUint32 {
+		return DiskANNLayout{}, ErrInvalidDiskANNLayout
+	}
+	layout, err := newDiskANNFP16Layout(Metric(header[68]), int(count), int(binary.LittleEndian.Uint32(header[48:52])), int(binary.LittleEndian.Uint32(header[52:56])))
+	if err != nil {
+		return DiskANNLayout{}, err
+	}
+	if uint32(layout.recordSize) != binary.LittleEndian.Uint32(header[56:60]) || uint32(layout.nodesPerSector) != binary.LittleEndian.Uint32(header[60:64]) ||
+		uint32(layout.sectorsPerNode) != binary.LittleEndian.Uint32(header[64:68]) || uint64(layout.dataLength) != dataLength {
+		return DiskANNLayout{}, ErrInvalidDiskANNLayout
+	}
+	layout.dataCRC = binary.LittleEndian.Uint32(header[72:76])
+	return layout, nil
+}
+
+func openDiskANNFP16NodeReader(ctx context.Context, reader io.ReaderAt, fileSize int64, cacheCapacity, workers int) (*diskANNFP16NodeReader, error) {
+	if ctx == nil || reader == nil || fileSize < diskANNNodeHeaderSize || cacheCapacity < 0 || workers < 0 {
+		return nil, ErrInvalidDiskANNLayout
+	}
+	header := make([]byte, diskANNNodeHeaderSize)
+	if err := readFullAt(ctx, reader, header, 0); err != nil {
+		return nil, err
+	}
+	layout, err := decodeDiskANNFP16Layout(header, fileSize)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyDiskANNData(ctx, reader, layout); err != nil {
+		return nil, err
+	}
+	cache, err := newDiskANNFP16Cache(cacheCapacity)
+	if err != nil {
+		return nil, err
+	}
+	return &diskANNFP16NodeReader{reader: reader, layout: layout, cache: cache, workers: workers}, nil
+}
+
+func (r *diskANNFP16NodeReader) readNodes(ctx context.Context, ids []uint32, cloneCached bool) ([]diskANNFP16Node, error) {
+	if ctx == nil {
+		return nil, errors.New("core: nil DiskANN FP16 read context")
+	}
+	result := make([]diskANNFP16Node, len(ids))
+	for position, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if node, found := r.cache.get(id, cloneCached); found {
+			result[position] = node
+			continue
+		}
+		spec, err := r.layout.readSpec(id)
+		if err != nil {
+			return nil, err
+		}
+		block := make([]byte, spec.length)
+		if err := readFullAt(ctx, r.reader, block, spec.offset); err != nil {
+			return nil, err
+		}
+		record := block[spec.recordOffset : spec.recordOffset+r.layout.recordSize]
+		if got, want := hashutil.CRC32C(record[:len(record)-4]), binary.LittleEndian.Uint32(record[len(record)-4:]); got != want {
+			return nil, ErrDiskANNChecksumMismatch
+		}
+		node := diskANNFP16Node{ID: id, Vector: make([]uint16, r.layout.dimension)}
+		offset := 0
+		for component := range node.Vector {
+			value := binary.LittleEndian.Uint16(record[offset:])
+			if value&0x7c00 == 0x7c00 {
+				return nil, fmt.Errorf("%w: non-finite vector", ErrInvalidDiskANNNode)
+			}
+			node.Vector[component] = value
+			offset += 2
+		}
+		degree := int(binary.LittleEndian.Uint32(record[offset:]))
+		offset += 4
+		if degree > r.layout.maxDegree {
+			return nil, ErrInvalidDiskANNNode
+		}
+		node.Neighbors = make([]uint32, degree)
+		seen := make(map[uint32]struct{}, degree)
+		for neighborIndex := range node.Neighbors {
+			neighbor := binary.LittleEndian.Uint32(record[offset:])
+			offset += 4
+			if uint64(neighbor) >= uint64(r.layout.count) || neighbor == id {
+				return nil, ErrInvalidDiskANNNode
+			}
+			if _, found := seen[neighbor]; found {
+				return nil, ErrInvalidDiskANNNode
+			}
+			seen[neighbor] = struct{}{}
+			node.Neighbors[neighborIndex] = neighbor
+		}
+		if !allZeroBytes(record[offset : len(record)-4]) {
+			return nil, ErrInvalidDiskANNNode
+		}
+		r.cache.put(node)
+		if cloneCached {
+			node = cloneDiskANNFP16Node(node)
+		}
+		result[position] = node
+	}
+	return result, nil
+}
+
 // DiskANNIndex owns immutable key/PQ metadata and serves graph nodes through
 // a sector-aware ReaderAt. An opened index owns its file until Close.
 type DiskANNIndex struct {
@@ -435,6 +785,8 @@ type DiskANNIndex struct {
 	codes           []byte
 	codeNorms       []float32
 	nodes           *DiskANNNodeReader
+	nodesFP16       *diskANNFP16NodeReader
+	fp16            bool
 }
 
 func (i *DiskANNIndex) Dimension() int {
@@ -442,6 +794,10 @@ func (i *DiskANNIndex) Dimension() int {
 		return 0
 	}
 	return i.dimension
+}
+
+func (i *DiskANNIndex) IsFP16() bool {
+	return i != nil && i.fp16
 }
 
 func (i *DiskANNIndex) Metric() Metric {
@@ -480,7 +836,13 @@ func (i *DiskANNIndex) EntryPoint() (uint64, bool) {
 }
 
 func (i *DiskANNIndex) CacheStats() DiskANNCacheStats {
-	if i == nil || i.nodes == nil {
+	if i == nil {
+		return DiskANNCacheStats{}
+	}
+	if i.fp16 && i.nodesFP16 != nil {
+		return i.nodesFP16.cache.statsSnapshot()
+	}
+	if i.nodes == nil {
 		return DiskANNCacheStats{}
 	}
 	return i.nodes.CacheStats()
@@ -493,12 +855,19 @@ func (i *DiskANNIndex) Vector(key uint64) ([]float32, bool) {
 	}
 	i.closeMu.RLock()
 	defer i.closeMu.RUnlock()
-	if i.closed || i.nodes == nil {
+	if i.closed || (i.nodes == nil && i.nodesFP16 == nil) {
 		return nil, false
 	}
 	position, found := i.positions[key]
 	if !found {
 		return nil, false
+	}
+	if i.fp16 {
+		nodes, err := i.nodesFP16.readNodes(context.Background(), []uint32{uint32(position)}, true)
+		if err != nil {
+			return nil, false
+		}
+		return float32VectorFromFP16(nodes[0].Vector), true
 	}
 	node, err := i.nodes.ReadNode(context.Background(), uint32(position))
 	if err != nil {
@@ -598,12 +967,37 @@ func (i *DiskANNIndex) searchDiskANN(
 }
 
 func (i *DiskANNIndex) searchDiskANNLinear(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {
+	collector := newDiskANNResultCollector(i.metric, options)
+	batchSize := i.diskANNReadBatchSize()
+	if i.fp16 {
+		queryFP16, err := denseVectorFP16(query)
+		if err != nil {
+			return nil, err
+		}
+		distance, err := denseDistanceFP16(i.metric)
+		if err != nil {
+			return nil, err
+		}
+		for start := 0; start < len(i.keys); start += batchSize {
+			end := min(len(i.keys), start+batchSize)
+			ids := make([]uint32, end-start)
+			for offset := range ids {
+				ids[offset] = uint32(start + offset)
+			}
+			nodes, err := i.nodesFP16.readNodes(ctx, ids, false)
+			if err != nil {
+				return nil, fmt.Errorf("core: linear DiskANN FP16 node read: %w", err)
+			}
+			for _, node := range nodes {
+				collector.Add(Result{Key: i.keys[node.ID], Score: distance(queryFP16, node.Vector)})
+			}
+		}
+		return collector.Results(), nil
+	}
 	distance, err := i.metric.Distance()
 	if err != nil {
 		return nil, err
 	}
-	collector := newDiskANNResultCollector(i.metric, options)
-	batchSize := i.diskANNReadBatchSize()
 	for start := 0; start < len(i.keys); start += batchSize {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -618,8 +1012,7 @@ func (i *DiskANNIndex) searchDiskANNLinear(ctx context.Context, query []float32,
 			return nil, fmt.Errorf("core: linear DiskANN node read: %w", err)
 		}
 		for _, node := range nodes {
-			score := distance(query, node.Vector)
-			collector.Add(Result{Key: i.keys[node.ID], Score: score})
+			collector.Add(Result{Key: i.keys[node.ID], Score: distance(query, node.Vector)})
 		}
 	}
 	return collector.Results(), nil
@@ -642,6 +1035,18 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 	distance, err := i.metric.Distance()
 	if err != nil {
 		return nil, err
+	}
+	var queryFP16 []uint16
+	var distanceFP16 func([]uint16, []uint16) float32
+	if i.fp16 {
+		queryFP16, err = denseVectorFP16(query)
+		if err != nil {
+			return nil, err
+		}
+		distanceFP16, err = denseDistanceFP16(i.metric)
+		if err != nil {
+			return nil, err
+		}
 	}
 	queryNorm := diskANNVectorNormSquared(prepared)
 	capacity := min(len(i.keys), max(options.TopK, options.ListSize))
@@ -670,6 +1075,38 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 	beam := i.diskANNBeamWidth(options.ListSize)
 	neighborIDs := make([]uint32, 0, i.options.MaxDegree)
 	neighborScores := make([]float32, i.options.MaxDegree)
+	processNode := func(id uint32, neighbors []uint32, exact float32) error {
+		collector.Add(Result{Key: i.keys[id], Score: exact})
+		neighborIDs = neighborIDs[:0]
+		for _, neighbor := range neighbors {
+			if visited[neighbor] {
+				continue
+			}
+			visited[neighbor] = true
+			neighborIDs = append(neighborIDs, neighbor)
+		}
+		scores := neighborScores[:len(neighborIDs)]
+		if err := i.diskANNApproximateScores(table, neighborIDs, queryNorm, scores); err != nil {
+			return err
+		}
+		for position, neighbor := range neighborIDs {
+			candidate := diskANNQueueNode{id: neighbor, score: scores[position]}
+			if retained.Len() < capacity {
+				retained.Push(candidate)
+				retainedMember[neighbor] = true
+				frontier.Push(candidate)
+				continue
+			}
+			worstNode, _ := retained.Peek()
+			if better(candidate, worstNode) {
+				replaced, _ := retained.Replace(candidate)
+				retainedMember[replaced.id] = false
+				retainedMember[neighbor] = true
+				frontier.Push(candidate)
+			}
+		}
+		return nil
+	}
 
 	for frontier.Len() != 0 {
 		if err := ctx.Err(); err != nil {
@@ -691,39 +1128,24 @@ func (i *DiskANNIndex) searchDiskANNGraph(ctx context.Context, query []float32, 
 		for position := range batch {
 			ids[position] = batch[position].id
 		}
-		nodes, err := i.nodes.readNodesBorrowed(ctx, ids)
-		if err != nil {
-			return nil, fmt.Errorf("core: DiskANN graph node read: %w", err)
-		}
-		for _, node := range nodes {
-			exact := distance(query, node.Vector)
-			collector.Add(Result{Key: i.keys[node.ID], Score: exact})
-			neighborIDs = neighborIDs[:0]
-			for _, neighbor := range node.Neighbors {
-				if visited[neighbor] {
-					continue
-				}
-				visited[neighbor] = true
-				neighborIDs = append(neighborIDs, neighbor)
+		if i.fp16 {
+			nodes, err := i.nodesFP16.readNodes(ctx, ids, false)
+			if err != nil {
+				return nil, fmt.Errorf("core: DiskANN FP16 graph node read: %w", err)
 			}
-			scores := neighborScores[:len(neighborIDs)]
-			if err := i.diskANNApproximateScores(table, neighborIDs, queryNorm, scores); err != nil {
-				return nil, fmt.Errorf("core: score DiskANN PQ neighbors of node %d: %w", node.ID, err)
-			}
-			for position, neighbor := range neighborIDs {
-				candidate := diskANNQueueNode{id: neighbor, score: scores[position]}
-				if retained.Len() < capacity {
-					retained.Push(candidate)
-					retainedMember[neighbor] = true
-					frontier.Push(candidate)
-					continue
+			for _, node := range nodes {
+				if err := processNode(node.ID, node.Neighbors, distanceFP16(queryFP16, node.Vector)); err != nil {
+					return nil, fmt.Errorf("core: score DiskANN PQ neighbors of node %d: %w", node.ID, err)
 				}
-				worstNode, _ := retained.Peek()
-				if better(candidate, worstNode) {
-					replaced, _ := retained.Replace(candidate)
-					retainedMember[replaced.id] = false
-					retainedMember[neighbor] = true
-					frontier.Push(candidate)
+			}
+		} else {
+			nodes, err := i.nodes.readNodesBorrowed(ctx, ids)
+			if err != nil {
+				return nil, fmt.Errorf("core: DiskANN graph node read: %w", err)
+			}
+			for _, node := range nodes {
+				if err := processNode(node.ID, node.Neighbors, distance(query, node.Vector)); err != nil {
+					return nil, fmt.Errorf("core: score DiskANN PQ neighbors of node %d: %w", node.ID, err)
 				}
 			}
 		}
@@ -816,7 +1238,9 @@ func diskANNVectorNormSquared(vector []float32) float64 {
 
 func (i *DiskANNIndex) diskANNReadBatchSize() int {
 	sectors := 1
-	if i != nil && i.nodes != nil {
+	if i != nil && i.fp16 && i.nodesFP16 != nil {
+		sectors = max(1, i.nodesFP16.layout.sectorsPerNode)
+	} else if i != nil && i.nodes != nil {
 		sectors = max(1, i.nodes.layout.sectorsPerNode)
 	}
 	return max(1, MaxDiskANNReadSectors/sectors)
@@ -894,7 +1318,13 @@ func (i *DiskANNIndex) WarmCache(ctx context.Context, count int) (int, error) {
 	if i.closed {
 		return 0, ErrDiskANNClosed
 	}
-	target := min(count, i.nodes.cache.Capacity(), len(i.keys))
+	cacheCapacity := 0
+	if i.fp16 {
+		cacheCapacity = i.nodesFP16.cache.Capacity()
+	} else {
+		cacheCapacity = i.nodes.cache.Capacity()
+	}
+	target := min(count, cacheCapacity, len(i.keys))
 	if target == 0 {
 		return 0, nil
 	}
@@ -906,13 +1336,29 @@ func (i *DiskANNIndex) WarmCache(ctx context.Context, count int) (int, error) {
 		batchCount := min(i.diskANNReadBatchSize(), target-warmed, len(queue))
 		ids := slices.Clone(queue[:batchCount])
 		queue = queue[batchCount:]
-		nodes, err := i.nodes.ReadNodes(ctx, ids)
-		if err != nil {
-			return warmed, err
+		var neighbors [][]uint32
+		if i.fp16 {
+			nodes, err := i.nodesFP16.readNodes(ctx, ids, true)
+			if err != nil {
+				return warmed, err
+			}
+			neighbors = make([][]uint32, len(nodes))
+			for position := range nodes {
+				neighbors[position] = nodes[position].Neighbors
+			}
+		} else {
+			nodes, err := i.nodes.ReadNodes(ctx, ids)
+			if err != nil {
+				return warmed, err
+			}
+			neighbors = make([][]uint32, len(nodes))
+			for position := range nodes {
+				neighbors[position] = nodes[position].Neighbors
+			}
 		}
-		warmed += len(nodes)
-		for _, node := range nodes {
-			for _, neighbor := range node.Neighbors {
+		warmed += len(neighbors)
+		for _, adjacent := range neighbors {
+			for _, neighbor := range adjacent {
 				if !visited[neighbor] {
 					visited[neighbor] = true
 					queue = append(queue, neighbor)
@@ -1052,7 +1498,15 @@ func encodeDiskANNIndex(ctx context.Context, index *DiskANNIndex) ([]byte, error
 		}
 		return nil, fmt.Errorf("%w: %v", ErrInvalidDiskANNFile, err)
 	}
-	nodeLength := index.nodes.layout.TotalLength()
+	nodeLength := int64(0)
+	var nodeReader io.ReaderAt
+	if index.fp16 {
+		nodeLength = index.nodesFP16.layout.TotalLength()
+		nodeReader = index.nodesFP16.reader
+	} else {
+		nodeLength = index.nodes.layout.TotalLength()
+		nodeReader = index.nodes.reader
+	}
 	if nodeLength < 0 || nodeLength > int64(maxPlatformInt()) {
 		return nil, fmt.Errorf("%w: node artifact exceeds platform capacity", ErrInvalidDiskANNFile)
 	}
@@ -1069,7 +1523,7 @@ func encodeDiskANNIndex(ctx context.Context, index *DiskANNIndex) ([]byte, error
 	}
 	encoded := make([]byte, int(sections.totalLength))
 	nodeArtifact := encoded[sections.nodesOffset : sections.nodesOffset+sections.nodesLength]
-	if err := readFullAt(ctx, index.nodes.reader, nodeArtifact, 0); err != nil {
+	if err := readFullAt(ctx, nodeReader, nodeArtifact, 0); err != nil {
 		return nil, fmt.Errorf("core: snapshot DiskANN node artifact: %w", err)
 	}
 	for position, key := range index.keys {
@@ -1261,7 +1715,18 @@ func openDiskANNIndexReader(
 		}
 	}
 	nodeSection := newDiskANNSectionReader(reader, meta.sections.nodesOffset, meta.sections.nodesLength)
-	nodeReader, err := OpenDiskANNNodeReader(ctx, nodeSection, meta.sections.nodesLength, cacheCapacity, workers)
+	nodeHeader := make([]byte, 10)
+	if err := readFullAt(ctx, nodeSection, nodeHeader, 0); err != nil {
+		return nil, err
+	}
+	fp16 := binary.LittleEndian.Uint16(nodeHeader[8:10]) == diskANNFP16NodeFileVersion
+	var nodeReader *DiskANNNodeReader
+	var nodeReaderFP16 *diskANNFP16NodeReader
+	if fp16 {
+		nodeReaderFP16, err = openDiskANNFP16NodeReader(ctx, nodeSection, meta.sections.nodesLength, cacheCapacity, workers)
+	} else {
+		nodeReader, err = OpenDiskANNNodeReader(ctx, nodeSection, meta.sections.nodesLength, cacheCapacity, workers)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("core: open DiskANN node section: %w", err)
 	}
@@ -1273,7 +1738,7 @@ func openDiskANNIndexReader(
 			PQChunks: meta.configuredChunks, Workers: workers, CacheCapacity: cacheCapacity,
 		},
 		keys: keys, positions: positions, entryPoint: meta.entryPoint,
-		pq: model, codes: codes, nodes: nodeReader,
+		pq: model, codes: codes, nodes: nodeReader, nodesFP16: nodeReaderFP16, fp16: fp16,
 	}
 	if meta.metric == MetricMIPSL2 && model != nil {
 		index.codeNorms, err = diskANNPQCodeNorms(ctx, model, codes, meta.count)
@@ -1480,16 +1945,25 @@ func validateDiskANNIndex(ctx context.Context, index *DiskANNIndex) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if index == nil || index.dimension <= 0 || index.dimension > MaxRotationDimension || index.nodes == nil {
+	if index == nil || index.dimension <= 0 || index.dimension > MaxRotationDimension || (index.nodes == nil && index.nodesFP16 == nil) {
 		return errors.New("core: invalid DiskANN index")
+	}
+	if index.fp16 != (index.nodesFP16 != nil) || index.fp16 == (index.nodes != nil) {
+		return errors.New("core: inconsistent DiskANN vector encoding")
 	}
 	if err := index.options.Validate(); err != nil {
 		return err
 	}
+	var layout DiskANNLayout
+	if index.fp16 {
+		layout = index.nodesFP16.layout
+	} else {
+		layout = index.nodes.layout
+	}
 	count := len(index.keys)
-	if count > math.MaxUint32 || len(index.positions) != count || index.nodes.layout.count != count ||
-		index.nodes.layout.dimension != index.dimension || index.nodes.layout.metric != index.metric ||
-		index.nodes.layout.maxDegree != index.options.MaxDegree {
+	if count > math.MaxUint32 || len(index.positions) != count || layout.count != count ||
+		layout.dimension != index.dimension || layout.metric != index.metric ||
+		layout.maxDegree != index.options.MaxDegree {
 		return errors.New("core: inconsistent DiskANN storage")
 	}
 	seen := make(map[uint64]struct{}, count)

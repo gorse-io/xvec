@@ -32,6 +32,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestHNSWFP16BuildSearchAndPersistence(t *testing.T) {
+	options := DefaultHNSWBuildOptions(MetricL2)
+	options.M, options.EFConstruction = 2, 4
+	builder, err := NewHNSWBuilderFP16(2, options)
+	require.NoError(t, err)
+	for _, candidate := range exactCandidates {
+		require.NoError(t, builder.Add(context.Background(), candidate.Key, candidate.Vector))
+	}
+	index, err := builder.Build(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, index.vectors)
+	require.Len(t, index.vectorsFP16, len(exactCandidates)*2)
+
+	results, err := index.Search(context.Background(), []float32{1, 0}, 3)
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 30, Score: 0}, {Key: 5, Score: 1}, {Key: 10, Score: 1}}, results)
+
+	path := filepath.Join(t.TempDir(), "vectors.hnsw")
+	require.NoError(t, index.Save(context.Background(), path))
+	reopened, err := OpenHNSWIndex(context.Background(), path)
+	require.NoError(t, err)
+	require.Empty(t, reopened.vectors)
+	require.Equal(t, index.vectorsFP16, reopened.vectorsFP16)
+	results, err = reopened.Search(context.Background(), []float32{1, 0}, 3)
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 30, Score: 0}, {Key: 5, Score: 1}, {Key: 10, Score: 1}}, results)
+}
+
 func TestHNSWBlockHeapBaseSearchUsesMetricOrdering(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -64,7 +92,7 @@ func TestHNSWBlockHeapBaseSearchUsesMetricOrdering(t *testing.T) {
 			defer releaseHNSWVisited(visited)
 
 			got, err := index.searchHNSWBaseBlockHeap(
-				context.Background(), []float32{test.query}, 0, 0, 2,
+				context.Background(), []float32{test.query}, nil, 0, 0, 2,
 				HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EF: 2}, visited,
 			)
 			require.NoError(t, err)
@@ -93,7 +121,7 @@ func TestHNSWRadiusSearchCanCrossOutOfRadiusBridge(t *testing.T) {
 	defer releaseHNSWVisited(visited)
 
 	got, err := index.searchHNSWBase(
-		context.Background(), []float32{0}, 0, 0, 1,
+		context.Background(), []float32{0}, nil, 0, 0, 1,
 		HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 1, Radius: 0.5}, EF: 1}, visited,
 	)
 
@@ -116,7 +144,7 @@ func TestHNSWBlockHeapExpandsEvictedEqualDistanceCandidate(t *testing.T) {
 	defer releaseHNSWVisited(visited)
 
 	got, err := index.searchHNSWBaseBlockHeap(
-		context.Background(), []float32{0}, 0, 0, 3,
+		context.Background(), []float32{0}, nil, 0, 0, 3,
 		HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 3}, EF: 3}, visited,
 	)
 
@@ -145,13 +173,13 @@ func TestHNSWBlockHeapCancellationAndEqualResult(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err = index.searchHNSWBaseBlockHeap(
-		ctx, []float32{0}, 0, 0, 2,
+		ctx, []float32{0}, nil, 0, 0, 2,
 		HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EF: 2}, visited,
 	)
 	require.ErrorIs(t, err, context.Canceled)
 
 	got, err := index.searchHNSWBaseBlockHeap(
-		context.Background(), []float32{0}, 0, 0, 2,
+		context.Background(), []float32{0}, nil, 0, 0, 2,
 		HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 2}, EF: 2}, visited,
 	)
 	require.NoError(t, err)

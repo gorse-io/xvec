@@ -31,6 +31,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestIVFFP16BuildSearchAndPersistence(t *testing.T) {
+	options := DefaultIVFBuildOptions(MetricL2)
+	options.NList, options.NIterations = 2, 4
+	builder, err := NewIVFBuilderFP16(2, options)
+	require.NoError(t, err)
+	for _, candidate := range exactCandidates {
+		require.NoError(t, builder.Add(context.Background(), candidate.Key, candidate.Vector))
+	}
+	index, err := builder.Build(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, index.vectors)
+	require.Len(t, index.vectorsFP16, len(exactCandidates)*2)
+
+	results, err := index.SearchIVF(context.Background(), []float32{1, 0}, IVFSearchOptions{
+		SearchOptions: SearchOptions{TopK: 3}, NProbe: 2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 30, Score: 0}, {Key: 5, Score: 1}, {Key: 10, Score: 1}}, results)
+
+	path := filepath.Join(t.TempDir(), "vectors.ivf")
+	require.NoError(t, index.Save(context.Background(), path))
+	reopened, err := OpenIVFIndex(context.Background(), path)
+	require.NoError(t, err)
+	require.Empty(t, reopened.vectors)
+	require.Equal(t, index.vectorsFP16, reopened.vectorsFP16)
+}
+
 func TestIVFBuildPartitionsVectors(t *testing.T) {
 	t.Parallel()
 	options := DefaultIVFBuildOptions(MetricL2)

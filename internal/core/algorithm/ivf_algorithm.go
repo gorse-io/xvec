@@ -26,9 +26,11 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/gorse-io/xvec/internal/ailego/io"
 	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/utility"
 )
 
 const (
@@ -82,17 +84,29 @@ func (o IVFBuildOptions) Validate() error {
 // IVFBuilder collects original vectors and builds a one-shot IVF layout. The
 // resulting index supports concurrent search and incremental streaming.
 type IVFBuilder struct {
-	mu        sync.Mutex
-	dimension int
-	options   IVFBuildOptions
-	keys      []uint64
-	vectors   []float32
-	positions map[uint64]int
-	built     bool
+	mu          sync.Mutex
+	dimension   int
+	options     IVFBuildOptions
+	keys        []uint64
+	vectors     []float32
+	vectorsFP16 []uint16
+	fp16        bool
+	positions   map[uint64]int
+	built       bool
 }
 
 // NewIVFBuilder constructs an empty IVF builder.
 func NewIVFBuilder(dimension int, options IVFBuildOptions) (*IVFBuilder, error) {
+	return newIVFBuilder(dimension, options, false)
+}
+
+// NewIVFBuilderFP16 constructs an IVF builder that retains originals in IEEE
+// 754 binary16 form while training centroids in FP32.
+func NewIVFBuilderFP16(dimension int, options IVFBuildOptions) (*IVFBuilder, error) {
+	return newIVFBuilder(dimension, options, true)
+}
+
+func newIVFBuilder(dimension int, options IVFBuildOptions, fp16 bool) (*IVFBuilder, error) {
 	if dimension <= 0 || dimension > MaxRotationDimension {
 		return nil, fmt.Errorf("%w: got %d", ErrInvalidDimension, dimension)
 	}
@@ -102,6 +116,7 @@ func NewIVFBuilder(dimension int, options IVFBuildOptions) (*IVFBuilder, error) 
 	return &IVFBuilder{
 		dimension: dimension,
 		options:   options,
+		fp16:      fp16,
 		positions: make(map[uint64]int),
 	}, nil
 }
@@ -132,9 +147,18 @@ func (b *IVFBuilder) Add(ctx context.Context, key uint64, vector []float32) erro
 	if _, exists := b.positions[key]; exists {
 		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
 	}
-	b.positions[key] = len(b.keys)
+	position := len(b.keys)
+	if b.fp16 {
+		encoded, err := denseVectorFP16(vector)
+		if err != nil {
+			return fmt.Errorf("core: encode IVF FP16 vector: %w", err)
+		}
+		b.vectorsFP16 = append(b.vectorsFP16, encoded...)
+	} else {
+		b.vectors = append(b.vectors, vector...)
+	}
+	b.positions[key] = position
 	b.keys = append(b.keys, key)
-	b.vectors = append(b.vectors, vector...)
 	return nil
 }
 
@@ -161,13 +185,22 @@ func (b *IVFBuilder) Build(ctx context.Context) (*IVFIndex, error) {
 	}
 
 	index := &IVFIndex{
-		dimension: b.dimension,
-		options:   b.options,
-		keys:      b.keys,
-		vectors:   b.vectors,
-		positions: b.positions,
+		dimension:   b.dimension,
+		options:     b.options,
+		keys:        b.keys,
+		vectors:     b.vectors,
+		vectorsFP16: b.vectorsFP16,
+		fp16:        b.fp16,
+		positions:   b.positions,
 	}
 	if len(b.keys) != 0 {
+		trainingStorage := b.vectors
+		if b.fp16 {
+			trainingStorage = make([]float32, len(b.vectorsFP16))
+			for index, bits := range b.vectorsFP16 {
+				trainingStorage[index] = utility.Float16BitsToFloat32(bits)
+			}
+		}
 		training := make([][]float32, len(b.keys))
 		for position := range b.keys {
 			if position&1023 == 0 {
@@ -176,7 +209,7 @@ func (b *IVFBuilder) Build(ctx context.Context) (*IVFIndex, error) {
 				}
 			}
 			start := position * b.dimension
-			training[position] = b.vectors[start : start+b.dimension]
+			training[position] = trainingStorage[start : start+b.dimension]
 		}
 		kmeans := DefaultKMeansOptions(b.options.NList, b.options.Metric)
 		kmeans.MaxIterations = b.options.NIterations
@@ -207,6 +240,7 @@ func (b *IVFBuilder) Build(ctx context.Context) (*IVFIndex, error) {
 	b.built = true
 	b.keys = nil
 	b.vectors = nil
+	b.vectorsFP16 = nil
 	b.positions = nil
 	return index, nil
 }
@@ -222,6 +256,8 @@ type IVFIndex struct {
 	model              *KMeansModel
 	keys               []uint64
 	vectors            []float32
+	vectorsFP16        []uint16
+	fp16               bool
 	vectorMagnitudes   []float32
 	centroidMagnitudes []float32
 	positions          map[uint64]int
@@ -235,6 +271,10 @@ func (i *IVFIndex) Dimension() int {
 		return 0
 	}
 	return i.dimension
+}
+
+func (i *IVFIndex) IsFP16() bool {
+	return i != nil && i.fp16
 }
 
 // Metric returns the configured metric.
@@ -287,6 +327,9 @@ func (i *IVFIndex) Vector(key uint64) ([]float32, bool) {
 		return nil, false
 	}
 	start := position * i.dimension
+	if i.fp16 {
+		return float32VectorFromFP16(i.vectorsFP16[start : start+i.dimension]), true
+	}
 	return slices.Clone(i.vectors[start : start+i.dimension]), true
 }
 
@@ -354,9 +397,13 @@ func (i *IVFIndex) List(list int) ([]Candidate, error) {
 	result := make([]Candidate, len(positions))
 	for index, position := range positions {
 		start := position * i.dimension
+		vector := slices.Clone(i.vectors[start : start+i.dimension])
+		if i.fp16 {
+			vector = float32VectorFromFP16(i.vectorsFP16[start : start+i.dimension])
+		}
 		result[index] = Candidate{
 			Key:    i.keys[position],
-			Vector: slices.Clone(i.vectors[start : start+i.dimension]),
+			Vector: vector,
 		}
 	}
 	return result, nil
@@ -469,6 +516,13 @@ func (i *IVFIndex) searchIVF(ctx context.Context, query []float32, options IVFSe
 	if err != nil {
 		return nil, err
 	}
+	if i.fp16 {
+		queryFP16, err := denseVectorFP16(query)
+		if err != nil {
+			return nil, fmt.Errorf("core: encode IVF FP16 query: %w", err)
+		}
+		return i.searchFP16Lists(ctx, queryFP16, lists, options.SearchOptions)
+	}
 	batchLen := func(batch int) int { return len(i.lists[lists[batch]].positions) }
 	if i.options.Metric == MetricCosine {
 		var candidateMagnitude float32
@@ -490,6 +544,54 @@ func (i *IVFIndex) searchIVF(ctx context.Context, query []float32, options IVFSe
 		start := position * i.dimension
 		return Candidate{Key: i.keys[position], Vector: i.vectors[start : start+i.dimension]}
 	})
+}
+
+func (i *IVFIndex) searchFP16Lists(ctx context.Context, query []uint16, lists []int, options SearchOptions) ([]Result, error) {
+	distance, err := denseDistanceFP16(i.options.Metric)
+	if err != nil {
+		return nil, err
+	}
+	k := min(options.TopK, len(i.keys))
+	worstFirst := func(left, right Result) bool {
+		if left.Score == right.Score {
+			return left.Key > right.Key
+		}
+		return i.options.Metric.Better(right.Score, left.Score)
+	}
+	heap := container.NewHeapWithCapacity(k, worstFirst)
+	queryMagnitude := float32(0)
+	if i.options.Metric == MetricCosine {
+		queryMagnitude = mathutil.L2MagnitudeFP16(query)
+	}
+	for _, list := range lists {
+		for _, position := range i.lists[list].positions {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			key := i.keys[position]
+			if options.Filter != nil && !options.Filter(key) {
+				continue
+			}
+			start := position * i.dimension
+			candidate := i.vectorsFP16[start : start+i.dimension]
+			score := distance(candidate, query)
+			if i.options.Metric == MetricCosine {
+				score = mathutil.CosineDistanceWithMagnitudesFP16(candidate, query, i.vectorMagnitudes[position], queryMagnitude)
+			}
+			retainDenseResult(heap, k, i.options.Metric, options.Radius, Result{Key: key, Score: score})
+		}
+	}
+	results := heap.Values()
+	slices.SortFunc(results, func(left, right Result) int {
+		if resultBetter(i.options.Metric, left, right) {
+			return -1
+		}
+		if resultBetter(i.options.Metric, right, left) {
+			return 1
+		}
+		return 0
+	})
+	return results, nil
 }
 
 // ProbedLists returns up to nprobe centroid indexes in metric-best order.
@@ -579,7 +681,11 @@ func (i *IVFIndex) cacheCosineMagnitudes(ctx context.Context) error {
 			}
 		}
 		start := position * i.dimension
-		i.vectorMagnitudes[position] = mathutil.L2Magnitude(i.vectors[start : start+i.dimension])
+		if i.fp16 {
+			i.vectorMagnitudes[position] = mathutil.L2MagnitudeFP16(i.vectorsFP16[start : start+i.dimension])
+		} else {
+			i.vectorMagnitudes[position] = mathutil.L2Magnitude(i.vectors[start : start+i.dimension])
+		}
 	}
 	i.centroidMagnitudes = make([]float32, len(i.model.centroids))
 	for index, centroid := range i.model.centroids {
@@ -610,9 +716,23 @@ func (i *IVFIndex) Add(ctx context.Context, key uint64, vector []float32) error 
 	if err := validateTrainingVector(vector, i.dimension); err != nil {
 		return fmt.Errorf("core: validate incremental IVF vector: %w", err)
 	}
+	var vectorFP16 []uint16
+	vectorForIndex := vector
+	if i.fp16 {
+		var err error
+		vectorFP16, err = denseVectorFP16(vector)
+		if err != nil {
+			return fmt.Errorf("core: encode incremental IVF FP16 vector: %w", err)
+		}
+		vectorForIndex = float32VectorFromFP16(vectorFP16)
+	}
 	var vectorMagnitude float32
 	if i.options.Metric == MetricCosine {
-		vectorMagnitude = mathutil.L2Magnitude(vector)
+		if i.fp16 {
+			vectorMagnitude = mathutil.L2MagnitudeFP16(vectorFP16)
+		} else {
+			vectorMagnitude = mathutil.L2Magnitude(vector)
+		}
 	}
 
 	i.mu.Lock()
@@ -623,7 +743,11 @@ func (i *IVFIndex) Add(ctx context.Context, key uint64, vector []float32) error 
 	if _, exists := i.positions[key]; exists {
 		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
 	}
-	if len(i.keys) == maxPlatformInt() || len(i.vectors) > maxPlatformInt()-i.dimension {
+	vectorLength := len(i.vectors)
+	if i.fp16 {
+		vectorLength = len(i.vectorsFP16)
+	}
+	if len(i.keys) == maxPlatformInt() || vectorLength > maxPlatformInt()-i.dimension {
 		return ErrIVFCapacity
 	}
 
@@ -636,13 +760,13 @@ func (i *IVFIndex) Add(ctx context.Context, key uint64, vector []float32) error 
 	growCentroids := len(i.lists) < i.options.NList
 	if growCentroids {
 		list = len(i.lists)
-		score = distance(vector, vector)
+		score = distance(vectorForIndex, vectorForIndex)
 	} else {
 		if i.model == nil {
 			return fmt.Errorf("%w: missing trained centroids", ErrInvalidIVFFile)
 		}
 		list, score, err = nearestCentroidWithDistanceContext(
-			ctx, i.options.Metric, distance, i.model.centroids, vector,
+			ctx, i.options.Metric, distance, i.model.centroids, vectorForIndex,
 		)
 	}
 	if err != nil {
@@ -666,7 +790,11 @@ func (i *IVFIndex) Add(ctx context.Context, key uint64, vector []float32) error 
 	position := len(i.keys)
 	i.positions[key] = position
 	i.keys = append(i.keys, key)
-	i.vectors = append(i.vectors, vector...)
+	if i.fp16 {
+		i.vectorsFP16 = append(i.vectorsFP16, vectorFP16...)
+	} else {
+		i.vectors = append(i.vectors, vector...)
+	}
 	if i.options.Metric == MetricCosine {
 		i.vectorMagnitudes = append(i.vectorMagnitudes, vectorMagnitude)
 	}
@@ -675,7 +803,7 @@ func (i *IVFIndex) Add(ctx context.Context, key uint64, vector []float32) error 
 		i.model = &KMeansModel{
 			metric:     i.options.Metric,
 			dimension:  i.dimension,
-			centroids:  [][]float32{slices.Clone(vector)},
+			centroids:  [][]float32{slices.Clone(vectorForIndex)},
 			counts:     []int{1},
 			cost:       cost,
 			iterations: 0,
@@ -688,7 +816,7 @@ func (i *IVFIndex) Add(ctx context.Context, key uint64, vector []float32) error 
 		return nil
 	}
 	if growCentroids {
-		i.model.centroids = append(i.model.centroids, slices.Clone(vector))
+		i.model.centroids = append(i.model.centroids, slices.Clone(vectorForIndex))
 		if i.options.Metric == MetricCosine {
 			i.centroidMagnitudes = append(i.centroidMagnitudes, vectorMagnitude)
 		}
@@ -768,6 +896,8 @@ func (i *IVFIndex) persistenceSnapshot(ctx context.Context) (*IVFIndex, error) {
 		options:            i.options,
 		keys:               append([]uint64(nil), i.keys...),
 		vectors:            append([]float32(nil), i.vectors...),
+		vectorsFP16:        append([]uint16(nil), i.vectorsFP16...),
+		fp16:               i.fp16,
 		vectorMagnitudes:   append([]float32(nil), i.vectorMagnitudes...),
 		centroidMagnitudes: append([]float32(nil), i.centroidMagnitudes...),
 		positions:          make(map[uint64]int, len(i.positions)),
@@ -835,7 +965,7 @@ func encodeIVFIndex(ctx context.Context, index *IVFIndex) ([]byte, error) {
 	}
 	count := len(index.keys)
 	nlist := len(index.lists)
-	payloadSize, err := checkedIVFPayloadSize(index.dimension, count, nlist)
+	payloadSize, err := checkedIVFPayloadSize(index.dimension, count, nlist, index.fp16)
 	if err != nil {
 		return nil, err
 	}
@@ -860,8 +990,14 @@ func encodeIVFIndex(ctx context.Context, index *IVFIndex) ([]byte, error) {
 		}
 		payload = binary.LittleEndian.AppendUint64(payload, key)
 		start := position * index.dimension
-		for _, value := range index.vectors[start : start+index.dimension] {
-			payload = binary.LittleEndian.AppendUint32(payload, math.Float32bits(value))
+		if index.fp16 {
+			for _, value := range index.vectorsFP16[start : start+index.dimension] {
+				payload = binary.LittleEndian.AppendUint16(payload, value)
+			}
+		} else {
+			for _, value := range index.vectors[start : start+index.dimension] {
+				payload = binary.LittleEndian.AppendUint32(payload, math.Float32bits(value))
+			}
 		}
 		payload = binary.LittleEndian.AppendUint32(payload, uint32(index.listForPosition[position]))
 	}
@@ -879,6 +1015,9 @@ func encodeIVFIndex(ctx context.Context, index *IVFIndex) ([]byte, error) {
 	binary.LittleEndian.PutUint32(header[40:44], uint32(index.dimension))
 	binary.LittleEndian.PutUint32(header[44:48], uint32(nlist))
 	header[48] = byte(index.options.Metric)
+	if index.fp16 {
+		header[50] = 1
+	}
 	binary.LittleEndian.PutUint32(header[52:56], uint32(index.options.NList))
 	binary.LittleEndian.PutUint32(header[56:60], uint32(index.options.NIterations))
 	binary.LittleEndian.PutUint64(header[60:68], uint64(int64(index.options.Workers)))
@@ -917,8 +1056,7 @@ func decodeIVFIndex(ctx context.Context, encoded []byte) (*IVFIndex, error) {
 	if binary.LittleEndian.Uint16(header[10:12]) != ivfHeaderSize {
 		return nil, fmt.Errorf("%w: bad header size", ErrInvalidIVFFile)
 	}
-	if binary.LittleEndian.Uint32(header[12:16]) != 0 ||
-		binary.LittleEndian.Uint16(header[50:52]) != 0 ||
+	if binary.LittleEndian.Uint32(header[12:16]) != 0 || header[50] > 1 || header[51] != 0 ||
 		binary.LittleEndian.Uint64(header[100:108]) != 0 {
 		return nil, fmt.Errorf("%w: nonzero reserved field", ErrInvalidIVFFile)
 	}
@@ -943,7 +1081,8 @@ func decodeIVFIndex(ctx context.Context, encoded []byte) (*IVFIndex, error) {
 		return nil, fmt.Errorf("%w: invalid effective list count", ErrInvalidIVFFile)
 	}
 	dimension, count, nlist := int(dimension64), int(count64), int(nlist64)
-	payloadSize, err := checkedIVFPayloadSize(dimension, count, nlist)
+	fp16 := header[50] == 1
+	payloadSize, err := checkedIVFPayloadSize(dimension, count, nlist, fp16)
 	if err != nil || payloadSize != len(encoded)-ivfHeaderSize {
 		return nil, fmt.Errorf("%w: invalid payload length", ErrInvalidIVFFile)
 	}
@@ -966,11 +1105,20 @@ func decodeIVFIndex(ctx context.Context, encoded []byte) (*IVFIndex, error) {
 		return nil, fmt.Errorf("%w: empty index has training metadata", ErrInvalidIVFFile)
 	}
 
+	var vectors []float32
+	var vectorsFP16 []uint16
+	if fp16 {
+		vectorsFP16 = make([]uint16, count*dimension)
+	} else {
+		vectors = make([]float32, count*dimension)
+	}
 	index := &IVFIndex{
 		dimension:       dimension,
 		options:         options,
 		keys:            make([]uint64, count),
-		vectors:         make([]float32, count*dimension),
+		vectors:         vectors,
+		vectorsFP16:     vectorsFP16,
+		fp16:            fp16,
 		positions:       make(map[uint64]int, count),
 		lists:           make([]ivfList, nlist),
 		listForPosition: make([]int, count),
@@ -1010,12 +1158,17 @@ func decodeIVFIndex(ctx context.Context, encoded []byte) (*IVFIndex, error) {
 		index.positions[key] = position
 		start := position * dimension
 		for component := 0; component < dimension; component++ {
-			value := math.Float32frombits(binary.LittleEndian.Uint32(payload[offset : offset+4]))
-			offset += 4
-			if !finiteFloat32(value) {
-				return nil, fmt.Errorf("%w: non-finite vector", ErrInvalidIVFFile)
+			if fp16 {
+				index.vectorsFP16[start+component] = binary.LittleEndian.Uint16(payload[offset : offset+2])
+				offset += 2
+			} else {
+				value := math.Float32frombits(binary.LittleEndian.Uint32(payload[offset : offset+4]))
+				offset += 4
+				if !finiteFloat32(value) {
+					return nil, fmt.Errorf("%w: non-finite vector", ErrInvalidIVFFile)
+				}
+				index.vectors[start+component] = value
 			}
-			index.vectors[start+component] = value
 		}
 		list := uint64(binary.LittleEndian.Uint32(payload[offset : offset+4]))
 		offset += 4
@@ -1076,10 +1229,14 @@ func validateIVFIndex(ctx context.Context, index *IVFIndex) error {
 		return fmt.Errorf("%w: options exceed format capacity", ErrInvalidIVFFile)
 	}
 	count := len(index.keys)
-	if _, err := checkedIVFPayloadSize(index.dimension, count, len(index.lists)); err != nil {
+	if _, err := checkedIVFPayloadSize(index.dimension, count, len(index.lists), index.fp16); err != nil {
 		return err
 	}
-	if count > maxPlatformInt()/index.dimension || len(index.vectors) != count*index.dimension || len(index.positions) != count {
+	validVectorStorage := len(index.vectors) == count*index.dimension && len(index.vectorsFP16) == 0
+	if index.fp16 {
+		validVectorStorage = len(index.vectors) == 0 && len(index.vectorsFP16) == count*index.dimension
+	}
+	if count > maxPlatformInt()/index.dimension || !validVectorStorage || len(index.positions) != count {
 		return fmt.Errorf("%w: inconsistent vector storage", ErrInvalidIVFFile)
 	}
 	if index.options.Metric == MetricCosine {
@@ -1137,24 +1294,36 @@ func validateIVFIndex(ctx context.Context, index *IVFIndex) error {
 			return fmt.Errorf("%w: inconsistent key map", ErrInvalidIVFFile)
 		}
 		start := position * index.dimension
-		for _, value := range index.vectors[start : start+index.dimension] {
-			if !finiteFloat32(value) {
-				return fmt.Errorf("%w: non-finite vector", ErrInvalidIVFFile)
+		if index.fp16 {
+			for _, bits := range index.vectorsFP16[start : start+index.dimension] {
+				if !finiteFloat32(utility.Float16BitsToFloat32(bits)) {
+					return fmt.Errorf("%w: non-finite vector", ErrInvalidIVFFile)
+				}
+			}
+		} else {
+			for _, value := range index.vectors[start : start+index.dimension] {
+				if !finiteFloat32(value) {
+					return fmt.Errorf("%w: non-finite vector", ErrInvalidIVFFile)
+				}
 			}
 		}
 	}
 	return nil
 }
 
-func checkedIVFPayloadSize(dimension, count, nlist int) (int, error) {
+func checkedIVFPayloadSize(dimension, count, nlist int, fp16 bool) (int, error) {
 	if dimension <= 0 || count < 0 || nlist < 0 {
 		return 0, fmt.Errorf("%w: invalid size", ErrInvalidIVFFile)
 	}
 	dim := uint64(dimension)
 	centroidBytes := uint64(nlist) * dim * 4
-	recordBytes := uint64(count) * (ivfRecordOverhead + dim*4)
+	vectorWidth := uint64(4)
+	if fp16 {
+		vectorWidth = 2
+	}
+	recordBytes := uint64(count) * (ivfRecordOverhead + dim*vectorWidth)
 	if nlist != 0 && centroidBytes/dim/4 != uint64(nlist) ||
-		count != 0 && recordBytes/(ivfRecordOverhead+dim*4) != uint64(count) ||
+		count != 0 && recordBytes/(ivfRecordOverhead+dim*vectorWidth) != uint64(count) ||
 		centroidBytes > math.MaxUint64-recordBytes {
 		return 0, fmt.Errorf("%w: payload size overflow", ErrInvalidIVFFile)
 	}

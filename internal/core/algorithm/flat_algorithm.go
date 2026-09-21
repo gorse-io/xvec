@@ -413,6 +413,14 @@ func denseVectorFP16(vector []float32) ([]uint16, error) {
 	return result, nil
 }
 
+func float32VectorFromFP16(vector []uint16) []float32 {
+	result := make([]float32, len(vector))
+	for index, bits := range vector {
+		result[index] = utility.Float16BitsToFloat32(bits)
+	}
+	return result
+}
+
 func denseDistanceFP16(metric Metric) (mathutil.DenseDistanceFP16, error) {
 	switch metric {
 	case MetricL2:
