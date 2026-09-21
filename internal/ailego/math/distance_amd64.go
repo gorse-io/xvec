@@ -19,6 +19,7 @@ package mathutil
 import (
 	"unsafe"
 
+	"github.com/klauspost/cpuid/v2"
 	"golang.org/x/sys/cpu"
 )
 
@@ -38,6 +39,16 @@ func init() {
 		kernels.l2 = squaredEuclideanAVX512
 		kernels.dot = innerProductAVX512
 		kernels.products = dotNormsAVX512
+	}
+	if cpuid.CPU.Supports(cpuid.AVX, cpuid.F16C) {
+		kernelsFP16.l2 = squaredEuclideanFP16AVX
+		kernelsFP16.dot = innerProductFP16AVX
+		kernelsFP16.products = dotNormsFP16AVX
+	}
+	if cpuid.CPU.Supports(cpuid.AVX, cpuid.F16C, cpuid.FMA3, cpuid.AVX512F, cpuid.AVX512DQ) {
+		kernelsFP16.l2 = squaredEuclideanFP16AVX512
+		kernelsFP16.dot = innerProductFP16AVX512
+		kernelsFP16.products = dotNormsFP16AVX512
 	}
 }
 
@@ -101,6 +112,56 @@ func dotNormsAVX512(left, right []float32) (dot, leftNorm, rightNorm float32) {
 		return dotNormsAVX(left, right)
 	}
 	dot = inner_product_and_squared_norm_fp32_avx512(
+		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)),
+		unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
+	)
+	return
+}
+
+func squaredEuclideanFP16AVX(left, right []uint16) float32 {
+	if len(left) < 8 {
+		return squaredEuclideanFP16Scalar(left, right)
+	}
+	return squared_euclidean_distance_fp16_avx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
+}
+
+func innerProductFP16AVX(left, right []uint16) float32 {
+	if len(left) < 8 {
+		return innerProductFP16Scalar(left, right)
+	}
+	return inner_product_fp16_avx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
+}
+
+func dotNormsFP16AVX(left, right []uint16) (dot, leftNorm, rightNorm float32) {
+	if len(left) < 8 {
+		return dotNormsFP16Scalar(left, right)
+	}
+	dot = inner_product_and_squared_norm_fp16_avx(
+		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)),
+		unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
+	)
+	return
+}
+
+func squaredEuclideanFP16AVX512(left, right []uint16) float32 {
+	if len(left) < 16 {
+		return squaredEuclideanFP16AVX(left, right)
+	}
+	return squared_euclidean_distance_fp16_avx512(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
+}
+
+func innerProductFP16AVX512(left, right []uint16) float32 {
+	if len(left) < 16 {
+		return innerProductFP16AVX(left, right)
+	}
+	return inner_product_fp16_avx512(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
+}
+
+func dotNormsFP16AVX512(left, right []uint16) (dot, leftNorm, rightNorm float32) {
+	if len(left) < 16 {
+		return dotNormsFP16AVX(left, right)
+	}
+	dot = inner_product_and_squared_norm_fp16_avx512(
 		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)),
 		unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
 	)

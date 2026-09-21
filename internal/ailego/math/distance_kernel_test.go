@@ -20,6 +20,7 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/gorse-io/xvec/internal/ailego/utility"
 	"github.com/stretchr/testify/require"
 )
 
@@ -139,6 +140,33 @@ func distanceOracle(left, right []float32) (l2, dot, leftNorm, rightNorm float32
 		rightNorm += rightValue * rightValue
 	}
 	return
+}
+
+func testArchitectureKernelsFP16(
+	t *testing.T,
+	l2Kernel binaryKernelFP16,
+	dotKernel binaryKernelFP16,
+	productsKernel productsKernelFP16,
+) {
+	t.Helper()
+	for _, dimension := range []int{1, 3, 4, 7, 8, 15, 16, 17, 31, 32, 33, 127, 128, 129} {
+		left := make([]uint16, dimension+1)
+		right := make([]uint16, dimension+1)
+		for index := 1; index <= dimension; index++ {
+			left[index] = utility.Float32ToFloat16Bits(float32((index*7)%19)/19 - 0.5)
+			right[index] = utility.Float32ToFloat16Bits(float32((index*11)%23)/23 - 0.5)
+		}
+		left, right = left[1:], right[1:]
+		wantL2 := squaredEuclideanFP16Scalar(left, right)
+		wantDot := innerProductFP16Scalar(left, right)
+		wantProduct, wantLeftNorm, wantRightNorm := dotNormsFP16Scalar(left, right)
+		requireFloat32Close(t, wantL2, l2Kernel(left, right))
+		requireFloat32Close(t, wantDot, dotKernel(left, right))
+		dot, leftNorm, rightNorm := productsKernel(left, right)
+		requireFloat32Close(t, wantProduct, dot)
+		requireFloat32Close(t, wantLeftNorm, leftNorm)
+		requireFloat32Close(t, wantRightNorm, rightNorm)
+	}
 }
 
 func requireFloat32Close(t *testing.T, expected, actual float32) {
