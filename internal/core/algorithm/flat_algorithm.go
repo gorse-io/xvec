@@ -26,6 +26,7 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/gorse-io/xvec/internal/ailego/math_batch"
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
+	"github.com/gorse-io/xvec/internal/ailego/utility"
 )
 
 var (
@@ -67,20 +68,33 @@ type DenseBuilder interface {
 	Build(ctx context.Context) (DenseIndex, error)
 }
 
-// DenseFlatIndex stores FP32 vectors contiguously and scans every vector for
-// exact search. Adds are serialized; any number of searches may run together.
+// DenseFlatIndex stores FP32 or binary16 vectors contiguously and scans every
+// vector for exact search. Adds are serialized; any number of searches may run
+// together.
 type DenseFlatIndex struct {
-	mu         sync.RWMutex
-	dimension  int
-	metric     Metric
-	keys       []uint64
-	vectors    []float32
-	magnitudes []float32
-	positions  map[uint64]int
+	mu          sync.RWMutex
+	dimension   int
+	metric      Metric
+	fp16        bool
+	keys        []uint64
+	vectors     []float32
+	vectorsFP16 []uint16
+	magnitudes  []float32
+	positions   map[uint64]int
 }
 
 // NewDenseFlatIndex constructs an empty exact index.
 func NewDenseFlatIndex(dimension int, metric Metric) (*DenseFlatIndex, error) {
+	return newDenseFlatIndex(dimension, metric, false)
+}
+
+// NewDenseFlatIndexFP16 constructs an exact index that stores IEEE-754
+// binary16 vectors and accumulates scores in float32.
+func NewDenseFlatIndexFP16(dimension int, metric Metric) (*DenseFlatIndex, error) {
+	return newDenseFlatIndex(dimension, metric, true)
+}
+
+func newDenseFlatIndex(dimension int, metric Metric, fp16 bool) (*DenseFlatIndex, error) {
 	if dimension <= 0 {
 		return nil, fmt.Errorf("%w: got %d", ErrInvalidDimension, dimension)
 	}
@@ -90,6 +104,7 @@ func NewDenseFlatIndex(dimension int, metric Metric) (*DenseFlatIndex, error) {
 	return &DenseFlatIndex{
 		dimension: dimension,
 		metric:    metric,
+		fp16:      fp16,
 		positions: make(map[uint64]int),
 	}, nil
 }
@@ -104,13 +119,34 @@ func NewDenseFlatIndexFromValidatedCandidates(
 	metric Metric,
 	candidates []Candidate,
 ) (*DenseFlatIndex, error) {
+	return newDenseFlatIndexFromValidatedCandidates(ctx, dimension, metric, candidates, false)
+}
+
+// NewDenseFlatIndexFP16FromValidatedCandidates constructs a binary16 exact
+// index in one allocation pass. Candidate vectors must already be finite.
+func NewDenseFlatIndexFP16FromValidatedCandidates(
+	ctx context.Context,
+	dimension int,
+	metric Metric,
+	candidates []Candidate,
+) (*DenseFlatIndex, error) {
+	return newDenseFlatIndexFromValidatedCandidates(ctx, dimension, metric, candidates, true)
+}
+
+func newDenseFlatIndexFromValidatedCandidates(
+	ctx context.Context,
+	dimension int,
+	metric Metric,
+	candidates []Candidate,
+	fp16 bool,
+) (*DenseFlatIndex, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil dense Flat build context")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	index, err := NewDenseFlatIndex(dimension, metric)
+	index, err := newDenseFlatIndex(dimension, metric, fp16)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +154,11 @@ func NewDenseFlatIndexFromValidatedCandidates(
 		return nil, ErrDenseCapacity
 	}
 	index.keys = make([]uint64, len(candidates))
-	index.vectors = make([]float32, len(candidates)*dimension)
+	if fp16 {
+		index.vectorsFP16 = make([]uint16, len(candidates)*dimension)
+	} else {
+		index.vectors = make([]float32, len(candidates)*dimension)
+	}
 	index.positions = make(map[uint64]int, len(candidates))
 	if metric == MetricCosine {
 		index.magnitudes = make([]float32, len(candidates))
@@ -138,9 +178,20 @@ func NewDenseFlatIndexFromValidatedCandidates(
 		index.keys[position] = candidate.Key
 		index.positions[candidate.Key] = position
 		start := position * dimension
-		copy(index.vectors[start:start+dimension], candidate.Vector)
-		if metric == MetricCosine {
-			index.magnitudes[position] = mathutil.L2Magnitude(candidate.Vector)
+		if fp16 {
+			vector, err := denseVectorFP16(candidate.Vector)
+			if err != nil {
+				return nil, fmt.Errorf("core: encode dense Flat FP16 candidate %d: %w", position, err)
+			}
+			copy(index.vectorsFP16[start:start+dimension], vector)
+			if metric == MetricCosine {
+				index.magnitudes[position] = mathutil.L2MagnitudeFP16(vector)
+			}
+		} else {
+			copy(index.vectors[start:start+dimension], candidate.Vector)
+			if metric == MetricCosine {
+				index.magnitudes[position] = mathutil.L2Magnitude(candidate.Vector)
+			}
 		}
 	}
 	return index, nil
@@ -157,14 +208,25 @@ func (i *DenseFlatIndex) Reserve(count int) error {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if count <= cap(i.keys) && count*i.dimension <= cap(i.vectors) &&
+	vectorCapacity := cap(i.vectors)
+	if i.fp16 {
+		vectorCapacity = cap(i.vectorsFP16)
+	}
+	if count <= cap(i.keys) && count*i.dimension <= vectorCapacity &&
 		(i.metric != MetricCosine || count <= cap(i.magnitudes)) {
 		return nil
 	}
 	keys := make([]uint64, len(i.keys), max(count, len(i.keys)))
 	copy(keys, i.keys)
-	vectors := make([]float32, len(i.vectors), max(count*i.dimension, len(i.vectors)))
-	copy(vectors, i.vectors)
+	var vectors []float32
+	var vectorsFP16 []uint16
+	if i.fp16 {
+		vectorsFP16 = make([]uint16, len(i.vectorsFP16), max(count*i.dimension, len(i.vectorsFP16)))
+		copy(vectorsFP16, i.vectorsFP16)
+	} else {
+		vectors = make([]float32, len(i.vectors), max(count*i.dimension, len(i.vectors)))
+		copy(vectors, i.vectors)
+	}
 	var magnitudes []float32
 	if i.metric == MetricCosine {
 		magnitudes = make([]float32, len(i.magnitudes), max(count, len(i.magnitudes)))
@@ -174,7 +236,7 @@ func (i *DenseFlatIndex) Reserve(count int) error {
 	for key, position := range i.positions {
 		positions[key] = position
 	}
-	i.keys, i.vectors, i.magnitudes, i.positions = keys, vectors, magnitudes, positions
+	i.keys, i.vectors, i.vectorsFP16, i.magnitudes, i.positions = keys, vectors, vectorsFP16, magnitudes, positions
 	return nil
 }
 
@@ -223,7 +285,17 @@ func (i *DenseFlatIndex) Add(ctx context.Context, key uint64, vector []float32) 
 		return fmt.Errorf("core: validate dense Flat vector: %w", err)
 	}
 	var magnitude float32
-	if i.metric == MetricCosine {
+	var vectorFP16 []uint16
+	if i.fp16 {
+		var err error
+		vectorFP16, err = denseVectorFP16(vector)
+		if err != nil {
+			return fmt.Errorf("core: encode dense Flat FP16 vector: %w", err)
+		}
+		if i.metric == MetricCosine {
+			magnitude = mathutil.L2MagnitudeFP16(vectorFP16)
+		}
+	} else if i.metric == MetricCosine {
 		magnitude = mathutil.L2Magnitude(vector)
 	}
 	i.mu.Lock()
@@ -236,7 +308,11 @@ func (i *DenseFlatIndex) Add(ctx context.Context, key uint64, vector []float32) 
 	}
 	i.positions[key] = len(i.keys)
 	i.keys = append(i.keys, key)
-	i.vectors = append(i.vectors, vector...)
+	if i.fp16 {
+		i.vectorsFP16 = append(i.vectorsFP16, vectorFP16...)
+	} else {
+		i.vectors = append(i.vectors, vector...)
+	}
 	if i.metric == MetricCosine {
 		i.magnitudes = append(i.magnitudes, magnitude)
 	}
@@ -255,6 +331,13 @@ func (i *DenseFlatIndex) Vector(key uint64) ([]float32, bool) {
 		return nil, false
 	}
 	start := position * i.dimension
+	if i.fp16 {
+		result := make([]float32, i.dimension)
+		for index, value := range i.vectorsFP16[start : start+i.dimension] {
+			result[index] = utility.Float16BitsToFloat32(value)
+		}
+		return result, true
+	}
 	return slices.Clone(i.vectors[start : start+i.dimension]), true
 }
 
@@ -295,6 +378,13 @@ func (i *DenseFlatIndex) search(ctx context.Context, query []float32, options Se
 	}
 	i.mu.RLock()
 	defer i.mu.RUnlock()
+	if i.fp16 {
+		queryFP16, err := denseVectorFP16(query)
+		if err != nil {
+			return nil, fmt.Errorf("core: encode dense Flat FP16 query: %w", err)
+		}
+		return i.searchFP16(ctx, queryFP16, options)
+	}
 	if i.metric == MetricCosine {
 		return i.searchCosine(ctx, query, options)
 	}
@@ -309,6 +399,83 @@ func (i *DenseFlatIndex) search(ctx context.Context, query []float32, options Se
 		start := position * i.dimension
 		return Candidate{Key: i.keys[position], Vector: i.vectors[start : start+i.dimension]}
 	})
+}
+
+func denseVectorFP16(vector []float32) ([]uint16, error) {
+	result := make([]uint16, len(vector))
+	for index, value := range vector {
+		bits := utility.Float32ToFloat16Bits(value)
+		if math.IsInf(float64(utility.Float16BitsToFloat32(bits)), 0) {
+			return nil, fmt.Errorf("%w at element %d", ErrQuantizationOverflow, index)
+		}
+		result[index] = bits
+	}
+	return result, nil
+}
+
+func denseDistanceFP16(metric Metric) (mathutil.DenseDistanceFP16, error) {
+	switch metric {
+	case MetricL2:
+		return mathutil.L2SquaredFP16, nil
+	case MetricIP:
+		return mathutil.InnerProductFP16, nil
+	case MetricCosine:
+		return mathutil.CosineDistanceFP16, nil
+	case MetricMIPSL2:
+		return mathutil.MIPSL2SquaredFP16, nil
+	default:
+		return nil, errors.New("core: invalid metric")
+	}
+}
+
+func (i *DenseFlatIndex) searchFP16(ctx context.Context, query []uint16, options SearchOptions) ([]Result, error) {
+	if options.TopK == 0 || len(i.keys) == 0 {
+		return []Result{}, nil
+	}
+	distance, err := denseDistanceFP16(i.metric)
+	if err != nil {
+		return nil, err
+	}
+	k := min(options.TopK, len(i.keys))
+	worstFirst := func(left, right Result) bool {
+		if left.Score == right.Score {
+			return left.Key > right.Key
+		}
+		return i.metric.Better(right.Score, left.Score)
+	}
+	heap := container.NewHeapWithCapacity(k, worstFirst)
+	queryMagnitude := float32(0)
+	if i.metric == MetricCosine {
+		queryMagnitude = mathutil.L2MagnitudeFP16(query)
+	}
+	for position, key := range i.keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if options.Filter != nil && !options.Filter(key) {
+			continue
+		}
+		start := position * i.dimension
+		candidate := i.vectorsFP16[start : start+i.dimension]
+		var score float32
+		if i.metric == MetricCosine {
+			score = mathutil.CosineDistanceWithMagnitudesFP16(candidate, query, i.magnitudes[position], queryMagnitude)
+		} else {
+			score = distance(candidate, query)
+		}
+		retainDenseResult(heap, k, i.metric, options.Radius, Result{Key: key, Score: score})
+	}
+	results := heap.Values()
+	slices.SortFunc(results, func(left, right Result) int {
+		if resultBetter(i.metric, left, right) {
+			return -1
+		}
+		if resultBetter(i.metric, right, left) {
+			return 1
+		}
+		return 0
+	})
+	return results, nil
 }
 
 func (i *DenseFlatIndex) searchDenseBatched(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {
@@ -912,6 +1079,17 @@ func (i *DenseFlatIndex) SearchGroups(ctx context.Context, query []float32, opti
 	if err != nil {
 		return nil, err
 	}
+	var queryFP16 []uint16
+	var distanceFP16 mathutil.DenseDistanceFP16
+	if i.fp16 {
+		queryFP16, err = denseVectorFP16(query)
+		if err == nil {
+			distanceFP16, err = denseDistanceFP16(i.metric)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("core: encode dense Flat FP16 group-by query: %w", err)
+		}
+	}
 
 	accumulator := newGroupAccumulator(i.metric, options.TopKPerGroup)
 	i.mu.RLock()
@@ -924,7 +1102,12 @@ func (i *DenseFlatIndex) SearchGroups(ctx context.Context, query []float32, opti
 			continue
 		}
 		start := position * i.dimension
-		score := distance(i.vectors[start:start+i.dimension], query)
+		var score float32
+		if i.fp16 {
+			score = distanceFP16(i.vectorsFP16[start:start+i.dimension], queryFP16)
+		} else {
+			score = distance(i.vectors[start:start+i.dimension], query)
+		}
 		if !scoreWithinRadius(i.metric, score, options.Radius) {
 			continue
 		}

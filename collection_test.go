@@ -41,6 +41,62 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCollectionDenseFlatFP16Metrics(t *testing.T) {
+	ctx := context.Background()
+	vector := func(values ...float32) VectorFP16 {
+		result := make(VectorFP16, len(values))
+		for index, value := range values {
+			result[index] = Float16FromFloat32(value)
+		}
+		return result
+	}
+	tests := []struct {
+		metric MetricType
+		want   []string
+	}{
+		{MetricTypeL2, []string{"a", "c"}},
+		{MetricTypeIP, []string{"c", "a"}},
+		{MetricTypeCosine, []string{"a", "c"}},
+		{MetricTypeMIPSL2, []string{"a", "c"}},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.metric.String(), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "fp16")
+			schema := NewCollectionSchema("fp16_flat", FieldSchema{
+				Name: "embedding", DataType: DataTypeVectorFP16, Dimension: 2,
+				Index: NewFlatIndexParams(testCase.metric),
+			})
+			collection, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
+			require.NoError(t, err)
+			_, err = collection.Insert(ctx, []Document{
+				{PrimaryKey: "a", Fields: map[string]any{"embedding": vector(1, 0)}},
+				{PrimaryKey: "b", Fields: map[string]any{"embedding": vector(0, 1)}},
+				{PrimaryKey: "c", Fields: map[string]any{"embedding": vector(2, 0)}},
+			})
+			require.NoError(t, err)
+
+			check := func() {
+				results, err := collection.Query(ctx, VectorQuery{
+					Field: "embedding", DenseVector: vector(1, 0), TopK: 2,
+				})
+				require.NoError(t, err)
+				got := make([]string, len(results))
+				for index := range results {
+					got[index] = results[index].PrimaryKey
+				}
+				require.Equal(t, testCase.want, got)
+			}
+			check()
+			require.NoError(t, collection.Close())
+
+			collection, err = Open(ctx, path, NewCollectionOptions())
+			require.NoError(t, err)
+			defer func() { require.NoError(t, collection.Close()) }()
+			check()
+		})
+	}
+}
+
 func TestCollectionCRUDFlushReopenAndReadOnly(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "books")

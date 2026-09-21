@@ -2102,7 +2102,12 @@ func buildCollectionDenseFlat(
 		return nil, err
 	}
 	if spec.quantize == QuantizeTypeUndefined || spec.indexType == IndexTypeIVFRaBitQ {
-		index, err := core.NewDenseFlatIndex(int(field.Dimension), spec.metric)
+		var index *core.DenseFlatIndex
+		if field.DataType == DataTypeVectorFP16 {
+			index, err = core.NewDenseFlatIndexFP16(int(field.Dimension), spec.metric)
+		} else {
+			index, err = core.NewDenseFlatIndex(int(field.Dimension), spec.metric)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -5115,10 +5120,13 @@ func (c *Collection) liveDocumentsFromSegmentsLocked(
 	return documents, nil
 }
 
-func buildDenseFlatIndex(ctx context.Context, field FieldSchema, metric core.Metric, documents []Document) (*core.DenseFlatIndex, error) {
+func buildDenseFlatIndex(ctx context.Context, field FieldSchema, metric core.Metric, documents []Document) (collectionDenseIndex, error) {
 	candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
 	if err != nil {
 		return nil, err
+	}
+	if field.DataType == DataTypeVectorFP16 {
+		return core.NewDenseFlatIndexFP16FromValidatedCandidates(ctx, int(field.Dimension), metric, candidates)
 	}
 	return core.NewDenseFlatIndexFromValidatedCandidates(ctx, int(field.Dimension), metric, candidates)
 }
