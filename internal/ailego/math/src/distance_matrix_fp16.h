@@ -1,5 +1,3 @@
-//go:build !noasm && arm64
-
 // Copyright 2026-present the xvec project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,24 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package mathutil
+#ifndef XVEC_DISTANCE_MATRIX_FP16_H_
+#define XVEC_DISTANCE_MATRIX_FP16_H_
 
-import (
-	"testing"
+#include <immintrin.h>
+#include <stdint.h>
 
-	"golang.org/x/sys/cpu"
-)
+#include "distance_matrix_fp32.h"
 
-func TestNEONDistanceKernels(t *testing.T) {
-	if !cpu.ARM64.HasASIMD {
-		t.Skip("NEON/ASIMD is not supported by this CPU")
-	}
-	testArchitectureKernels(t, squaredEuclideanNEON, innerProductNEON, dotNormsNEON)
-}
-
-func TestNEONFP16DistanceKernels(t *testing.T) {
-	if !cpu.ARM64.HasFPHP || !cpu.ARM64.HasASIMDHP {
-		t.Skip("NEON FP16 is not supported by this CPU")
-	}
-	testArchitectureKernelsFP16(t, squaredEuclideanFP16NEON, innerProductFP16NEON, dotNormsFP16NEON)
-}
+#endif

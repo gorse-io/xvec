@@ -19,6 +19,7 @@ package mathutil
 import (
 	"testing"
 
+	"github.com/klauspost/cpuid/v2"
 	"golang.org/x/sys/cpu"
 )
 
@@ -33,9 +34,23 @@ func TestAVXDistanceKernels(t *testing.T) {
 	testArchitectureKernels(t, squaredEuclideanAVX, innerProductAVX, dotNormsAVX)
 }
 
+func TestAVXFP16DistanceKernels(t *testing.T) {
+	if !cpuid.CPU.Supports(cpuid.AVX, cpuid.F16C) {
+		t.Skip("AVX/F16C is not supported by this CPU")
+	}
+	testArchitectureKernelsFP16(t, squaredEuclideanFP16AVX, innerProductFP16AVX, dotNormsFP16AVX)
+}
+
 func TestAVX512DistanceKernels(t *testing.T) {
 	if !cpu.X86.HasAVX || !cpu.X86.HasFMA || !cpu.X86.HasAVX512F {
 		t.Skip("AVX-512/FMA is not supported by this CPU")
 	}
 	testArchitectureKernels(t, squaredEuclideanAVX512, innerProductAVX512, dotNormsAVX512)
+}
+
+func TestAVX512FP16DistanceKernels(t *testing.T) {
+	if !cpuid.CPU.Supports(cpuid.AVX, cpuid.F16C, cpuid.FMA3, cpuid.AVX512F, cpuid.AVX512DQ) {
+		t.Skip("AVX-512/F16C/FMA is not supported by this CPU")
+	}
+	testArchitectureKernelsFP16(t, squaredEuclideanFP16AVX512, innerProductFP16AVX512, dotNormsFP16AVX512)
 }

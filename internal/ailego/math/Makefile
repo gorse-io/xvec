@@ -66,6 +66,7 @@ distance-avx:
 	$(GOAT) src/euclidean_distance_matrix_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/inner_product_matrix_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/mips_euclidean_distance_matrix_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/distance_matrix_fp16_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mf16c -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 distance-avx512:
@@ -74,6 +75,7 @@ distance-avx512:
 	$(GOAT) src/euclidean_distance_matrix_fp32_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mfma -mavx512f -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/inner_product_matrix_fp32_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mfma -mavx512f -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/mips_euclidean_distance_matrix_fp32_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mfma -mavx512f -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/distance_matrix_fp16_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mf16c -mavx512f -mavx512dq -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 distance-neon:
@@ -82,6 +84,7 @@ distance-neon:
 	$(GOAT) src/euclidean_distance_matrix_fp32_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/inner_product_matrix_fp32_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/mips_euclidean_distance_matrix_fp32_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/distance_matrix_fp16_neon.c --target $(GOAT_TARGET_ARM64) -O3 -march=armv8.2-a+fp16 -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 distance-rvv:

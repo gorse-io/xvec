@@ -18,6 +18,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/gorse-io/xvec/internal/ailego/utility"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,6 +59,65 @@ func TestDenseMetricsMatchPinnedBaseline(t *testing.T) {
 				tolerance = 1e-7
 			}
 			require.InDelta(t, testCase.expected, actual, float64(tolerance))
+		})
+	}
+}
+
+func TestFP16DenseMetricsMatchPinnedBaseline(t *testing.T) {
+	t.Parallel()
+
+	encode := func(values ...float32) []uint16 {
+		encoded := make([]uint16, len(values))
+		for index, value := range values {
+			encoded[index] = utility.Float32ToFloat16Bits(value)
+		}
+		return encoded
+	}
+	left := encode(1, 2, 3)
+	right := encode(4, 6, 3)
+	require.Equal(t, float32(25), L2SquaredFP16(left, right))
+	require.Equal(t, float32(25), InnerProductFP16(left, right))
+	require.InDelta(t, CosineDistance(
+		[]float32{1, 2, 3}, []float32{4, 6, 3},
+	), CosineDistanceFP16(left, right), 1e-6)
+	require.InDelta(t, MIPSL2Squared(
+		[]float32{1, 2, 3}, []float32{4, 6, 3},
+	), MIPSL2SquaredFP16(left, right), 1e-6)
+	require.InDelta(t, float32(math.Sqrt(14)), L2MagnitudeFP16(left), 1e-6)
+	require.InDelta(t, CosineDistanceFP16(left, right), CosineDistanceWithMagnitudesFP16(
+		left, right, L2MagnitudeFP16(left), L2MagnitudeFP16(right),
+	), 1e-6)
+}
+
+func TestFP16DenseMetricZeroVectors(t *testing.T) {
+	t.Parallel()
+
+	zero := []uint16{0, 0}
+	unit := []uint16{utility.Float32ToFloat16Bits(1), 0}
+	require.Equal(t, float32(0), CosineDistanceFP16(zero, zero))
+	require.Equal(t, float32(1), CosineDistanceFP16(zero, unit))
+	require.Equal(t, float32(1), CosineDistanceFP16(unit, zero))
+	require.Equal(t, float32(0), MIPSL2SquaredFP16(zero, zero))
+	require.Equal(t, float32(2), MIPSL2SquaredFP16(zero, unit))
+	require.Equal(t, float32(2), MIPSL2SquaredFP16(unit, zero))
+}
+
+func TestFP16DenseDistancesDoNotAllocate(t *testing.T) {
+	left := []uint16{0x3266, 0x3b33, 0xb666, 0x399a}
+	right := []uint16{0x34cd, 0x3800, 0x3a66, 0xae66}
+	for _, test := range []struct {
+		name     string
+		distance DenseDistanceFP16
+	}{
+		{name: "l2", distance: L2SquaredFP16},
+		{name: "inner product", distance: InnerProductFP16},
+		{name: "cosine", distance: CosineDistanceFP16},
+		{name: "mips-l2", distance: MIPSL2SquaredFP16},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.Zero(t, testing.AllocsPerRun(100, func() {
+				benchmarkDenseScore = test.distance(left, right)
+			}))
 		})
 	}
 }
