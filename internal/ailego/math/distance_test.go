@@ -122,6 +122,13 @@ func TestFP16DenseDistancesDoNotAllocate(t *testing.T) {
 	}
 }
 
+func TestFP16MagnitudeClampsNegativeRoundoff(t *testing.T) {
+	original := kernelsFP16.dot
+	kernelsFP16.dot = func(_, _ []uint16) float32 { return -1 }
+	t.Cleanup(func() { kernelsFP16.dot = original })
+	require.Zero(t, L2MagnitudeFP16([]uint16{0}))
+}
+
 func TestDenseMetricZeroVectors(t *testing.T) {
 	t.Parallel()
 

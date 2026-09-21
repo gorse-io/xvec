@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/klauspost/cpuid/v2"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/cpu"
 )
 
@@ -53,4 +54,19 @@ func TestAVX512FP16DistanceKernels(t *testing.T) {
 		t.Skip("AVX-512/F16C/FMA is not supported by this CPU")
 	}
 	testArchitectureKernelsFP16(t, squaredEuclideanFP16AVX512, innerProductFP16AVX512, dotNormsFP16AVX512)
+}
+
+func TestAVX512FP16DistanceKernelsFallback(t *testing.T) {
+	if !cpuid.CPU.Supports(cpuid.AVX, cpuid.F16C) {
+		t.Skip("AVX/F16C is not supported by this CPU")
+	}
+	left := []uint16{0x3c00, 0x4000, 0x4200}
+	right := []uint16{0x4400, 0x4500, 0x4600}
+	require.Equal(t, squaredEuclideanFP16Scalar(left, right), squaredEuclideanFP16AVX512(left, right))
+	require.Equal(t, innerProductFP16Scalar(left, right), innerProductFP16AVX512(left, right))
+	wantDot, wantLeftNorm, wantRightNorm := dotNormsFP16Scalar(left, right)
+	dot, leftNorm, rightNorm := dotNormsFP16AVX512(left, right)
+	require.Equal(t, wantDot, dot)
+	require.Equal(t, wantLeftNorm, leftNorm)
+	require.Equal(t, wantRightNorm, rightNorm)
 }
