@@ -88,6 +88,33 @@ func (p HNSWQueryParams) Validate() error {
 }
 func (p HNSWQueryParams) cloneQueryParams() QueryParams { return p }
 
+// HNSWRaBitQQueryParams configures HNSW traversal over RaBitQ codes.
+type HNSWRaBitQQueryParams struct {
+	QueryOptions
+	EF          int
+	ScaleFactor float32
+}
+
+func NewHNSWRaBitQQueryParams() HNSWRaBitQQueryParams {
+	return HNSWRaBitQQueryParams{EF: DefaultHNSWEFSearch}
+}
+
+func (HNSWRaBitQQueryParams) IndexType() IndexType { return IndexTypeHNSWRaBitQ }
+func (p HNSWRaBitQQueryParams) Validate() error {
+	if err := p.validate("validate HNSW RaBitQ query params"); err != nil {
+		return err
+	}
+	if p.EF <= 0 || p.EF > MaxGraphEFSearch {
+		return invalidArgument("validate HNSW RaBitQ query params", "EF must be in [1, %d]", MaxGraphEFSearch)
+	}
+	value := float64(p.ScaleFactor)
+	if math.IsNaN(value) || math.IsInf(value, 0) || p.ScaleFactor < 0 {
+		return invalidArgument("validate HNSW RaBitQ query params", "ScaleFactor must be finite and non-negative")
+	}
+	return nil
+}
+func (p HNSWRaBitQQueryParams) cloneQueryParams() QueryParams { return p }
+
 // IVFRaBitQQueryParams configures IVF probing over RaBitQ codes.
 type IVFRaBitQQueryParams struct {
 	QueryOptions

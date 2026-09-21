@@ -177,6 +177,7 @@ func TestCollectionSchemaCodecRoundTripIndexParameters(t *testing.T) {
 	indexParameters := []IndexParams{
 		NewFlatIndexParams(MetricTypeIP),
 		NewHNSWIndexParams(MetricTypeL2),
+		NewHNSWRaBitQIndexParams(MetricTypeL2),
 		NewIVFRaBitQIndexParams(MetricTypeCosine),
 		NewIVFIndexParams(MetricTypeIP),
 		NewDiskANNIndexParams(MetricTypeL2),
@@ -208,6 +209,14 @@ func TestCollectionSchemaCodecRoundTripIndexParameters(t *testing.T) {
 	decoded, err := unmarshalCollectionSchema(encoded)
 	require.NoError(t, err)
 	require.Equal(t, scalar, decoded)
+}
+
+func TestHNSWRaBitQSchemaRequiresFP32(t *testing.T) {
+	params := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	schema := NewCollectionSchema("invalid",
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP16, Dimension: 64, Index: params},
+	)
+	assert.ErrorIs(t, schema.Validate(), ErrInvalidArgument)
 }
 
 func TestCollectionSchemaCodecLocksDiskANNAndVamanaValues(t *testing.T) {
