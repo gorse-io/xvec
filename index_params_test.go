@@ -60,6 +60,21 @@ func TestHNSWRaBitQDefaultsAndValidation(t *testing.T) {
 
 	params.TotalBits = MaxRaBitQTotalBits + 1
 	assert.ErrorIs(t, params.Validate(), ErrInvalidArgument)
+
+	invalidMetric := NewHNSWRaBitQIndexParams(MetricType(99))
+	negativeClusters := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	negativeClusters.NumClusters = -1
+	negativeSampleCount := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	negativeSampleCount.SampleCount = -1
+	invalidM := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	invalidM.M = 0
+	invalidEFConstruction := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	invalidEFConstruction.EFConstruction = invalidEFConstruction.M - 1
+	for _, value := range []HNSWRaBitQIndexParams{
+		invalidMetric, negativeClusters, negativeSampleCount, invalidM, invalidEFConstruction,
+	} {
+		assert.ErrorIs(t, value.Validate(), ErrInvalidArgument)
+	}
 }
 
 func TestIndexParamsRejectInvalidValues(t *testing.T) {

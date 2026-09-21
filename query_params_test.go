@@ -48,6 +48,8 @@ func TestQueryParamsRejectInvalidValues(t *testing.T) {
 	hnswRaBitQScale.ScaleFactor = -1
 	hnswRaBitQNaN := NewHNSWRaBitQQueryParams()
 	hnswRaBitQNaN.ScaleFactor = float32(math.NaN())
+	hnswRaBitQRadius := NewHNSWRaBitQQueryParams()
+	hnswRaBitQRadius.Radius = -1
 	rabitqProbe := NewIVFRaBitQQueryParams()
 	rabitqProbe.NProbe = 0
 	rabitqScale := NewIVFRaBitQQueryParams()
@@ -68,7 +70,7 @@ func TestQueryParamsRejectInvalidValues(t *testing.T) {
 	nan.ScaleFactor = float32(math.NaN())
 
 	params := []QueryParams{
-		hnsw, hnswLarge, hnswRaBitQ, hnswRaBitQScale, hnswRaBitQNaN, rabitqProbe, rabitqScale, ivf, flat, diskANN, diskANNLarge, vamana, vamanaLarge, nan,
+		hnsw, hnswLarge, hnswRaBitQ, hnswRaBitQScale, hnswRaBitQNaN, hnswRaBitQRadius, rabitqProbe, rabitqScale, ivf, flat, diskANN, diskANNLarge, vamana, vamanaLarge, nan,
 		FTSQueryParams{DefaultOperator: "XOR"},
 	}
 	for _, params := range params {

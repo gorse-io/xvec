@@ -1569,6 +1569,26 @@ func TestCollectionHNSWRaBitQQueryOptimizeAndReopen(t *testing.T) {
 	require.Equal(t, IndexTypeHNSWRaBitQ, field.IndexType())
 }
 
+func TestResolveCollectionHNSWRaBitQPointerAndErrors(t *testing.T) {
+	params := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	field := FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 64, Index: &params}
+	spec, err := resolveCollectionVectorIndex(field, "test", "")
+	require.NoError(t, err)
+	require.Equal(t, params, spec.hnswRaBitQ)
+
+	field.DataType = DataTypeSparseVectorFP32
+	field.Index = params
+	_, err = resolveCollectionVectorIndex(field, "test", "")
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	flat, err := core.NewDenseFlatIndex(64, core.MetricL2)
+	require.NoError(t, err)
+	_, err = searchCollectionDense(context.Background(), flat, make([]float32, 64), 1, nil,
+		collectionVectorIndex{indexType: IndexTypeHNSWRaBitQ},
+		collectionQueryConfig{ef: DefaultHNSWEFSearch})
+	require.Error(t, err)
+}
+
 func TestCollectionIVFRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "rabitq")

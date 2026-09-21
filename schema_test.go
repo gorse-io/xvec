@@ -211,6 +211,14 @@ func TestCollectionSchemaCodecRoundTripIndexParameters(t *testing.T) {
 	require.Equal(t, scalar, decoded)
 }
 
+func TestHNSWRaBitQSchemaRequiresFP32(t *testing.T) {
+	params := NewHNSWRaBitQIndexParams(MetricTypeL2)
+	schema := NewCollectionSchema("invalid",
+		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP16, Dimension: 64, Index: params},
+	)
+	assert.ErrorIs(t, schema.Validate(), ErrInvalidArgument)
+}
+
 func TestCollectionSchemaCodecLocksDiskANNAndVamanaValues(t *testing.T) {
 	schema := NewCollectionSchema("mapping",
 		FieldSchema{Name: "disk", DataType: DataTypeVectorFP32, Dimension: 8, Index: NewDiskANNIndexParams(MetricTypeL2)},
