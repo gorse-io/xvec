@@ -30,6 +30,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestVamanaFP16BuildSearchAndPersistence(t *testing.T) {
+	options := DefaultVamanaBuildOptions(MetricL2)
+	options.MaxDegree, options.SearchListSize, options.MaxOcclusionSize = 2, 4, 4
+	builder, err := NewVamanaBuilderFP16(2, options)
+	require.NoError(t, err)
+	for _, candidate := range exactCandidates {
+		require.NoError(t, builder.Add(context.Background(), candidate.Key, candidate.Vector))
+	}
+	index, err := builder.Build(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, index.vectors)
+	require.Len(t, index.vectorsFP16, len(exactCandidates)*2)
+
+	results, err := index.Search(context.Background(), []float32{1, 0}, 3)
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 30, Score: 0}, {Key: 5, Score: 1}, {Key: 10, Score: 1}}, results)
+	require.NoError(t, index.Add(context.Background(), 99, []float32{2, 0}))
+	require.Empty(t, index.vectors)
+	require.Len(t, index.vectorsFP16, (len(exactCandidates)+1)*2)
+	vector, found := index.Vector(99)
+	require.True(t, found)
+	require.Equal(t, []float32{2, 0}, vector)
+
+	path := filepath.Join(t.TempDir(), "vectors.vamana")
+	require.NoError(t, index.Save(context.Background(), path))
+	reopened, err := OpenVamanaIndex(context.Background(), path)
+	require.NoError(t, err)
+	require.Empty(t, reopened.vectors)
+	require.Equal(t, index.vectorsFP16, reopened.vectorsFP16)
+}
+
 func TestVamanaBlockHeapSearchUsesInnerProductOrdering(t *testing.T) {
 	keys := []uint64{30, 10, 20}
 	neighbors := [][]int{{1, 2}, {0}, {0}}

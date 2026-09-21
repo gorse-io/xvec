@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/utility"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,6 +48,39 @@ func TestDenseFlatSearchMetrics(t *testing.T) {
 				require.NoError(t, err)
 			}
 		}
+		got, err := index.Search(context.Background(), []float32{1, 0}, 3)
+		require.NoError(t, err)
+		require.Equal(t, testCase.want, got)
+	}
+}
+
+func TestDenseFlatFP16SearchMetrics(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		metric Metric
+		want   []Result
+	}{
+		{MetricL2, []Result{{Key: 30, Score: 0}, {Key: 5, Score: 1}, {Key: 10, Score: 1}}},
+		{MetricIP, []Result{{Key: 5, Score: 2}, {Key: 10, Score: 2}, {Key: 30, Score: 1}}},
+		{MetricCosine, []Result{{Key: 5, Score: 0}, {Key: 10, Score: 0}, {Key: 30, Score: 0}}},
+		{MetricMIPSL2, []Result{{Key: 30, Score: 0}, {Key: 5, Score: 1}, {Key: 10, Score: 1}}},
+	}
+	for _, testCase := range tests {
+		index, err := NewDenseFlatIndexFP16(2, testCase.metric)
+		require.NoError(t, err)
+
+		for _, candidate := range exactCandidates {
+			require.NoError(t, index.Add(context.Background(), candidate.Key, candidate.Vector))
+		}
+		require.Empty(t, index.vectors)
+		wantFP16 := make([]uint16, 0, len(exactCandidates)*2)
+		for _, candidate := range exactCandidates {
+			for _, value := range candidate.Vector {
+				wantFP16 = append(wantFP16, utility.Float32ToFloat16Bits(value))
+			}
+		}
+		require.Equal(t, wantFP16, index.vectorsFP16)
+
 		got, err := index.Search(context.Background(), []float32{1, 0}, 3)
 		require.NoError(t, err)
 		require.Equal(t, testCase.want, got)
@@ -237,6 +271,30 @@ func TestDenseFlatBuildsValidatedCandidatesInBulk(t *testing.T) {
 	cancel()
 	_, err = NewDenseFlatIndexFromValidatedCandidates(canceled, 1, MetricL2, nil)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestDenseFlatFP16BuildsValidatedCandidatesInBulk(t *testing.T) {
+	candidates := []Candidate{
+		{Key: 2, Vector: []float32{0, 2}},
+		{Key: 1, Vector: []float32{1, 0}},
+		{Key: 3, Vector: []float32{0, 0}},
+	}
+	index, err := NewDenseFlatIndexFP16FromValidatedCandidates(
+		context.Background(), 2, MetricCosine, candidates,
+	)
+	require.NoError(t, err)
+	require.Empty(t, index.vectors)
+	require.Len(t, index.vectorsFP16, len(candidates)*2)
+	require.Len(t, index.magnitudes, len(candidates))
+
+	candidates[1].Vector[0] = 99
+	vector, found := index.Vector(1)
+	require.True(t, found)
+	require.Equal(t, []float32{1, 0}, vector)
+
+	results, err := index.Search(context.Background(), []float32{1, 0}, 3)
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 1, Score: 0}, {Key: 2, Score: 1}, {Key: 3, Score: 1}}, results)
 }
 
 func TestDenseFlatConcurrentStreamingAndSearch(t *testing.T) {

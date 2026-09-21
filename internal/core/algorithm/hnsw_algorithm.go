@@ -33,6 +33,7 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/gorse-io/xvec/internal/ailego/math_batch"
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
+	"github.com/gorse-io/xvec/internal/ailego/utility"
 )
 
 const (
@@ -84,17 +85,29 @@ func (o HNSWBuildOptions) Validate() error {
 
 // HNSWBuilder collects dense originals and constructs one deterministic graph.
 type HNSWBuilder struct {
-	mu        sync.Mutex
-	dimension int
-	options   HNSWBuildOptions
-	keys      []uint64
-	vectors   []float32
-	positions map[uint64]int
-	built     bool
+	mu          sync.Mutex
+	dimension   int
+	options     HNSWBuildOptions
+	keys        []uint64
+	vectors     []float32
+	vectorsFP16 []uint16
+	fp16        bool
+	positions   map[uint64]int
+	built       bool
 }
 
 // NewHNSWBuilder constructs an empty one-shot dense HNSW builder.
 func NewHNSWBuilder(dimension int, options HNSWBuildOptions) (*HNSWBuilder, error) {
+	return newHNSWBuilder(dimension, options, false)
+}
+
+// NewHNSWBuilderFP16 constructs an HNSW builder that stores and scores vectors
+// in IEEE 754 binary16 form.
+func NewHNSWBuilderFP16(dimension int, options HNSWBuildOptions) (*HNSWBuilder, error) {
+	return newHNSWBuilder(dimension, options, true)
+}
+
+func newHNSWBuilder(dimension int, options HNSWBuildOptions, fp16 bool) (*HNSWBuilder, error) {
 	if dimension <= 0 || dimension > MaxRotationDimension {
 		return nil, fmt.Errorf("%w: got %d", ErrInvalidDimension, dimension)
 	}
@@ -104,6 +117,7 @@ func NewHNSWBuilder(dimension int, options HNSWBuildOptions) (*HNSWBuilder, erro
 	return &HNSWBuilder{
 		dimension: dimension,
 		options:   options,
+		fp16:      fp16,
 		positions: make(map[uint64]int),
 	}, nil
 }
@@ -122,18 +136,29 @@ func (b *HNSWBuilder) Reserve(count int) error {
 	if b.built {
 		return ErrBuilderClosed
 	}
-	if count <= cap(b.keys) && count*b.dimension <= cap(b.vectors) {
+	vectorCapacity := cap(b.vectors)
+	if b.fp16 {
+		vectorCapacity = cap(b.vectorsFP16)
+	}
+	if count <= cap(b.keys) && count*b.dimension <= vectorCapacity {
 		return nil
 	}
 	reservedKeys := make([]uint64, len(b.keys), max(count, len(b.keys)))
 	copy(reservedKeys, b.keys)
-	reservedVectors := make([]float32, len(b.vectors), max(count*b.dimension, len(b.vectors)))
-	copy(reservedVectors, b.vectors)
+	var reservedVectors []float32
+	var reservedVectorsFP16 []uint16
+	if b.fp16 {
+		reservedVectorsFP16 = make([]uint16, len(b.vectorsFP16), max(count*b.dimension, len(b.vectorsFP16)))
+		copy(reservedVectorsFP16, b.vectorsFP16)
+	} else {
+		reservedVectors = make([]float32, len(b.vectors), max(count*b.dimension, len(b.vectors)))
+		copy(reservedVectors, b.vectors)
+	}
 	reservedPositions := make(map[uint64]int, max(count, len(b.positions)))
 	for key, position := range b.positions {
 		reservedPositions[key] = position
 	}
-	b.keys, b.vectors, b.positions = reservedKeys, reservedVectors, reservedPositions
+	b.keys, b.vectors, b.vectorsFP16, b.positions = reservedKeys, reservedVectors, reservedVectorsFP16, reservedPositions
 	return nil
 }
 
@@ -162,12 +187,25 @@ func (b *HNSWBuilder) Add(ctx context.Context, key uint64, vector []float32) err
 	if _, exists := b.positions[key]; exists {
 		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
 	}
-	if len(b.vectors) > maxPlatformInt()-b.dimension {
+	vectorLength := len(b.vectors)
+	if b.fp16 {
+		vectorLength = len(b.vectorsFP16)
+	}
+	if vectorLength > maxPlatformInt()-b.dimension {
 		return ErrHNSWCapacity
 	}
 	b.positions[key] = len(b.keys)
 	b.keys = append(b.keys, key)
-	b.vectors = append(b.vectors, vector...)
+	if b.fp16 {
+		encoded, err := denseVectorFP16(vector)
+		if err != nil {
+			delete(b.positions, key)
+			return fmt.Errorf("core: encode HNSW FP16 vector: %w", err)
+		}
+		b.vectorsFP16 = append(b.vectorsFP16, encoded...)
+	} else {
+		b.vectors = append(b.vectors, vector...)
+	}
 	return nil
 }
 
@@ -209,18 +247,28 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 	if err != nil {
 		return nil, err
 	}
+	var distanceFP16 mathutil.DenseDistanceFP16
+	if b.fp16 {
+		distanceFP16, err = denseDistanceFP16(b.options.Metric)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	index := &HNSWIndex{
-		dimension:  b.dimension,
-		options:    b.options,
-		distance:   distance,
-		keys:       b.keys,
-		vectors:    b.vectors,
-		positions:  b.positions,
-		entryPoint: -1,
-		maxLevel:   -1,
-		levels:     make([]int, len(b.keys)),
-		neighbors:  make([][][]int, len(b.keys)),
+		dimension:    b.dimension,
+		options:      b.options,
+		distance:     distance,
+		distanceFP16: distanceFP16,
+		keys:         b.keys,
+		vectors:      b.vectors,
+		vectorsFP16:  b.vectorsFP16,
+		fp16:         b.fp16,
+		positions:    b.positions,
+		entryPoint:   -1,
+		maxLevel:     -1,
+		levels:       make([]int, len(b.keys)),
+		neighbors:    make([][][]int, len(b.keys)),
 	}
 	random := splitMix64{state: b.options.Seed}
 	for position := range index.keys {
@@ -262,11 +310,12 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 	b.built = true
 	b.keys = nil
 	b.vectors = nil
+	b.vectorsFP16 = nil
 	b.positions = nil
 	return index, nil
 }
 
-// HNSWIndex stores original FP32 vectors and a bounded multi-layer proximity
+// HNSWIndex stores original dense vectors and a bounded multi-layer proximity
 // graph. Readers share one immutable generation while additions publish a
 // complete copy-on-write generation.
 type HNSWIndex struct {
@@ -275,8 +324,11 @@ type HNSWIndex struct {
 	dimension        int
 	options          HNSWBuildOptions
 	distance         mathutil.DenseDistance
+	distanceFP16     mathutil.DenseDistanceFP16
 	keys             []uint64
 	vectors          []float32
+	vectorsFP16      []uint16
+	fp16             bool
 	vectorMagnitudes []float32
 	positions        map[uint64]int
 	levels           []int
@@ -292,6 +344,10 @@ func (i *HNSWIndex) Dimension() int {
 		return 0
 	}
 	return i.dimension
+}
+
+func (i *HNSWIndex) IsFP16() bool {
+	return i != nil && i.fp16
 }
 
 // Metric returns the graph construction metric.
@@ -332,6 +388,13 @@ func (i *HNSWIndex) Vector(key uint64) ([]float32, bool) {
 		return nil, false
 	}
 	start := position * i.dimension
+	if i.fp16 {
+		vector := make([]float32, i.dimension)
+		for component, bits := range i.vectorsFP16[start : start+i.dimension] {
+			vector[component] = utility.Float16BitsToFloat32(bits)
+		}
+		return vector, true
+	}
 	return slices.Clone(i.vectors[start : start+i.dimension]), true
 }
 
@@ -404,10 +467,16 @@ func (i *HNSWIndex) insertBuiltNode(ctx context.Context, position int) error {
 		return nil
 	}
 	entry := i.entryPoint
-	query := i.vectorAt(position)
+	var query []float32
+	var queryFP16 []uint16
+	if i.fp16 {
+		queryFP16 = i.vectorFP16At(position)
+	} else {
+		query = i.vectorAt(position)
+	}
 	queryMagnitude := i.magnitudeAt(position)
 	for currentLevel := i.maxLevel; currentLevel > level; currentLevel-- {
-		nearest, err := i.searchHNSWLayer(ctx, query, queryMagnitude, []int{entry}, 1, currentLevel, visited)
+		nearest, err := i.searchHNSWLayer(ctx, query, queryFP16, queryMagnitude, []int{entry}, 1, currentLevel, visited)
 		if err != nil {
 			return err
 		}
@@ -416,7 +485,7 @@ func (i *HNSWIndex) insertBuiltNode(ctx context.Context, position int) error {
 		}
 	}
 	for currentLevel := min(level, i.maxLevel); currentLevel >= 0; currentLevel-- {
-		candidates, err := i.searchHNSWLayer(ctx, query, queryMagnitude, []int{entry}, i.options.EFConstruction, currentLevel, visited)
+		candidates, err := i.searchHNSWLayer(ctx, query, queryFP16, queryMagnitude, []int{entry}, i.options.EFConstruction, currentLevel, visited)
 		if err != nil {
 			return err
 		}
@@ -446,7 +515,7 @@ type hnswScoredNode struct {
 	score    float32
 }
 
-func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, queryMagnitude float32, entries []int, ef, level int, visited *hnswVisited) ([]hnswScoredNode, error) {
+func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, queryFP16 []uint16, queryMagnitude float32, entries []int, ef, level int, visited *hnswVisited) ([]hnswScoredNode, error) {
 	limit := min(ef, len(i.keys))
 	if limit <= 0 {
 		return []hnswScoredNode{}, nil
@@ -460,7 +529,7 @@ func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, queryM
 		if entry < 0 || entry >= len(i.keys) || i.levels[entry] < level || visited.seen(entry) {
 			continue
 		}
-		score, err := i.queryDistanceAt(query, queryMagnitude, entry)
+		score, err := i.queryDistanceAt(query, queryFP16, queryMagnitude, entry)
 		if err != nil {
 			return nil, err
 		}
@@ -483,7 +552,7 @@ func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, queryM
 				continue
 			}
 			visited.mark(neighbor)
-			score, err := i.queryDistanceAt(query, queryMagnitude, neighbor)
+			score, err := i.queryDistanceAt(query, queryFP16, queryMagnitude, neighbor)
 			if err != nil {
 				return nil, err
 			}
@@ -591,6 +660,11 @@ func (i *HNSWIndex) vectorAt(position int) []float32 {
 	return i.vectors[start : start+i.dimension]
 }
 
+func (i *HNSWIndex) vectorFP16At(position int) []uint16 {
+	start := position * i.dimension
+	return i.vectorsFP16[start : start+i.dimension]
+}
+
 func (i *HNSWIndex) computeDistance(left, right []float32) (float32, error) {
 	distance := i.distance
 	if distance == nil {
@@ -606,6 +680,14 @@ func (i *HNSWIndex) computeDistance(left, right []float32) (float32, error) {
 }
 
 func (i *HNSWIndex) computeDistanceAt(left, right int) (float32, error) {
+	if i.fp16 {
+		if i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys) {
+			return mathutil.CosineDistanceWithMagnitudesFP16(
+				i.vectorFP16At(left), i.vectorFP16At(right), i.vectorMagnitudes[left], i.vectorMagnitudes[right],
+			), nil
+		}
+		return i.distanceFP16(i.vectorFP16At(left), i.vectorFP16At(right)), nil
+	}
 	if i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys) {
 		return mathutil.CosineDistanceWithMagnitudes(
 			i.vectorAt(left), i.vectorAt(right), i.vectorMagnitudes[left], i.vectorMagnitudes[right],
@@ -615,6 +697,14 @@ func (i *HNSWIndex) computeDistanceAt(left, right int) (float32, error) {
 }
 
 func (i *HNSWIndex) computeDistancePairAt(query, first, second int) (float32, float32, error) {
+	if i.fp16 {
+		firstScore, err := i.computeDistanceAt(query, first)
+		if err != nil {
+			return 0, 0, err
+		}
+		secondScore, err := i.computeDistanceAt(query, second)
+		return firstScore, secondScore, err
+	}
 	if i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys) {
 		firstScore, secondScore := mathbatch.CosineDistances2WithMagnitudes(
 			i.vectorAt(query), i.vectorAt(first), i.vectorAt(second),
@@ -639,7 +729,15 @@ func (i *HNSWIndex) computeDistancePairAt(query, first, second int) (float32, fl
 	return firstScore, secondScore, nil
 }
 
-func (i *HNSWIndex) queryDistanceAt(query []float32, queryMagnitude float32, position int) (float32, error) {
+func (i *HNSWIndex) queryDistanceAt(query []float32, queryFP16 []uint16, queryMagnitude float32, position int) (float32, error) {
+	if i.fp16 {
+		if i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys) {
+			return mathutil.CosineDistanceWithMagnitudesFP16(
+				queryFP16, i.vectorFP16At(position), queryMagnitude, i.vectorMagnitudes[position],
+			), nil
+		}
+		return i.distanceFP16(queryFP16, i.vectorFP16At(position)), nil
+	}
 	if i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys) {
 		return mathutil.CosineDistanceWithMagnitudes(
 			query, i.vectorAt(position), queryMagnitude, i.vectorMagnitudes[position],
@@ -662,7 +760,11 @@ func (i *HNSWIndex) cacheCosineMagnitudes(ctx context.Context, workers int) erro
 	}
 	i.vectorMagnitudes = make([]float32, len(i.keys))
 	return parallel.ParallelFor(ctx, len(i.keys), workers, func(_ context.Context, position int) error {
-		i.vectorMagnitudes[position] = mathutil.L2Magnitude(i.vectorAt(position))
+		if i.fp16 {
+			i.vectorMagnitudes[position] = mathutil.L2MagnitudeFP16(i.vectorFP16At(position))
+		} else {
+			i.vectorMagnitudes[position] = mathutil.L2Magnitude(i.vectorAt(position))
+		}
 		return nil
 	})
 }
@@ -768,8 +870,18 @@ func (i *HNSWIndex) SearchHNSWGroups(
 	if err := mathutil.ValidateDense(query, i.dimension); err != nil {
 		return nil, fmt.Errorf("core: validate HNSW group-by query: %w", err)
 	}
+	var queryFP16 []uint16
 	queryMagnitude := float32(0)
-	if i.options.Metric == MetricCosine {
+	if i.fp16 {
+		var err error
+		queryFP16, err = denseVectorFP16(query)
+		if err != nil {
+			return nil, fmt.Errorf("core: encode HNSW FP16 group-by query: %w", err)
+		}
+		if i.options.Metric == MetricCosine {
+			queryMagnitude = mathutil.L2MagnitudeFP16(queryFP16)
+		}
+	} else if i.options.Metric == MetricCosine {
 		queryMagnitude = mathutil.L2Magnitude(query)
 	}
 
@@ -786,7 +898,7 @@ func (i *HNSWIndex) SearchHNSWGroups(
 	visited := acquireHNSWVisited(len(i.keys))
 	defer releaseHNSWVisited(visited)
 	for level := i.maxLevel; level > 0; level-- {
-		nearest, err := i.searchHNSWLayer(ctx, query, queryMagnitude, []int{entry}, 1, level, visited)
+		nearest, err := i.searchHNSWLayer(ctx, query, queryFP16, queryMagnitude, []int{entry}, 1, level, visited)
 		if err != nil {
 			return nil, fmt.Errorf("core: descend HNSW group-by level %d: %w", level, err)
 		}
@@ -800,7 +912,7 @@ func (i *HNSWIndex) SearchHNSWGroups(
 		},
 		EF: options.EF, PrefetchOffset: options.PrefetchOffset, PrefetchLines: options.PrefetchLines,
 	}
-	initial, err := i.searchHNSWBase(ctx, query, queryMagnitude, entry, max(options.EF, candidateCount), searchOptions, visited)
+	initial, err := i.searchHNSWBase(ctx, query, queryFP16, queryMagnitude, entry, max(options.EF, candidateCount), searchOptions, visited)
 	if err != nil {
 		return nil, err
 	}
@@ -808,7 +920,7 @@ func (i *HNSWIndex) SearchHNSWGroups(
 		initial = initial[:candidateCount]
 	}
 	scoreAt := func(position int) (float32, error) {
-		return i.queryDistanceAt(query, queryMagnitude, position)
+		return i.queryDistanceAt(query, queryFP16, queryMagnitude, position)
 	}
 	prefetch := func(neighbors []int) {
 		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
@@ -852,14 +964,31 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 	if err := mathutil.ValidateDense(query, i.dimension); err != nil {
 		return nil, fmt.Errorf("core: validate HNSW query: %w", err)
 	}
+	var queryFP16 []uint16
 	queryMagnitude := float32(0)
-	if i.options.Metric == MetricCosine {
+	if i.fp16 {
+		var err error
+		queryFP16, err = denseVectorFP16(query)
+		if err != nil {
+			return nil, fmt.Errorf("core: encode HNSW FP16 query: %w", err)
+		}
+		if i.options.Metric == MetricCosine {
+			queryMagnitude = mathutil.L2MagnitudeFP16(queryFP16)
+		}
+	} else if i.options.Metric == MetricCosine {
 		queryMagnitude = mathutil.L2Magnitude(query)
 	}
 	if options.TopK == 0 || len(i.keys) == 0 {
 		return []Result{}, nil
 	}
 	if len(i.keys) <= DefaultHNSWBruteForceThreshold {
+		if i.fp16 {
+			flat := DenseFlatIndex{
+				dimension: i.dimension, metric: i.options.Metric, fp16: true,
+				keys: i.keys, vectorsFP16: i.vectorsFP16, magnitudes: i.vectorMagnitudes,
+			}
+			return flat.searchFP16(ctx, queryFP16, options.SearchOptions)
+		}
 		distance := i.distance
 		if distance == nil {
 			var err error
@@ -877,7 +1006,7 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 	visited := acquireHNSWVisited(len(i.keys))
 	defer releaseHNSWVisited(visited)
 	for level := i.maxLevel; level > 0; level-- {
-		nearest, err := i.searchHNSWLayer(ctx, query, queryMagnitude, []int{entry}, 1, level, visited)
+		nearest, err := i.searchHNSWLayer(ctx, query, queryFP16, queryMagnitude, []int{entry}, 1, level, visited)
 		if err != nil {
 			return nil, fmt.Errorf("core: descend HNSW level %d: %w", level, err)
 		}
@@ -886,7 +1015,7 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 		}
 	}
 	capacity := max(options.EF, options.TopK)
-	candidates, err := i.searchHNSWBase(ctx, query, queryMagnitude, entry, capacity, options, visited)
+	candidates, err := i.searchHNSWBase(ctx, query, queryFP16, queryMagnitude, entry, capacity, options, visited)
 	if err != nil {
 		return nil, err
 	}
@@ -900,9 +1029,9 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 	return results, nil
 }
 
-func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryMagnitude float32, entry, capacity int, options HNSWSearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
+func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryFP16 []uint16, queryMagnitude float32, entry, capacity int, options HNSWSearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
 	if options.Filter == nil && options.Radius == 0 && capacity <= maxBlockHeapSearchCapacity {
-		return i.searchHNSWBaseBlockHeap(ctx, query, queryMagnitude, entry, capacity, options, visited)
+		return i.searchHNSWBaseBlockHeap(ctx, query, queryFP16, queryMagnitude, entry, capacity, options, visited)
 	}
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(i.options.Metric, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.hnswResultNodeBetter(right, left) }
@@ -924,7 +1053,7 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryMa
 	}
 	useCachedMagnitudes := i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys)
 
-	score, err := i.queryDistanceAt(query, queryMagnitude, entry)
+	score, err := i.queryDistanceAt(query, queryFP16, queryMagnitude, entry)
 	if err != nil {
 		return nil, fmt.Errorf("core: score HNSW entry point: %w", err)
 	}
@@ -956,13 +1085,19 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryMa
 			}
 			visited.mark(neighbor)
 			visited.batchPositions = append(visited.batchPositions, neighbor)
-			visited.batchVectors = append(visited.batchVectors, i.vectorAt(neighbor))
+			if !i.fp16 {
+				visited.batchVectors = append(visited.batchVectors, i.vectorAt(neighbor))
+			}
 			visited.batchScores = append(visited.batchScores, 0)
 			if useCachedMagnitudes {
 				visited.batchMagnitudes = append(visited.batchMagnitudes, i.vectorMagnitudes[neighbor])
 			}
 		}
-		if err := denseDistances(
+		if i.fp16 {
+			for index, neighbor := range visited.batchPositions {
+				visited.batchScores[index], _ = i.queryDistanceAt(query, queryFP16, queryMagnitude, neighbor)
+			}
+		} else if err := denseDistances(
 			i.options.Metric, query, visited.batchVectors, queryMagnitude,
 			visited.batchMagnitudes, visited.batchScores,
 		); err != nil {
@@ -984,7 +1119,7 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryMa
 	}
 	result := accepted.Values()
 	for index := range result {
-		score, err := i.queryDistanceAt(query, queryMagnitude, result[index].position)
+		score, err := i.queryDistanceAt(query, queryFP16, queryMagnitude, result[index].position)
 		if err != nil {
 			return nil, fmt.Errorf("core: rerank HNSW result: %w", err)
 		}
@@ -1002,7 +1137,7 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryMa
 	return result, nil
 }
 
-func (i *HNSWIndex) searchHNSWBaseBlockHeap(ctx context.Context, query []float32, queryMagnitude float32, entry, capacity int, options HNSWSearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
+func (i *HNSWIndex) searchHNSWBaseBlockHeap(ctx context.Context, query []float32, queryFP16 []uint16, queryMagnitude float32, entry, capacity int, options HNSWSearchOptions, visited *hnswVisited) ([]hnswScoredNode, error) {
 	visited.reset(len(i.keys))
 	degree := min(i.maxDegree(0), max(0, len(i.keys)-1), initialDistanceBatchCapacity)
 	if cap(visited.batchIDs) < degree {
@@ -1022,7 +1157,7 @@ func (i *HNSWIndex) searchHNSWBaseBlockHeap(ctx context.Context, query []float32
 	}
 	useCachedMagnitudes := i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys)
 
-	score, err := i.queryDistanceAt(query, queryMagnitude, entry)
+	score, err := i.queryDistanceAt(query, queryFP16, queryMagnitude, entry)
 	if err != nil {
 		return nil, fmt.Errorf("core: score HNSW entry point: %w", err)
 	}
@@ -1064,13 +1199,19 @@ func (i *HNSWIndex) searchHNSWBaseBlockHeap(ctx context.Context, query []float32
 			visited.mark(neighbor)
 			visited.batchIDs = append(visited.batchIDs, uint32(neighbor))
 			visited.batchTies = append(visited.batchTies, i.keys[neighbor])
-			visited.batchVectors = append(visited.batchVectors, i.vectorAt(neighbor))
+			if !i.fp16 {
+				visited.batchVectors = append(visited.batchVectors, i.vectorAt(neighbor))
+			}
 			visited.batchScores = append(visited.batchScores, 0)
 			if useCachedMagnitudes {
 				visited.batchMagnitudes = append(visited.batchMagnitudes, i.vectorMagnitudes[neighbor])
 			}
 		}
-		if err := denseDistances(
+		if i.fp16 {
+			for index, id := range visited.batchIDs {
+				visited.batchScores[index], _ = i.queryDistanceAt(query, queryFP16, queryMagnitude, int(id))
+			}
+		} else if err := denseDistances(
 			i.options.Metric, query, visited.batchVectors, queryMagnitude,
 			visited.batchMagnitudes, visited.batchScores,
 		); err != nil {
@@ -1084,7 +1225,7 @@ func (i *HNSWIndex) searchHNSWBaseBlockHeap(ctx context.Context, query []float32
 	result := make([]hnswScoredNode, 0, min(options.TopK, visited.blockHeap.Len()))
 	for index := 0; index < visited.blockHeap.Len(); index++ {
 		position := int(visited.blockHeap.ID(index))
-		score, err := i.queryDistanceAt(query, queryMagnitude, position)
+		score, err := i.queryDistanceAt(query, queryFP16, queryMagnitude, position)
 		if err != nil {
 			return nil, fmt.Errorf("core: rerank HNSW result: %w", err)
 		}
@@ -1166,7 +1307,11 @@ func (i *HNSWIndex) Add(ctx context.Context, key uint64, vector []float32) error
 		i.mu.RUnlock()
 		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
 	}
-	if uint64(len(i.keys)) >= math.MaxUint32 || len(i.vectors) > maxPlatformInt()-i.dimension {
+	vectorLength := len(i.vectors)
+	if i.fp16 {
+		vectorLength = len(i.vectorsFP16)
+	}
+	if uint64(len(i.keys)) >= math.MaxUint32 || vectorLength > maxPlatformInt()-i.dimension {
 		i.mu.RUnlock()
 		return ErrHNSWCapacity
 	}
@@ -1181,7 +1326,15 @@ func (i *HNSWIndex) Add(ctx context.Context, key uint64, vector []float32) error
 	level := sampleHNSWLevel(&random, working.options.M)
 	position := len(working.keys)
 	working.keys = append(working.keys, key)
-	working.vectors = append(working.vectors, vector...)
+	if working.fp16 {
+		encoded, err := denseVectorFP16(vector)
+		if err != nil {
+			return fmt.Errorf("core: encode incremental HNSW FP16 vector: %w", err)
+		}
+		working.vectorsFP16 = append(working.vectorsFP16, encoded...)
+	} else {
+		working.vectors = append(working.vectors, vector...)
+	}
 	working.positions[key] = position
 	working.levels = append(working.levels, level)
 	working.neighbors = append(working.neighbors, make([][]int, level+1))
@@ -1203,6 +1356,7 @@ func (i *HNSWIndex) Add(ctx context.Context, key uint64, vector []float32) error
 	}
 	i.keys = working.keys
 	i.vectors = working.vectors
+	i.vectorsFP16 = working.vectorsFP16
 	i.vectorMagnitudes = working.vectorMagnitudes
 	i.positions = working.positions
 	i.levels = working.levels
@@ -1230,8 +1384,11 @@ func cloneHNSWIndex(ctx context.Context, source *HNSWIndex) (*HNSWIndex, error) 
 		dimension:        source.dimension,
 		options:          source.options,
 		distance:         source.distance,
+		distanceFP16:     source.distanceFP16,
 		keys:             slices.Clone(source.keys),
 		vectors:          slices.Clone(source.vectors),
+		vectorsFP16:      slices.Clone(source.vectorsFP16),
+		fp16:             source.fp16,
 		vectorMagnitudes: slices.Clone(source.vectorMagnitudes),
 		positions:        make(map[uint64]int, len(source.positions)),
 		levels:           slices.Clone(source.levels),
@@ -1323,7 +1480,7 @@ func writeHNSWIndex(ctx context.Context, file *os.File, index *HNSWIndex, payloa
 		return err
 	}
 	writer := bufio.NewWriterSize(file, hnswReadChunk)
-	node := make([]byte, 0, hnswRecordFixedBytes+index.dimension*4+(MaxHNSWLevel+1)*(hnswLevelFixedBytes+index.options.M*8))
+	node := make([]byte, 0, hnswRecordFixedBytes+index.dimension*hnswVectorWidth(index.fp16)+(MaxHNSWLevel+1)*(hnswLevelFixedBytes+index.options.M*8))
 	var payloadCRC uint32
 	written := 0
 	for position, key := range index.keys {
@@ -1336,8 +1493,14 @@ func writeHNSWIndex(ctx context.Context, file *os.File, index *HNSWIndex, payloa
 		node = binary.LittleEndian.AppendUint64(node, key)
 		node = binary.LittleEndian.AppendUint32(node, uint32(index.levels[position]))
 		start := position * index.dimension
-		for _, value := range index.vectors[start : start+index.dimension] {
-			node = binary.LittleEndian.AppendUint32(node, math.Float32bits(value))
+		if index.fp16 {
+			for _, value := range index.vectorsFP16[start : start+index.dimension] {
+				node = binary.LittleEndian.AppendUint16(node, value)
+			}
+		} else {
+			for _, value := range index.vectors[start : start+index.dimension] {
+				node = binary.LittleEndian.AppendUint32(node, math.Float32bits(value))
+			}
 		}
 		for _, neighbors := range index.neighbors[position] {
 			node = binary.LittleEndian.AppendUint32(node, uint32(len(neighbors)))
@@ -1383,6 +1546,9 @@ func makeHNSWHeader(index *HNSWIndex, payloadSize int, payloadCRC uint32) []byte
 	binary.LittleEndian.PutUint32(header[44:48], uint32(index.options.M))
 	binary.LittleEndian.PutUint32(header[48:52], uint32(index.options.EFConstruction))
 	header[52] = byte(index.options.Metric)
+	if index.fp16 {
+		header[53] = 1
+	}
 	entryPoint := uint64(math.MaxUint64)
 	if index.entryPoint >= 0 {
 		entryPoint = uint64(index.entryPoint)
@@ -1446,8 +1612,14 @@ func encodeHNSWIndex(ctx context.Context, index *HNSWIndex) ([]byte, error) {
 		payload = binary.LittleEndian.AppendUint64(payload, key)
 		payload = binary.LittleEndian.AppendUint32(payload, uint32(index.levels[position]))
 		start := position * index.dimension
-		for _, value := range index.vectors[start : start+index.dimension] {
-			payload = binary.LittleEndian.AppendUint32(payload, math.Float32bits(value))
+		if index.fp16 {
+			for _, value := range index.vectorsFP16[start : start+index.dimension] {
+				payload = binary.LittleEndian.AppendUint16(payload, value)
+			}
+		} else {
+			for _, value := range index.vectors[start : start+index.dimension] {
+				payload = binary.LittleEndian.AppendUint32(payload, math.Float32bits(value))
+			}
 		}
 		for _, neighbors := range index.neighbors[position] {
 			payload = binary.LittleEndian.AppendUint32(payload, uint32(len(neighbors)))
@@ -1485,8 +1657,8 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 	if binary.LittleEndian.Uint16(header[10:12]) != hnswHeaderSize {
 		return nil, fmt.Errorf("%w: bad header size", ErrInvalidHNSWFile)
 	}
-	if binary.LittleEndian.Uint32(header[12:16]) != 0 ||
-		!hnswAllZero(header[53:56]) ||
+	if binary.LittleEndian.Uint32(header[12:16]) != 0 || header[53] > 1 ||
+		!hnswAllZero(header[54:56]) ||
 		!hnswAllZero(header[88:108]) {
 		return nil, fmt.Errorf("%w: nonzero reserved field", ErrInvalidHNSWFile)
 	}
@@ -1511,7 +1683,8 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 		return nil, fmt.Errorf("%w: invalid dimension %d", ErrInvalidHNSWFile, dimension64)
 	}
 	count, dimension := int(count64), int(dimension64)
-	minimumSize, err := checkedHNSWMinimumPayloadSize(dimension, count)
+	fp16 := header[53] == 1
+	minimumSize, err := checkedHNSWMinimumPayloadSize(dimension, count, fp16)
 	if err != nil || minimumSize > len(payload) {
 		return nil, fmt.Errorf("%w: invalid payload length", ErrInvalidHNSWFile)
 	}
@@ -1542,13 +1715,30 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid metric", ErrInvalidHNSWFile)
 	}
+	var distanceFP16 mathutil.DenseDistanceFP16
+	if fp16 {
+		distanceFP16, err = denseDistanceFP16(options.Metric)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid FP16 metric", ErrInvalidHNSWFile)
+		}
+	}
+	var vectors []float32
+	var vectorsFP16 []uint16
+	if fp16 {
+		vectorsFP16 = make([]uint16, count*dimension)
+	} else {
+		vectors = make([]float32, count*dimension)
+	}
 
 	index := &HNSWIndex{
 		dimension:     dimension,
 		options:       options,
 		distance:      distance,
+		distanceFP16:  distanceFP16,
 		keys:          make([]uint64, count),
-		vectors:       make([]float32, count*dimension),
+		vectors:       vectors,
+		vectorsFP16:   vectorsFP16,
+		fp16:          fp16,
 		positions:     make(map[uint64]int, count),
 		levels:        make([]int, count),
 		neighbors:     make([][][]int, count),
@@ -1563,7 +1753,7 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 				return nil, err
 			}
 		}
-		vectorBytes := dimension * 4
+		vectorBytes := dimension * hnswVectorWidth(fp16)
 		if !hnswPayloadAvailable(payload, offset, hnswRecordFixedBytes+vectorBytes+hnswLevelFixedBytes) {
 			return nil, fmt.Errorf("%w: truncated node %d", ErrInvalidHNSWFile, position)
 		}
@@ -1583,12 +1773,17 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 		index.neighbors[position] = make([][]int, int(level)+1)
 		start := position * dimension
 		for component := 0; component < dimension; component++ {
-			value := math.Float32frombits(binary.LittleEndian.Uint32(payload[offset : offset+4]))
-			offset += 4
-			if !finiteFloat32(value) {
-				return nil, fmt.Errorf("%w: non-finite vector", ErrInvalidHNSWFile)
+			if fp16 {
+				index.vectorsFP16[start+component] = binary.LittleEndian.Uint16(payload[offset : offset+2])
+				offset += 2
+			} else {
+				value := math.Float32frombits(binary.LittleEndian.Uint32(payload[offset : offset+4]))
+				offset += 4
+				if !finiteFloat32(value) {
+					return nil, fmt.Errorf("%w: non-finite vector", ErrInvalidHNSWFile)
+				}
+				index.vectors[start+component] = value
 			}
-			index.vectors[start+component] = value
 		}
 		for currentLevel := 0; currentLevel <= int(level); currentLevel++ {
 			if !hnswPayloadAvailable(payload, offset, hnswLevelFixedBytes) {
@@ -1678,8 +1873,12 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 		return fmt.Errorf("%w: options exceed format capacity", ErrInvalidHNSWFile)
 	}
 	count := len(index.keys)
+	validVectorStorage := len(index.vectors) == count*index.dimension && len(index.vectorsFP16) == 0
+	if index.fp16 {
+		validVectorStorage = len(index.vectors) == 0 && len(index.vectorsFP16) == count*index.dimension
+	}
 	if uint64(count) > math.MaxUint32 || count > maxPlatformInt()/index.dimension ||
-		len(index.vectors) != count*index.dimension || len(index.positions) != count ||
+		!validVectorStorage || len(index.positions) != count ||
 		len(index.levels) != count || len(index.neighbors) != count {
 		return fmt.Errorf("%w: inconsistent graph storage", ErrInvalidHNSWFile)
 	}
@@ -1714,9 +1913,17 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 		}
 		derivedMaxLevel = max(derivedMaxLevel, level)
 		start := position * index.dimension
-		for _, value := range index.vectors[start : start+index.dimension] {
-			if !finiteFloat32(value) {
-				return fmt.Errorf("%w: non-finite vector", ErrInvalidHNSWFile)
+		if index.fp16 {
+			for _, bits := range index.vectorsFP16[start : start+index.dimension] {
+				if !finiteFloat32(utility.Float16BitsToFloat32(bits)) {
+					return fmt.Errorf("%w: non-finite vector", ErrInvalidHNSWFile)
+				}
+			}
+		} else {
+			for _, value := range index.vectors[start : start+index.dimension] {
+				if !finiteFloat32(value) {
+					return fmt.Errorf("%w: non-finite vector", ErrInvalidHNSWFile)
+				}
 			}
 		}
 		for currentLevel, neighbors := range index.neighbors[position] {
@@ -1750,7 +1957,7 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 }
 
 func checkedHNSWPayloadSize(index *HNSWIndex) (int, error) {
-	minimum, err := checkedHNSWMinimumPayloadSize(index.dimension, len(index.keys))
+	minimum, err := checkedHNSWMinimumPayloadSize(index.dimension, len(index.keys), index.fp16)
 	if err != nil {
 		return 0, err
 	}
@@ -1768,11 +1975,11 @@ func checkedHNSWPayloadSize(index *HNSWIndex) (int, error) {
 	return int(total), nil
 }
 
-func checkedHNSWMinimumPayloadSize(dimension, count int) (int, error) {
+func checkedHNSWMinimumPayloadSize(dimension, count int, fp16 bool) (int, error) {
 	if dimension <= 0 || count < 0 {
 		return 0, fmt.Errorf("%w: invalid size", ErrInvalidHNSWFile)
 	}
-	recordBytes := uint64(hnswRecordFixedBytes+hnswLevelFixedBytes) + uint64(dimension)*4
+	recordBytes := uint64(hnswRecordFixedBytes+hnswLevelFixedBytes) + uint64(dimension*hnswVectorWidth(fp16))
 	total := uint64(count) * recordBytes
 	if count != 0 && total/recordBytes != uint64(count) {
 		return 0, fmt.Errorf("%w: payload size overflow", ErrInvalidHNSWFile)
@@ -1781,6 +1988,13 @@ func checkedHNSWMinimumPayloadSize(dimension, count int) (int, error) {
 		return 0, fmt.Errorf("%w: payload exceeds platform capacity", ErrInvalidHNSWFile)
 	}
 	return int(total), nil
+}
+
+func hnswVectorWidth(fp16 bool) int {
+	if fp16 {
+		return 2
+	}
+	return 4
 }
 
 func hnswPayloadAvailable(payload []byte, offset, size int) bool {

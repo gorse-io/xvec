@@ -2102,7 +2102,12 @@ func buildCollectionDenseFlat(
 		return nil, err
 	}
 	if spec.quantize == QuantizeTypeUndefined || spec.indexType == IndexTypeIVFRaBitQ {
-		index, err := core.NewDenseFlatIndex(int(field.Dimension), spec.metric)
+		var index *core.DenseFlatIndex
+		if field.DataType == DataTypeVectorFP16 {
+			index, err = core.NewDenseFlatIndexFP16(int(field.Dimension), spec.metric)
+		} else {
+			index, err = core.NewDenseFlatIndex(int(field.Dimension), spec.metric)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -2139,7 +2144,12 @@ func buildCollectionDenseHNSW(
 	options := core.DefaultHNSWBuildOptions(spec.metric)
 	options.M = spec.hnsw.M
 	options.EFConstruction = spec.hnsw.EFConstruction
-	builder, err := core.NewHNSWBuilder(int(field.Dimension), options)
+	var builder *core.HNSWBuilder
+	if field.DataType == DataTypeVectorFP16 && spec.quantize == QuantizeTypeUndefined {
+		builder, err = core.NewHNSWBuilderFP16(int(field.Dimension), options)
+	} else {
+		builder, err = core.NewHNSWBuilder(int(field.Dimension), options)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2215,7 +2225,12 @@ func buildCollectionDenseIVF(
 	options.NList = spec.ivf.NList
 	options.NIterations = spec.ivf.NIterations
 	options.Workers = workers
-	builder, err := core.NewIVFBuilder(int(field.Dimension), options)
+	var builder *core.IVFBuilder
+	if field.DataType == DataTypeVectorFP16 && spec.quantize == QuantizeTypeUndefined {
+		builder, err = core.NewIVFBuilderFP16(int(field.Dimension), options)
+	} else {
+		builder, err = core.NewIVFBuilder(int(field.Dimension), options)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2263,7 +2278,12 @@ func buildCollectionDenseVamana(
 		options.MaxOcclusionSize = core.DefaultVamanaMaxOcclusionSize
 	}
 	options.SaturateGraph = spec.vamana.SaturateGraph
-	builder, err := core.NewVamanaBuilder(int(field.Dimension), options)
+	var builder *core.VamanaBuilder
+	if field.DataType == DataTypeVectorFP16 && spec.quantize == QuantizeTypeUndefined {
+		builder, err = core.NewVamanaBuilderFP16(int(field.Dimension), options)
+	} else {
+		builder, err = core.NewVamanaBuilder(int(field.Dimension), options)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2321,7 +2341,15 @@ func buildCollectionDenseDiskANN(
 		}
 		return core.NewScalarQuantizedDiskANNIndex(ctx, int(field.Dimension), options, kind, reformer, candidates)
 	}
-	builder, err := core.NewDiskANNBuilder(int(field.Dimension), options)
+	var (
+		builder *core.DiskANNBuilder
+		err     error
+	)
+	if field.DataType == DataTypeVectorFP16 {
+		builder, err = core.NewDiskANNBuilderFP16(int(field.Dimension), options)
+	} else {
+		builder, err = core.NewDiskANNBuilder(int(field.Dimension), options)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -5115,10 +5143,13 @@ func (c *Collection) liveDocumentsFromSegmentsLocked(
 	return documents, nil
 }
 
-func buildDenseFlatIndex(ctx context.Context, field FieldSchema, metric core.Metric, documents []Document) (*core.DenseFlatIndex, error) {
+func buildDenseFlatIndex(ctx context.Context, field FieldSchema, metric core.Metric, documents []Document) (collectionDenseIndex, error) {
 	candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
 	if err != nil {
 		return nil, err
+	}
+	if field.DataType == DataTypeVectorFP16 {
+		return core.NewDenseFlatIndexFP16FromValidatedCandidates(ctx, int(field.Dimension), metric, candidates)
 	}
 	return core.NewDenseFlatIndexFromValidatedCandidates(ctx, int(field.Dimension), metric, candidates)
 }

@@ -30,6 +30,7 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/io"
 	mathutil "github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
+	"github.com/gorse-io/xvec/internal/ailego/utility"
 )
 
 const (
@@ -94,24 +95,36 @@ func (o VamanaBuildOptions) Validate() error {
 
 // VamanaBuilder collects original vectors for one deterministic graph build.
 type VamanaBuilder struct {
-	mu        sync.Mutex
-	dimension int
-	options   VamanaBuildOptions
-	keys      []uint64
-	vectors   []float32
-	positions map[uint64]int
-	built     bool
+	mu          sync.Mutex
+	dimension   int
+	options     VamanaBuildOptions
+	keys        []uint64
+	vectors     []float32
+	vectorsFP16 []uint16
+	fp16        bool
+	positions   map[uint64]int
+	built       bool
 }
 
 // NewVamanaBuilder constructs an empty one-shot builder.
 func NewVamanaBuilder(dimension int, options VamanaBuildOptions) (*VamanaBuilder, error) {
+	return newVamanaBuilder(dimension, options, false)
+}
+
+// NewVamanaBuilderFP16 constructs a graph builder that stores and scores
+// vectors in IEEE 754 binary16 form.
+func NewVamanaBuilderFP16(dimension int, options VamanaBuildOptions) (*VamanaBuilder, error) {
+	return newVamanaBuilder(dimension, options, true)
+}
+
+func newVamanaBuilder(dimension int, options VamanaBuildOptions, fp16 bool) (*VamanaBuilder, error) {
 	if dimension <= 0 || dimension > MaxRotationDimension {
 		return nil, fmt.Errorf("%w: got %d", ErrInvalidDimension, dimension)
 	}
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
-	return &VamanaBuilder{dimension: dimension, options: options, positions: make(map[uint64]int)}, nil
+	return &VamanaBuilder{dimension: dimension, options: options, fp16: fp16, positions: make(map[uint64]int)}, nil
 }
 
 // newBorrowedVamanaBuilder constructs an internal one-shot builder over
@@ -160,12 +173,25 @@ func (b *VamanaBuilder) Add(ctx context.Context, key uint64, vector []float32) e
 	if _, found := b.positions[key]; found {
 		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
 	}
-	if len(b.vectors) > maxPlatformInt()-b.dimension {
+	vectorLength := len(b.vectors)
+	if b.fp16 {
+		vectorLength = len(b.vectorsFP16)
+	}
+	if vectorLength > maxPlatformInt()-b.dimension {
 		return ErrVamanaCapacity
 	}
-	b.positions[key] = len(b.keys)
+	position := len(b.keys)
+	if b.fp16 {
+		encoded, err := denseVectorFP16(vector)
+		if err != nil {
+			return fmt.Errorf("core: encode Vamana FP16 vector: %w", err)
+		}
+		b.vectorsFP16 = append(b.vectorsFP16, encoded...)
+	} else {
+		b.vectors = append(b.vectors, vector...)
+	}
+	b.positions[key] = position
 	b.keys = append(b.keys, key)
-	b.vectors = append(b.vectors, vector...)
 	return nil
 }
 
@@ -217,10 +243,17 @@ func (b *VamanaBuilder) build(ctx context.Context, workers int) (*VamanaIndex, e
 	if err != nil {
 		return nil, err
 	}
+	var distanceFP16 mathutil.DenseDistanceFP16
+	if b.fp16 {
+		distanceFP16, err = denseDistanceFP16(b.options.Metric)
+		if err != nil {
+			return nil, err
+		}
+	}
 	index := &VamanaIndex{
 		dimension: b.dimension, options: b.options,
-		distance: distance,
-		keys:     b.keys, vectors: b.vectors, positions: b.positions,
+		distance: distance, distanceFP16: distanceFP16,
+		keys: b.keys, vectors: b.vectors, vectorsFP16: b.vectorsFP16, fp16: b.fp16, positions: b.positions,
 		neighbors: make([][]int, len(b.keys)), neighborDistances: make([][]float32, len(b.keys)),
 		entryPoint: -1,
 	}
@@ -277,6 +310,7 @@ func (b *VamanaBuilder) build(ctx context.Context, workers int) (*VamanaIndex, e
 	b.built = true
 	b.keys = nil
 	b.vectors = nil
+	b.vectorsFP16 = nil
 	b.positions = nil
 	return index, nil
 }
@@ -304,10 +338,17 @@ func (b *VamanaBuilder) buildInterleaved(ctx context.Context, workers int) (*Vam
 	if err != nil {
 		return nil, err
 	}
+	var distanceFP16 mathutil.DenseDistanceFP16
+	if b.fp16 {
+		distanceFP16, err = denseDistanceFP16(b.options.Metric)
+		if err != nil {
+			return nil, err
+		}
+	}
 	index := &VamanaIndex{
 		dimension: b.dimension, options: b.options,
-		distance: distance,
-		keys:     b.keys, vectors: b.vectors, positions: b.positions,
+		distance: distance, distanceFP16: distanceFP16,
+		keys: b.keys, vectors: b.vectors, vectorsFP16: b.vectorsFP16, fp16: b.fp16, positions: b.positions,
 		neighbors: make([][]int, len(b.keys)), neighborDistances: make([][]float32, len(b.keys)),
 		entryPoint: -1,
 	}
@@ -369,6 +410,7 @@ func (b *VamanaBuilder) buildInterleaved(ctx context.Context, workers int) (*Vam
 	b.built = true
 	b.keys = nil
 	b.vectors = nil
+	b.vectorsFP16 = nil
 	b.positions = nil
 	return index, nil
 }
@@ -383,7 +425,7 @@ func vamanaBuildWorkers(workers, count int) int {
 	return max(1, min(workers, max(1, count)))
 }
 
-// VamanaIndex stores original FP32 vectors and one bounded directed graph.
+// VamanaIndex stores original dense vectors and one bounded directed graph.
 // Readers share an immutable generation while Add publishes copy-on-write.
 type VamanaIndex struct {
 	streamMu          sync.Mutex
@@ -393,8 +435,11 @@ type VamanaIndex struct {
 	dimension         int
 	options           VamanaBuildOptions
 	distance          mathutil.DenseDistance
+	distanceFP16      mathutil.DenseDistanceFP16
 	keys              []uint64
 	vectors           []float32
+	vectorsFP16       []uint16
+	fp16              bool
 	vectorMagnitudes  []float32
 	positions         map[uint64]int
 	neighbors         [][]int
@@ -407,6 +452,10 @@ func (i *VamanaIndex) Dimension() int {
 		return 0
 	}
 	return i.dimension
+}
+
+func (i *VamanaIndex) IsFP16() bool {
+	return i != nil && i.fp16
 }
 
 func (i *VamanaIndex) Metric() Metric {
@@ -441,6 +490,9 @@ func (i *VamanaIndex) Vector(key uint64) ([]float32, bool) {
 	position, found := i.positions[key]
 	if !found {
 		return nil, false
+	}
+	if i.fp16 {
+		return float32VectorFromFP16(i.vectorFP16At(position)), true
 	}
 	return slices.Clone(i.vectorAt(position)), true
 }
@@ -932,6 +984,20 @@ func (i *VamanaIndex) graphDistance(left, right []float32) (float32, error) {
 }
 
 func (i *VamanaIndex) graphDistanceAt(left, right int) (float32, error) {
+	if i.fp16 {
+		var score float32
+		if i.options.Metric == MetricCosine {
+			score = mathutil.CosineDistanceWithMagnitudesFP16(
+				i.vectorFP16At(left), i.vectorFP16At(right), i.vectorMagnitudes[left], i.vectorMagnitudes[right],
+			)
+		} else {
+			score = i.distanceFP16(i.vectorFP16At(left), i.vectorFP16At(right))
+		}
+		if i.options.Metric == MetricIP {
+			score = -score
+		}
+		return score, nil
+	}
 	if i.options.Metric == MetricCosine {
 		return mathutil.CosineDistanceWithMagnitudes(
 			i.vectorAt(left), i.vectorAt(right), i.vectorMagnitudes[left], i.vectorMagnitudes[right],
@@ -949,6 +1015,15 @@ func (i *VamanaIndex) queryDistanceAt(query []float32, queryMagnitude float32, p
 	return i.distance(query, i.vectorAt(position)), nil
 }
 
+func (i *VamanaIndex) queryDistanceAtFP16(query []uint16, queryMagnitude float32, position int) (float32, error) {
+	if i.options.Metric == MetricCosine {
+		return mathutil.CosineDistanceWithMagnitudesFP16(
+			query, i.vectorFP16At(position), queryMagnitude, i.vectorMagnitudes[position],
+		), nil
+	}
+	return i.distanceFP16(query, i.vectorFP16At(position)), nil
+}
+
 func (i *VamanaIndex) cacheCosineMagnitudes(ctx context.Context, workers int) error {
 	if i.options.Metric != MetricCosine {
 		i.vectorMagnitudes = nil
@@ -956,7 +1031,11 @@ func (i *VamanaIndex) cacheCosineMagnitudes(ctx context.Context, workers int) er
 	}
 	i.vectorMagnitudes = make([]float32, len(i.keys))
 	if err := parallel.ParallelFor(ctx, len(i.keys), workers, func(_ context.Context, position int) error {
-		i.vectorMagnitudes[position] = mathutil.L2Magnitude(i.vectorAt(position))
+		if i.fp16 {
+			i.vectorMagnitudes[position] = mathutil.L2MagnitudeFP16(i.vectorFP16At(position))
+		} else {
+			i.vectorMagnitudes[position] = mathutil.L2Magnitude(i.vectorAt(position))
+		}
 		return nil
 	}); err != nil {
 		return err
@@ -975,8 +1054,14 @@ func (i *VamanaIndex) calculateMedoid(ctx context.Context) (int, error) {
 				return -1, err
 			}
 		}
-		for component, value := range i.vectorAt(position) {
-			centroid[component] += float64(value)
+		if i.fp16 {
+			for component, bits := range i.vectorFP16At(position) {
+				centroid[component] += float64(utility.Float16BitsToFloat32(bits))
+			}
+		} else {
+			for component, value := range i.vectorAt(position) {
+				centroid[component] += float64(value)
+			}
 		}
 	}
 	scale := 1 / float64(len(i.keys))
@@ -991,9 +1076,16 @@ func (i *VamanaIndex) calculateMedoid(ctx context.Context) (int, error) {
 			}
 		}
 		var distance float64
-		for component, value := range i.vectorAt(position) {
-			delta := float64(value) - centroid[component]
-			distance += delta * delta
+		if i.fp16 {
+			for component, bits := range i.vectorFP16At(position) {
+				delta := float64(utility.Float16BitsToFloat32(bits)) - centroid[component]
+				distance += delta * delta
+			}
+		} else {
+			for component, value := range i.vectorAt(position) {
+				delta := float64(value) - centroid[component]
+				distance += delta * delta
+			}
 		}
 		if distance < bestDistance {
 			best, bestDistance = position, distance
@@ -1005,6 +1097,11 @@ func (i *VamanaIndex) calculateMedoid(ctx context.Context) (int, error) {
 func (i *VamanaIndex) vectorAt(position int) []float32 {
 	start := position * i.dimension
 	return i.vectors[start : start+i.dimension]
+}
+
+func (i *VamanaIndex) vectorFP16At(position int) []uint16 {
+	start := position * i.dimension
+	return i.vectorsFP16[start : start+i.dimension]
 }
 
 func vamanaDistanceBetter(left, right vamanaDistanceNode) bool {
@@ -1033,8 +1130,8 @@ func cloneVamanaIndex(ctx context.Context, source *VamanaIndex) (*VamanaIndex, e
 	}
 	clone := &VamanaIndex{
 		dimension: source.dimension, options: source.options,
-		distance: source.distance,
-		keys:     slices.Clone(source.keys), vectors: slices.Clone(source.vectors),
+		distance: source.distance, distanceFP16: source.distanceFP16, fp16: source.fp16,
+		keys: slices.Clone(source.keys), vectors: slices.Clone(source.vectors), vectorsFP16: slices.Clone(source.vectorsFP16),
 		vectorMagnitudes: slices.Clone(source.vectorMagnitudes),
 		positions:        cloneUint64Positions(source.positions), entryPoint: source.entryPoint,
 		neighbors: make([][]int, len(source.neighbors)), neighborDistances: make([][]float32, len(source.neighborDistances)),
@@ -1065,7 +1162,13 @@ func validateVamanaIndex(ctx context.Context, index *VamanaIndex) error {
 		return err
 	}
 	count := len(index.keys)
-	if count > maxPlatformInt()/index.dimension || len(index.vectors) != count*index.dimension || len(index.positions) != count ||
+	if count > maxPlatformInt()/index.dimension {
+		return errors.New("core: inconsistent Vamana storage")
+	}
+	wantVectors := count * index.dimension
+	validVectors := (!index.fp16 && len(index.vectors) == wantVectors && len(index.vectorsFP16) == 0) ||
+		(index.fp16 && len(index.vectors) == 0 && len(index.vectorsFP16) == wantVectors)
+	if !validVectors || len(index.positions) != count ||
 		len(index.neighbors) != count || len(index.neighborDistances) != count {
 		return errors.New("core: inconsistent Vamana storage")
 	}
@@ -1087,7 +1190,11 @@ func validateVamanaIndex(ctx context.Context, index *VamanaIndex) error {
 			return errors.New("core: invalid Vamana key map")
 		}
 		seenKeys[key] = struct{}{}
-		if err := validateTrainingVector(index.vectorAt(position), index.dimension); err != nil {
+		if index.fp16 {
+			if err := validateTrainingVector(float32VectorFromFP16(index.vectorFP16At(position)), index.dimension); err != nil {
+				return err
+			}
+		} else if err := validateTrainingVector(index.vectorAt(position), index.dimension); err != nil {
 			return err
 		}
 		if len(index.neighbors[position]) > index.options.MaxDegree || len(index.neighbors[position]) != len(index.neighborDistances[position]) {
@@ -1196,11 +1303,28 @@ func (i *VamanaIndex) searchVamana(ctx context.Context, query []float32, options
 	if options.TopK == 0 || len(i.keys) == 0 {
 		return []Result{}, nil
 	}
+	var queryFP16 []uint16
 	queryMagnitude := float32(0)
-	if i.options.Metric == MetricCosine {
+	if i.fp16 {
+		var err error
+		queryFP16, err = denseVectorFP16(query)
+		if err != nil {
+			return nil, fmt.Errorf("core: encode Vamana FP16 query: %w", err)
+		}
+		if i.options.Metric == MetricCosine {
+			queryMagnitude = mathutil.L2MagnitudeFP16(queryFP16)
+		}
+	} else if i.options.Metric == MetricCosine {
 		queryMagnitude = mathutil.L2Magnitude(query)
 	}
 	if len(i.keys) <= DefaultVamanaBruteForceThreshold {
+		if i.fp16 {
+			flat := DenseFlatIndex{
+				dimension: i.dimension, metric: i.options.Metric, fp16: true,
+				keys: i.keys, vectorsFP16: i.vectorsFP16, magnitudes: i.vectorMagnitudes,
+			}
+			return flat.searchFP16(ctx, queryFP16, options.SearchOptions)
+		}
 		var candidateMagnitude float32
 		distance := i.distance
 		if i.options.Metric == MetricCosine {
@@ -1216,11 +1340,24 @@ func (i *VamanaIndex) searchVamana(ctx context.Context, query []float32, options
 		})
 	}
 	scoreAt := func(position int) (float32, error) {
+		if i.fp16 {
+			return i.queryDistanceAtFP16(queryFP16, queryMagnitude, position)
+		}
 		return i.queryDistanceAt(query, queryMagnitude, position)
 	}
 	batch := acquireDenseDistanceBatch(i.options.MaxDegree)
 	defer releaseDenseDistanceBatch(batch)
 	scoreBatch := func(positions []int, scores []float32) error {
+		if i.fp16 {
+			for offset, position := range positions {
+				score, err := i.queryDistanceAtFP16(queryFP16, queryMagnitude, position)
+				if err != nil {
+					return err
+				}
+				scores[offset] = score
+			}
+			return nil
+		}
 		batch.vectors = batch.vectors[:0]
 		batch.magnitudes = batch.magnitudes[:0]
 		for _, position := range positions {
@@ -1232,7 +1369,9 @@ func (i *VamanaIndex) searchVamana(ctx context.Context, query []float32, options
 		return denseDistances(i.options.Metric, query, batch.vectors, queryMagnitude, batch.magnitudes, scores)
 	}
 	prefetch := func(neighbors []int) {
-		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
+		if !i.fp16 {
+			prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
+		}
 	}
 	return searchVamanaGraph(ctx, i.options.Metric, i.keys, i.neighbors, i.entryPoint, options, scoreAt, scoreBatch, prefetch, batch)
 }
@@ -1491,7 +1630,11 @@ func (i *VamanaIndex) Add(ctx context.Context, key uint64, vector []float32) err
 		i.mu.RUnlock()
 		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
 	}
-	if len(i.vectors) > maxPlatformInt()-i.dimension {
+	vectorCount := len(i.vectors)
+	if i.fp16 {
+		vectorCount = len(i.vectorsFP16)
+	}
+	if vectorCount > maxPlatformInt()-i.dimension {
 		i.mu.RUnlock()
 		return ErrVamanaCapacity
 	}
@@ -1503,9 +1646,21 @@ func (i *VamanaIndex) Add(ctx context.Context, key uint64, vector []float32) err
 	position := len(working.keys)
 	working.positions[key] = position
 	working.keys = append(working.keys, key)
-	working.vectors = append(working.vectors, vector...)
+	if working.fp16 {
+		encoded, err := denseVectorFP16(vector)
+		if err != nil {
+			return fmt.Errorf("core: encode incremental Vamana FP16 vector: %w", err)
+		}
+		working.vectorsFP16 = append(working.vectorsFP16, encoded...)
+	} else {
+		working.vectors = append(working.vectors, vector...)
+	}
 	if working.options.Metric == MetricCosine {
-		working.vectorMagnitudes = append(working.vectorMagnitudes, mathutil.L2Magnitude(vector))
+		if working.fp16 {
+			working.vectorMagnitudes = append(working.vectorMagnitudes, mathutil.L2MagnitudeFP16(working.vectorFP16At(position)))
+		} else {
+			working.vectorMagnitudes = append(working.vectorMagnitudes, mathutil.L2Magnitude(vector))
+		}
 	}
 	working.neighbors = append(working.neighbors, nil)
 	working.neighborDistances = append(working.neighborDistances, nil)
@@ -1528,7 +1683,7 @@ func (i *VamanaIndex) Add(ctx context.Context, key uint64, vector []float32) err
 		i.mu.Unlock()
 		return err
 	}
-	i.keys, i.vectors, i.vectorMagnitudes, i.positions = working.keys, working.vectors, working.vectorMagnitudes, working.positions
+	i.keys, i.vectors, i.vectorsFP16, i.vectorMagnitudes, i.positions = working.keys, working.vectors, working.vectorsFP16, working.vectorMagnitudes, working.positions
 	i.neighbors, i.neighborDistances, i.entryPoint = working.neighbors, working.neighborDistances, working.entryPoint
 	i.mu.Unlock()
 	return nil
@@ -1544,6 +1699,7 @@ const (
 	vamanaFileVersion  = 1
 	vamanaHeaderSize   = 128
 	vamanaFlagSaturate = uint32(1)
+	vamanaEncodingFP16 = byte(1)
 )
 
 var (
@@ -1626,7 +1782,7 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error) 
 		}
 		edgeCount += len(adjacent)
 	}
-	payloadSize, err := checkedVamanaPayloadSize(len(index.keys), index.dimension, edgeCount)
+	payloadSize, err := checkedVamanaPayloadSize(len(index.keys), index.dimension, edgeCount, index.fp16)
 	if err != nil {
 		return nil, err
 	}
@@ -1639,13 +1795,24 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error) 
 		}
 		payload = binary.LittleEndian.AppendUint64(payload, key)
 	}
-	for position, value := range index.vectors {
-		if position&16383 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
+	if index.fp16 {
+		for position, value := range index.vectorsFP16 {
+			if position&16383 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
 			}
+			payload = binary.LittleEndian.AppendUint16(payload, value)
 		}
-		payload = binary.LittleEndian.AppendUint32(payload, math.Float32bits(value))
+	} else {
+		for position, value := range index.vectors {
+			if position&16383 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
+			payload = binary.LittleEndian.AppendUint32(payload, math.Float32bits(value))
+		}
 	}
 	for position, adjacent := range index.neighbors {
 		if position&255 == 0 {
@@ -1674,6 +1841,9 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error) 
 	binary.LittleEndian.PutUint64(header[40:48], uint64(edgeCount))
 	binary.LittleEndian.PutUint32(header[48:52], uint32(index.dimension))
 	header[52] = byte(index.options.Metric)
+	if index.fp16 {
+		header[53] = vamanaEncodingFP16
+	}
 	binary.LittleEndian.PutUint32(header[56:60], uint32(index.options.MaxDegree))
 	binary.LittleEndian.PutUint32(header[60:64], uint32(index.options.SearchListSize))
 	binary.LittleEndian.PutUint32(header[64:68], uint32(index.options.MaxOcclusionSize))
@@ -1708,7 +1878,7 @@ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error
 	}
 	flags := binary.LittleEndian.Uint32(header[12:16])
 	if binary.LittleEndian.Uint16(header[10:12]) != vamanaHeaderSize || flags&^vamanaFlagSaturate != 0 ||
-		!hnswAllZero(header[53:56]) || !hnswAllZero(header[84:124]) {
+		header[53] > vamanaEncodingFP16 || !hnswAllZero(header[54:56]) || !hnswAllZero(header[84:124]) {
 		return nil, fmt.Errorf("%w: invalid header fields", ErrInvalidVamanaFile)
 	}
 	if got, want := hashutil.CRC32C(header[:124]), binary.LittleEndian.Uint32(header[124:128]); got != want {
@@ -1754,7 +1924,8 @@ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error
 	if err := options.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidVamanaFile, err)
 	}
-	expectedSize, err := checkedVamanaPayloadSize(count, dimension, edgeCount)
+	fp16 := header[53] == vamanaEncodingFP16
+	expectedSize, err := checkedVamanaPayloadSize(count, dimension, edgeCount, fp16)
 	if err != nil || expectedSize != len(payload) {
 		return nil, fmt.Errorf("%w: invalid payload size", ErrInvalidVamanaFile)
 	}
@@ -1772,7 +1943,7 @@ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error
 	}
 	index := &VamanaIndex{
 		dimension: dimension, options: options, keys: make([]uint64, count),
-		vectors: make([]float32, count*dimension), positions: make(map[uint64]int, count),
+		fp16: fp16, positions: make(map[uint64]int, count),
 		neighbors: make([][]int, count), neighborDistances: make([][]float32, count), entryPoint: entry,
 	}
 	index.distance, err = options.Metric.Distance()
@@ -1793,14 +1964,27 @@ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error
 		}
 		index.keys[position], index.positions[key] = key, position
 	}
-	for position := range index.vectors {
-		if position&16383 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
+	if fp16 {
+		index.distanceFP16, err = denseDistanceFP16(options.Metric)
+		if err != nil {
+			return nil, err
 		}
-		index.vectors[position] = math.Float32frombits(binary.LittleEndian.Uint32(payload[offset : offset+4]))
-		offset += 4
+		index.vectorsFP16 = make([]uint16, count*dimension)
+		for position := range index.vectorsFP16 {
+			index.vectorsFP16[position] = binary.LittleEndian.Uint16(payload[offset : offset+2])
+			offset += 2
+		}
+	} else {
+		index.vectors = make([]float32, count*dimension)
+		for position := range index.vectors {
+			if position&16383 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
+			index.vectors[position] = math.Float32frombits(binary.LittleEndian.Uint32(payload[offset : offset+4]))
+			offset += 4
+		}
 	}
 	if err := index.cacheCosineMagnitudes(ctx, vamanaBuildWorkers(0, count)); err != nil {
 		return nil, fmt.Errorf("%w: cache vector magnitudes: %v", ErrInvalidVamanaFile, err)
@@ -1868,11 +2052,15 @@ func validateVamanaFormatOptions(options VamanaBuildOptions) error {
 	return nil
 }
 
-func checkedVamanaPayloadSize(count, dimension, edgeCount int) (int, error) {
+func checkedVamanaPayloadSize(count, dimension, edgeCount int, fp16 bool) (int, error) {
 	if count < 0 || dimension <= 0 || edgeCount < 0 {
 		return 0, fmt.Errorf("%w: invalid payload inputs", ErrInvalidVamanaFile)
 	}
-	perNode := uint64(12) + uint64(dimension)*4
+	vectorWidth := uint64(4)
+	if fp16 {
+		vectorWidth = 2
+	}
+	perNode := uint64(12) + uint64(dimension)*vectorWidth
 	if uint64(edgeCount) > math.MaxUint64/4 || (perNode != 0 && uint64(count) > (math.MaxUint64-uint64(edgeCount)*4)/perNode) {
 		return 0, fmt.Errorf("%w: payload size overflow", ErrInvalidVamanaFile)
 	}

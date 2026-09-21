@@ -58,6 +58,72 @@ func TestDiskANNCloseRetriesFailedCloser(t *testing.T) {
 	require.Equal(t, 2, closer.calls)
 }
 
+func TestDiskANNFP16BuildSearchAndPersistence(t *testing.T) {
+	options := DefaultDiskANNBuildOptions(MetricL2)
+	options.MaxDegree, options.ListSize, options.PQChunks = 2, 4, 1
+	builder, err := NewDiskANNBuilderFP16(2, options)
+	require.NoError(t, err)
+	for _, candidate := range exactCandidates {
+		require.NoError(t, builder.Add(context.Background(), candidate.Key, candidate.Vector))
+	}
+	require.Empty(t, builder.vectors)
+	require.Len(t, builder.vectorsFP16, len(exactCandidates)*2)
+
+	index, err := builder.Build(context.Background())
+	require.NoError(t, err)
+	require.True(t, index.fp16)
+	require.Equal(t, 2*2+4+options.MaxDegree*4+4, index.nodesFP16.layout.recordSize)
+
+	search := DiskANNSearchOptions{SearchOptions: SearchOptions{TopK: 3}, ListSize: len(exactCandidates), Linear: true}
+	results, err := index.SearchDiskANN(context.Background(), []float32{1, 0}, search)
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 30, Score: 0}, {Key: 5, Score: 1}, {Key: 10, Score: 1}}, results)
+	graphSearch := search
+	graphSearch.Linear = false
+	graphResults, err := index.SearchDiskANN(context.Background(), []float32{1, 0}, graphSearch)
+	require.NoError(t, err)
+	require.Equal(t, results, graphResults)
+	vector, found := index.Vector(30)
+	require.True(t, found)
+	require.Equal(t, []float32{1, 0}, vector)
+
+	path := filepath.Join(t.TempDir(), "vectors.diskann")
+	require.NoError(t, index.Save(context.Background(), path))
+	artifact, err := os.ReadFile(path)
+	require.NoError(t, err)
+	nodesOffset := int(binary.LittleEndian.Uint64(artifact[128:136]))
+	require.Equal(t, uint16(diskANNFP16NodeFileVersion), binary.LittleEndian.Uint16(artifact[nodesOffset+8:nodesOffset+10]))
+	require.Equal(t, byte(diskANNFP16NodeMarker), artifact[nodesOffset+69])
+
+	corrupt := slices.Clone(artifact)
+	nodesLength := int(binary.LittleEndian.Uint64(corrupt[136:144]))
+	nodeHeader := corrupt[nodesOffset : nodesOffset+diskANNNodeHeaderSize]
+	nodeData := corrupt[nodesOffset+diskANNNodeHeaderSize : nodesOffset+nodesLength]
+	binary.LittleEndian.PutUint16(nodeData[:2], 0x7c00)
+	recordSize := index.nodesFP16.layout.recordSize
+	binary.LittleEndian.PutUint32(nodeData[recordSize-4:recordSize], hashutil.CRC32C(nodeData[:recordSize-4]))
+	binary.LittleEndian.PutUint32(nodeHeader[72:76], hashutil.CRC32C(nodeData))
+	binary.LittleEndian.PutUint32(nodeHeader[diskANNNodeHeaderCRCPos:], hashutil.CRC32C(nodeHeader[:diskANNNodeHeaderCRCPos]))
+	binary.LittleEndian.PutUint32(corrupt[160:164], hashutil.CRC32C(corrupt[nodesOffset:nodesOffset+nodesLength]))
+	binary.LittleEndian.PutUint32(corrupt[diskANNIndexHeaderCRCPos:], hashutil.CRC32C(corrupt[:diskANNIndexHeaderCRCPos]))
+	corrupted, err := openDiskANNIndexReader(context.Background(), bytes.NewReader(corrupt), int64(len(corrupt)), 0, 1, nil)
+	require.NoError(t, err)
+	_, err = corrupted.nodesFP16.readNodes(context.Background(), []uint32{0}, false)
+	require.ErrorIs(t, err, ErrInvalidDiskANNNode)
+
+	reopened, err := OpenDiskANNIndex(context.Background(), path, 2, 1)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, reopened.Close()) }()
+	require.True(t, reopened.fp16)
+	require.Equal(t, index.nodesFP16.layout.recordSize, reopened.nodesFP16.layout.recordSize)
+	results, err = reopened.SearchDiskANN(context.Background(), []float32{1, 0}, search)
+	require.NoError(t, err)
+	require.Equal(t, []Result{{Key: 30, Score: 0}, {Key: 5, Score: 1}, {Key: 10, Score: 1}}, results)
+	graphResults, err = reopened.SearchDiskANN(context.Background(), []float32{1, 0}, graphSearch)
+	require.NoError(t, err)
+	require.Equal(t, results, graphResults)
+}
+
 func TestDiskANNBuildSearchMetricsFilterRadiusAndRefiner(t *testing.T) {
 	for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
 		t.Run(diskANNMetricName(metric), func(t *testing.T) {
