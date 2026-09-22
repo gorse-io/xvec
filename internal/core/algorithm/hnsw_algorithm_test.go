@@ -1796,3 +1796,34 @@ func rechecksumHNSW(encoded []byte) {
 	binary.LittleEndian.PutUint32(encoded[84:88], hashutil.CRC32C(encoded[hnswHeaderSize:]))
 	binary.LittleEndian.PutUint32(encoded[108:112], hashutil.CRC32C(encoded[:108]))
 }
+
+func TestDenseHNSWPrefetchPreservesResults(t *testing.T) {
+	for _, dimension := range []int{1, 17, 768} {
+		t.Run(fmt.Sprint(dimension), func(t *testing.T) {
+			options := DefaultHNSWBuildOptions(MetricCosine)
+			options.M, options.EFConstruction = 8, 32
+			builder, err := NewHNSWBuilder(dimension, options)
+			require.NoError(t, err)
+			vector := make([]float32, dimension)
+			for n := 0; n < DefaultHNSWBruteForceThreshold+16; n++ {
+				for d := range vector {
+					vector[d] = float32(math.Sin(float64(n*dimension + d + 1)))
+				}
+				require.NoError(t, builder.Add(context.Background(), uint64(n), vector))
+			}
+			index, err := builder.Build(context.Background())
+			require.NoError(t, err)
+			for _, filter := range []func(uint64) bool{nil, func(key uint64) bool { return key%2 == 0 }} {
+				query := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 10, Filter: filter}, EF: 32}
+				want, err := index.SearchHNSW(context.Background(), vector, query)
+				require.NoError(t, err)
+				for _, hints := range [][2]uint32{{8, 0}, {1, 1}, {math.MaxUint32, math.MaxUint32}} {
+					query.PrefetchOffset, query.PrefetchLines = hints[0], hints[1]
+					got, err := index.SearchHNSW(context.Background(), vector, query)
+					require.NoError(t, err)
+					require.Equal(t, want, got)
+				}
+			}
+		})
+	}
+}

@@ -19,29 +19,7 @@ import (
 	"runtime"
 )
 
-// The Go runtime has no portable non-faulting prefetch intrinsic. These
-// helpers synchronously warm the same bounded cache-line prefix requested by
-// the public hint. They never change candidate ordering or admission.
-func prefetchDenseHNSWNeighbors(vectors []float32, dimension int, neighbors []int, offset, lines uint32) {
-	count := prefetchNeighborCount(len(neighbors), offset)
-	if count == 0 || dimension <= 0 {
-		return
-	}
-	lineCount := normalizedPrefetchLines(lines, dimension*4)
-	var touched uint32
-	for _, position := range neighbors[:count] {
-		start := position * dimension
-		for line := 0; line < lineCount; line++ {
-			element := line * 16
-			if element >= dimension {
-				break
-			}
-			touched ^= math.Float32bits(vectors[start+element])
-		}
-	}
-	runtime.KeepAlive(touched)
-}
-
+// Sparse and quantized hints currently warm cache lines synchronously.
 func prefetchSparseHNSWNeighbors(offsets []int, indices []uint32, values []float32, neighbors []int, offset, lines uint32) {
 	count := prefetchNeighborCount(len(neighbors), offset)
 	if count == 0 {

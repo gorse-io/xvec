@@ -61,6 +61,34 @@ func TestVamanaFP16BuildSearchAndPersistence(t *testing.T) {
 	require.Equal(t, index.vectorsFP16, reopened.vectorsFP16)
 }
 
+func TestDenseVamanaPrefetchPreservesResults(t *testing.T) {
+	const dimension = 17
+	options := DefaultVamanaBuildOptions(MetricCosine)
+	options.MaxDegree, options.SearchListSize = 8, 32
+	builder, err := NewVamanaBuilder(dimension, options)
+	require.NoError(t, err)
+	vector := make([]float32, dimension)
+	for n := 0; n < DefaultVamanaBruteForceThreshold+16; n++ {
+		for d := range vector {
+			vector[d] = float32(math.Sin(float64(n*dimension + d + 1)))
+		}
+		require.NoError(t, builder.Add(context.Background(), uint64(n), vector))
+	}
+	index, err := builder.Build(context.Background())
+	require.NoError(t, err)
+	for _, filter := range []func(uint64) bool{nil, func(key uint64) bool { return key%2 == 0 }} {
+		query := VamanaSearchOptions{SearchOptions: SearchOptions{TopK: 10, Filter: filter}, EFSearch: 32}
+		want, err := index.SearchVamana(context.Background(), vector, query)
+		require.NoError(t, err)
+		for _, hints := range [][2]uint32{{8, 0}, {1, 1}, {math.MaxUint32, math.MaxUint32}} {
+			query.PrefetchOffset, query.PrefetchLines = hints[0], hints[1]
+			got, err := index.SearchVamana(context.Background(), vector, query)
+			require.NoError(t, err)
+			require.Equal(t, want, got)
+		}
+	}
+}
+
 func TestVamanaBlockHeapSearchUsesInnerProductOrdering(t *testing.T) {
 	keys := []uint64{30, 10, 20}
 	neighbors := [][]int{{1, 2}, {0}, {0}}
