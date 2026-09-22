@@ -66,12 +66,13 @@ func (d StoredDocument) Clone() StoredDocument {
 
 // WriteSegment accepts sequential documents until it is sealed.
 type WriteSegment struct {
-	mu       sync.RWMutex
-	id       uint64
-	minDocID uint64
-	maxDocs  uint64
-	docs     []StoredDocument
-	sealed   bool
+	mu          sync.RWMutex
+	id          uint64
+	minDocID    uint64
+	maxDocs     uint64
+	docs        []StoredDocument
+	sealed      bool
+	memoryBytes uint64
 }
 
 // NewWriteSegment constructs an empty segment with a fixed global ID range
@@ -171,6 +172,7 @@ func (s *WriteSegment) append(ctx context.Context, expectedDocID *uint64, primar
 		Payload: slices.Clone(payload),
 	}
 	s.docs = append(s.docs, doc)
+	s.memoryBytes = saturatingAdd(s.memoryBytes, storedDocumentMemoryBytes(doc))
 	return doc, nil
 }
 
@@ -211,14 +213,14 @@ func (s *WriteSegment) VisitDocuments(visit func([]StoredDocument) error) error 
 	return visit(s.docs)
 }
 
-// MemoryUsageBytes returns the encoded record bytes retained by the segment.
+// MemoryUsageBytes returns the cached encoded record bytes retained by the segment.
 func (s *WriteSegment) MemoryUsageBytes() uint64 {
 	if s == nil {
 		return 0
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return storedDocumentsMemoryBytes(s.docs)
+	return s.memoryBytes
 }
 
 // Metadata returns the current in-memory range without file references.
@@ -281,12 +283,16 @@ func (s *WriteSegment) writeImmutable(ctx context.Context, collectionDir, relati
 
 // ImmutableSegment is a verified read-only segment snapshot.
 type ImmutableSegment struct {
-	metadata common.SegmentMetadata
-	docs     []StoredDocument
+	metadata    common.SegmentMetadata
+	docs        []StoredDocument
+	memoryBytes uint64
 }
 
 func newImmutableSegment(metadata common.SegmentMetadata, docs []StoredDocument) *ImmutableSegment {
-	return &ImmutableSegment{metadata: common.CloneSegment(metadata), docs: CloneDocuments(docs)}
+	return &ImmutableSegment{
+		metadata: common.CloneSegment(metadata), docs: CloneDocuments(docs),
+		memoryBytes: storedDocumentsMemoryBytes(docs),
+	}
 }
 
 // OpenImmutableSegment loads and verifies the first data file in metadata.
@@ -382,18 +388,22 @@ func (s *ImmutableSegment) VisitDocuments(visit func([]StoredDocument) error) er
 	return visit(s.docs)
 }
 
-// MemoryUsageBytes returns the encoded record bytes retained by the segment.
+// MemoryUsageBytes returns the cached encoded record bytes retained by the segment.
 func (s *ImmutableSegment) MemoryUsageBytes() uint64 {
 	if s == nil {
 		return 0
 	}
-	return storedDocumentsMemoryBytes(s.docs)
+	return s.memoryBytes
+}
+
+func storedDocumentMemoryBytes(document StoredDocument) uint64 {
+	return uint64(segmentRecordHeaderSize + len(document.PrimaryKey) + len(document.Payload))
 }
 
 func storedDocumentsMemoryBytes(documents []StoredDocument) uint64 {
 	var total uint64
 	for _, document := range documents {
-		size := uint64(segmentRecordHeaderSize + len(document.PrimaryKey) + len(document.Payload))
+		size := storedDocumentMemoryBytes(document)
 		if size > math.MaxUint64-total {
 			return math.MaxUint64
 		}

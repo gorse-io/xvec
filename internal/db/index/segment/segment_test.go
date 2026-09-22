@@ -18,7 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"github.com/gorse-io/xvec/internal/db/index/common"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/gorse-io/xvec/internal/ailego/hash"
+	"github.com/gorse-io/xvec/internal/db/index/common"
 	"github.com/stretchr/testify/require"
 )
 
@@ -265,4 +266,76 @@ func TestStreamedSegmentEncodingMatchesCodec(t *testing.T) {
 	got, err := os.ReadFile(name)
 	require.NoError(t, err)
 	require.Equal(t, want, got)
+}
+
+func TestSegmentMemoryUsageAcrossSnapshots(t *testing.T) {
+	ctx := context.Background()
+	writing, err := NewWriteSegment(1, 100, 2)
+	require.NoError(t, err)
+	require.Zero(t, writing.MemoryUsageBytes())
+	require.Zero(t, (*WriteSegment)(nil).MemoryUsageBytes())
+	require.Zero(t, (*ImmutableSegment)(nil).MemoryUsageBytes())
+
+	_, err = writing.Append(ctx, "one", []byte("abc"))
+	require.NoError(t, err)
+	const firstBytes = uint64(segmentRecordHeaderSize + 3 + 3)
+	require.Equal(t, firstBytes, writing.MemoryUsageBytes())
+
+	_, err = writing.AppendExpected(ctx, 999, "wrong", []byte("payload"))
+	require.Error(t, err)
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = writing.Append(canceled, "canceled", nil)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, firstBytes, writing.MemoryUsageBytes())
+
+	dir := t.TempDir()
+	snapshot, err := writing.Snapshot(ctx, dir, "snapshot.seg")
+	require.NoError(t, err)
+	require.Equal(t, firstBytes, snapshot.MemoryUsageBytes())
+	require.NoError(t, writing.ApplyExpected(ctx, 101, "second", nil))
+	const totalBytes = firstBytes + uint64(segmentRecordHeaderSize+6)
+	require.Equal(t, totalBytes, writing.MemoryUsageBytes())
+	require.Equal(t, firstBytes, snapshot.MemoryUsageBytes(), "later appends must not change a snapshot")
+	_, err = writing.Append(ctx, "full", nil)
+	require.ErrorIs(t, err, ErrSegmentFull)
+	require.Equal(t, totalBytes, writing.MemoryUsageBytes())
+
+	immutable, err := writing.Seal(ctx, dir, "sealed.seg")
+	require.NoError(t, err)
+	require.Equal(t, totalBytes, immutable.MemoryUsageBytes())
+	_, err = writing.Append(ctx, "sealed", nil)
+	require.ErrorIs(t, err, ErrSegmentSealed)
+	require.Equal(t, totalBytes, writing.MemoryUsageBytes())
+	reopened, err := OpenImmutableSegment(ctx, dir, immutable.Metadata())
+	require.NoError(t, err)
+	require.Equal(t, totalBytes, reopened.MemoryUsageBytes())
+}
+
+func BenchmarkSegmentMemoryUsageBytes(b *testing.B) {
+	for _, count := range []int{1, 1000, 1000000} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			writing, err := NewWriteSegment(1, 0, uint64(count))
+			require.NoError(b, err)
+			for n := 0; n < count; n++ {
+				require.NoError(b, writing.ApplyExpected(context.Background(), uint64(n), "key", nil))
+			}
+			immutable := newImmutableSegment(writing.Metadata(), writing.docs)
+			want := uint64(count) * (segmentRecordHeaderSize + 3)
+			b.Run("mutable", func(b *testing.B) {
+				for b.Loop() {
+					if got := writing.MemoryUsageBytes(); got != want {
+						b.Fatalf("got %d, want %d", got, want)
+					}
+				}
+			})
+			b.Run("immutable", func(b *testing.B) {
+				for b.Loop() {
+					if got := immutable.MemoryUsageBytes(); got != want {
+						b.Fatalf("got %d, want %d", got, want)
+					}
+				}
+			})
+		})
+	}
 }
