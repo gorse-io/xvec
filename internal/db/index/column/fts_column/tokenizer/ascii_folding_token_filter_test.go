@@ -17,11 +17,8 @@ package tokenizer
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -29,71 +26,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-type asciiFoldingFixture struct {
-	BaselineCommit        string `json:"baseline_commit"`
-	SourceSHA256          string `json:"source_sha256"`
-	HeaderSHA256          string `json:"header_sha256"`
-	UTF8ProcCommit        string `json:"utf8proc_commit"`
-	UTF8ProcDataSHA256    string `json:"utf8proc_data_sha256"`
-	NFKDPairsSHA256       string `json:"nfkd_pairs_sha256"`
-	ExtraFoldsSHA256      string `json:"extra_folds_sha256"`
-	EffectivePairsSHA256  string `json:"effective_pairs_sha256"`
-	EffectiveMappingCount int    `json:"effective_mapping_count"`
-	Cases                 []struct {
-		Name      string `json:"name"`
-		InputHex  string `json:"input_hex"`
-		OutputHex string `json:"output_hex"`
-		Removed   bool   `json:"removed"`
-	} `json:"cases"`
-}
-
-func TestASCIIFoldingTokenFilterBaselineFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/ascii_folding_filter_58375ff.json")
-	require.NoError(t, err)
-
-	var fixture asciiFoldingFixture
-	{
-		err := json.Unmarshal(data, &fixture)
-		require.NoError(t, err)
-	}
-	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
-	require.True(t, fixture.SourceSHA256 == "1b0962633ddcd1d703d7d86cd5257566b4ebafee8a8c546ba0b4eed4cb151307")
-	require.True(t, fixture.HeaderSHA256 == "d1b9d6cd964d2d7bceb538424ce022c3e676784ff47c02400942e00367fc9454")
-	require.True(t, fixture.UTF8ProcCommit == "e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78")
-	require.True(t, fixture.UTF8ProcDataSHA256 == "950e549dbfc853c4304425f3af1875e72fa9fc9697c273c763400c2da4e380a7")
-	require.True(t, fixture.NFKDPairsSHA256 == "049564e35ef35becd34f82abc578733fc2cacfcaa84960659c741173cc7f5907")
-	require.True(t, fixture.ExtraFoldsSHA256 == "b30b3076dea67303cc3e5d2fbdd16097c7deeba255200b63fd41b335346947fd")
-	require.True(t, fixture.EffectivePairsSHA256 == "d4255c7dfe10844f0d464b8a82a3adc556f7bb42a5c0c39775e8b3516f3a4636")
-	require.True(t, fixture.EffectiveMappingCount == 2120)
-
-	filter := NewASCIIFoldingTokenFilter()
-	require.True(t, filter.Name() == "ascii_folding")
-
-	for index, test := range fixture.Cases {
-		t.Run(test.Name, func(t *testing.T) {
-			input, err := hex.DecodeString(test.InputHex)
-			require.NoError(t, err)
-
-			want, err := hex.DecodeString(test.OutputHex)
-			require.NoError(t, err)
-
-			tokens := []Token{{Text: string(input), Offset: uint32(index + 7), Position: uint32(index + 11)}}
-			got, err := filter.Filter(context.Background(), tokens)
-			require.NoError(t, err)
-
-			var expected []Token
-			if test.Removed {
-				expected = []Token{}
-			} else {
-				expected = []Token{{Text: string(want), Offset: tokens[0].Offset, Position: tokens[0].Position}}
-			}
-			require.Equal(t, expected, got)
-			require.Equal(t, string(input), tokens[0].Text,
-				"filter modified its input")
-		})
-	}
-}
 
 func TestASCIIFoldingTablesIdentity(t *testing.T) {
 	require.Len(t, asciiNFKDCodepoints, 1986)

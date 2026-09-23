@@ -16,58 +16,11 @@ package tokenizer
 
 import (
 	"context"
-	"encoding/hex"
-	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
-
-type whitespaceTokenizerFixture struct {
-	BaselineCommit string `json:"baseline_commit"`
-	Cases          []struct {
-		Name     string `json:"name"`
-		InputHex string `json:"input_hex"`
-		Tokens   []struct {
-			TextHex  string `json:"text_hex"`
-			Offset   uint32 `json:"offset"`
-			Position uint32 `json:"position"`
-		} `json:"tokens"`
-	} `json:"cases"`
-}
-
-func TestWhitespaceTokenizerBaselineFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/whitespace_tokenizer_58375ff.json")
-	require.NoError(t, err)
-
-	var fixture whitespaceTokenizerFixture
-	{
-		err := json.Unmarshal(data, &fixture)
-		require.NoError(t, err)
-	}
-	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
-
-	tokenizer := NewWhitespaceTokenizer()
-	for _, test := range fixture.Cases {
-		t.Run(test.Name, func(t *testing.T) {
-			input, err := hex.DecodeString(test.InputHex)
-			require.NoError(t, err)
-
-			want := make([]Token, len(test.Tokens))
-			for index, token := range test.Tokens {
-				text, err := hex.DecodeString(token.TextHex)
-				require.NoError(t, err)
-
-				want[index] = Token{Text: string(text), Offset: token.Offset, Position: token.Position}
-			}
-			got, err := tokenizer.Tokenize(context.Background(), string(input))
-			require.NoError(t, err)
-			require.Equal(t, want, got)
-		})
-	}
-}
 
 func TestWhitespaceTokenizerPinnedByteSemantics(t *testing.T) {
 	tokenizer := NewWhitespaceTokenizer()

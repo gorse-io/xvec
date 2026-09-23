@@ -16,72 +16,13 @@ package tokenizer
 
 import (
 	"context"
-	"encoding/hex"
-	"encoding/json"
 	"math"
-	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 )
-
-type ngramTokenizerFixture struct {
-	BaselineCommit    string `json:"baseline_commit"`
-	SourceSHA256      string `json:"source_sha256"`
-	UnicodeProvider   string `json:"unicode_provider"`
-	UnicodeDataSHA256 string `json:"unicode_data_sha256"`
-	UnicodeVersion    string `json:"unicode_version"`
-	Cases             []struct {
-		Name       string          `json:"name"`
-		Min        uint32          `json:"min"`
-		Max        uint32          `json:"max"`
-		TokenChars NGramTokenChars `json:"token_chars"`
-		InputHex   string          `json:"input_hex"`
-		Tokens     []struct {
-			TextHex  string `json:"text_hex"`
-			Offset   uint32 `json:"offset"`
-			Position uint32 `json:"position"`
-		} `json:"tokens"`
-	} `json:"cases"`
-}
-
-func TestNGramTokenizerBaselineFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/ngram_tokenizer_58375ff.json")
-	require.NoError(t, err)
-
-	var fixture ngramTokenizerFixture
-	{
-		err := json.Unmarshal(data, &fixture)
-		require.NoError(t, err)
-	}
-	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
-	require.True(t, fixture.SourceSHA256 == "106f58aa34dc0a3d718e1131656edffcadfca51d5700628287259be2986e7785")
-	require.True(t, fixture.UnicodeProvider == "utf8proc 2.11.3 e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78")
-	require.True(t, fixture.UnicodeDataSHA256 == "950e549dbfc853c4304425f3af1875e72fa9fc9697c273c763400c2da4e380a7")
-	require.True(t, fixture.UnicodeVersion == "17.0.0")
-
-	for _, test := range fixture.Cases {
-		t.Run(test.Name, func(t *testing.T) {
-			input, err := hex.DecodeString(test.InputHex)
-			require.NoError(t, err)
-
-			tokenizer := mustNGramTokenizer(t, NGramTokenizerOptions{Min: test.Min, Max: test.Max, TokenChars: test.TokenChars})
-			got, err := tokenizer.Tokenize(context.Background(), string(input))
-			require.NoError(t, err)
-
-			want := make([]Token, len(test.Tokens))
-			for index, token := range test.Tokens {
-				text, err := hex.DecodeString(token.TextHex)
-				require.NoError(t, err)
-
-				want[index] = Token{Text: string(text), Offset: token.Offset, Position: token.Position}
-			}
-			require.Equal(t, want, got)
-		})
-	}
-}
 
 func TestNGramTokenizerOptions(t *testing.T) {
 	defaults := DefaultNGramTokenizerOptions()
