@@ -21,6 +21,7 @@ func releaseHNSWVisited(visited *hnswVisited) {
 
 func (v *hnswVisited) resetBatch() {
 	clear(v.batchVectors[:cap(v.batchVectors)])
+	clear(v.batchCodes[:cap(v.batchCodes)])
 	v.batchPositions = v.batchPositions[:0]
 	v.batchIDs = v.batchIDs[:0]
 	v.batchTies = v.batchTies[:0]
@@ -28,8 +29,10 @@ func (v *hnswVisited) resetBatch() {
 	v.batchVectors = v.batchVectors[:0]
 	v.batchMagnitudes = v.batchMagnitudes[:0]
 	v.batchScores = v.batchScores[:0]
+	v.batchCodes = v.batchCodes[:0]
+	v.batchCodeDots = v.batchCodeDots[:0]
 	v.blockHeap.release(maxPooledDistanceBatchCapacity)
-	if cap(v.batchPositions) > maxPooledDistanceBatchCapacity || cap(v.batchIDs) > maxPooledDistanceBatchCapacity || cap(v.batchTies) > maxPooledDistanceBatchCapacity || cap(v.overflow) > maxPooledDistanceBatchCapacity || cap(v.batchVectors) > maxPooledDistanceBatchCapacity || cap(v.batchMagnitudes) > maxPooledDistanceBatchCapacity || cap(v.batchScores) > maxPooledDistanceBatchCapacity {
+	if cap(v.batchPositions) > maxPooledDistanceBatchCapacity || cap(v.batchIDs) > maxPooledDistanceBatchCapacity || cap(v.batchTies) > maxPooledDistanceBatchCapacity || cap(v.overflow) > maxPooledDistanceBatchCapacity || cap(v.batchVectors) > maxPooledDistanceBatchCapacity || cap(v.batchMagnitudes) > maxPooledDistanceBatchCapacity || cap(v.batchScores) > maxPooledDistanceBatchCapacity || cap(v.batchCodes) > maxPooledDistanceBatchCapacity || cap(v.batchCodeDots) > maxPooledDistanceBatchCapacity {
 		v.batchPositions = nil
 		v.batchIDs = nil
 		v.batchTies = nil
@@ -37,6 +40,8 @@ func (v *hnswVisited) resetBatch() {
 		v.batchVectors = nil
 		v.batchMagnitudes = nil
 		v.batchScores = nil
+		v.batchCodes = nil
+		v.batchCodeDots = nil
 	}
 }
 
@@ -56,6 +61,8 @@ type hnswVisited struct {
 	batchVectors    [][]float32
 	batchMagnitudes []float32
 	batchScores     []float32
+	batchCodes      [][]byte
+	batchCodeDots   []int64
 	blockHeap       BlockHeap
 }
 

@@ -266,7 +266,12 @@ func (i *ScalarQuantizedHNSWIndex) search(
 		}
 	}
 	capacity := max(options.EF, options.TopK)
-	candidates, err := i.searchBase(ctx, entry, capacity, options, scoreAt, visited)
+	var candidates []hnswScoredNode
+	if i.vectors.kind == QuantizationInt8 && options.Filter == nil && options.Radius == 0 && capacity <= maxBlockHeapSearchCapacity {
+		candidates, err = i.searchBaseInt8(ctx, queryCode, entry, capacity, options, visited)
+	} else {
+		candidates, err = i.searchBase(ctx, entry, capacity, options, scoreAt, visited)
+	}
 	if err != nil {
 		return nil, err
 	}

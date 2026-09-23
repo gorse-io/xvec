@@ -22,7 +22,7 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-//go:generate make avx
+//go:generate make avx int8-avx2
 
 func init() {
 	if cpu.X86.HasAVX {
@@ -30,6 +30,9 @@ func init() {
 		kernels.dot4 = innerProducts4AVX
 		kernels.l2Squared2 = squaredEuclideanDistances2AVX
 		kernels.l2Squared4 = squaredEuclideanDistances4AVX
+	}
+	if cpu.X86.HasAVX2 {
+		innerProductsInt8Kernel4 = innerProductsInt8AVX2_4
 	}
 }
 
@@ -79,4 +82,15 @@ func squaredEuclideanDistances4AVX(query, first, second, third, fourth []float32
 		unsafe.Pointer(&thirdDistance), unsafe.Pointer(&fourthDistance),
 	)
 	return
+}
+
+func innerProductsInt8AVX2_4(query, first, second, third, fourth []byte, output []int64) {
+	if len(query) < 32 {
+		innerProductsInt8Scalar4(query, first, second, third, fourth, output)
+		return
+	}
+	xvec_avx2_batch_inner_products_int8_4(
+		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)), unsafe.Pointer(&output[0]),
+	)
 }

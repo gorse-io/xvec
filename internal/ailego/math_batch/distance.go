@@ -35,6 +35,8 @@ var kernels = struct {
 	l2Squared4: squaredEuclideanDistances4Scalar,
 }
 
+var innerProductsInt8Kernel4 = innerProductsInt8Scalar4
+
 // InnerProducts2 computes inner products from one query to two candidates
 // while sharing each query load.
 func InnerProducts2(query, first, second []float32) (firstProduct, secondProduct float32) {
@@ -224,4 +226,29 @@ func squaredEuclideanDistances4Scalar(query, first, second, third, fourth []floa
 		fourthDistance += fourthDifference * fourthDifference
 	}
 	return
+}
+
+// InnerProductsInt8 computes exact signed INT8 dot products for one query and
+// many candidates. Codes are stored as bytes. Every candidate must have at
+// least len(query) bytes; output must have room for all candidates.
+func InnerProductsInt8(query []byte, candidates [][]byte, output []int64) {
+	i := 0
+	for ; i+4 <= len(candidates); i += 4 {
+		innerProductsInt8Kernel4(query, candidates[i], candidates[i+1], candidates[i+2], candidates[i+3], output[i:i+4])
+	}
+	for ; i < len(candidates); i++ {
+		output[i] = mathutil.InnerProductInt8(query, candidates[i][:len(query)])
+	}
+}
+
+func innerProductsInt8Scalar4(query, first, second, third, fourth []byte, output []int64) {
+	var a, b, c, d int64
+	for i, code := range query {
+		q := int64(int8(code))
+		a += q * int64(int8(first[i]))
+		b += q * int64(int8(second[i]))
+		c += q * int64(int8(third[i]))
+		d += q * int64(int8(fourth[i]))
+	}
+	output[0], output[1], output[2], output[3] = a, b, c, d
 }

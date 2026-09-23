@@ -19,15 +19,20 @@ TEST_NEON_BINARY ?= .test-neon.arm64.test
 TEST_RVV_BINARY ?= .test-rvv.riscv64.test
 TEST_LASX_BINARY ?= .test-lasx.loong64.test
 
-.PHONY: generate avx neon rvv lasx clean test-neon test-rvv test-lasx
+.PHONY: generate avx int8-avx2 neon rvv lasx clean test-neon test-rvv test-lasx
 
-generate: avx neon rvv lasx clean
+generate: avx int8-avx2 neon rvv lasx clean
 
 avx:
 	$(RM) -r $(GOAT_OUTPUT_DIR)
 	mkdir -p $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/inner_product_batch_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
+
+int8-avx2:
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/inner_product_batch_int8_avx2.c --target $(GOAT_TARGET_AMD64) -O3 -mavx2 -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/inner_product_batch_int8_avx2.go $(GOAT_OUTPUT_DIR)/inner_product_batch_int8_avx2.s .
 
 neon:
 	$(RM) -r $(GOAT_OUTPUT_DIR)
