@@ -17,8 +17,10 @@ package core
 import (
 	"context"
 	"errors"
+	"slices"
 
 	mathutil "github.com/gorse-io/xvec/internal/ailego/math"
+	mathbatch "github.com/gorse-io/xvec/internal/ailego/math_batch"
 )
 
 // BuildInt8WithWorkers quantizes the collected vectors before graph insertion.
@@ -30,24 +32,42 @@ func (b *HNSWBuilder) BuildInt8WithWorkers(
 	ctx context.Context, workers int, reformer DenseReformer,
 ) (*ScalarQuantizedHNSWIndex, error) {
 	var vectors *scalarQuantizedVectors
-	base, err := b.buildWithDistance(ctx, workers, func(index *HNSWIndex) (func(int, int) (float32, error), error) {
+	base, err := b.buildWithDistance(ctx, workers, func(index *HNSWIndex) (hnswBuildScorers, error) {
 		if index.fp16 {
-			return nil, errors.New("core: INT8 HNSW construction requires an FP32 builder")
+			return hnswBuildScorers{}, errors.New("core: INT8 HNSW construction requires an FP32 builder")
 		}
 		var err error
 		vectors, err = newScalarQuantizedVectors(
 			ctx, index.dimension, index.options.Metric, QuantizationInt8, reformer, index.keys, index.vectors,
 		)
 		if err != nil {
-			return nil, err
+			return hnswBuildScorers{}, err
 		}
-		return func(left, right int) (float32, error) {
+		return hnswBuildScorers{score: func(left, right int) (float32, error) {
 			// Codes are immutable and validated during quantization. Reuse
 			// the exact SIMD dot product and normal score reconstruction.
 			leftCode, rightCode := vectors.codes[left], vectors.codes[right]
 			dot := mathutil.InnerProductInt8(leftCode.codes, rightCode.codes)
 			return quantizedDistanceFromDot(vectors.metric, leftCode, rightCode, float64(dot))
-		}, nil
+		}, batch: func(query int, positions []int, scratch *hnswVisited) error {
+			count := len(positions)
+			scratch.batchCodes = slices.Grow(scratch.batchCodes[:0], count)[:count]
+			scratch.batchCodeDots = slices.Grow(scratch.batchCodeDots[:0], count)[:count]
+			scratch.batchScores = slices.Grow(scratch.batchScores[:0], count)[:count]
+			for j, position := range positions {
+				scratch.batchCodes[j] = vectors.codes[position].codes
+			}
+			left := vectors.codes[query]
+			mathbatch.InnerProductsInt8(left.codes, scratch.batchCodes, scratch.batchCodeDots)
+			for j, position := range positions {
+				score, err := quantizedDistanceFromDot(vectors.metric, left, vectors.codes[position], float64(scratch.batchCodeDots[j]))
+				if err != nil {
+					return err
+				}
+				scratch.batchScores[j] = score
+			}
+			return nil
+		}}, nil
 	})
 	if err != nil {
 		return nil, err

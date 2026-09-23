@@ -24,13 +24,22 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
+// Batch scoring uses insertion-local scratch and writes batchScores in input order.
+// Codes and scoring callbacks are immutable and shared across workers.
+type hnswBuildScorers struct {
+	score func(left, right int) (float32, error)
+	pair  func(query, first, second int) (float32, float32, error)
+	batch func(query int, positions []int, scratch *hnswVisited) error
+}
+
 type parallelHNSWGraph struct {
-	options   HNSWBuildOptions
-	levels    []int
-	neighbors [][][]int
-	nodeLocks []sync.RWMutex
-	score     func(left, right int) (float32, error)
-	scorePair func(query, first, second int) (float32, float32, error)
+	options    HNSWBuildOptions
+	levels     []int
+	neighbors  [][][]int
+	nodeLocks  []sync.RWMutex
+	score      func(left, right int) (float32, error)
+	scorePair  func(query, first, second int) (float32, float32, error)
+	scoreBatch func(query int, positions []int, scratch *hnswVisited) error
 
 	entryMu  sync.RWMutex
 	entry    int
@@ -44,7 +53,7 @@ func buildParallelHNSW(
 	levels []int,
 	neighbors [][][]int,
 	score func(left, right int) (float32, error),
-	scorePairs ...func(query, first, second int) (float32, float32, error),
+	extra ...hnswBuildScorers,
 ) (entryPoint, maxLevel int, err error) {
 	if len(levels) == 0 {
 		return -1, -1, nil
@@ -57,12 +66,16 @@ func buildParallelHNSW(
 		secondScore, scoreErr := score(query, second)
 		return firstScore, secondScore, scoreErr
 	}
-	if len(scorePairs) != 0 && scorePairs[0] != nil {
-		scorePair = scorePairs[0]
+	var scorers hnswBuildScorers
+	if len(extra) != 0 {
+		scorers = extra[0]
+		if scorers.pair != nil {
+			scorePair = scorers.pair
+		}
 	}
 	graph := parallelHNSWGraph{
 		options: options, levels: levels, neighbors: neighbors,
-		nodeLocks: make([]sync.RWMutex, len(levels)), score: score, scorePair: scorePair,
+		nodeLocks: make([]sync.RWMutex, len(levels)), score: score, scorePair: scorePair, scoreBatch: scorers.batch,
 		entry: 0, maxLevel: levels[0],
 	}
 	if err := parallel.ParallelFor(ctx, len(levels)-1, workers, func(workerCtx context.Context, offset int) error {
@@ -102,11 +115,11 @@ func (g *parallelHNSWGraph) insert(ctx context.Context, position int) error {
 		if err != nil {
 			return err
 		}
-		if err := g.mergeNeighbors(ctx, position, selected, currentLevel); err != nil {
+		if err := g.mergeNeighbors(ctx, position, selected, currentLevel, visited); err != nil {
 			return err
 		}
 		for _, neighbor := range selected {
-			if err := g.mergeNeighbors(ctx, neighbor, []int{position}, currentLevel); err != nil {
+			if err := g.mergeNeighbors(ctx, neighbor, []int{position}, currentLevel, visited); err != nil {
 				return err
 			}
 		}
@@ -169,6 +182,33 @@ func (g *parallelHNSWGraph) searchLayer(
 			break
 		}
 		g.nodeLocks[current.position].RLock()
+		if g.scoreBatch != nil {
+			visited.batchPositions = visited.batchPositions[:0]
+			for _, neighbor := range g.neighbors[current.position][level] {
+				if visited.seen(neighbor) {
+					continue
+				}
+				visited.mark(neighbor)
+				visited.batchPositions = append(visited.batchPositions, neighbor)
+			}
+			if err := g.scoreBatch(query, visited.batchPositions, visited); err != nil {
+				g.nodeLocks[current.position].RUnlock()
+				return nil, err
+			}
+			for j, position := range visited.batchPositions {
+				node := hnswScoredNode{position: position, score: visited.batchScores[j]}
+				worst, hasWorst = results.Peek()
+				if results.Len() < limit || !hasWorst || hnswNodeBetter(g.options.Metric, node, worst) {
+					candidates.Push(node)
+					results.Push(node)
+					if results.Len() > limit {
+						_, _ = results.Pop()
+					}
+				}
+			}
+			g.nodeLocks[current.position].RUnlock()
+			continue
+		}
 		pending := -1
 		for _, neighbor := range g.neighbors[current.position][level] {
 			if visited.seen(neighbor) {
@@ -269,7 +309,7 @@ func (g *parallelHNSWGraph) selectNeighbors(
 	return selected, nil
 }
 
-func (g *parallelHNSWGraph) mergeNeighbors(ctx context.Context, owner int, additions []int, level int) error {
+func (g *parallelHNSWGraph) mergeNeighbors(ctx context.Context, owner int, additions []int, level int, scratch *hnswVisited) error {
 	g.nodeLocks[owner].Lock()
 	defer g.nodeLocks[owner].Unlock()
 	current := g.neighbors[owner][level]
@@ -286,24 +326,34 @@ func (g *parallelHNSWGraph) mergeNeighbors(ctx context.Context, owner int, addit
 		return nil
 	}
 	candidates := make([]hnswScoredNode, 0, len(merged))
-	paired := len(merged) &^ 1
-	for offset := 0; offset < paired; offset += 2 {
-		firstScore, secondScore, err := g.scorePair(owner, merged[offset], merged[offset+1])
-		if err != nil {
+	if g.scoreBatch != nil {
+		if err := g.scoreBatch(owner, merged, scratch); err != nil {
 			return err
 		}
-		candidates = append(candidates,
-			hnswScoredNode{position: merged[offset], score: firstScore},
-			hnswScoredNode{position: merged[offset+1], score: secondScore},
-		)
-	}
-	if paired != len(merged) {
-		score, err := g.score(owner, merged[paired])
-		if err != nil {
-			return err
+		for j, position := range merged {
+			candidates = append(candidates, hnswScoredNode{position: position, score: scratch.batchScores[j]})
 		}
-		candidates = append(candidates, hnswScoredNode{position: merged[paired], score: score})
+	} else {
+		paired := len(merged) &^ 1
+		for offset := 0; offset < paired; offset += 2 {
+			firstScore, secondScore, err := g.scorePair(owner, merged[offset], merged[offset+1])
+			if err != nil {
+				return err
+			}
+			candidates = append(candidates,
+				hnswScoredNode{position: merged[offset], score: firstScore},
+				hnswScoredNode{position: merged[offset+1], score: secondScore},
+			)
+		}
+		if paired != len(merged) {
+			score, err := g.score(owner, merged[paired])
+			if err != nil {
+				return err
+			}
+			candidates = append(candidates, hnswScoredNode{position: merged[paired], score: score})
+		}
 	}
+
 	slices.SortFunc(candidates, func(left, right hnswScoredNode) int {
 		if hnswNodeBetter(g.options.Metric, left, right) {
 			return -1
