@@ -1,4 +1,4 @@
-//go:build !noasm && amd64
+//go:build !noasm && arm64
 
 // Copyright 2026-present the xvec project
 //
@@ -22,16 +22,9 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-func TestInnerProductInt8AVX2(t *testing.T) {
-	if !cpu.X86.HasAVX2 {
-		t.Skip("AVX2 is not supported by this CPU")
+func TestInnerProductInt8NEON(t *testing.T) {
+	if !cpu.ARM64.HasASIMD {
+		t.Skip("NEON/ASIMD is not supported by this CPU")
 	}
-	testInnerProductInt8(t, innerProductInt8AVX2)
-}
-
-func TestInnerProductInt8AVX512(t *testing.T) {
-	if !cpu.X86.HasAVX2 || !cpu.X86.HasAVX512F || !cpu.X86.HasAVX512BW {
-		t.Skip("AVX2, AVX-512F and AVX-512BW are not supported by this CPU")
-	}
-	testInnerProductInt8(t, innerProductInt8AVX512)
+	testInnerProductInt8(t, innerProductInt8NEON)
 }

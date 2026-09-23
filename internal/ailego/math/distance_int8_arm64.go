@@ -1,4 +1,4 @@
-//go:build !noasm && amd64
+//go:build !noasm && arm64
 
 // Copyright 2026-present the xvec project
 //
@@ -22,27 +22,17 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-//go:generate make distance-int8-avx2 distance-int8-avx512
+//go:generate make distance-int8-neon
 
 func init() {
-	switch {
-	case cpu.X86.HasAVX2 && cpu.X86.HasAVX512F && cpu.X86.HasAVX512BW:
-		innerProductInt8Kernel = innerProductInt8AVX512
-	case cpu.X86.HasAVX2:
-		innerProductInt8Kernel = innerProductInt8AVX2
+	if cpu.ARM64.HasASIMD {
+		innerProductInt8Kernel = innerProductInt8NEON
 	}
 }
 
-func innerProductInt8AVX2(left, right []byte) int64 {
-	if len(left) < 32 {
+func innerProductInt8NEON(left, right []byte) int64 {
+	if len(left) < 16 {
 		return innerProductInt8Scalar(left, right)
 	}
-	return inner_product_int8_avx2(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
-}
-
-func innerProductInt8AVX512(left, right []byte) int64 {
-	if len(left) < 64 {
-		return innerProductInt8Scalar(left, right)
-	}
-	return inner_product_int8_avx512(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
+	return inner_product_int8_neon(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
 }

@@ -16,17 +16,17 @@ LOONG64_QEMU_FLAGS ?= -cpu max
 TEST_RVV_BINARY ?= .test-rvv.riscv64.test
 TEST_LASX_BINARY ?= .test-lasx.loong64.test
 
-.PHONY: generate avx avx2 avx512 neon rvv lasx fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-int8-avx2 distance-avx512 distance-neon distance-rvv distance-lasx clean test-rvv test-lasx
+.PHONY: generate avx avx2 avx512 neon rvv lasx fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-int8-avx2 distance-int8-avx512 distance-int8-neon distance-avx512 distance-neon distance-rvv distance-lasx clean test-rvv test-lasx
 
-generate: fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-int8-avx2 distance-avx512 distance-neon distance-rvv distance-lasx clean
+generate: fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-int8-avx2 distance-int8-avx512 distance-int8-neon distance-avx512 distance-neon distance-rvv distance-lasx clean
 
 avx: distance-avx
 
-avx2: fht-avx2
+avx2: fht-avx2 distance-int8-avx2
 
-avx512: fht-avx512 distance-avx512
+avx512: fht-avx512 distance-avx512 distance-int8-avx512
 
-neon: fht-neon distance-neon
+neon: fht-neon distance-neon distance-int8-neon
 
 rvv: fht-rvv distance-rvv
 
@@ -82,6 +82,16 @@ distance-int8-avx2:
 	mkdir -p $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/inner_product_matrix_int8_avx2.c --target $(GOAT_TARGET_AMD64) -O3 -mavx2 -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/inner_product_matrix_int8_avx2.go $(GOAT_OUTPUT_DIR)/inner_product_matrix_int8_avx2.s .
+
+distance-int8-avx512:
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/inner_product_matrix_int8_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx2 -mavx512f -mavx512bw -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/inner_product_matrix_int8_avx512.go $(GOAT_OUTPUT_DIR)/inner_product_matrix_int8_avx512.s .
+
+distance-int8-neon:
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/inner_product_matrix_int8_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/inner_product_matrix_int8_neon.go $(GOAT_OUTPUT_DIR)/inner_product_matrix_int8_neon.s .
 
 distance-neon:
 	$(RM) -r $(GOAT_OUTPUT_DIR)
