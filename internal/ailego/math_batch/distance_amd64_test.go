@@ -28,3 +28,10 @@ func TestAVXBatchKernels(t *testing.T) {
 	}
 	testBatchKernels(t, innerProducts2AVX, innerProducts4AVX, squaredEuclideanDistances2AVX, squaredEuclideanDistances4AVX)
 }
+
+func TestInnerProductsInt8AVX2_4(t *testing.T) {
+	if !cpu.X86.HasAVX2 {
+		t.Skip("AVX2 is not supported by this CPU")
+	}
+	testInnerProductsInt8(t, int8BatchWithKernel(innerProductsInt8AVX2_4))
+}
