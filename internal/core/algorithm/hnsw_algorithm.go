@@ -230,7 +230,7 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 // any edges are inserted. Original vectors remain available for persistence.
 func (b *HNSWBuilder) buildWithDistance(
 	ctx context.Context, workers int,
-	prepare func(*HNSWIndex) (func(int, int) (float32, error), error),
+	prepare func(*HNSWIndex) (hnswBuildScorers, error),
 ) (*HNSWIndex, error) {
 	if b == nil {
 		return nil, errors.New("core: nil HNSW builder")
@@ -295,15 +295,13 @@ func (b *HNSWBuilder) buildWithDistance(
 		return nil, err
 	}
 	score := index.computeDistanceAt
-	scorePair := index.computeDistancePairAt
+	scorers := hnswBuildScorers{pair: index.computeDistancePairAt}
 	if prepare != nil {
-		score, err = prepare(index)
+		scorers, err = prepare(index)
 		if err != nil {
 			return nil, err
 		}
-		// The parallel graph's default pair scorer calls the supplied
-		// distance twice; never fall back to FP32 during quantized builds.
-		scorePair = nil
+		score = scorers.score
 	}
 	if workers == 1 && prepare == nil {
 		for position := range index.keys {
@@ -315,7 +313,7 @@ func (b *HNSWBuilder) buildWithDistance(
 			}
 		}
 	} else {
-		entryPoint, maxLevel, err := buildParallelHNSW(ctx, workers, index.options, index.levels, index.neighbors, score, scorePair)
+		entryPoint, maxLevel, err := buildParallelHNSW(ctx, workers, index.options, index.levels, index.neighbors, score, scorers)
 		if err != nil {
 			return nil, fmt.Errorf("core: construct HNSW: %w", err)
 		}

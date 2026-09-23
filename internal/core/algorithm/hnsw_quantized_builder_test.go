@@ -16,21 +16,27 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestInt8HNSWBuildUsesQuantizedDistances(t *testing.T) {
-	const dimension, count = 32, 96
+	const count = 96
 	ctx := context.Background()
 	for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
 		for _, rotate := range []bool{false, true} {
 			t.Run(fmt.Sprintf("metric=%d/rotate=%v", metric, rotate), func(t *testing.T) {
+				dimension := 33
+				if rotate {
+					dimension = 32
+				}
 				options := DefaultHNSWBuildOptions(metric)
 				options.M, options.EFConstruction = 4, 24
 				var reformer DenseReformer
@@ -193,4 +199,29 @@ func TestInt8HNSWBuildValidation(t *testing.T) {
 	require.NoError(t, err)
 	_, err = half.BuildInt8WithWorkers(ctx, 1, nil)
 	require.Error(t, err)
+}
+
+// Scorer failures must not leave graph locks held or publish a partial update.
+func TestInt8HNSWBatchBuildScorerError(t *testing.T) {
+	ctx := context.Background()
+	failure := errors.New("batch score failed")
+	graph := parallelHNSWGraph{
+		options:    HNSWBuildOptions{Metric: MetricL2, M: 1},
+		levels:     []int{0, 0, 0, 0},
+		neighbors:  [][][]int{{{1, 2}}, {{0}}, {{0}}, {{}}},
+		nodeLocks:  make([]sync.RWMutex, 4),
+		score:      func(left, right int) (float32, error) { return 0, nil },
+		scoreBatch: func(query int, positions []int, scratch *hnswVisited) error { return failure },
+	}
+	scratch := acquireHNSWVisited(4)
+	defer releaseHNSWVisited(scratch)
+	_, err := graph.searchLayer(ctx, 3, []int{0}, 4, 0, scratch)
+	require.ErrorIs(t, err, failure)
+	require.True(t, graph.nodeLocks[0].TryLock(), "search error leaked the read lock")
+	graph.nodeLocks[0].Unlock()
+	err = graph.mergeNeighbors(ctx, 0, []int{3}, 0, scratch)
+	require.ErrorIs(t, err, failure)
+	require.Equal(t, []int{1, 2}, graph.neighbors[0][0])
+	require.True(t, graph.nodeLocks[0].TryLock(), "merge error leaked the write lock")
+	graph.nodeLocks[0].Unlock()
 }
