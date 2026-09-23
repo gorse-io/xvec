@@ -15,7 +15,9 @@
 package mathutil
 
 import (
+	"fmt"
 	"math"
+	"math/rand/v2"
 	"testing"
 
 	"github.com/gorse-io/xvec/internal/ailego/utility"
@@ -266,4 +268,44 @@ func TestSparseInnerProduct(t *testing.T) {
 func assertScore(t *testing.T, compute DenseDistance, left, right []float32, expected float32) {
 	t.Helper()
 	require.Equal(t, expected, compute(left, right))
+}
+
+func TestInnerProductInt8(t *testing.T) {
+	testInnerProductInt8(t, InnerProductInt8)
+}
+
+func TestInnerProductInt8Scalar(t *testing.T) {
+	testInnerProductInt8(t, innerProductInt8Scalar)
+}
+
+func testInnerProductInt8(t *testing.T, dot func([]byte, []byte) int64) {
+	t.Helper()
+	rng := rand.New(rand.NewPCG(7, 11))
+	dimensions := []int{255, 256, 257, 767, 768, 769, 1536, 65535, 65536, 65537, 131073, 1<<20 + 3}
+	for dimension := 0; dimension <= 129; dimension++ {
+		dimensions = append(dimensions, dimension)
+	}
+	for _, dimension := range dimensions {
+		for _, offset := range []int{0, 1, 15, 31} {
+			t.Run(fmt.Sprintf("dimension=%d/offset=%d", dimension, offset), func(t *testing.T) {
+				left := make([]byte, dimension+offset)[offset:]
+				right := make([]byte, dimension+32-offset)[32-offset:]
+				var want int64
+				for i := range left {
+					l, r := rng.IntN(256)-128, rng.IntN(256)-128
+					left[i], right[i] = byte(l), byte(r)
+					want += int64(l * r)
+				}
+				require.Equal(t, want, dot(left, right))
+				// Extreme inputs exercise signed widening, saturation hazards,
+				// SIMD reduction and totals beyond both int32 and float32 precision.
+				for _, pair := range [][2]int{{-128, -128}, {-128, 127}, {127, 127}, {0, -128}} {
+					for i := range left {
+						left[i], right[i] = byte(pair[0]), byte(pair[1])
+					}
+					require.Equal(t, int64(dimension)*int64(pair[0]*pair[1]), dot(left, right))
+				}
+			})
+		}
+	}
 }

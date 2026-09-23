@@ -35,3 +35,10 @@ func TestNEONFP16DistanceKernels(t *testing.T) {
 	}
 	testArchitectureKernelsFP16(t, squaredEuclideanFP16NEON, innerProductFP16NEON, dotNormsFP16NEON)
 }
+
+func TestInnerProductInt8NEON(t *testing.T) {
+	if !cpu.ARM64.HasASIMD {
+		t.Skip("NEON/ASIMD is not supported by this CPU")
+	}
+	testInnerProductInt8(t, innerProductInt8NEON)
+}
