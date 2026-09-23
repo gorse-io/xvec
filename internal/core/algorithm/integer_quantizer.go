@@ -194,7 +194,12 @@ func QuantizedDistance(metric Metric, left, right QuantizedVector) (float32, err
 		return distance(leftDecoded, rightDecoded), nil
 	}
 
-	dotCodes := integerCodeDot(left, right)
+	return quantizedDistanceFromDot(metric, left, right, integerCodeDot(left, right))
+}
+
+// quantizedDistanceFromDot reconstructs a score from an exact integer code dot
+// product. The caller must supply validated integer encodings of equal size.
+func quantizedDistanceFromDot(metric Metric, left, right QuantizedVector, dotCodes float64) (float32, error) {
 	leftScale, rightScale := float64(left.inverseScale), float64(right.inverseScale)
 	leftOffset, rightOffset := float64(left.offset), float64(right.offset)
 	dimension := float64(left.dimension)

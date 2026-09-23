@@ -86,6 +86,8 @@ func TestHNSWVisitedResetBatchScratch(t *testing.T) {
 		batchVectors:    append(make([][]float32, 0, 2), vector),
 		batchMagnitudes: append(make([]float32, 0, 2), 1),
 		batchScores:     append(make([]float32, 0, 2), 1),
+		batchCodes:      append(make([][]byte, 0, 2), []byte{1}),
+		batchCodeDots:   append(make([]int64, 0, 2), 1),
 	}
 
 	visited.resetBatch()
@@ -94,6 +96,10 @@ func TestHNSWVisitedResetBatchScratch(t *testing.T) {
 	require.Empty(t, visited.batchVectors)
 	require.Empty(t, visited.batchMagnitudes)
 	require.Empty(t, visited.batchScores)
+	require.Empty(t, visited.batchCodes)
+	require.Empty(t, visited.batchCodeDots)
+	require.Equal(t, 2, cap(visited.batchCodes))
+	require.Nil(t, visited.batchCodes[:cap(visited.batchCodes)][0])
 	require.Equal(t, 2, cap(visited.batchVectors))
 	require.Nil(t, visited.batchVectors[:cap(visited.batchVectors)][0])
 }
@@ -104,6 +110,8 @@ func TestHNSWVisitedResetBatchScratchDropsOversizedBuffers(t *testing.T) {
 		batchVectors:    make([][]float32, 0, maxPooledDistanceBatchCapacity+1),
 		batchMagnitudes: make([]float32, 0, maxPooledDistanceBatchCapacity+1),
 		batchScores:     make([]float32, 0, maxPooledDistanceBatchCapacity+1),
+		batchCodes:      make([][]byte, 0, maxPooledDistanceBatchCapacity+1),
+		batchCodeDots:   make([]int64, 0, maxPooledDistanceBatchCapacity+1),
 	}
 	visited.blockHeap.Reset(maxPooledDistanceBatchCapacity+1, 1)
 
@@ -113,5 +121,7 @@ func TestHNSWVisitedResetBatchScratchDropsOversizedBuffers(t *testing.T) {
 	require.Zero(t, cap(visited.batchVectors))
 	require.Zero(t, cap(visited.batchMagnitudes))
 	require.Zero(t, cap(visited.batchScores))
+	require.Zero(t, cap(visited.batchCodes))
+	require.Zero(t, cap(visited.batchCodeDots))
 	require.Zero(t, cap(visited.blockHeap.data))
 }
