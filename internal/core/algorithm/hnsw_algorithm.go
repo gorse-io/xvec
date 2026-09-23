@@ -223,6 +223,15 @@ func (b *HNSWBuilder) BuildWithWorkers(ctx context.Context, workers int) (*HNSWI
 }
 
 func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error) {
+	return b.buildWithDistance(ctx, workers, nil)
+}
+
+// prepare, when supplied, creates an immutable scoring representation before
+// any edges are inserted. Original vectors remain available for persistence.
+func (b *HNSWBuilder) buildWithDistance(
+	ctx context.Context, workers int,
+	prepare func(*HNSWIndex) (func(int, int) (float32, error), error),
+) (*HNSWIndex, error) {
 	if b == nil {
 		return nil, errors.New("core: nil HNSW builder")
 	}
@@ -285,7 +294,18 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 	if err := index.cacheCosineMagnitudes(ctx, min(workers, max(1, len(index.keys)))); err != nil {
 		return nil, err
 	}
-	if workers == 1 {
+	score := index.computeDistanceAt
+	scorePair := index.computeDistancePairAt
+	if prepare != nil {
+		score, err = prepare(index)
+		if err != nil {
+			return nil, err
+		}
+		// The parallel graph's default pair scorer calls the supplied
+		// distance twice; never fall back to FP32 during quantized builds.
+		scorePair = nil
+	}
+	if workers == 1 && prepare == nil {
 		for position := range index.keys {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -295,12 +315,7 @@ func (b *HNSWBuilder) build(ctx context.Context, workers int) (*HNSWIndex, error
 			}
 		}
 	} else {
-		entryPoint, maxLevel, err := buildParallelHNSW(ctx, workers, index.options, index.levels, index.neighbors,
-			func(left, right int) (float32, error) {
-				return index.computeDistanceAt(left, right)
-			}, func(query, first, second int) (float32, float32, error) {
-				return index.computeDistancePairAt(query, first, second)
-			})
+		entryPoint, maxLevel, err := buildParallelHNSW(ctx, workers, index.options, index.levels, index.neighbors, score, scorePair)
 		if err != nil {
 			return nil, fmt.Errorf("core: construct HNSW: %w", err)
 		}

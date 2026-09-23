@@ -2209,6 +2209,13 @@ func buildCollectionDenseHNSW(
 			return nil, err
 		}
 	}
+	if spec.quantize == QuantizeTypeInt8 {
+		reformer, err := collectionReformer(schemaName, field, spec)
+		if err != nil {
+			return nil, err
+		}
+		return builder.BuildInt8WithWorkers(ctx, workers, reformer)
+	}
 	base, err := builder.BuildWithWorkers(ctx, workers)
 	if err != nil {
 		return nil, err
