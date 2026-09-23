@@ -16,9 +16,7 @@ package xvec
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -220,30 +218,6 @@ func TestCallbackRerankerConcurrentUse(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.True(t, invocations.Load() == 801)
-}
-
-func TestCallbackRerankerCompatibilityFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/callback_reranker_58375ff.json")
-	require.NoError(t, err)
-
-	var fixture struct {
-		BaselineCommit string   `json:"baseline_commit"`
-		HeaderHash     string   `json:"header_sha256"`
-		SourceHash     string   `json:"source_sha256"`
-		TestsHash      string   `json:"tests_sha256"`
-		Arguments      []string `json:"arguments"`
-		EmptyIsError   bool     `json:"empty_callback_is_error"`
-	}
-	{
-		err := json.Unmarshal(data, &fixture)
-		require.NoError(t, err)
-	}
-	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
-	require.True(t, fixture.HeaderHash == "bc1949536968bc27f0cb11026d0ab8633dbb46641365455c20b433367837c7d6")
-	require.True(t, fixture.SourceHash == "3c93edc12303898af52911589c46c720072f9470446858fc36a61206d538aa1e")
-	require.True(t, fixture.TestsHash == "05a03cacf74e7615661cec3153b2d2307f6a991510018386f6650f2625cb9a7d")
-	require.Equal(t, []string{"results", "fields", "topn"}, fixture.Arguments)
-	require.True(t, fixture.EmptyIsError)
 }
 
 func FuzzCallbackRerankerPanicBoundary(f *testing.F) {

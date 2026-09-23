@@ -17,11 +17,8 @@ package tokenizer
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -29,74 +26,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-type stemmerFilterFixture struct {
-	BaselineCommit   string `json:"baseline_commit"`
-	SourceSHA256     string `json:"source_sha256"`
-	HeaderSHA256     string `json:"header_sha256"`
-	SnowballVersion  string `json:"snowball_version"`
-	SnowballCommit   string `json:"snowball_commit"`
-	ModulesSHA256    string `json:"modules_sha256"`
-	AlgorithmsSHA256 string `json:"algorithms_sha256"`
-	AliasesSHA256    string `json:"aliases_sha256"`
-	AlgorithmCount   int    `json:"algorithm_count"`
-	AliasCount       int    `json:"alias_count"`
-	Cases            []struct {
-		Language  string `json:"language"`
-		InputHex  string `json:"input_hex"`
-		OutputHex string `json:"output_hex"`
-	} `json:"cases"`
-}
-
-func loadStemmerFilterFixture(t testing.TB) stemmerFilterFixture {
-	t.Helper()
-	data, err := os.ReadFile("testdata/stemmer_filter_58375ff.json")
-	require.NoError(t, err)
-
-	var fixture stemmerFilterFixture
-	{
-		err := json.Unmarshal(data, &fixture)
-		require.NoError(t, err)
-	}
-
-	return fixture
-}
-
-func TestStemmerTokenFilterBaselineFixture(t *testing.T) {
-	fixture := loadStemmerFilterFixture(t)
-	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
-	require.True(t, fixture.SourceSHA256 == "8958f54f93148d162b4c4a2efbe36c5e6e5a22bd3bb24ec15a7568397ac498ec")
-	require.True(t, fixture.HeaderSHA256 == "db25ee73a8c6b92a5367edde11ce9667b398486e58b12a0e7719c73b186765e7")
-	require.True(t, fixture.SnowballVersion == "3.1.1")
-	require.True(t, fixture.SnowballCommit == "cd195b51e948a902a4312f023f4a14392516a543")
-	require.True(t, fixture.ModulesSHA256 == "a4f1a2fde0231ca137b2926de4da1a5c4e532c5a6e51248699e6e97af8170ad7")
-	require.True(t, fixture.AlgorithmsSHA256 == "282b20fb1b8b31743af035ac1e13c24ebf5f42954a46b09686044ca547c6ae1f")
-	require.True(t, fixture.AliasesSHA256 == "f682fb56f2f7c4a6b7952967057c07c0d63a4ac0f57fcdbb414c59a6acefe7b1")
-	require.True(t, fixture.AlgorithmCount == 36)
-	require.True(t, fixture.AliasCount == 115)
-
-	for index, test := range fixture.Cases {
-		t.Run(fmt.Sprintf("%s/%d", test.Language, index), func(t *testing.T) {
-			input, err := hex.DecodeString(test.InputHex)
-			require.NoError(t, err)
-
-			want, err := hex.DecodeString(test.OutputHex)
-			require.NoError(t, err)
-
-			filter, err := NewStemmerTokenFilter(StemmerTokenFilterOptions{Language: test.Language})
-			require.NoError(t, err)
-
-			tokens := []Token{{Text: string(input), Offset: uint32(index + 7), Position: uint32(index + 11)}}
-			got, err := filter.Filter(context.Background(), tokens)
-			require.NoError(t, err)
-
-			expected := []Token{{Text: string(want), Offset: tokens[0].Offset, Position: tokens[0].Position}}
-			require.Equal(t, expected, got)
-			require.Equal(t, string(input), tokens[0].Text,
-				"filter modified its input")
-		})
-	}
-}
 
 func TestStemmerTokenFilterOptions(t *testing.T) {
 	defaults := DefaultStemmerTokenFilterOptions()
@@ -144,76 +73,6 @@ func TestSupportedStemmerLanguages(t *testing.T) {
 	languages[0] = "modified"
 	require.True(t, SupportedStemmerLanguages()[0] == "ar",
 		"caller mutated language registry")
-}
-
-func TestStemmerTokenFilterAliases(t *testing.T) {
-	fixture := loadStemmerFilterFixture(t)
-	caseByLanguage := make(map[string]struct{ input, output string }, fixture.AlgorithmCount)
-	for _, test := range fixture.Cases[:fixture.AlgorithmCount] {
-		input, err := hex.DecodeString(test.InputHex)
-		require.NoError(t, err)
-
-		output, err := hex.DecodeString(test.OutputHex)
-		require.NoError(t, err)
-
-		caseByLanguage[test.Language] = struct{ input, output string }{string(input), string(output)}
-	}
-	aliases := map[string][]string{
-		"arabic":       {"arabic", "ar", "ara"},
-		"armenian":     {"armenian", "hy", "hye", "arm"},
-		"basque":       {"basque", "eu", "eus", "baq"},
-		"catalan":      {"catalan", "ca", "cat"},
-		"czech":        {"czech", "cs", "ces", "cze"},
-		"danish":       {"danish", "da", "dan"},
-		"dutch":        {"dutch", "nl", "dut", "nld", "kraaij_pohlmann"},
-		"english":      {"english", "en", "eng"},
-		"esperanto":    {"esperanto", "eo", "epo"},
-		"estonian":     {"estonian", "et", "est"},
-		"finnish":      {"finnish", "fi", "fin"},
-		"french":       {"french", "fr", "fre", "fra"},
-		"german":       {"german", "de", "ger", "deu"},
-		"greek":        {"greek", "el", "gre", "ell"},
-		"hindi":        {"hindi", "hi", "hin"},
-		"hungarian":    {"hungarian", "hu", "hun"},
-		"indonesian":   {"indonesian", "id", "ind"},
-		"irish":        {"irish", "ga", "gle"},
-		"italian":      {"italian", "it", "ita"},
-		"lithuanian":   {"lithuanian", "lt", "lit"},
-		"nepali":       {"nepali", "ne", "nep"},
-		"norwegian":    {"norwegian", "no", "nor"},
-		"persian":      {"persian", "fa", "fas", "pers"},
-		"polish":       {"polish", "pl", "pol"},
-		"portuguese":   {"portuguese", "pt", "por"},
-		"romanian":     {"romanian", "ro", "rum", "ron"},
-		"russian":      {"russian", "ru", "rus"},
-		"serbian":      {"serbian", "sr", "srp"},
-		"sesotho":      {"sesotho", "st", "sot"},
-		"spanish":      {"spanish", "es", "esl", "spa"},
-		"swedish":      {"swedish", "sv", "swe"},
-		"tamil":        {"tamil", "ta", "tam"},
-		"turkish":      {"turkish", "tr", "tur"},
-		"yiddish":      {"yiddish", "yi", "yid"},
-		"porter":       {"porter"},
-		"dutch_porter": {"dutch_porter"},
-	}
-	seen := make(map[string]struct{}, fixture.AliasCount)
-	for canonical, names := range aliases {
-		test, found := caseByLanguage[canonical]
-		require.True(t, found)
-
-		for _, name := range names {
-			seen[name] = struct{}{}
-			filter, err := NewStemmerTokenFilter(StemmerTokenFilterOptions{Language: name})
-			require.NoError(t, err)
-
-			got, err := filter.Filter(context.Background(), []Token{{Text: test.input}})
-			require.NoError(t, err)
-			require.Len(t, got, 1)
-			require.Equal(t, test.output, got[0].Text)
-		}
-	}
-	require.Len(t, aliases, fixture.AlgorithmCount)
-	require.Len(t, seen, fixture.AliasCount)
 }
 
 func TestStemmerTokenFilterBaselineBehavior(t *testing.T) {

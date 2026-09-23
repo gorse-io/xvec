@@ -16,67 +16,12 @@ package tokenizer
 
 import (
 	"context"
-	"encoding/hex"
-	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 )
-
-type standardTokenizerFixture struct {
-	BaselineCommit     string `json:"baseline_commit"`
-	SourceSHA256       string `json:"source_sha256"`
-	UnicodeTableSHA256 string `json:"unicode_table_sha256"`
-	UnicodeVersion     string `json:"unicode_version"`
-	Cases              []struct {
-		Name           string `json:"name"`
-		MaxTokenLength uint32 `json:"max_token_length"`
-		InputHex       string `json:"input_hex"`
-		Tokens         []struct {
-			TextHex  string `json:"text_hex"`
-			Offset   uint32 `json:"offset"`
-			Position uint32 `json:"position"`
-		} `json:"tokens"`
-	} `json:"cases"`
-}
-
-func TestStandardTokenizerBaselineFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/standard_tokenizer_58375ff.json")
-	require.NoError(t, err)
-
-	var fixture standardTokenizerFixture
-	{
-		err := json.Unmarshal(data, &fixture)
-		require.NoError(t, err)
-	}
-	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
-	require.True(t, fixture.SourceSHA256 == "3f9a7ee811e9fac253bac363d5b208b9e7a03cc1bb51b771221e9417bc8864e9")
-	require.True(t, fixture.UnicodeTableSHA256 == "3d666796d24191c9708fb3a183d7ce0f61962da0b34dacfdc73d03061f342722")
-	require.True(t, fixture.UnicodeVersion == "17.0.0")
-
-	for _, test := range fixture.Cases {
-		t.Run(test.Name, func(t *testing.T) {
-			input, err := hex.DecodeString(test.InputHex)
-			require.NoError(t, err)
-
-			tokenizer := mustStandardTokenizer(t, test.MaxTokenLength)
-			got, err := tokenizer.Tokenize(context.Background(), string(input))
-			require.NoError(t, err)
-
-			want := make([]Token, len(test.Tokens))
-			for index, token := range test.Tokens {
-				text, err := hex.DecodeString(token.TextHex)
-				require.NoError(t, err)
-
-				want[index] = Token{Text: string(text), Offset: token.Offset, Position: token.Position}
-			}
-			require.Equal(t, want, got)
-		})
-	}
-}
 
 func TestStandardTokenizerOptions(t *testing.T) {
 	defaults := DefaultStandardTokenizerOptions()

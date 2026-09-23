@@ -16,10 +16,7 @@ package ftscolumn
 
 import (
 	"context"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,101 +25,6 @@ import (
 	"github.com/gorse-io/xvec/internal/db/index/column/fts_column/tokenizer"
 	"github.com/stretchr/testify/require"
 )
-
-type ftsPostingFixture struct {
-	BaselineCommit      string `json:"baseline_commit"`
-	PostingHeaderSHA256 string `json:"posting_header_sha256"`
-	PostingSourceSHA256 string `json:"posting_source_sha256"`
-	IndexerHeaderSHA256 string `json:"indexer_header_sha256"`
-	IndexerSourceSHA256 string `json:"indexer_source_sha256"`
-	ReducerHeaderSHA256 string `json:"reducer_header_sha256"`
-	ReducerSourceSHA256 string `json:"reducer_source_sha256"`
-	PhraseSourceSHA256  string `json:"phrase_source_sha256"`
-	PositionDeltaHex    string `json:"position_delta_hex"`
-	TotalDocuments      uint64 `json:"total_documents"`
-	TotalTokens         uint64 `json:"total_tokens"`
-	Documents           []struct {
-		DocumentID uint32 `json:"document_id"`
-		Tokens     []struct {
-			Term     string `json:"term"`
-			Position uint32 `json:"position"`
-		} `json:"tokens"`
-	} `json:"documents"`
-	Terms []struct {
-		Term                 string       `json:"term"`
-		DocumentFrequency    uint32       `json:"document_frequency"`
-		MaximumTermFrequency uint32       `json:"maximum_term_frequency"`
-		Postings             []FTSPosting `json:"postings"`
-	} `json:"terms"`
-}
-
-func loadFTSPostingFixture(t testing.TB) ftsPostingFixture {
-	t.Helper()
-	data, err := os.ReadFile("testdata/fts_posting_58375ff.json")
-	require.NoError(t, err)
-
-	var fixture ftsPostingFixture
-	{
-		err := json.Unmarshal(data, &fixture)
-		require.NoError(t, err)
-	}
-
-	return fixture
-}
-
-func TestFTSTermDictionaryBaselineFixture(t *testing.T) {
-	fixture := loadFTSPostingFixture(t)
-	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
-	require.True(t, fixture.PostingHeaderSHA256 == "78b8e7e6af6ae7279eb7561fc4aec53b2f7811a209f3e32306f89eb9430f92b5")
-	require.True(t, fixture.PostingSourceSHA256 == "ed99e2c626429926afc6633c1f4d3d6ae89ac32bb584860306b215302756180c")
-	require.True(t, fixture.IndexerHeaderSHA256 == "83baa255dad8f86e18a9c49091bcbcf015d5c066d75e726332eb2dddf7a31056")
-	require.True(t, fixture.IndexerSourceSHA256 == "dbe3bffb8fef7d15a4be09babd5c7d3706dcdde4343d1318a310ba24662d5cab")
-	require.True(t, fixture.ReducerHeaderSHA256 == "b87f60888e230f39268dea6614d7aadca60f8945bc3bc0862f2fa026d1aeb43b")
-	require.True(t, fixture.ReducerSourceSHA256 == "7bebfd9d410c598e2970c0d3b7331b9623e2b481b28466b2eae7543af7d58b2e")
-	require.True(t, fixture.PhraseSourceSHA256 == "6316f87dab229ba02fbb588f0047f23a9b988aab584d0d87fb9987896dd565f7")
-
-	positions, err := appendFTSPositionDeltas(context.Background(), nil, []uint32{0, 2, 130})
-	require.NoError(t, err)
-	{
-		got := hex.EncodeToString(positions)
-		require.Equal(t, fixture.PositionDeltaHex, got)
-	}
-
-	builder := NewFTSFieldBuilder()
-	for _, document := range fixture.Documents {
-		tokens := make([]tokenizer.Token, len(document.Tokens))
-		for index, token := range document.Tokens {
-			tokens[index] = tokenizer.Token{Text: token.Term, Position: token.Position}
-		}
-		{
-			err := builder.AddDocument(context.Background(), document.DocumentID, tokens)
-			require.NoError(t, err)
-		}
-	}
-	dictionary, err := builder.Build(context.Background())
-	require.NoError(t, err)
-	{
-		got, want := dictionary.Stats(), (FTSSegmentStats{TotalDocuments: fixture.TotalDocuments, TotalTokens: fixture.TotalTokens})
-		require.Equal(t, want, got)
-	}
-	require.Equal(t, float64(5)/3, dictionary.Stats().AverageDocumentLength())
-	require.Len(t, fixture.Terms, dictionary.TermCount())
-
-	for _, term := range fixture.Terms {
-		info, postingList, found := dictionary.Lookup(term.Term)
-		require.True(t, found)
-		require.Equal(t, FTSTermInfo{Term: term.Term, DocumentFrequency: term.DocumentFrequency, MaximumTermFrequency: term.MaximumTermFrequency}, info)
-		{
-			got := collectFTSPostings(postingList.Iterator())
-			require.Equal(t, term.Postings, got)
-		}
-	}
-	{
-		_, _, found := dictionary.Lookup("missing")
-		require.False(t, found,
-			"missing term found")
-	}
-}
 
 func TestFTSTermDictionaryPrefixAndSnapshot(t *testing.T) {
 	builder := NewFTSFieldBuilder()

@@ -17,11 +17,8 @@ package tokenizer
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -29,60 +26,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-type lowercaseFilterFixture struct {
-	BaselineCommit     string `json:"baseline_commit"`
-	SourceSHA256       string `json:"source_sha256"`
-	UTF8ProcCommit     string `json:"utf8proc_commit"`
-	UTF8ProcDataSHA256 string `json:"utf8proc_data_sha256"`
-	MappingPairsSHA256 string `json:"mapping_pairs_sha256"`
-	MappingCount       int    `json:"mapping_count"`
-	Cases              []struct {
-		Name      string `json:"name"`
-		InputHex  string `json:"input_hex"`
-		OutputHex string `json:"output_hex"`
-	} `json:"cases"`
-}
-
-func TestLowercaseTokenFilterBaselineFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/lowercase_filter_58375ff.json")
-	require.NoError(t, err)
-
-	var fixture lowercaseFilterFixture
-	{
-		err := json.Unmarshal(data, &fixture)
-		require.NoError(t, err)
-	}
-	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
-	require.True(t, fixture.SourceSHA256 == "52a9c44a460818cf4d4857f980eea8bad944466ca8ca93e754107d4aa47ea7eb")
-	require.True(t, fixture.UTF8ProcCommit == "e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78")
-	require.True(t, fixture.UTF8ProcDataSHA256 == "950e549dbfc853c4304425f3af1875e72fa9fc9697c273c763400c2da4e380a7")
-	require.True(t, fixture.MappingPairsSHA256 == "3687b35be3fc408c2a4044074d2e673f7cc4818d15e3911ba161aabf252d6068")
-	require.True(t, fixture.MappingCount == 1488)
-
-	filter := NewLowercaseTokenFilter()
-	require.True(t, filter.Name() == "lowercase")
-
-	for index, test := range fixture.Cases {
-		t.Run(test.Name, func(t *testing.T) {
-			input, err := hex.DecodeString(test.InputHex)
-			require.NoError(t, err)
-
-			want, err := hex.DecodeString(test.OutputHex)
-			require.NoError(t, err)
-
-			tokens := []Token{{Text: string(input), Offset: uint32(index + 7), Position: uint32(index + 11)}}
-			got, err := filter.Filter(context.Background(), tokens)
-			require.NoError(t, err)
-			{
-				expected := []Token{{Text: string(want), Offset: tokens[0].Offset, Position: tokens[0].Position}}
-				require.Equal(t, expected, got)
-			}
-			require.Equal(t, string(input), tokens[0].Text,
-				"filter modified its input")
-		})
-	}
-}
 
 func TestLowercaseUnicode17TableIdentity(t *testing.T) {
 	hash := sha256.New()

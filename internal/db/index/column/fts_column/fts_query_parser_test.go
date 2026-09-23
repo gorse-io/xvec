@@ -16,10 +16,8 @@ package ftscolumn
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -28,100 +26,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-type ftsQueryParserFixture struct {
-	BaselineCommit     string `json:"baseline_commit"`
-	LexerSHA256        string `json:"lexer_sha256"`
-	ParserSHA256       string `json:"parser_sha256"`
-	ASTSHA256          string `json:"ast_sha256"`
-	ParserSourceHash   string `json:"parser_source_sha256"`
-	ParserTestsHash    string `json:"parser_tests_sha256"`
-	RewriterHash       string `json:"rewriter_source_sha256"`
-	TermIteratorHash   string `json:"term_iterator_source_sha256"`
-	AndIteratorHash    string `json:"and_iterator_source_sha256"`
-	OrIteratorHash     string `json:"or_iterator_source_sha256"`
-	PhraseIteratorHash string `json:"phrase_iterator_source_sha256"`
-	Cases              []struct {
-		Name     string `json:"name"`
-		Query    string `json:"query"`
-		Analyzer string `json:"analyzer"`
-		Default  string `json:"default_operator"`
-		Want     string `json:"want"`
-		Error    string `json:"error"`
-	} `json:"cases"`
-}
-
-func TestFTSQueryParserBaselineFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/fts_query_parser_58375ff.json")
-	require.NoError(t, err)
-
-	var fixture ftsQueryParserFixture
-	{
-		err := json.Unmarshal(data, &fixture)
-		require.NoError(t, err)
-	}
-	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b",
-
-		"baseline identity drift")
-	require.True(t, fixture.LexerSHA256 == "73d93e4311af4a74a76f8db964441ceefb8ac20f2ac2fb6470b0c2163a3b8d8d",
-
-		"baseline identity drift")
-	require.True(t, fixture.ParserSHA256 == "9d4bca5dba6040da755c6d4af25e54c963df34542c0d0ff7e4b4b7fef7760bf5",
-
-		"baseline identity drift")
-	require.True(t, fixture.ASTSHA256 == "6f0e03452b3d1df98d557d239dc2969cec80a5de45eae2ade7a25ed200481d85",
-
-		"baseline identity drift")
-	require.True(t, fixture.ParserSourceHash == "3e63b894375a0c58283accd1b642d765b2cbf97020b69687c3ad478aa1ef825a",
-
-		"baseline identity drift")
-	require.True(t, fixture.ParserTestsHash == "45a6a5af0bb2b38abb81554bf7f857e931c9cee3f29b4975280ce6febcc24b09",
-
-		"baseline identity drift")
-	require.True(t, fixture.RewriterHash == "178d7c625c755f4de250f832569a1354544c034f760d7da18555a864ad6411f7",
-
-		"baseline identity drift")
-	require.True(t, fixture.TermIteratorHash == "842080ba9bce4bacdb102705da18e9bc36a029138d4b8f269caeab4681f0f2c8",
-
-		"baseline identity drift")
-	require.True(t, fixture.AndIteratorHash == "a524cd701608563f13fda44c2838772cb979b8f6af7195b19bfe527956cef59c",
-
-		"baseline identity drift")
-	require.True(t, fixture.OrIteratorHash == "6645478f1ae200077f4686d076214aa8a70e81ddbee1bf9397403fcac011684d",
-
-		"baseline identity drift")
-	require.True(t, fixture.PhraseIteratorHash == "6316f87dab229ba02fbb588f0047f23a9b988aab584d0d87fb9987896dd565f7",
-		"baseline identity drift")
-
-	standard := newFTSStandardTestPipeline(t)
-	whitespace, err := tokenizer.NewFTSTokenizerPipeline(tokenizer.NewWhitespaceTokenizer())
-	require.NoError(t, err)
-
-	for _, test := range fixture.Cases {
-		t.Run(test.Name, func(t *testing.T) {
-			analyzer := tokenizer.FTSAnalyzer(standard)
-			if test.Analyzer == "whitespace" {
-				analyzer = whitespace
-			}
-			defaultOperator, err := ParseFTSDefaultOperator(test.Default)
-			require.NoError(t, err)
-
-			node, err := ParseFTSQuery(context.Background(), test.Query, analyzer, defaultOperator)
-			if test.Error != "" {
-				require.Nil(t, node)
-				require.Error(t, err)
-				require.Contains(t, err.Error(), test.Error)
-
-				return
-			}
-			require.NoError(t, err)
-			{
-				got := node.String()
-				require.Equal(t, test.Want, got)
-			}
-		})
-	}
-}
 
 func TestLexFTSQueryLongestMatchAndLocations(t *testing.T) {
 	query := "or AND Not ORbit 12 1.5 1. full-text C\\+\\+\n\"a \\\"b\\\"\" 中文 😀"

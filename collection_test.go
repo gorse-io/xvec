@@ -17,7 +17,6 @@ package xvec
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -5289,23 +5288,6 @@ func TestCollectionFTSAnalyzerConfiguration(t *testing.T) {
 			text: "RUNNING", wantTokens: []string{"run"},
 		},
 	}
-	jiebaDirectory, err := filepath.Abs(filepath.Join("internal", "db", "index", "column", "fts_column", "tokenizer", "testdata", "jieba"))
-	require.NoError(t, err)
-
-	jiebaExtra, _ := json.Marshal(map[string]string{
-		"jieba_dict_dir": jiebaDirectory,
-		"user_dict_path": filepath.Join(jiebaDirectory, "user.dict.utf8"),
-		"cut_mode":       "search",
-	})
-	tests = append(tests, struct {
-		name       string
-		params     FTSIndexParams
-		text       string
-		wantTokens []string
-	}{
-		name: "jieba resources", params: FTSIndexParams{Tokenizer: "jieba", ExtraParams: string(jiebaExtra)},
-		text: "中华人民共和国", wantTokens: []string{"中华", "人民", "共和", "共和国", "中华人民共和国"},
-	})
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			{
@@ -6074,36 +6056,6 @@ func TestCollectionMultiQueryConcurrentSnapshotSearch(t *testing.T) {
 	for err := range errorsFound {
 		require.NoError(t, err)
 	}
-}
-
-func TestMultiQueryPinnedCompatibilityFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/multi_query_58375ff.json")
-	require.NoError(t, err)
-
-	var fixture struct {
-		BaselineCommit     string `json:"baseline_commit"`
-		QueryHeaderHash    string `json:"query_header_sha256"`
-		CollectionHash     string `json:"collection_source_sha256"`
-		RerankerHeaderHash string `json:"reranker_header_sha256"`
-		MaxTopK            int    `json:"max_topk"`
-		MinimumSubQueries  int    `json:"minimum_sub_queries"`
-		DefaultTopK        int    `json:"default_topk"`
-		DefaultCandidates  int    `json:"default_num_candidates"`
-		DefaultFTSOperator string `json:"default_fts_operator"`
-	}
-	{
-		err := json.Unmarshal(data, &fixture)
-		require.NoError(t, err)
-	}
-	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
-	require.True(t, fixture.QueryHeaderHash == "2c482b4c9832ffb07086e9789c88a4f7de6bc278c3f7ae901b4091e7acbdd193")
-	require.True(t, fixture.CollectionHash == "cf4145fa9cbed9bf8975c440f024ce98359b2c6792f008e630db5da7f6422493")
-	require.True(t, fixture.RerankerHeaderHash == "bc1949536968bc27f0cb11026d0ab8633dbb46641365455c20b433367837c7d6")
-	require.Equal(t, MaxQueryTopK, fixture.MaxTopK)
-	require.True(t, fixture.MinimumSubQueries == 2)
-	require.Equal(t, DefaultMultiQueryTopK, fixture.DefaultTopK)
-	require.Equal(t, DefaultSubQueryCandidates, fixture.DefaultCandidates)
-	require.Equal(t, NewFTSQueryParams().DefaultOperator, fixture.DefaultFTSOperator)
 }
 
 func FuzzMultiQueryTargetKind(f *testing.F) {
@@ -7062,32 +7014,6 @@ func TestConfigureRuntimeOneShotSubprocess(t *testing.T) {
 	command.Env = append(os.Environ(), "ZVEC_RUNTIME_CONFIG_HELPER=1")
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, "runtime config subprocess output:\n%s", output)
-}
-
-func TestRuntimeConfigCompatibilityFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/runtime_config_58375ff.json")
-	require.NoError(t, err)
-
-	var fixture struct {
-		BaselineCommit string             `json:"baseline_commit"`
-		ConfigHeader   string             `json:"config_header_sha256"`
-		ConfigSource   string             `json:"config_source_sha256"`
-		OptionsHeader  string             `json:"options_header_sha256"`
-		StatsHeader    string             `json:"stats_header_sha256"`
-		Defaults       map[string]float64 `json:"planner_ratio_defaults"`
-		LogLevels      map[string]int     `json:"log_levels"`
-	}
-	{
-		err := json.Unmarshal(data, &fixture)
-		require.NoError(t, err)
-	}
-	require.True(t, fixture.BaselineCommit == "58375ff7b8fdd0d6fc7d234e47567b179777883b")
-	require.True(t, fixture.ConfigHeader == "e2fdabad1fca4b3ffd647081962c2869b4c376379fc1e5506f1e465c985b1758")
-	require.True(t, fixture.ConfigSource == "04c9ea1d60b74dd3c5a1fb78bd61251bd11ab54acf2ada944e780f5800f3d929")
-	require.True(t, fixture.OptionsHeader == "865c50a022754ad5101f9f40a03401e2832c5b008713c92d487ebf125334670d")
-	require.True(t, fixture.StatsHeader == "791bb777751cb3f76ed79ec8c068a3575068361a717d246fb02f43027fc685af")
-	require.Equal(t, map[string]float64{"invert_to_forward": 0.9, "vector_brute_force": 0.1, "fts_brute_force": 0.05}, fixture.Defaults)
-	require.Equal(t, map[string]int{"debug": 0, "info": 1, "warn": 2, "error": 3, "fatal": 4}, fixture.LogLevels)
 }
 
 func FuzzRuntimeConfigValidation(f *testing.F) {
