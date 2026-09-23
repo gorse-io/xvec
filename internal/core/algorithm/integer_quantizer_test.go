@@ -17,6 +17,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"slices"
 	"testing"
@@ -24,6 +25,28 @@ import (
 	"github.com/gorse-io/xvec/internal/ailego/math"
 	"github.com/stretchr/testify/require"
 )
+
+func TestIntegerCodeDotMatchesScalar(t *testing.T) {
+	t.Parallel()
+	for _, dimension := range []int{1, 31, 32, 33, 127, 128, 768, 769, 1536, MaxRotationDimension} {
+		t.Run(fmt.Sprint(dimension), func(t *testing.T) {
+			left, right := make([]float32, dimension), make([]float32, dimension)
+			for i := range left {
+				left[i] = float32(i%251) - 120
+				right[i] = float32(i%239) - 131
+			}
+			l, err := QuantizeVector(QuantizationInt8, left)
+			require.NoError(t, err)
+			r, err := QuantizeVector(QuantizationInt8, right)
+			require.NoError(t, err)
+			var want float64
+			for i := range dimension {
+				want += float64(l.integerCode(i) * r.integerCode(i))
+			}
+			require.Equal(t, want, integerCodeDot(l, r))
+		})
+	}
+}
 
 func TestQuantizeFP16(t *testing.T) {
 	t.Parallel()

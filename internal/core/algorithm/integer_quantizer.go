@@ -360,6 +360,9 @@ func (q Quantization) valid() bool {
 }
 
 func integerCodeDot(left, right QuantizedVector) float64 {
+	if left.kind == QuantizationInt8 {
+		return float64(mathutil.InnerProductInt8(left.codes, right.codes))
+	}
 	var dot float64
 	for index := 0; index < left.dimension; index++ {
 		leftCode := left.integerCode(index)
