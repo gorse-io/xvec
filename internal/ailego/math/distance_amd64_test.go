@@ -70,3 +70,17 @@ func TestAVX512FP16DistanceKernelsFallback(t *testing.T) {
 	require.Equal(t, wantLeftNorm, leftNorm)
 	require.Equal(t, wantRightNorm, rightNorm)
 }
+
+func TestInnerProductInt8AVX2(t *testing.T) {
+	if !cpu.X86.HasAVX2 {
+		t.Skip("AVX2 is not supported by this CPU")
+	}
+	testInnerProductInt8(t, innerProductInt8AVX2)
+}
+
+func TestInnerProductInt8AVX512(t *testing.T) {
+	if !cpu.X86.HasAVX2 || !cpu.X86.HasAVX512F || !cpu.X86.HasAVX512BW {
+		t.Skip("AVX2, AVX-512F and AVX-512BW are not supported by this CPU")
+	}
+	testInnerProductInt8(t, innerProductInt8AVX512)
+}
