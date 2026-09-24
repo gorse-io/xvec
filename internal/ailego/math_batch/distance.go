@@ -241,6 +241,15 @@ func InnerProductsInt8(query []byte, candidates [][]byte, output []int64) {
 	}
 }
 
+// InnerProductsInt4 computes exact dot products between one packed signed INT4
+// query and multiple packed signed INT4 candidates. Inputs follow the unchecked
+// distance-kernel contract: every candidate and output must cover the query.
+func InnerProductsInt4(query []byte, candidates [][]byte, output []int64) {
+	for i := range candidates {
+		output[i] = mathutil.InnerProductInt4(query, candidates[i][:len(query)])
+	}
+}
+
 func innerProductsInt8Scalar4(query, first, second, third, fourth []byte, output []int64) {
 	var a, b, c, d int64
 	for i, code := range query {

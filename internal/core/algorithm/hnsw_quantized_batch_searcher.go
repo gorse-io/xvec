@@ -18,14 +18,13 @@ import (
 	"context"
 	"fmt"
 	"slices"
-
-	mathbatch "github.com/gorse-io/xvec/internal/ailego/math_batch"
 )
 
-// searchBaseInt8 batches immutable INT8 codes and maintains candidates with the
-// same BlockHeap used by dense HNSW. Filters and radius searches retain the
-// dual-heap traversal so rejected bridge nodes can still be expanded.
-func (i *ScalarQuantizedHNSWIndex) searchBaseInt8(
+// searchBaseQuantized batches immutable INT8 or INT4 codes and maintains
+// candidates with the same BlockHeap used by dense HNSW. Filters and radius
+// searches retain the dual-heap traversal so rejected bridge nodes can still
+// be expanded.
+func (i *ScalarQuantizedHNSWIndex) searchBaseQuantized(
 	ctx context.Context, query QuantizedVector, entry, capacity int,
 	options HNSWSearchOptions, visited *hnswVisited,
 ) ([]hnswScoredNode, error) {
@@ -83,13 +82,13 @@ func (i *ScalarQuantizedHNSWIndex) searchBaseInt8(
 			visited.batchCodeDots = append(visited.batchCodeDots, 0)
 			visited.batchScores = append(visited.batchScores, 0)
 		}
-		mathbatch.InnerProductsInt8(query.codes, visited.batchCodes, visited.batchCodeDots)
+		integerCodeDots(query.kind, query.codes, visited.batchCodes, visited.batchCodeDots)
 		for j, id := range visited.batchIDs {
 			// Stored codes are immutable and validated at construction; the
 			// query was validated and quantized before graph traversal.
 			score, err := quantizedDistanceFromDot(metric, i.vectors.codes[id], query, float64(visited.batchCodeDots[j]))
 			if err != nil {
-				return nil, fmt.Errorf("core: score INT8 HNSW neighbor: %w", err)
+				return nil, fmt.Errorf("core: score integer-quantized HNSW neighbor: %w", err)
 			}
 			visited.batchScores[j] = blockHeapDistance(metric, score)
 		}

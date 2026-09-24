@@ -102,6 +102,39 @@ func TestInt8HNSWBuildUsesQuantizedDistances(t *testing.T) {
 	}
 }
 
+func TestInt4HNSWBuildUsesQuantizedDistances(t *testing.T) {
+	const dimension, count = 32, 96
+	ctx := context.Background()
+	options := DefaultHNSWBuildOptions(MetricL2)
+	options.M, options.EFConstruction = 4, 24
+	builder, err := NewHNSWBuilder(dimension, options)
+	require.NoError(t, err)
+	codes := make([]QuantizedVector, count)
+	for n := range count {
+		vector := make([]float32, dimension)
+		for d := range vector {
+			vector[d] = float32(math.Sin(float64(n*dimension + d)))
+		}
+		vector[0], vector[1] = -1000, 1000
+		require.NoError(t, builder.Add(ctx, uint64(n), vector))
+		codes[n], err = QuantizeVector(QuantizationInt4, vector)
+		require.NoError(t, err)
+	}
+	index, err := builder.BuildInt4WithWorkers(ctx, 1, nil)
+	require.NoError(t, err)
+	reference := make([][][]int, count)
+	for n, level := range index.base.levels {
+		reference[n] = make([][]int, level+1)
+	}
+	entry, level, err := buildParallelHNSW(ctx, 1, options, index.base.levels, reference,
+		func(left, right int) (float32, error) { return QuantizedDistance(MetricL2, codes[left], codes[right]) })
+	require.NoError(t, err)
+	require.Equal(t, reference, index.base.neighbors)
+	require.Equal(t, entry, index.base.entryPoint)
+	require.Equal(t, level, index.base.maxLevel)
+	require.Equal(t, codes, index.vectors.codes)
+}
+
 func TestInt8HNSWBuildRecallAndPersistence(t *testing.T) {
 	ctx := context.Background()
 	const dimension, count = 33, DefaultHNSWBruteForceThreshold + 100
@@ -195,6 +228,10 @@ func TestInt8HNSWBuildValidation(t *testing.T) {
 		require.NoError(t, err)
 		require.Zero(t, index.Len())
 	}
+	oddInt4, err := NewHNSWBuilder(3, options)
+	require.NoError(t, err)
+	_, err = oddInt4.BuildInt4WithWorkers(ctx, 1, nil)
+	require.ErrorIs(t, err, ErrOddInt4Dimension)
 	half, err := NewHNSWBuilderFP16(3, options)
 	require.NoError(t, err)
 	_, err = half.BuildInt8WithWorkers(ctx, 1, nil)

@@ -380,6 +380,22 @@ func TestInnerProductsInt8(t *testing.T) {
 	testInnerProductsInt8(t, InnerProductsInt8)
 }
 
+func TestInnerProductsInt4(t *testing.T) {
+	query := []byte{0x87, 0xf1, 0x20}
+	candidates := [][]byte{
+		{0x78, 0x1f, 0x02},
+		{0x87, 0xf1, 0x20},
+		{0x00, 0x00, 0x00},
+		{0xff, 0xff, 0xff},
+		{0x12, 0x34, 0x56},
+	}
+	output := make([]int64, len(candidates))
+	InnerProductsInt4(query, candidates, output)
+	for i := range candidates {
+		require.Equal(t, mathutil.InnerProductInt4(query, candidates[i]), output[i])
+	}
+}
+
 func TestInnerProductsInt8Scalar4(t *testing.T) {
 	testInnerProductsInt8(t, int8BatchWithKernel(innerProductsInt8Scalar4))
 }

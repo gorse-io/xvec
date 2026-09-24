@@ -59,10 +59,51 @@ func TestQuantizedHNSWInt8BatchMatchesScalar(t *testing.T) {
 				}
 				want, err := index.searchBase(context.Background(), 0, count, options, scoreAt, visited)
 				require.NoError(t, err)
-				got, err := index.searchBaseInt8(context.Background(), code, 0, count, options, visited)
+				got, err := index.searchBaseQuantized(context.Background(), code, 0, count, options, visited)
 				require.NoError(t, err)
 				require.Equal(t, want, got)
 			}
+		})
+	}
+}
+
+func TestQuantizedHNSWInt4BatchMatchesScalar(t *testing.T) {
+	const dimension, count = 32, 80
+	for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
+		t.Run(fmt.Sprint(metric), func(t *testing.T) {
+			base := &HNSWIndex{
+				dimension: dimension, options: HNSWBuildOptions{Metric: metric, M: count, EFConstruction: count},
+				keys: make([]uint64, count), vectors: make([]float32, dimension*count),
+				neighbors: make([][][]int, count), levels: make([]int, count),
+			}
+			for j := range count {
+				base.keys[j] = uint64(count - j)
+				for d := range dimension {
+					base.vectors[j*dimension+d] = float32((j*13+d*7)%31 - 15)
+				}
+				base.neighbors[j] = make([][]int, 1)
+				for n := range count {
+					if n != j {
+						base.neighbors[j][0] = append(base.neighbors[j][0], n)
+					}
+				}
+			}
+			index, err := NewScalarQuantizedHNSWIndex(context.Background(), base, QuantizationInt4, nil)
+			require.NoError(t, err)
+			visited := acquireHNSWVisited(count)
+			defer releaseHNSWVisited(visited)
+			query := base.vectors[3*dimension : 4*dimension]
+			code, err := index.vectors.quantizedQuery(query)
+			require.NoError(t, err)
+			options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: count}, EF: count, PrefetchOffset: 8}
+			scoreAt := func(position int) (float32, error) {
+				return QuantizedDistance(metric, index.vectors.codes[position], code)
+			}
+			want, err := index.searchBase(context.Background(), 0, count, options, scoreAt, visited)
+			require.NoError(t, err)
+			got, err := index.searchBaseQuantized(context.Background(), code, 0, count, options, visited)
+			require.NoError(t, err)
+			require.Equal(t, want, got)
 		})
 	}
 }
@@ -80,12 +121,12 @@ func TestQuantizedHNSWInt8BatchExpandsBoundaryTies(t *testing.T) {
 	visited := acquireHNSWVisited(5)
 	defer releaseHNSWVisited(visited)
 	options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 3}, EF: 3}
-	got, err := index.searchBaseInt8(context.Background(), code, 0, 3, options, visited)
+	got, err := index.searchBaseQuantized(context.Background(), code, 0, 3, options, visited)
 	require.NoError(t, err)
 	require.Equal(t, []hnswScoredNode{{position: 0, score: 0}, {position: 4, score: .0625}, {position: 2, score: .25}}, got)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = index.searchBaseInt8(ctx, code, 0, 3, options, visited)
+	_, err = index.searchBaseQuantized(ctx, code, 0, 3, options, visited)
 	require.ErrorIs(t, err, context.Canceled)
 }
 
