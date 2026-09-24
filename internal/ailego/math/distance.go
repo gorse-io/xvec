@@ -342,18 +342,184 @@ func dotNormsFP16Scalar(left, right []uint16) (dot, leftNorm, rightNorm float32)
 	return
 }
 
-var innerProductInt8Kernel = innerProductInt8Scalar
+type binaryKernelInteger func(left, right []byte) int64
+type productsKernelInteger func(left, right []byte) (dot, leftNorm, rightNorm int64)
+
+var kernelsInt4 = struct {
+	l2       binaryKernelInteger
+	dot      binaryKernelInteger
+	products productsKernelInteger
+}{
+	l2:       squaredEuclideanInt4Scalar,
+	dot:      innerProductInt4Scalar,
+	products: dotNormsInt4Scalar,
+}
+
+var kernelsInt8 = struct {
+	l2       binaryKernelInteger
+	dot      binaryKernelInteger
+	products productsKernelInteger
+}{
+	l2:       squaredEuclideanInt8Scalar,
+	dot:      innerProductInt8Scalar,
+	products: dotNormsInt8Scalar,
+}
+
+// InnerProductInt4 computes the unchecked dot product of packed signed INT4
+// codes. Each byte stores the low-nibble value first and the high-nibble value
+// second. Callers must guarantee equal byte lengths.
+func InnerProductInt4(left, right []byte) int64 {
+	return kernelsInt4.dot(left, right)
+}
+
+// L2SquaredInt4 computes unchecked squared Euclidean distance between packed
+// signed INT4 codes. Callers must guarantee equal byte lengths.
+func L2SquaredInt4(left, right []byte) int64 {
+	return kernelsInt4.l2(left, right)
+}
+
+// MIPSSphericalL2SquaredInt4 computes the unchecked spherical MIPS-to-L2
+// transform for packed signed INT4 codes. Callers must guarantee equal byte
+// lengths. An inverseMaxSquaredNorm of zero selects localized spherical
+// injection.
+func MIPSSphericalL2SquaredInt4(left, right []byte, inverseMaxSquaredNorm float32) float32 {
+	dot, leftNorm, rightNorm := kernelsInt4.products(left, right)
+	return sphericalMIPSL2Squared(dot, leftNorm, rightNorm, inverseMaxSquaredNorm)
+}
+
+// MIPSRepeatedQuadraticL2SquaredInt4 computes the unchecked repeated-quadratic
+// MIPS-to-L2 transform for packed signed INT4 codes. Callers must guarantee
+// equal byte lengths.
+func MIPSRepeatedQuadraticL2SquaredInt4(
+	left, right []byte, repetitions int, inverseMaxSquaredNorm float32,
+) float32 {
+	dot, leftNorm, rightNorm := kernelsInt4.products(left, right)
+	return repeatedQuadraticMIPSL2Squared(dot, leftNorm, rightNorm, repetitions, inverseMaxSquaredNorm)
+}
 
 // InnerProductInt8 computes the unchecked dot product of signed INT8 codes
 // stored in byte slices. Callers must guarantee equal lengths. Accumulation
 // uses int64 so dimensions whose dot product exceeds int32 remain exact.
 func InnerProductInt8(left, right []byte) int64 {
-	return innerProductInt8Kernel(left, right)
+	return kernelsInt8.dot(left, right)
+}
+
+// L2SquaredInt8 computes unchecked squared Euclidean distance between signed
+// INT8 codes stored in byte slices. Callers must guarantee equal lengths.
+func L2SquaredInt8(left, right []byte) int64 {
+	return kernelsInt8.l2(left, right)
+}
+
+// MIPSSphericalL2SquaredInt8 computes the unchecked spherical MIPS-to-L2
+// transform for signed INT8 codes. Callers must guarantee equal byte lengths.
+// An inverseMaxSquaredNorm of zero selects localized spherical injection.
+func MIPSSphericalL2SquaredInt8(left, right []byte, inverseMaxSquaredNorm float32) float32 {
+	dot, leftNorm, rightNorm := kernelsInt8.products(left, right)
+	return sphericalMIPSL2Squared(dot, leftNorm, rightNorm, inverseMaxSquaredNorm)
+}
+
+// MIPSRepeatedQuadraticL2SquaredInt8 computes the unchecked repeated-quadratic
+// MIPS-to-L2 transform for signed INT8 codes. Callers must guarantee equal byte
+// lengths.
+func MIPSRepeatedQuadraticL2SquaredInt8(
+	left, right []byte, repetitions int, inverseMaxSquaredNorm float32,
+) float32 {
+	dot, leftNorm, rightNorm := kernelsInt8.products(left, right)
+	return repeatedQuadraticMIPSL2Squared(dot, leftNorm, rightNorm, repetitions, inverseMaxSquaredNorm)
+}
+
+func innerProductInt4Scalar(left, right []byte) (sum int64) {
+	dot, _, _ := dotNormsInt4Scalar(left, right)
+	return dot
+}
+
+func squaredEuclideanInt4Scalar(left, right []byte) (sum int64) {
+	for i, value := range left {
+		leftLow, leftHigh := unpackInt4(value)
+		rightLow, rightHigh := unpackInt4(right[i])
+		lowDifference := leftLow - rightLow
+		highDifference := leftHigh - rightHigh
+		sum += lowDifference*lowDifference + highDifference*highDifference
+	}
+	return sum
+}
+
+func dotNormsInt4(left, right []byte) (dot, leftNorm, rightNorm int64) {
+	return kernelsInt4.products(left, right)
+}
+
+func dotNormsInt4Scalar(left, right []byte) (dot, leftNorm, rightNorm int64) {
+	for i, value := range left {
+		leftLow, leftHigh := unpackInt4(value)
+		rightLow, rightHigh := unpackInt4(right[i])
+		dot += leftLow*rightLow + leftHigh*rightHigh
+		leftNorm += leftLow*leftLow + leftHigh*leftHigh
+		rightNorm += rightLow*rightLow + rightHigh*rightHigh
+	}
+	return
+}
+
+func unpackInt4(value byte) (low, high int64) {
+	return int64(int8(value<<4) >> 4), int64(int8(value) >> 4)
 }
 
 func innerProductInt8Scalar(left, right []byte) (sum int64) {
+	dot, _, _ := dotNormsInt8Scalar(left, right)
+	return dot
+}
+
+func squaredEuclideanInt8Scalar(left, right []byte) (sum int64) {
 	for i, value := range left {
-		sum += int64(int8(value)) * int64(int8(right[i]))
+		difference := int64(int8(value)) - int64(int8(right[i]))
+		sum += difference * difference
+	}
+	return sum
+}
+
+func dotNormsInt8(left, right []byte) (dot, leftNorm, rightNorm int64) {
+	return kernelsInt8.products(left, right)
+}
+
+func dotNormsInt8Scalar(left, right []byte) (dot, leftNorm, rightNorm int64) {
+	for i, value := range left {
+		leftValue := int64(int8(value))
+		rightValue := int64(int8(right[i]))
+		dot += leftValue * rightValue
+		leftNorm += leftValue * leftValue
+		rightNorm += rightValue * rightValue
+	}
+	return
+}
+
+func sphericalMIPSL2Squared(dot, leftNorm, rightNorm int64, inverseMaxSquaredNorm float32) float32 {
+	if inverseMaxSquaredNorm == 0 {
+		denominator := max(leftNorm, rightNorm)
+		if denominator == 0 {
+			return 0
+		}
+		return 2 - 2*float32(dot)/float32(denominator)
+	}
+
+	e2 := float64(inverseMaxSquaredNorm)
+	value := (1 - e2*float64(leftNorm)) * (1 - e2*float64(rightNorm))
+	score := 1 - e2*float64(dot)
+	if value > 0 {
+		score -= math.Sqrt(value)
+	}
+	return float32(2 * score)
+}
+
+func repeatedQuadraticMIPSL2Squared(
+	dot, leftNorm, rightNorm int64, repetitions int, inverseMaxSquaredNorm float32,
+) float32 {
+	left := float32(leftNorm) * inverseMaxSquaredNorm
+	right := float32(rightNorm) * inverseMaxSquaredNorm
+	sum := float32(leftNorm+rightNorm-2*dot) * inverseMaxSquaredNorm
+	for range repetitions {
+		difference := left - right
+		sum += difference * difference
+		left *= left
+		right *= right
 	}
 	return sum
 }

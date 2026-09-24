@@ -91,7 +91,7 @@ func dotNormsFP16NEON(left, right []uint16) (dot, leftNorm, rightNorm float32) {
 
 func init() {
 	if cpu.ARM64.HasASIMD {
-		innerProductInt8Kernel = innerProductInt8NEON
+		kernelsInt8.dot = innerProductInt8NEON
 	}
 }
 
