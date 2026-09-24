@@ -259,6 +259,23 @@ scanning and lower throughput. These measurements align the routing behavior;
 they do not establish a speed improvement. The legacy xvec layout at
 `nprobe=30` reached 89.405% recall and 228.62 QPS in the same workload.
 
+FP32 indexes using the new cosine routing now pack originals in list order at
+build/open time. This improves sequential memory access without changing
+centroids, list membership, probe counts, original vector bits, or scoring.
+Version-2 indexes built before packing benefit on reopen without retraining;
+there is no additional format change. Incremental inserts append normally and
+are packed on reopen. FP16, legacy routing, and RaBitQ layouts are unchanged.
+Packing uses a temporary vector buffer (2.86 GiB for 1M × 768 FP32) plus key and
+position arrays; already-packed indexes skip this allocation.
+
+A separate before/after run reused the exact same trained 1M index with the
+settings above (`--skip-load --skip-drop-old --skip-download`). On reopen,
+packing improved QPS from **82.81 to 182.99** (2.21×) and concurrent p95 from
+**158.69 ms to 76.15 ms**. Recall stayed **88.606%**; all 100,000 returned IDs
+across the 1,000 serial queries were identical, including their order. A prior
+packing-only run measured 177.93 QPS at the same recall. These are local runs,
+not a cross-machine performance guarantee.
+
 ## Vamana comparison
 
 zvec-go v0.7 exposes zvec's native Vamana index. Select it independently from
