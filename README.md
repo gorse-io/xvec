@@ -6,7 +6,7 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/gorse-io/xvec)](go.mod)
 [![License](https://img.shields.io/github/license/gorse-io/xvec)](LICENSE)
 
-xvec is an embedded vector database vibe-coded with reference to
+xvec is an embedded vector database inspired by
 [Alibaba zvec](https://github.com/alibaba/zvec). It provides durable local
 storage and runs inside your application without CGO, a separate database
 server, or prebuilt native libraries.
