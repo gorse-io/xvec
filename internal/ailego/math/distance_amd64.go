@@ -173,7 +173,7 @@ func dotNormsFP16AVX512(left, right []uint16) (dot, leftNorm, rightNorm float32)
 	return
 }
 
-//go:generate make distance-integer-sse41 distance-integer-avx2 distance-int8-avx2 distance-int8-avx512
+//go:generate make distance-integer-avx2 distance-int8-avx2 distance-int8-avx512
 
 func init() {
 	switch {
@@ -191,59 +191,12 @@ func init() {
 		kernelsInt8.l2 = squaredEuclideanInt8AVX2
 		kernelsInt8.dot = innerProductInt8AVX2
 		kernelsInt8.products = dotNormsInt8AVX2
-	case cpu.X86.HasSSSE3 && cpu.X86.HasSSE41:
-		kernelsInt4.l2 = squaredEuclideanInt4SSE41
-		kernelsInt4.dot = innerProductInt4SSE41
-		kernelsInt4.products = dotNormsInt4SSE41
-		kernelsInt8.l2 = squaredEuclideanInt8SSE41
-		kernelsInt8.dot = innerProductInt8SSE41
-		kernelsInt8.products = dotNormsInt8SSE41
 	}
-}
-
-func innerProductInt4SSE41(left, right []byte) int64 {
-	if len(left) < 16 {
-		return innerProductInt4Scalar(left, right)
-	}
-	aligned := len(left) &^ 15
-	return inner_product_int4_sse41(
-		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(aligned),
-		int4NibbleMask, int4SignMask,
-	) + innerProductInt4Scalar(left[aligned:], right[aligned:])
-}
-
-func squaredEuclideanInt4SSE41(left, right []byte) int64 {
-	if len(left) < 16 {
-		return squaredEuclideanInt4Scalar(left, right)
-	}
-	aligned := len(left) &^ 15
-	return squared_euclidean_int4_sse41(
-		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(aligned),
-		int4NibbleMask, int4SignMask,
-	) + squaredEuclideanInt4Scalar(left[aligned:], right[aligned:])
-}
-
-func dotNormsInt4SSE41(left, right []byte) (dot, leftNorm, rightNorm int64) {
-	if len(left) < 16 {
-		return dotNormsInt4Scalar(left, right)
-	}
-	aligned := len(left) &^ 15
-	var products [3]int64
-	dot_norms_int4_sse41(
-		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(aligned),
-		unsafe.Pointer(&products[0]), int4NibbleMask, int4SignMask,
-	)
-	dot, leftNorm, rightNorm = products[0], products[1], products[2]
-	tailDot, tailLeftNorm, tailRightNorm := dotNormsInt4Scalar(left[aligned:], right[aligned:])
-	dot += tailDot
-	leftNorm += tailLeftNorm
-	rightNorm += tailRightNorm
-	return
 }
 
 func innerProductInt4AVX2(left, right []byte) int64 {
 	if len(left) < 32 {
-		return innerProductInt4SSE41(left, right)
+		return innerProductInt4Scalar(left, right)
 	}
 	aligned := len(left) &^ 31
 	return inner_product_int4_avx2(
@@ -254,7 +207,7 @@ func innerProductInt4AVX2(left, right []byte) int64 {
 
 func squaredEuclideanInt4AVX2(left, right []byte) int64 {
 	if len(left) < 32 {
-		return squaredEuclideanInt4SSE41(left, right)
+		return squaredEuclideanInt4Scalar(left, right)
 	}
 	aligned := len(left) &^ 31
 	return squared_euclidean_int4_avx2(
@@ -265,7 +218,7 @@ func squaredEuclideanInt4AVX2(left, right []byte) int64 {
 
 func dotNormsInt4AVX2(left, right []byte) (dot, leftNorm, rightNorm int64) {
 	if len(left) < 32 {
-		return dotNormsInt4SSE41(left, right)
+		return dotNormsInt4Scalar(left, right)
 	}
 	aligned := len(left) &^ 31
 	var products [3]int64
@@ -281,52 +234,16 @@ func dotNormsInt4AVX2(left, right []byte) (dot, leftNorm, rightNorm int64) {
 	return
 }
 
-func innerProductInt8SSE41(left, right []byte) int64 {
-	if len(left) < 16 {
-		return innerProductInt8Scalar(left, right)
-	}
-	aligned := len(left) &^ 15
-	return inner_product_int8_sse41(
-		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(aligned),
-	) + innerProductInt8Scalar(left[aligned:], right[aligned:])
-}
-
-func squaredEuclideanInt8SSE41(left, right []byte) int64 {
-	if len(left) < 16 {
-		return squaredEuclideanInt8Scalar(left, right)
-	}
-	aligned := len(left) &^ 15
-	return squared_euclidean_int8_sse41(
-		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(aligned),
-	) + squaredEuclideanInt8Scalar(left[aligned:], right[aligned:])
-}
-
-func dotNormsInt8SSE41(left, right []byte) (dot, leftNorm, rightNorm int64) {
-	if len(left) < 16 {
-		return dotNormsInt8Scalar(left, right)
-	}
-	aligned := len(left) &^ 15
-	dot_norms_int8_sse41(
-		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(aligned),
-		unsafe.Pointer(&dot), unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
-	)
-	tailDot, tailLeftNorm, tailRightNorm := dotNormsInt8Scalar(left[aligned:], right[aligned:])
-	dot += tailDot
-	leftNorm += tailLeftNorm
-	rightNorm += tailRightNorm
-	return
-}
-
 func innerProductInt8AVX2(left, right []byte) int64 {
 	if len(left) < 32 {
-		return innerProductInt8SSE41(left, right)
+		return innerProductInt8Scalar(left, right)
 	}
 	return inner_product_int8_avx2(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
 }
 
 func squaredEuclideanInt8AVX2(left, right []byte) int64 {
 	if len(left) < 32 {
-		return squaredEuclideanInt8SSE41(left, right)
+		return squaredEuclideanInt8Scalar(left, right)
 	}
 	aligned := len(left) &^ 31
 	return squared_euclidean_int8_avx2(
@@ -336,7 +253,7 @@ func squaredEuclideanInt8AVX2(left, right []byte) int64 {
 
 func dotNormsInt8AVX2(left, right []byte) (dot, leftNorm, rightNorm int64) {
 	if len(left) < 32 {
-		return dotNormsInt8SSE41(left, right)
+		return dotNormsInt8Scalar(left, right)
 	}
 	aligned := len(left) &^ 31
 	dot_norms_int8_avx2(

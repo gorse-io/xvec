@@ -85,25 +85,11 @@ func TestInnerProductInt8AVX512(t *testing.T) {
 	testInnerProductInt8(t, innerProductInt8AVX512)
 }
 
-func TestInt4DistanceKernelsSSE41(t *testing.T) {
-	if !cpu.X86.HasSSE41 {
-		t.Skip("SSE4.1 is not supported by this CPU")
-	}
-	testInt4DistanceKernels(t, innerProductInt4SSE41, squaredEuclideanInt4SSE41, dotNormsInt4SSE41)
-}
-
 func TestInt4DistanceKernelsAVX2(t *testing.T) {
 	if !cpu.X86.HasAVX2 {
 		t.Skip("AVX2 is not supported by this CPU")
 	}
 	testInt4DistanceKernels(t, innerProductInt4AVX2, squaredEuclideanInt4AVX2, dotNormsInt4AVX2)
-}
-
-func TestInt8DistanceKernelsSSE41(t *testing.T) {
-	if !cpu.X86.HasSSE41 {
-		t.Skip("SSE4.1 is not supported by this CPU")
-	}
-	testInt8DistanceKernels(t, innerProductInt8SSE41, squaredEuclideanInt8SSE41, dotNormsInt8SSE41)
 }
 
 func TestInt8DistanceKernelsAVX2(t *testing.T) {

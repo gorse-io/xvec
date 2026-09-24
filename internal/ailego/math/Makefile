@@ -16,13 +16,13 @@ LOONG64_QEMU_FLAGS ?= -cpu max
 TEST_RVV_BINARY ?= .test-rvv.riscv64.test
 TEST_LASX_BINARY ?= .test-lasx.loong64.test
 
-.PHONY: generate avx avx2 avx512 neon rvv lasx fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-integer-sse41 distance-integer-avx2 distance-int8-avx2 distance-int8-avx512 distance-int8-neon distance-avx512 distance-neon distance-rvv distance-lasx clean test-rvv test-lasx
+.PHONY: generate avx avx2 avx512 neon rvv lasx fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-integer-avx2 distance-int8-avx2 distance-int8-avx512 distance-int8-neon distance-avx512 distance-neon distance-rvv distance-lasx clean test-rvv test-lasx
 
-generate: fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-integer-sse41 distance-integer-avx2 distance-int8-avx2 distance-int8-avx512 distance-int8-neon distance-avx512 distance-neon distance-rvv distance-lasx clean
+generate: fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-integer-avx2 distance-int8-avx2 distance-int8-avx512 distance-int8-neon distance-avx512 distance-neon distance-rvv distance-lasx clean
 
 avx: distance-avx
 
-avx2: fht-avx2 distance-integer-sse41 distance-integer-avx2 distance-int8-avx2
+avx2: fht-avx2 distance-integer-avx2 distance-int8-avx2
 
 avx512: fht-avx512 distance-avx512 distance-int8-avx512
 
@@ -77,11 +77,6 @@ distance-avx512:
 	$(GOAT) src/mips_euclidean_distance_matrix_fp32_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mfma -mavx512f -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/distance_matrix_fp16_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mf16c -mavx512f -mavx512dq -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
-
-distance-integer-sse41:
-	mkdir -p $(GOAT_OUTPUT_DIR)
-	$(GOAT) src/distance_matrix_integer_sse41.c --target $(GOAT_TARGET_AMD64) -O3 -e=-fno-vectorize -e=-fno-slp-vectorize -msse4.1 -o $(GOAT_OUTPUT_DIR)
-	$(MV) $(GOAT_OUTPUT_DIR)/distance_matrix_integer_sse41.go $(GOAT_OUTPUT_DIR)/distance_matrix_integer_sse41.s .
 
 distance-integer-avx2:
 	mkdir -p $(GOAT_OUTPUT_DIR)
