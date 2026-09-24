@@ -240,6 +240,9 @@ func (b *IVFBuilder) Build(ctx context.Context) (*IVFIndex, error) {
 			index.lists[label].positions = append(index.lists[label].positions, position)
 			index.listForPosition[position] = label
 		}
+		if err := index.packCosineLists(ctx); err != nil {
+			return nil, err
+		}
 		if err := index.cacheCosineMagnitudes(ctx); err != nil {
 			return nil, err
 		}
@@ -1229,6 +1232,9 @@ func decodeIVFIndex(ctx context.Context, encoded []byte) (*IVFIndex, error) {
 			cost:       trainingCost,
 			iterations: int(trainingIterations),
 			converged:  converged == 1,
+		}
+		if err := index.packCosineLists(ctx); err != nil {
+			return nil, err
 		}
 		if err := index.cacheCosineMagnitudes(ctx); err != nil {
 			return nil, err
