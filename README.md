@@ -166,12 +166,10 @@ branches over one snapshot.
 Dense vectors support FP16 and FP32 storage, plus supported scalar
 quantization options. Sparse vectors support exact Flat and HNSW
 inner-product search. See the [Go reference](https://pkg.go.dev/github.com/gorse-io/xvec)
-for the complete API and the [documentation homepage](docs/README.md) for
-project benchmarks.
+for the complete API.
 
 ## Documentation
 
-- [Documentation index](docs/README.md)
 - [Go reference](https://pkg.go.dev/github.com/gorse-io/xvec)
 - [VectorDBBench-compatible Go benchmark](cmd/vector-db-bench/README.md)
 
