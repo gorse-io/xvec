@@ -48,6 +48,9 @@ const (
 	// KMeansInitPlusPlus uses squared-L2 weighted sampling after its first
 	// uniformly selected sample.
 	KMeansInitPlusPlus
+	// KMeansInitKMC2 uses a 32-step Markov chain to approximate k-means++
+	// without visiting the entire training set for every new center.
+	KMeansInitKMC2
 )
 
 // KMeansEmptyPolicy controls an empty centroid after an update.
@@ -311,7 +314,7 @@ func validateKMeansOptions(options KMeansOptions) error {
 	if !options.Metric.Valid() {
 		return fmt.Errorf("%w: invalid metric", ErrInvalidKMeansOptions)
 	}
-	if options.Initializer != KMeansInitReservoir && options.Initializer != KMeansInitPlusPlus {
+	if options.Initializer != KMeansInitReservoir && options.Initializer != KMeansInitPlusPlus && options.Initializer != KMeansInitKMC2 {
 		return fmt.Errorf("%w: invalid initializer", ErrInvalidKMeansOptions)
 	}
 	if options.EmptyPolicy < KMeansEmptyKeep || options.EmptyPolicy > KMeansEmptyDrop {
@@ -366,6 +369,8 @@ func initializeKMeans(ctx context.Context, vectors [][]float32, clusters, dimens
 	switch options.Initializer {
 	case KMeansInitReservoir:
 		return algorithm.InitializeReservoir(ctx, vectors, clusters, random.intn)
+	case KMeansInitKMC2:
+		return algorithm.InitializeKMC2(ctx, vectors, clusters, 32, random.intn, random.float64, mathutil.L2Squared)
 	case KMeansInitPlusPlus:
 		return algorithm.InitializePlusPlus(
 			ctx,
