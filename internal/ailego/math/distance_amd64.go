@@ -168,7 +168,7 @@ func dotNormsFP16AVX512(left, right []uint16) (dot, leftNorm, rightNorm float32)
 	return
 }
 
-//go:generate make distance-int8-avx2 distance-int8-avx512
+//go:generate make distance-int4-avx2 distance-int8-avx2 distance-int8-avx512
 
 func init() {
 	switch {
@@ -176,6 +176,11 @@ func init() {
 		innerProductInt8Kernel = innerProductInt8AVX512
 	case cpu.X86.HasAVX2:
 		innerProductInt8Kernel = innerProductInt8AVX2
+	}
+	if cpu.X86.HasAVX2 {
+		kernelsInt4.l2 = squaredEuclideanInt4AVX2
+		kernelsInt4.dot = innerProductInt4AVX2
+		kernelsInt4.products = dotNormsInt4AVX2
 	}
 }
 
@@ -191,4 +196,45 @@ func innerProductInt8AVX512(left, right []byte) int64 {
 		return innerProductInt8Scalar(left, right)
 	}
 	return inner_product_int8_avx512(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
+}
+
+const (
+	int4MaskBits = int64(0x0f0f0f0f0f0f0f0f)
+	int4SignBits = int64(0x0808080808080808)
+)
+
+func innerProductInt4AVX2(left, right []byte) int64 {
+	prefix := len(left) &^ 31
+	if prefix == 0 {
+		return innerProductInt4Scalar(left, right)
+	}
+	result := inner_product_int4_avx2(
+		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix), int4MaskBits, int4SignBits,
+	)
+	return result + innerProductInt4Scalar(left[prefix:], right[prefix:])
+}
+
+func squaredEuclideanInt4AVX2(left, right []byte) int64 {
+	prefix := len(left) &^ 31
+	if prefix == 0 {
+		return squaredEuclideanInt4Scalar(left, right)
+	}
+	result := squared_euclidean_int4_avx2(
+		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix), int4MaskBits, int4SignBits,
+	)
+	return result + squaredEuclideanInt4Scalar(left[prefix:], right[prefix:])
+}
+
+func dotNormsInt4AVX2(left, right []byte) (dot, leftNorm, rightNorm int64) {
+	prefix := len(left) &^ 31
+	if prefix == 0 {
+		return dotNormsInt4Scalar(left, right)
+	}
+	var result [3]int64
+	dot_norms_int4_avx2(
+		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix), int4MaskBits, int4SignBits,
+		unsafe.Pointer(&result[0]),
+	)
+	dotTail, leftNormTail, rightNormTail := dotNormsInt4Scalar(left[prefix:], right[prefix:])
+	return result[0] + dotTail, result[1] + leftNormTail, result[2] + rightNormTail
 }

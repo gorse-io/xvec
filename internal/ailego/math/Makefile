@@ -16,13 +16,13 @@ LOONG64_QEMU_FLAGS ?= -cpu max
 TEST_RVV_BINARY ?= .test-rvv.riscv64.test
 TEST_LASX_BINARY ?= .test-lasx.loong64.test
 
-.PHONY: generate avx avx2 avx512 neon rvv lasx fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-int8-avx2 distance-int8-avx512 distance-int8-neon distance-avx512 distance-neon distance-rvv distance-lasx clean test-rvv test-lasx
+.PHONY: generate avx avx2 avx512 neon rvv lasx fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-int4-avx2 distance-int8-avx2 distance-int8-avx512 distance-int8-neon distance-avx512 distance-neon distance-rvv distance-lasx clean test-rvv test-lasx
 
-generate: fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-int8-avx2 distance-int8-avx512 distance-int8-neon distance-avx512 distance-neon distance-rvv distance-lasx clean
+generate: fht-avx2 fht-avx512 fht-neon fht-rvv fht-lasx distance-avx distance-int4-avx2 distance-int8-avx2 distance-int8-avx512 distance-int8-neon distance-avx512 distance-neon distance-rvv distance-lasx clean
 
 avx: distance-avx
 
-avx2: fht-avx2 distance-int8-avx2
+avx2: fht-avx2 distance-int4-avx2 distance-int8-avx2
 
 avx512: fht-avx512 distance-avx512 distance-int8-avx512
 
@@ -82,6 +82,11 @@ distance-int8-avx2:
 	mkdir -p $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/inner_product_matrix_int8_avx2.c --target $(GOAT_TARGET_AMD64) -O3 -mavx2 -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/inner_product_matrix_int8_avx2.go $(GOAT_OUTPUT_DIR)/inner_product_matrix_int8_avx2.s .
+
+distance-int4-avx2:
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/distance_matrix_int4_avx2.c --target $(GOAT_TARGET_AMD64) -O3 -mavx2 -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/distance_matrix_int4_avx2.go $(GOAT_OUTPUT_DIR)/distance_matrix_int4_avx2.s .
 
 distance-int8-avx512:
 	mkdir -p $(GOAT_OUTPUT_DIR)
