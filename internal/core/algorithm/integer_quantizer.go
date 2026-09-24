@@ -368,13 +368,7 @@ func integerCodeDot(left, right QuantizedVector) float64 {
 	if left.kind == QuantizationInt8 {
 		return float64(mathutil.InnerProductInt8(left.codes, right.codes))
 	}
-	var dot float64
-	for index := 0; index < left.dimension; index++ {
-		leftCode := left.integerCode(index)
-		rightCode := right.integerCode(index)
-		dot += float64(leftCode * rightCode)
-	}
-	return dot
+	return float64(mathutil.InnerProductInt4(left.codes, right.codes))
 }
 
 func (v QuantizedVector) integerCode(index int) int {

@@ -84,3 +84,10 @@ func TestInnerProductInt8AVX512(t *testing.T) {
 	}
 	testInnerProductInt8(t, innerProductInt8AVX512)
 }
+
+func TestInt4DistanceKernelsAVX2(t *testing.T) {
+	if !cpu.X86.HasAVX2 {
+		t.Skip("AVX2 is not supported by this CPU")
+	}
+	testInt4Kernels(t, innerProductInt4AVX2, squaredEuclideanInt4AVX2, dotNormsInt4AVX2)
+}

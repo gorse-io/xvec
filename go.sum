@@ -78,8 +78,8 @@ github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 h1:LMLX+LgTNWpfvCBdFe
 github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3/go.mod h1:jl5iWTm0/hd5PjEYEOuwAJ57L/CibdZfrqZ5XA5GrCk=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
-github.com/gorse-io/goat v0.2.2-0.20260904114525-f9a441e62a1a h1:HcUYDQZsoSeGMwp7ShoxBSKWehCwMdxnWaYsol8Gw20=
-github.com/gorse-io/goat v0.2.2-0.20260904114525-f9a441e62a1a/go.mod h1:gRNfHg2VIBM1rLZXr6LtS2BX+qVI8DKckQC9LBESUMk=
+github.com/gorse-io/goat v0.2.2-0.20260924112123-4875656d2845 h1:S4+xNs4iFrH2ohfTzsDL517K5SV/2DU7aOlXBdw8en4=
+github.com/gorse-io/goat v0.2.2-0.20260924112123-4875656d2845/go.mod h1:gRNfHg2VIBM1rLZXr6LtS2BX+qVI8DKckQC9LBESUMk=
 github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs4luLUK2k=
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
 github.com/hexops/gotextdiff v1.0.3 h1:gitA9+qJrrTCsiCl7+kh75nPqQt1cx4ZkudSTLoUqJM=

@@ -357,3 +357,116 @@ func innerProductInt8Scalar(left, right []byte) (sum int64) {
 	}
 	return sum
 }
+
+type binaryKernelInt4 func(left, right []byte) int64
+type productsKernelInt4 func(left, right []byte) (dot, leftNorm, rightNorm int64)
+
+var kernelsInt4 = struct {
+	l2       binaryKernelInt4
+	dot      binaryKernelInt4
+	products productsKernelInt4
+}{
+	l2:       squaredEuclideanInt4Scalar,
+	dot:      innerProductInt4Scalar,
+	products: dotNormsInt4Scalar,
+}
+
+// InnerProductInt4 computes the unchecked dot product of packed signed INT4
+// codes. Each byte stores two values in [-8, 7], low nibble first. Callers must
+// guarantee equal packed lengths.
+func InnerProductInt4(left, right []byte) int64 {
+	return kernelsInt4.dot(left, right)
+}
+
+// MinusInnerProductInt4 computes the negated packed signed INT4 dot product.
+func MinusInnerProductInt4(left, right []byte) int64 {
+	return -kernelsInt4.dot(left, right)
+}
+
+// L2SquaredInt4 computes the squared Euclidean distance of packed signed INT4
+// codes using exact int64 accumulation.
+func L2SquaredInt4(left, right []byte) int64 {
+	return kernelsInt4.l2(left, right)
+}
+
+func dotNormsInt4(left, right []byte) (dot, leftNorm, rightNorm int64) {
+	return kernelsInt4.products(left, right)
+}
+
+// L2Int4 computes the Euclidean distance of packed signed INT4 codes.
+func L2Int4(left, right []byte) float32 {
+	return float32(math.Sqrt(float64(kernelsInt4.l2(left, right))))
+}
+
+// MIPSSphericalInt4 computes zvec's spherical-injection MIPS distance for
+// packed signed INT4 codes. An e2 of zero selects localized injection.
+func MIPSSphericalInt4(left, right []byte, e2 float32) float32 {
+	dot, leftNorm, rightNorm := kernelsInt4.products(left, right)
+	if e2 == 0 {
+		denominator := max(leftNorm, rightNorm)
+		if denominator == 0 {
+			return 0
+		}
+		return 2 - 2*float32(dot)/float32(denominator)
+	}
+	product := (1 - float64(e2)*float64(leftNorm)) * (1 - float64(e2)*float64(rightNorm))
+	score := 1 - float64(e2)*float64(dot)
+	if product > 0 {
+		score -= math.Sqrt(product)
+	}
+	return float32(2 * score)
+}
+
+// MIPSRepeatedQuadraticInt4 computes zvec's repeated-quadratic-injection MIPS
+// distance for packed signed INT4 codes.
+func MIPSRepeatedQuadraticInt4(left, right []byte, iterations int, e2 float32) float32 {
+	dot, leftNorm, rightNorm := kernelsInt4.products(left, right)
+	leftScaled := e2 * float32(leftNorm)
+	rightScaled := e2 * float32(rightNorm)
+	sum := e2 * float32(leftNorm+rightNorm-2*dot)
+	for range iterations {
+		difference := leftScaled - rightScaled
+		sum += difference * difference
+		leftScaled *= leftScaled
+		rightScaled *= rightScaled
+	}
+	return sum
+}
+
+func decodeInt4(value byte) int64 {
+	nibble := int8(value & 0x0f)
+	return int64((nibble ^ 8) - 8)
+}
+
+func innerProductInt4Scalar(left, right []byte) (sum int64) {
+	for index, packedLeft := range left {
+		packedRight := right[index]
+		sum += decodeInt4(packedLeft) * decodeInt4(packedRight)
+		sum += decodeInt4(packedLeft>>4) * decodeInt4(packedRight>>4)
+	}
+	return
+}
+
+func squaredEuclideanInt4Scalar(left, right []byte) (sum int64) {
+	for index, packedLeft := range left {
+		packedRight := right[index]
+		lowDifference := decodeInt4(packedLeft) - decodeInt4(packedRight)
+		highDifference := decodeInt4(packedLeft>>4) - decodeInt4(packedRight>>4)
+		sum += lowDifference*lowDifference + highDifference*highDifference
+	}
+	return
+}
+
+func dotNormsInt4Scalar(left, right []byte) (dot, leftNorm, rightNorm int64) {
+	for index, packedLeft := range left {
+		packedRight := right[index]
+		for shift := uint(0); shift <= 4; shift += 4 {
+			leftValue := decodeInt4(packedLeft >> shift)
+			rightValue := decodeInt4(packedRight >> shift)
+			dot += leftValue * rightValue
+			leftNorm += leftValue * leftValue
+			rightNorm += rightValue * rightValue
+		}
+	}
+	return
+}
