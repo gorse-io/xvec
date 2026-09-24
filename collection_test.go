@@ -4624,6 +4624,8 @@ func TestCollectionDenseQuantizedLinearGroupByAndRefinement(t *testing.T) {
 	hnsw.M, hnsw.EFConstruction = 8, 32
 	hnsw.Quantize = QuantizeTypeInt8
 	hnsw.Quantizer.EnableRotate = true
+	hnswInt4 := hnsw
+	hnswInt4.Quantize = QuantizeTypeInt4
 	tests := []struct {
 		name   string
 		index  IndexParams
@@ -4639,6 +4641,14 @@ func TestCollectionDenseQuantizedLinearGroupByAndRefinement(t *testing.T) {
 		},
 		{
 			name: "HNSW INT8", index: hnsw,
+			params: func(refine bool) QueryParams {
+				value := NewHNSWQueryParams()
+				value.Linear, value.UseRefiner = true, refine
+				return value
+			},
+		},
+		{
+			name: "HNSW INT4", index: hnswInt4,
 			params: func(refine bool) QueryParams {
 				value := NewHNSWQueryParams()
 				value.Linear, value.UseRefiner = true, refine
