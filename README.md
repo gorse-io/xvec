@@ -170,7 +170,7 @@ for the complete API.
 
 ## Benchmark
 
-![Benchmark](https://xvec.gorse.io/benchmarks/e2-standard-8-Performance768D100K-1e7009b3d2.svg)
+[![Benchmark](https://xvec.gorse.io/benchmarks/e2-standard-8-Performance768D100K-1e7009b3d2.svg)](https://xvec.gorse.io/)
 
 ## License
 
