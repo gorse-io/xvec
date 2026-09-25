@@ -73,7 +73,7 @@ func TestQuantizedHNSWSharedStorageAndSnapshotIsolation(t *testing.T) {
 
 func TestQuantizedHNSWBuilderTransfersOriginals(t *testing.T) {
 	ctx := context.Background()
-	for _, kind := range []Quantization{QuantizationInt8, QuantizationInt4} {
+	for _, kind := range []Quantization{QuantizationFP16, QuantizationInt8, QuantizationInt4} {
 		t.Run(fmt.Sprint(kind), func(t *testing.T) {
 			candidates := quantizedIndexCandidates(40)
 			builder, err := NewHNSWBuilder(4, DefaultHNSWBuildOptions(MetricL2))

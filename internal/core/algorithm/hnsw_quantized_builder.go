@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 
 	mathutil "github.com/gorse-io/xvec/internal/ailego/math"
@@ -54,14 +55,7 @@ func BuildScalarQuantizedHNSWWithBorrowedVectors(ctx context.Context, dimension 
 		builder.positions[candidate.Key] = position
 		builder.vectorRows[position] = candidate.Vector[:dimension:dimension]
 	}
-	if kind == QuantizationInt8 || kind == QuantizationInt4 {
-		return builder.buildScalarQuantizedWithWorkers(ctx, workers, kind, reformer)
-	}
-	base, err := builder.BuildWithWorkers(ctx, workers)
-	if err != nil {
-		return nil, err
-	}
-	return newOwnedScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+	return builder.buildScalarQuantizedWithWorkers(ctx, workers, kind, reformer)
 }
 
 // BuildInt8WithWorkers quantizes the collected vectors before graph insertion.
@@ -84,13 +78,20 @@ func (b *HNSWBuilder) BuildInt4WithWorkers(
 	return b.buildScalarQuantizedWithWorkers(ctx, workers, QuantizationInt4, reformer)
 }
 
+// BuildFP16WithWorkers quantizes before graph insertion so navigation, neighbor
+// selection and reverse-edge pruning all use binary16 scores. Originals remain
+// available for refinement and persistence. This consumes the builder on success.
+func (b *HNSWBuilder) BuildFP16WithWorkers(ctx context.Context, workers int, reformer DenseReformer) (*ScalarQuantizedHNSWIndex, error) {
+	return b.buildScalarQuantizedWithWorkers(ctx, workers, QuantizationFP16, reformer)
+}
+
 func (b *HNSWBuilder) buildScalarQuantizedWithWorkers(
 	ctx context.Context, workers int, kind Quantization, reformer DenseReformer,
 ) (*ScalarQuantizedHNSWIndex, error) {
 	var vectors *scalarQuantizedVectors
 	base, err := b.buildWithDistance(ctx, workers, func(index *HNSWIndex) (hnswBuildScorers, error) {
 		if index.fp16 {
-			return hnswBuildScorers{}, errors.New("core: integer-quantized HNSW construction requires an FP32 builder")
+			return hnswBuildScorers{}, errors.New("core: scalar-quantized HNSW construction requires an FP32 builder")
 		}
 		if kind == QuantizationInt4 && index.dimension%2 != 0 {
 			return hnswBuildScorers{}, ErrOddInt4Dimension
@@ -101,6 +102,9 @@ func (b *HNSWBuilder) buildScalarQuantizedWithWorkers(
 		)
 		if err != nil {
 			return hnswBuildScorers{}, err
+		}
+		if kind == QuantizationFP16 {
+			return fp16BuildScorers(ctx, vectors)
 		}
 		return hnswBuildScorers{score: func(left, right int) (float32, error) {
 			// Codes are immutable and validated during quantization. Reuse
@@ -149,4 +153,60 @@ func integerCodeDots(kind Quantization, query []byte, candidates [][]byte, outpu
 		return
 	}
 	mathbatch.InnerProductsInt4(query, candidates, output)
+}
+
+// Magnitudes are temporary construction state. Persisted codes and public query
+// scoring are unchanged; the cache avoids repeated norms during O(M^2) pruning.
+func fp16BuildScorers(ctx context.Context, vectors *scalarQuantizedVectors) (hnswBuildScorers, error) {
+	metric := vectors.metric
+	var magnitudes []float32
+	if metric == MetricCosine {
+		magnitudes = make([]float32, len(vectors.codes))
+		for j, code := range vectors.codes {
+			if err := ctx.Err(); err != nil {
+				return hnswBuildScorers{}, err
+			}
+			squared := fp16CodeDistance(MetricIP, code.codes, code.codes)
+			magnitudes[j] = float32(math.Sqrt(float64(max(float32(0), squared))))
+		}
+	}
+	return hnswBuildScorers{
+		score: func(left, right int) (float32, error) {
+			if metric == MetricCosine {
+				dot := fp16CodeDistance(MetricIP, vectors.codes[left].codes, vectors.codes[right].codes)
+				return buildCosineFromDot(dot, magnitudes[left], magnitudes[right]), nil
+			}
+			return fp16CodeDistance(metric, vectors.codes[left].codes, vectors.codes[right].codes), nil
+		},
+		batch: func(query int, positions []int, scratch *hnswVisited) error {
+			count := len(positions)
+			scratch.batchCodes = slices.Grow(scratch.batchCodes[:0], count)[:count]
+			scratch.batchScores = slices.Grow(scratch.batchScores[:0], count)[:count]
+			for j, position := range positions {
+				scratch.batchCodes[j] = vectors.codes[position].codes
+			}
+			prefetchQuantizedHNSWNeighbors(vectors.codes, positions, 8, 1)
+			scoreMetric := metric
+			if metric == MetricCosine {
+				scoreMetric = MetricIP
+			}
+			fp16CodeDistances(scoreMetric, vectors.codes[query].codes, scratch.batchCodes, scratch.batchScores)
+			if metric == MetricCosine {
+				for j, position := range positions {
+					scratch.batchScores[j] = buildCosineFromDot(scratch.batchScores[j], magnitudes[query], magnitudes[position])
+				}
+			}
+			return nil
+		},
+	}, nil
+}
+
+func buildCosineFromDot(dot, leftMagnitude, rightMagnitude float32) float32 {
+	if leftMagnitude == 0 && rightMagnitude == 0 {
+		return 0
+	}
+	if leftMagnitude == 0 || rightMagnitude == 0 {
+		return 1
+	}
+	return 1 - min(float32(1), max(float32(-1), dot/(leftMagnitude*rightMagnitude)))
 }
