@@ -62,7 +62,7 @@ func TestInt8HNSWBuildUsesQuantizedDistances(t *testing.T) {
 						transformed, err = reformer.Transform(vector)
 						require.NoError(t, err)
 					}
-					codes[n], err = QuantizeVector(QuantizationInt8, transformed)
+					codes[n], err = quantizeIndexVector(QuantizationInt8, metric, transformed)
 					require.NoError(t, err)
 				}
 				index, err := builder.BuildInt8WithWorkers(ctx, 1, reformer)
@@ -72,7 +72,7 @@ func TestInt8HNSWBuildUsesQuantizedDistances(t *testing.T) {
 					reference[n] = make([][]int, level+1)
 				}
 				entry, level, err := buildParallelHNSW(ctx, 1, options, index.base.levels, reference,
-					func(left, right int) (float32, error) { return QuantizedDistance(metric, codes[left], codes[right]) })
+					func(left, right int) (float32, error) { return index.vectors.distance(codes[left], codes[right]) })
 				require.NoError(t, err)
 				require.Equal(t, reference, index.base.neighbors)
 				require.Equal(t, entry, index.base.entryPoint)
@@ -187,9 +187,13 @@ func TestInt8HNSWBuildRecallAndPersistence(t *testing.T) {
 				original[0] = 12345
 				originalAgain, _ := index.Vector(candidates[q*43].Key)
 				require.Equal(t, query, originalAgain)
-				refined, err := index.SearchWithOptions(ctx, query, SearchOptions{TopK: 1})
+				refiner, err := NewOriginalVectorRefiner(index, MetricCosine)
 				require.NoError(t, err)
-				require.Equal(t, candidates[q*43].Key, refined[0].Key)
+				refined, err := RefinedSearch(ctx, index, refiner, query, SearchOptions{TopK: 1}, 10)
+				require.NoError(t, err)
+				exact, err := TopK(ctx, MetricCosine, query, candidates, 1)
+				require.NoError(t, err)
+				require.Equal(t, exact, refined)
 				require.InDelta(t, 0, refined[0].Score, 1e-5)
 			}
 			require.GreaterOrEqual(t, float64(matched)/200, .95)

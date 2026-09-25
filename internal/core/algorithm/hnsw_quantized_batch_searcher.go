@@ -37,7 +37,7 @@ func (i *ScalarQuantizedHNSWIndex) searchBaseQuantized(
 	visited.batchScores = slices.Grow(visited.batchScores[:0], degree)
 	metric := i.vectors.metric
 
-	score, err := QuantizedDistance(metric, i.vectors.codes[entry], query)
+	score, err := i.vectors.distance(i.vectors.codes[entry], query)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +86,7 @@ func (i *ScalarQuantizedHNSWIndex) searchBaseQuantized(
 		for j, id := range visited.batchIDs {
 			// Stored codes are immutable and validated at construction; the
 			// query was validated and quantized before graph traversal.
-			score, err := quantizedDistanceFromDot(metric, i.vectors.codes[id], query, float64(visited.batchCodeDots[j]))
+			score, err := i.vectors.distanceFromDot(i.vectors.codes[id], query, float64(visited.batchCodeDots[j]))
 			if err != nil {
 				return nil, fmt.Errorf("core: score integer-quantized HNSW neighbor: %w", err)
 			}

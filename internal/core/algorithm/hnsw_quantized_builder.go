@@ -66,7 +66,7 @@ func (b *HNSWBuilder) buildScalarQuantizedWithWorkers(
 			// the exact SIMD dot product and normal score reconstruction.
 			leftCode, rightCode := vectors.codes[left], vectors.codes[right]
 			dot := integerCodeDotInt64(leftCode, rightCode)
-			return quantizedDistanceFromDot(vectors.metric, leftCode, rightCode, float64(dot))
+			return vectors.distanceFromDot(leftCode, rightCode, float64(dot))
 		}, batch: func(query int, positions []int, scratch *hnswVisited) error {
 			count := len(positions)
 			scratch.batchCodes = slices.Grow(scratch.batchCodes[:0], count)[:count]
@@ -78,7 +78,7 @@ func (b *HNSWBuilder) buildScalarQuantizedWithWorkers(
 			left := vectors.codes[query]
 			integerCodeDots(kind, left.codes, scratch.batchCodes, scratch.batchCodeDots)
 			for j, position := range positions {
-				score, err := quantizedDistanceFromDot(vectors.metric, left, vectors.codes[position], float64(scratch.batchCodeDots[j]))
+				score, err := vectors.distanceFromDot(left, vectors.codes[position], float64(scratch.batchCodeDots[j]))
 				if err != nil {
 					return err
 				}

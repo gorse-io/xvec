@@ -25,6 +25,12 @@ server, or prebuilt native libraries.
 - Configurable WAL durability batching, crash recovery, segment-native incremental indexes, and atomic compaction.
 - Pure Go on Linux, macOS, and Windows.
 
+INT8/INT4 cosine indexes normalize vectors after optional rotation and before
+quantization, then rank by the quantized inner product. Their approximate cosine
+distance is `1 - inner_product` and can fall outside `[0, 2]`; enable refinement
+to score candidates with the original vectors. Existing indexes remain readable;
+rebuilding HNSW graphs also applies this scoring rule during construction.
+
 ## Install
 
 xvec requires Go 1.27 or later.

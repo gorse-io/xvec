@@ -154,7 +154,7 @@ func (i *ScalarQuantizedFlatIndex) SearchGroups(
 		if options.Filter != nil && !options.Filter(key) {
 			continue
 		}
-		score, err := QuantizedDistance(i.vectors.metric, i.vectors.codes[position], queryCode)
+		score, err := i.vectors.distance(i.vectors.codes[position], queryCode)
 		if err != nil {
 			return nil, fmt.Errorf("core: score scalar-quantized group candidate %d: %w", position, err)
 		}
@@ -245,7 +245,7 @@ func newScalarQuantizedVectors(
 				return nil, fmt.Errorf("%w: transformed vector %d has %d, want %d", ErrInvalidDimension, position, len(transformed), dimension)
 			}
 		}
-		code, err := QuantizeVector(kind, transformed)
+		code, err := quantizeIndexVector(kind, metric, transformed)
 		if err != nil {
 			return nil, fmt.Errorf("core: quantize vector %d: %w", position, err)
 		}
@@ -288,11 +288,49 @@ func (s *scalarQuantizedVectors) quantizedQuery(query []float32) (QuantizedVecto
 			return QuantizedVector{}, fmt.Errorf("%w: transformed query has %d, want %d", ErrInvalidDimension, len(transformed), s.dimension)
 		}
 	}
-	code, err := QuantizeVector(s.kind, transformed)
+	code, err := quantizeIndexVector(s.kind, s.metric, transformed)
 	if err != nil {
 		return QuantizedVector{}, fmt.Errorf("core: quantize query: %w", err)
 	}
 	return code, nil
+}
+
+// Integer cosine indexes quantize unit vectors after any rotation. Keep the
+// original vectors untouched for retrieval and exact refinement.
+func quantizeIndexVector(kind Quantization, metric Metric, vector []float32) (QuantizedVector, error) {
+	if metric == MetricCosine && (kind == QuantizationInt8 || kind == QuantizationInt4) {
+		vector = slices.Clone(vector)
+		mathutil.NormalizeL2(vector)
+	}
+	return QuantizeVector(kind, vector)
+}
+
+// distance scores immutable index codes against an already validated query.
+// Cosine integer codes represent normalized inputs, so ranking by their inner
+// product avoids reconstructing two norms and taking a square root per edge.
+func (s *scalarQuantizedVectors) distance(left, right QuantizedVector) (float32, error) {
+	if s.metric == MetricCosine && (s.kind == QuantizationInt8 || s.kind == QuantizationInt4) {
+		return s.distanceFromDot(left, right, integerCodeDot(left, right))
+	}
+	return QuantizedDistance(s.metric, left, right)
+}
+
+func (s *scalarQuantizedVectors) distanceFromDot(left, right QuantizedVector, dot float64) (float32, error) {
+	if s.metric != MetricCosine {
+		return quantizedDistanceFromDot(s.metric, left, right, dot)
+	}
+	// Preserve the public cosine convention for two zero vectors. A constant
+	// nonzero vector also has zero codes, but its offset is nonzero.
+	if left.codeSquare == 0 && left.offset == 0 && right.codeSquare == 0 && right.offset == 0 {
+		return 0, nil
+	}
+	inner := float64(left.inverseScale)*float64(right.inverseScale)*dot +
+		float64(left.offset)*float64(right.inverseScale)*right.codeSum +
+		float64(right.offset)*float64(left.inverseScale)*left.codeSum +
+		float64(left.dimension)*float64(left.offset)*float64(right.offset)
+	// Do not clamp: quantization can move the inner product outside [-1, 1],
+	// and clipping would collapse distinct candidates into ranking ties.
+	return finiteQuantizedScore(1 - inner)
 }
 
 func (s *scalarQuantizedVectors) search(ctx context.Context, query []float32, options SearchOptions, positions []int) ([]Result, error) {
@@ -325,7 +363,7 @@ func (s *scalarQuantizedVectors) searchWithCode(ctx context.Context, queryCode Q
 		if options.Filter != nil && !options.Filter(key) {
 			continue
 		}
-		score, err := QuantizedDistance(s.metric, s.codes[position], queryCode)
+		score, err := s.distance(s.codes[position], queryCode)
 		if err != nil {
 			return nil, fmt.Errorf("core: score scalar-quantized candidate %d: %w", position, err)
 		}
