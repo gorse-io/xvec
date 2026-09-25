@@ -215,22 +215,24 @@ func TestFP16CodeBatchDistances(t *testing.T) {
 			for count := range 10 {
 				candidates := make([][]byte, count)
 				output := make([]float32, count)
-				for j := range candidates {
-					candidates[j] = other.codes
-					if j%3 == 0 {
-						candidates[j] = query.codes
+				for _, unaligned := range []bool{false, true} {
+					for j := range candidates {
+						candidates[j] = other.codes
+						if j%3 == 0 {
+							candidates[j] = query.codes
+						}
+						if unaligned && j%5 == 0 {
+							candidates[j] = unalignedFP16Codes(candidates[j])
+						}
 					}
-					if j%5 == 0 {
-						candidates[j] = unalignedFP16Codes(candidates[j])
+					for _, q := range [][]byte{query.codes, unalignedFP16Codes(query.codes)} {
+						fp16CodeDistances(metric, q, candidates, output)
+						for j := range output {
+							want := fp16CodeDistance(metric, q, candidates[j])
+							require.InDelta(t, want, output[j], 2e-5*max(1, math.Abs(float64(want))))
+						}
+						require.Zero(t, testing.AllocsPerRun(10, func() { fp16CodeDistances(metric, q, candidates, output) }))
 					}
-				}
-				for _, q := range [][]byte{query.codes, unalignedFP16Codes(query.codes)} {
-					fp16CodeDistances(metric, q, candidates, output)
-					for j := range output {
-						want := fp16CodeDistance(metric, q, candidates[j])
-						require.InDelta(t, want, output[j], 2e-5*max(1, math.Abs(float64(want))))
-					}
-					require.Zero(t, testing.AllocsPerRun(10, func() { fp16CodeDistances(metric, q, candidates, output) }))
 				}
 			}
 		}

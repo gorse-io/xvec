@@ -39,8 +39,9 @@ func TestFP16Batch4(t *testing.T) {
 	for _, dimension := range []int{0, 1, 7, 8, 9, 15, 16, 17, 31, 33, 768, 769} {
 		t.Run(fmt.Sprint(dimension), func(t *testing.T) {
 			v := fp16BatchFixture(dimension)
-			for _, special := range []bool{false, true} {
-				if special {
+			for _, mode := range []string{"random", "zero-query", "zero-all", "extremes"} {
+				v = fp16BatchFixture(dimension)
+				if mode != "random" {
 					clear(v[0])
 					for j := 1; j < len(v); j++ {
 						for d := range v[j] {
@@ -48,6 +49,15 @@ func TestFP16Batch4(t *testing.T) {
 						}
 					}
 				}
+				if mode == "zero-all" {
+					for j := range v {
+						clear(v[j])
+					}
+				} else if mode == "extremes" {
+					copy(v[0], v[1])
+					clear(v[2])
+				}
+
 				for _, tc := range []struct {
 					name            string
 					batch, fallback fp16Batch4Kernel
