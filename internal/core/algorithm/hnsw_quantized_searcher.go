@@ -189,7 +189,7 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
 		},
 		EF: options.EF, PrefetchOffset: options.PrefetchOffset, PrefetchLines: options.PrefetchLines,
 	}
-	initial, err := i.searchBase(ctx, entry, max(options.EF, candidateCount), searchOptions, scoreAt, visited)
+	initial, err := i.searchBase(ctx, entry, max(options.EF, candidateCount), searchOptions, scoreAt, &queryCode, visited)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +270,7 @@ func (i *ScalarQuantizedHNSWIndex) search(
 	if (i.vectors.kind == QuantizationInt8 || i.vectors.kind == QuantizationInt4) && options.Filter == nil && options.Radius == 0 && capacity <= maxBlockHeapSearchCapacity {
 		candidates, err = i.searchBaseQuantized(ctx, queryCode, entry, capacity, options, visited)
 	} else {
-		candidates, err = i.searchBase(ctx, entry, capacity, options, scoreAt, visited)
+		candidates, err = i.searchBase(ctx, entry, capacity, options, scoreAt, &queryCode, visited)
 	}
 	if err != nil {
 		return nil, err
@@ -362,6 +362,7 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 	entry, capacity int,
 	options HNSWSearchOptions,
 	scoreAt func(int) (float32, error),
+	query *QuantizedVector,
 	visited *hnswVisited,
 ) ([]hnswScoredNode, error) {
 	metric := i.vectors.metric
@@ -370,6 +371,15 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 	frontier := container.NewHeap(better)
 	accepted := container.NewHeap(worse)
 	visited.reset(len(i.vectors.keys))
+	// Batch scoring is independent of the result queue: large EF, filters, and
+	// radius searches still use the same dual-heap admission and stopping rules.
+	batch := query != nil && (query.kind == QuantizationInt4 || query.kind == QuantizationInt8)
+	if batch {
+		degree := min(i.base.maxDegree(0), max(0, len(i.vectors.keys)-1), initialDistanceBatchCapacity)
+		visited.batchPositions = slices.Grow(visited.batchPositions[:0], degree)
+		visited.batchCodes = slices.Grow(visited.batchCodes[:0], degree)
+		visited.batchCodeDots = slices.Grow(visited.batchCodeDots[:0], degree)
+	}
 
 	score, err := scoreAt(entry)
 	if err != nil {
@@ -392,12 +402,34 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 		}
 		neighbors := i.base.neighbors[current.position][0]
 		prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
-		for _, neighbor := range neighbors {
-			if visited.seen(neighbor) {
-				continue
+		if batch {
+			visited.batchPositions = visited.batchPositions[:0]
+			visited.batchCodes = visited.batchCodes[:0]
+			visited.batchCodeDots = visited.batchCodeDots[:0]
+			for _, neighbor := range neighbors {
+				if visited.seen(neighbor) {
+					continue
+				}
+				visited.mark(neighbor)
+				visited.batchPositions = append(visited.batchPositions, neighbor)
+				visited.batchCodes = append(visited.batchCodes, i.vectors.codes[neighbor].codes)
+				visited.batchCodeDots = append(visited.batchCodeDots, 0)
 			}
-			visited.mark(neighbor)
-			score, err := scoreAt(neighbor)
+			integerCodeDots(query.kind, query.codes, visited.batchCodes, visited.batchCodeDots)
+			neighbors = visited.batchPositions
+		}
+		for j, neighbor := range neighbors {
+			var score float32
+			var err error
+			if batch {
+				score, err = quantizedDistanceFromDot(metric, i.vectors.codes[neighbor], *query, float64(visited.batchCodeDots[j]))
+			} else {
+				if visited.seen(neighbor) {
+					continue
+				}
+				visited.mark(neighbor)
+				score, err = scoreAt(neighbor)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("core: score scalar-quantized HNSW node %d: %w", neighbor, err)
 			}

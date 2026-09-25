@@ -22,7 +22,7 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-//go:generate make avx int4-avx512 int8-avx2 int8-avx512
+//go:generate make avx int4-avx2 int4-avx512 int8-avx2 int8-avx512
 
 func init() {
 	if cpu.X86.HasAVX {
@@ -32,6 +32,7 @@ func init() {
 		kernels.l2Squared4 = squaredEuclideanDistances4AVX
 	}
 	if cpu.X86.HasAVX2 {
+		innerProductsInt4Kernel4 = innerProductsInt4AVX2_4
 		innerProductsInt8Kernel4 = innerProductsInt8AVX2_4
 	}
 	if cpu.X86.HasAVX2 && cpu.X86.HasAVX512F && cpu.X86.HasAVX512BW {
@@ -128,6 +129,25 @@ func innerProductsInt4AVX512_4(query, first, second, third, fourth []byte, outpu
 		return
 	}
 	xvec_avx512_batch_inner_products_int4_4(
+		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(prefix), unsafe.Pointer(&output[0]),
+	)
+	if prefix != len(query) {
+		var tail [4]int64
+		innerProductsInt4Scalar4(query[prefix:], first[prefix:], second[prefix:], third[prefix:], fourth[prefix:], tail[:])
+		for i := range tail {
+			output[i] += tail[i]
+		}
+	}
+}
+
+func innerProductsInt4AVX2_4(query, first, second, third, fourth []byte, output []int64) {
+	prefix := len(query) &^ 31
+	if prefix == 0 {
+		innerProductsInt4Scalar4(query, first, second, third, fourth, output)
+		return
+	}
+	xvec_avx2_batch_inner_products_int4_4(
 		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
 		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(prefix), unsafe.Pointer(&output[0]),
 	)

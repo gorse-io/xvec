@@ -549,3 +549,34 @@ var (
 	benchmarkBatch4Third  float32
 	benchmarkBatch4Fourth float32
 )
+
+func BenchmarkInnerProductsInt4(b *testing.B) {
+	query := make([]byte, 384) // 768 dimensions
+	candidates := make([][]byte, 32)
+	for j := range candidates {
+		candidates[j] = make([]byte, len(query))
+		for i := range query {
+			query[i], candidates[j][i] = byte(i), byte(i+j)
+		}
+	}
+	output := make([]int64, len(candidates))
+	for _, name := range []string{"scalar4", "single", "batch"} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				switch name {
+				case "scalar4":
+					for j := 0; j < len(candidates); j += 4 {
+						innerProductsInt4Scalar4(query, candidates[j], candidates[j+1], candidates[j+2], candidates[j+3], output[j:j+4])
+					}
+				case "single":
+					for j := range candidates {
+						output[j] = mathutil.InnerProductInt4(query, candidates[j])
+					}
+				case "batch":
+					InnerProductsInt4(query, candidates, output)
+				}
+			}
+		})
+	}
+}

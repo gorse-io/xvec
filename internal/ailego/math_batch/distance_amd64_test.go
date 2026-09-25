@@ -49,3 +49,10 @@ func TestInnerProductsInt4AVX512_4(t *testing.T) {
 	}
 	testInnerProductsInt4(t, int4BatchWithKernel(innerProductsInt4AVX512_4))
 }
+
+func TestInnerProductsInt4AVX2_4(t *testing.T) {
+	if !cpu.X86.HasAVX2 {
+		t.Skip("AVX2 is not supported by this CPU")
+	}
+	testInnerProductsInt4(t, int4BatchWithKernel(innerProductsInt4AVX2_4))
+}
