@@ -185,13 +185,7 @@ func QuantizedDistance(metric Metric, left, right QuantizedVector) (float32, err
 		return 0, mathutil.ErrDimensionMismatch
 	}
 	if left.kind == QuantizationFP16 {
-		leftDecoded, _ := left.Decode()
-		rightDecoded, _ := right.Decode()
-		distance, err := metric.Distance()
-		if err != nil {
-			return 0, err
-		}
-		return distance(leftDecoded, rightDecoded), nil
+		return fp16CodeDistance(metric, left.codes, right.codes), nil
 	}
 
 	return quantizedDistanceFromDot(metric, left, right, integerCodeDot(left, right))
@@ -351,8 +345,8 @@ func (v QuantizedVector) validate() error {
 	}
 	if v.kind == QuantizationFP16 {
 		for index := 0; index < v.dimension; index++ {
-			decoded := utility.Float16BitsToFloat32(binary.LittleEndian.Uint16(v.codes[index*2:]))
-			if !finiteFloat32(decoded) {
+			bits := binary.LittleEndian.Uint16(v.codes[index*2:])
+			if bits&0x7c00 == 0x7c00 {
 				return fmt.Errorf("%w: non-finite FP16 code at element %d", ErrInvalidQuantizedVector, index)
 			}
 		}
