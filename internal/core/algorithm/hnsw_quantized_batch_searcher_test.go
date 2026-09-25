@@ -57,7 +57,7 @@ func TestQuantizedHNSWInt8BatchMatchesScalar(t *testing.T) {
 				scoreAt := func(position int) (float32, error) {
 					return QuantizedDistance(metric, index.vectors.codes[position], code)
 				}
-				want, err := index.searchBase(context.Background(), 0, count, options, scoreAt, visited)
+				want, err := index.searchBase(context.Background(), 0, count, options, scoreAt, nil, visited)
 				require.NoError(t, err)
 				got, err := index.searchBaseQuantized(context.Background(), code, 0, count, options, visited)
 				require.NoError(t, err)
@@ -99,7 +99,7 @@ func TestQuantizedHNSWInt4BatchMatchesScalar(t *testing.T) {
 			scoreAt := func(position int) (float32, error) {
 				return QuantizedDistance(metric, index.vectors.codes[position], code)
 			}
-			want, err := index.searchBase(context.Background(), 0, count, options, scoreAt, visited)
+			want, err := index.searchBase(context.Background(), 0, count, options, scoreAt, nil, visited)
 			require.NoError(t, err)
 			got, err := index.searchBaseQuantized(context.Background(), code, 0, count, options, visited)
 			require.NoError(t, err)
@@ -198,5 +198,67 @@ func BenchmarkQuantizedHNSWInt8Batch(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// The dual-heap path must preserve scores, tie ordering, rejected bridges and
+// stopping decisions when scoring a neighbor list in SIMD batches.
+func TestQuantizedHNSWDualHeapBatchMatchesScalar(t *testing.T) {
+	const count, dimension = DefaultHNSWBruteForceThreshold + 101, 66
+	ctx := context.Background()
+	for _, kind := range []Quantization{QuantizationInt4, QuantizationInt8} {
+		for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
+			t.Run(fmt.Sprintf("kind=%v/metric=%v", kind, metric), func(t *testing.T) {
+				base := &HNSWIndex{
+					dimension: dimension, options: HNSWBuildOptions{Metric: metric, M: 16, EFConstruction: 300},
+					keys: make([]uint64, count), vectors: make([]float32, dimension*count),
+					neighbors: make([][][]int, count), levels: make([]int, count),
+				}
+				for j := range count {
+					base.keys[j] = uint64(count - j)
+					for d := range dimension {
+						// Include duplicate codes, constants, and zero vectors.
+						if j%7 != 0 {
+							base.vectors[j*dimension+d] = float32(((j%137)*13+d*7)%31 - 15)
+						}
+					}
+					base.neighbors[j] = [][]int{{(j + 1) % count, (j + 1) % count}}
+					for n := range 30 {
+						base.neighbors[j][0] = append(base.neighbors[j][0], (j*17+n*37)%count)
+					}
+				}
+				index, err := NewScalarQuantizedHNSWIndex(ctx, base, kind, nil)
+				require.NoError(t, err)
+				visited := acquireHNSWVisited(count)
+				defer releaseHNSWVisited(visited)
+				for _, query := range [][]float32{make([]float32, dimension), base.vectors[3*dimension : 4*dimension]} {
+					code, err := index.vectors.quantizedQuery(query)
+					require.NoError(t, err)
+					for _, options := range []HNSWSearchOptions{
+						{SearchOptions: SearchOptions{TopK: 100}, EF: 300},
+						{SearchOptions: SearchOptions{TopK: 17, Filter: func(key uint64) bool { return key%3 == 0 }}, EF: 17},
+						{SearchOptions: SearchOptions{TopK: 100, Filter: func(key uint64) bool { return key%11 == 0 }}, EF: 300},
+						{SearchOptions: SearchOptions{TopK: 17, Radius: .5}, EF: 17},
+						{SearchOptions: SearchOptions{TopK: 100, Radius: .5}, EF: 300},
+					} {
+						scoreAt := func(position int) (float32, error) {
+							return QuantizedDistance(metric, index.vectors.codes[position], code)
+						}
+						want, err := index.searchBase(ctx, 0, options.EF, options, scoreAt, nil, visited)
+						require.NoError(t, err)
+						got, err := index.searchBase(ctx, 0, options.EF, options, scoreAt, &code, visited)
+						require.NoError(t, err)
+						require.Equal(t, want, got)
+						results, err := index.SearchHNSW(ctx, query, options)
+						require.NoError(t, err)
+						wantResults := make([]Result, min(len(want), options.TopK))
+						for j := range wantResults {
+							wantResults[j] = Result{Key: base.keys[want[j].position], Score: want[j].score}
+						}
+						require.Equal(t, wantResults, results)
+					}
+				}
+			})
+		}
 	}
 }

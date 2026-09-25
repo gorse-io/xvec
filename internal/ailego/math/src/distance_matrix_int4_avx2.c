@@ -28,14 +28,13 @@ static inline __m256i decode_int4_high(__m256i packed, __m256i mask,
 }
 
 static inline __m256i multiply_add_int8(__m256i left, __m256i right) {
-  __m256i left_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(left));
-  __m256i left_hi =
-      _mm256_cvtepi8_epi16(_mm256_extracti128_si256(left, 1));
-  __m256i right_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(right));
-  __m256i right_hi =
-      _mm256_cvtepi8_epi16(_mm256_extracti128_si256(right, 1));
-  return _mm256_add_epi32(_mm256_madd_epi16(left_lo, right_lo),
-                          _mm256_madd_epi16(left_hi, right_hi));
+  // INT4 operands (and their L2 differences) are in [-15, 15].
+  // Negation fits int8 and each adjacent product sum fits int16, so
+  // maddubs is exact here. This does not apply to arbitrary INT8 codes.
+  return _mm256_madd_epi16(
+      _mm256_maddubs_epi16(_mm256_abs_epi8(right),
+                          _mm256_sign_epi8(left, right)),
+      _mm256_set1_epi16(1));
 }
 
 static inline int64_t horizontal_sum_int32(__m256i values) {
