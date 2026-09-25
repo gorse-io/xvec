@@ -29,6 +29,13 @@ func TestRVVDistanceKernels(t *testing.T) {
 	testArchitectureKernels(t, squaredEuclideanRVV, innerProductRVV, dotNormsRVV)
 }
 
+func TestInnerProductInt8RVV(t *testing.T) {
+	if !cpu.RISCV64.HasV {
+		t.Skip("RVV is not supported by this CPU")
+	}
+	testInnerProductInt8(t, innerProductInt8RVV)
+}
+
 func TestInt4DistanceKernelsRVV(t *testing.T) {
 	if !cpu.RISCV64.HasV {
 		t.Skip("RVV is not supported by this CPU")

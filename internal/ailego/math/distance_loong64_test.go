@@ -29,6 +29,13 @@ func TestLASXDistanceKernels(t *testing.T) {
 	testArchitectureKernels(t, squaredEuclideanLASX, innerProductLASX, dotNormsLASX)
 }
 
+func TestInnerProductInt8LASX(t *testing.T) {
+	if !cpu.Loong64.HasLASX {
+		t.Skip("LASX is not supported by this CPU")
+	}
+	testInnerProductInt8(t, innerProductInt8LASX)
+}
+
 func TestInt4DistanceKernelsLASX(t *testing.T) {
 	if !cpu.Loong64.HasLASX {
 		t.Skip("LASX is not supported by this CPU")

@@ -6,12 +6,31 @@
 // flags: -mavx2 -mavx512f -mavx512bw -fno-vectorize -fno-slp-vectorize -O3
 // source: src/inner_product_batch_int4_avx512.c
 
+DATA __goat_data_2e4c435049305f30<>+0x000(SB)/8, $0x0f0f0f0f0f0f0f0f
+DATA __goat_data_2e4c435049305f30<>+0x008(SB)/8, $0x0f0f0f0f0f0f0f0f
+DATA __goat_data_2e4c435049305f30<>+0x010(SB)/8, $0x0f0f0f0f0f0f0f0f
+DATA __goat_data_2e4c435049305f30<>+0x018(SB)/8, $0x0f0f0f0f0f0f0f0f
+GLOBL __goat_data_2e4c435049305f30<>(SB), 8, $32
+
+DATA __goat_data_2e4c435049305f31<>+0x000(SB)/8, $0x0808080808080808
+DATA __goat_data_2e4c435049305f31<>+0x008(SB)/8, $0x0808080808080808
+DATA __goat_data_2e4c435049305f31<>+0x010(SB)/8, $0x0808080808080808
+DATA __goat_data_2e4c435049305f31<>+0x018(SB)/8, $0x0808080808080808
+GLOBL __goat_data_2e4c435049305f31<>(SB), 8, $32
+
+DATA __goat_data_2e4c435049305f32<>+0x000(SB)/8, $0xf0f0f0f0f0f0f0f0
+DATA __goat_data_2e4c435049305f32<>+0x008(SB)/8, $0xf0f0f0f0f0f0f0f0
+DATA __goat_data_2e4c435049305f32<>+0x010(SB)/8, $0xf0f0f0f0f0f0f0f0
+DATA __goat_data_2e4c435049305f32<>+0x018(SB)/8, $0xf0f0f0f0f0f0f0f0
+GLOBL __goat_data_2e4c435049305f32<>(SB), 8, $32
+
 DATA __goat_data_2e4c435049305f33<>+0x000(SB)/8, $0x0000001100000001
 DATA __goat_data_2e4c435049305f33<>+0x008(SB)/8, $0x0000001100000001
 GLOBL __goat_data_2e4c435049305f33<>(SB), 8, $16
 
-DATA __goat_data_2e4c435049305f34<>+0x000(SB)/8, $0x0000001000000000
-GLOBL __goat_data_2e4c435049305f34<>(SB), 8, $8
+DATA __goat_data_2e4c435049305f34<>+0x000(SB)/8, $0x0000000000000000
+DATA __goat_data_2e4c435049305f34<>+0x008(SB)/8, $0x0000001000000000
+GLOBL __goat_data_2e4c435049305f34<>(SB), 8, $16
 
 DATA __goat_data_2e4c435049305f35<>+0x000(SB)/1, $0x0f
 GLOBL __goat_data_2e4c435049305f35<>(SB), 8, $1

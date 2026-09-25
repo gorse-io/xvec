@@ -29,6 +29,7 @@ func init() {
 		kernels.l2 = squaredEuclideanRVV
 		kernels.dot = innerProductRVV
 		kernels.products = dotNormsRVV
+		innerProductInt8Kernel = innerProductInt8RVV
 		kernelsInt4.l2 = squaredEuclideanInt4RVV
 		kernelsInt4.dot = innerProductInt4RVV
 		kernelsInt4.products = dotNormsInt4RVV
@@ -49,6 +50,13 @@ func dotNormsRVV(left, right []float32) (dot, leftNorm, rightNorm float32) {
 		unsafe.Pointer(&dot), unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
 	)
 	return
+}
+
+func innerProductInt8RVV(left, right []byte) int64 {
+	if len(left) == 0 {
+		return 0
+	}
+	return inner_product_int8_rvv(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
 }
 
 func innerProductInt4RVV(left, right []byte) int64 {

@@ -29,6 +29,7 @@ func init() {
 		kernels.l2 = squaredEuclideanLASX
 		kernels.dot = innerProductLASX
 		kernels.products = dotNormsLASX
+		innerProductInt8Kernel = innerProductInt8LASX
 		kernelsInt4.l2 = squaredEuclideanInt4LASX
 		kernelsInt4.dot = innerProductInt4LASX
 		kernelsInt4.products = dotNormsInt4LASX
@@ -58,6 +59,15 @@ func dotNormsLASX(left, right []float32) (dot, leftNorm, rightNorm float32) {
 		unsafe.Pointer(&dot), unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
 	)
 	return
+}
+
+func innerProductInt8LASX(left, right []byte) int64 {
+	prefix := len(left) &^ 31
+	if prefix == 0 {
+		return innerProductInt8Scalar(left, right)
+	}
+	result := inner_product_int8_lasx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix))
+	return result + innerProductInt8Scalar(left[prefix:], right[prefix:])
 }
 
 func innerProductInt4LASX(left, right []byte) int64 {
