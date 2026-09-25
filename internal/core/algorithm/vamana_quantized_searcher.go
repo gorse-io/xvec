@@ -173,7 +173,7 @@ func (i *ScalarQuantizedVamanaIndex) search(
 		return i.vectors.searchWithCode(ctx, queryCode, options.SearchOptions, positions)
 	}
 	scoreAt := func(position int) (float32, error) {
-		return i.vectors.distance(i.vectors.codes[position], queryCode)
+		return i.vectors.distance(&i.vectors.codes[position], &queryCode)
 	}
 	prefetch := func(neighbors []int) {
 		prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)

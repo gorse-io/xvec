@@ -72,7 +72,7 @@ func TestInt8HNSWBuildUsesQuantizedDistances(t *testing.T) {
 					reference[n] = make([][]int, level+1)
 				}
 				entry, level, err := buildParallelHNSW(ctx, 1, options, index.base.levels, reference,
-					func(left, right int) (float32, error) { return index.vectors.distance(codes[left], codes[right]) })
+					func(left, right int) (float32, error) { return index.vectors.distance(&codes[left], &codes[right]) })
 				require.NoError(t, err)
 				require.Equal(t, reference, index.base.neighbors)
 				require.Equal(t, entry, index.base.entryPoint)

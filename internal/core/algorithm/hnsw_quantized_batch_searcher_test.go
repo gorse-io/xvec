@@ -55,7 +55,7 @@ func TestQuantizedHNSWInt8BatchMatchesScalar(t *testing.T) {
 				require.NoError(t, err)
 				options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: count}, EF: count, PrefetchOffset: 8}
 				scoreAt := func(position int) (float32, error) {
-					return index.vectors.distance(index.vectors.codes[position], code)
+					return index.vectors.distance(&index.vectors.codes[position], &code)
 				}
 				want, err := index.searchBase(context.Background(), 0, count, options, scoreAt, visited)
 				require.NoError(t, err)
@@ -97,7 +97,7 @@ func TestQuantizedHNSWInt4BatchMatchesScalar(t *testing.T) {
 			require.NoError(t, err)
 			options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: count}, EF: count, PrefetchOffset: 8}
 			scoreAt := func(position int) (float32, error) {
-				return index.vectors.distance(index.vectors.codes[position], code)
+				return index.vectors.distance(&index.vectors.codes[position], &code)
 			}
 			want, err := index.searchBase(context.Background(), 0, count, options, scoreAt, visited)
 			require.NoError(t, err)

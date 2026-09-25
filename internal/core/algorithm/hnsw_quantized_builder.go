@@ -64,7 +64,7 @@ func (b *HNSWBuilder) buildScalarQuantizedWithWorkers(
 		return hnswBuildScorers{score: func(left, right int) (float32, error) {
 			// Codes are immutable and validated during quantization. Reuse
 			// the exact SIMD dot product and normal score reconstruction.
-			leftCode, rightCode := vectors.codes[left], vectors.codes[right]
+			leftCode, rightCode := &vectors.codes[left], &vectors.codes[right]
 			dot := integerCodeDotInt64(leftCode, rightCode)
 			return vectors.distanceFromDot(leftCode, rightCode, float64(dot))
 		}, batch: func(query int, positions []int, scratch *hnswVisited) error {
@@ -75,10 +75,10 @@ func (b *HNSWBuilder) buildScalarQuantizedWithWorkers(
 			for j, position := range positions {
 				scratch.batchCodes[j] = vectors.codes[position].codes
 			}
-			left := vectors.codes[query]
+			left := &vectors.codes[query]
 			integerCodeDots(kind, left.codes, scratch.batchCodes, scratch.batchCodeDots)
 			for j, position := range positions {
-				score, err := vectors.distanceFromDot(left, vectors.codes[position], float64(scratch.batchCodeDots[j]))
+				score, err := vectors.distanceFromDot(left, &vectors.codes[position], float64(scratch.batchCodeDots[j]))
 				if err != nil {
 					return err
 				}
@@ -95,7 +95,7 @@ func (b *HNSWBuilder) buildScalarQuantizedWithWorkers(
 	return &ScalarQuantizedHNSWIndex{base: base, vectors: vectors}, nil
 }
 
-func integerCodeDotInt64(left, right QuantizedVector) int64 {
+func integerCodeDotInt64(left, right *QuantizedVector) int64 {
 	if left.kind == QuantizationInt8 {
 		return mathutil.InnerProductInt8(left.codes, right.codes)
 	}

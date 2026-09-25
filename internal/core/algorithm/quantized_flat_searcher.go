@@ -154,7 +154,7 @@ func (i *ScalarQuantizedFlatIndex) SearchGroups(
 		if options.Filter != nil && !options.Filter(key) {
 			continue
 		}
-		score, err := i.vectors.distance(i.vectors.codes[position], queryCode)
+		score, err := i.vectors.distance(&i.vectors.codes[position], &queryCode)
 		if err != nil {
 			return nil, fmt.Errorf("core: score scalar-quantized group candidate %d: %w", position, err)
 		}
@@ -308,16 +308,16 @@ func quantizeIndexVector(kind Quantization, metric Metric, vector []float32) (Qu
 // distance scores immutable index codes against an already validated query.
 // Cosine integer codes represent normalized inputs, so ranking by their inner
 // product avoids reconstructing two norms and taking a square root per edge.
-func (s *scalarQuantizedVectors) distance(left, right QuantizedVector) (float32, error) {
+func (s *scalarQuantizedVectors) distance(left, right *QuantizedVector) (float32, error) {
 	if s.metric == MetricCosine && (s.kind == QuantizationInt8 || s.kind == QuantizationInt4) {
-		return s.distanceFromDot(left, right, integerCodeDot(left, right))
+		return s.distanceFromDot(left, right, float64(integerCodeDotInt64(left, right)))
 	}
-	return QuantizedDistance(s.metric, left, right)
+	return QuantizedDistance(s.metric, *left, *right)
 }
 
-func (s *scalarQuantizedVectors) distanceFromDot(left, right QuantizedVector, dot float64) (float32, error) {
+func (s *scalarQuantizedVectors) distanceFromDot(left, right *QuantizedVector, dot float64) (float32, error) {
 	if s.metric != MetricCosine {
-		return quantizedDistanceFromDot(s.metric, left, right, dot)
+		return quantizedDistanceFromDot(s.metric, *left, *right, dot)
 	}
 	// Preserve the public cosine convention for two zero vectors. A constant
 	// nonzero vector also has zero codes, but its offset is nonzero.
@@ -363,7 +363,7 @@ func (s *scalarQuantizedVectors) searchWithCode(ctx context.Context, queryCode Q
 		if options.Filter != nil && !options.Filter(key) {
 			continue
 		}
-		score, err := s.distance(s.codes[position], queryCode)
+		score, err := s.distance(&s.codes[position], &queryCode)
 		if err != nil {
 			return nil, fmt.Errorf("core: score scalar-quantized candidate %d: %w", position, err)
 		}
