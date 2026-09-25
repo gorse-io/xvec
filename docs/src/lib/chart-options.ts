@@ -1,5 +1,5 @@
 import type { EChartsOption } from 'echarts';
-import { categories, colors, formatValue, metrics, seriesFor, type ComparisonGroup, type Metric } from './benchmark';
+import { categories, colors, formatBytes, formatValue, metrics, seriesFor, type ComparisonGroup, type Metric } from './benchmark';
 
 export const chartCards = [
   { kind: 'qps', metric: 'concurrent_qps' },
@@ -7,7 +7,7 @@ export const chartCards = [
   { kind: 'latency', metric: 'concurrent_latency_avg_ms' },
   { kind: 'latency-p99', metric: 'concurrent_latency_p99_ms' },
   { kind: 'load', metric: 'insert_duration_sec' },
-  { kind: 'memory', metric: 'peak_rss_mib' },
+  { kind: 'memory', metric: 'peak_rss_kib' },
 ] as const satisfies readonly { kind: string; metric: Metric }[];
 
 export function configurationLabel(group: ComparisonGroup): string {
@@ -31,7 +31,8 @@ export function chartDefinition(group: ComparisonGroup, kind: string, metric: Me
       data: variants.map((category) => category.records.find((record) => record.backend === backend)?.[field] ?? null),
     })))
     : seriesFor(group.records, metric).map((entry) => ({ ...entry, color: colors[entry.name as keyof typeof colors] }));
-  const description = `${title} (${definition.unit}). ${series.map((entry) => `${entry.name}: ${entry.data.map((value, index) => `${labels[index]}: ${value === null ? 'not measured' : formatValue(value)}`).join('; ')}`).join('. ')}`;
+  const displayValue = (value: number) => kind === 'memory' ? formatBytes(value) : `${formatValue(value)} ${definition.unit}`;
+  const description = `${title} (${definition.unit}). ${series.map((entry) => `${entry.name}: ${entry.data.map((value, index) => `${labels[index]}: ${value === null ? 'not measured' : displayValue(value)}`).join('; ')}`).join('. ')}`;
   const options: EChartsOption = {
     animation: false,
     color: [colors.xvec, colors.zvec],
@@ -42,7 +43,7 @@ export function chartDefinition(group: ComparisonGroup, kind: string, metric: Me
     tooltip: {
       trigger: 'axis', renderMode: 'richText', confine: true,
       axisPointer: { type: 'shadow' },
-      valueFormatter: (value: unknown) => typeof value === 'number' ? `${formatValue(value)} ${definition.unit}` : 'Not measured',
+      valueFormatter: (value: unknown) => typeof value === 'number' ? displayValue(value) : 'Not measured',
     },
     xAxis: { type: 'category', data: labels, axisTick: { show: false }, axisLine: { lineStyle: { color: '#dfe4eb' } }, axisLabel: { color: '#5c677b', fontSize: 11, lineHeight: 18, interval: 0 } },
     yAxis: {

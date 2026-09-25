@@ -76,13 +76,23 @@ export const metrics = {
   load_duration_sec: { label: 'Total load time', unit: 's', direction: 'Lower is better' },
   insert_duration_sec: { label: 'Insert time', unit: 's', direction: 'Lower is better' },
   optimize_duration_sec: { label: 'Optimize time', unit: 's', direction: 'Lower is better' },
-  peak_rss_mib: { label: 'Peak resident memory', unit: 'MiB', direction: 'Lower is better' },
+  peak_rss_kib: { label: 'Peak resident memory', unit: 'B', direction: 'Lower is better' },
 } as const satisfies Partial<Record<NumericField, { label: string; unit: string; direction: string }>>;
 export type Metric = keyof typeof metrics;
 export const metricKeys = Object.keys(metrics) as Metric[];
 
 export function formatValue(value: number): string {
   return value.toLocaleString('en-US', { maximumFractionDigits: 6 });
+}
+
+export function formatBytes(value: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toLocaleString('en-US', { maximumFractionDigits: 2 })} ${units[unit]}`;
 }
 
 export function categories(records: Benchmark[]) {
@@ -96,6 +106,9 @@ export function categories(records: Benchmark[]) {
 export function seriesFor(records: Benchmark[], metric: Metric) {
   return backends.map((backend) => ({
     name: backend,
-    data: categories(records).map((category) => category.records.find((r) => r.backend === backend)?.[metric] ?? null),
+    data: categories(records).map((category) => {
+      const value = category.records.find((r) => r.backend === backend)?.[metric];
+      return value === undefined ? null : metric === 'peak_rss_kib' ? value * 1024 : value;
+    }),
   }));
 }

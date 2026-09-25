@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { parseBenchmarks } from '../src/lib/parse-benchmark';
-import { categories, groupBenchmarks, metricKeys, seriesFor, suiteFields, type Benchmark } from '../src/lib/benchmark';
+import { categories, formatBytes, groupBenchmarks, metricKeys, seriesFor, suiteFields, type Benchmark } from '../src/lib/benchmark';
 
 const csv = readFileSync(new URL('../benchmark-hnsw.csv', import.meta.url), 'utf8');
 const [header, ...lines] = csv.trim().split('\n');
@@ -23,19 +23,27 @@ test('current six runs, three categories, and all 13 chart metrics match the pub
   // Order follows the shared metric definitions; these are independent values
   // from the published CSV, covering every selector and series.
   const expected = [
-    [1835.186707,282.908977,87.984,4.357283,6.054819,7.265314,3.270084,4.524953,5.342606,71.003205,7.32474,63.670982,1472.585938],
-    [2285.309151,273.20439,81.892,3.498585,5.234352,6.952462,3.422636,5.406221,5.921854,44.980547,6.133945,38.8244,568.742188],
-    [1709.966729,251.062994,98.958,4.676369,6.336985,7.53349,3.721647,5.141429,6.114587,79.558466,11.828973,67.720461,1441.910156],
-    [1512.037726,216.490614,98.474,5.28701,8.976525,11.737435,4.250335,5.909212,6.700442,61.840791,5.46147,56.333318,640.679688],
-    [1289.41308,230.398904,99.68,6.202116,8.263139,9.70572,4.095718,5.311647,5.829253,90.289743,5.13713,85.145997,1672.835938],
-    [1733.569829,289.796495,99.507,4.61225,6.468389,8.37713,3.242727,4.615804,5.367489,69.127283,4.938918,64.161354,781.839844],
+    [1835.186707,282.908977,87.984,4.357283,6.054819,7.265314,3.270084,4.524953,5.342606,71.003205,7.32474,63.670982,1507928],
+    [2285.309151,273.20439,81.892,3.498585,5.234352,6.952462,3.422636,5.406221,5.921854,44.980547,6.133945,38.8244,582392],
+    [1709.966729,251.062994,98.958,4.676369,6.336985,7.53349,3.721647,5.141429,6.114587,79.558466,11.828973,67.720461,1476516],
+    [1512.037726,216.490614,98.474,5.28701,8.976525,11.737435,4.250335,5.909212,6.700442,61.840791,5.46147,56.333318,656056],
+    [1289.41308,230.398904,99.68,6.202116,8.263139,9.70572,4.095718,5.311647,5.829253,90.289743,5.13713,85.145997,1712984],
+    [1733.569829,289.796495,99.507,4.61225,6.468389,8.37713,3.242727,4.615804,5.367489,69.127283,4.938918,64.161354,800604],
   ];
   records.forEach((record, index) => assert.deepEqual(metricKeys.map((metric) => record[metric]), expected[index]));
-  metricKeys.forEach((metric, index) => assert.deepEqual(seriesFor(records, metric).map((series) => series.data), [
-    [expected[0][index], expected[2][index], expected[4][index]],
-    [expected[1][index], expected[3][index], expected[5][index]],
-  ]));
+  metricKeys.forEach((metric, index) => {
+    const displayed = expected.map((values) => metric === 'peak_rss_kib' ? values[index] * 1024 : values[index]);
+    assert.deepEqual(seriesFor(records, metric).map((series) => series.data), [
+      [displayed[0], displayed[2], displayed[4]],
+      [displayed[1], displayed[3], displayed[5]],
+    ]);
+  });
   assert.notEqual(records[0].backend_version, records[4].backend_version);
+});
+
+test('byte values use readable units', () => {
+  assert.equal(formatBytes(1544118272), '1.44 GB');
+  assert.equal(formatBytes(596369408), '568.74 MB');
 });
 
 test('quoted commas, escaped quotes, multiline fields, BOM and CRLF', () => {
