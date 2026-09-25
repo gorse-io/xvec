@@ -87,12 +87,15 @@ browser is required. The homepage and static images share the same metric and
 chart definitions. The images include the filters and six chart cards in a fixed
 two-column layout, excluding the navigation bar.
 
-The build creates:
+The build creates SVG files only inside `docs/dist`:
 
-- `docs/benchmark-hnsw.svg`: a local copy of the default configuration (ignored by Git).
-- `docs/dist/benchmark-hnsw.svg`: the same image in the deployed site.
+- `docs/dist/benchmark-hnsw.svg`: the default configuration for README embeds.
 - `docs/dist/benchmarks/<machine>-<dataset>-<configuration-hash>.svg`: one image for
   each comparison group.
+
+Deploy `docs/dist` as the site's document root. The default image is then served
+at `<site><base>/benchmark-hnsw.svg`; `dist` is a build directory, not part of the
+public URL. No copy is written into the source directory.
 
 Click the image icon (**Export SVG**) to the left of the GitHub icon to download
 the static file for the selected machine, dataset, and test configuration. The

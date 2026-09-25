@@ -7,7 +7,6 @@
 /docs/node_modules/
 /docs/.astro/
 /docs/dist/
-/docs/benchmark-hnsw.svg
 /docs/.vuepress/.cache/
 /docs/.vuepress/.temp/
 /docs/.vuepress/dist/
