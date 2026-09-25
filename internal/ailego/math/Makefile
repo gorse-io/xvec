@@ -76,6 +76,7 @@ distance-avx512:
 	$(GOAT) src/inner_product_matrix_fp32_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mfma -mavx512f -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/mips_euclidean_distance_matrix_fp32_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mfma -mavx512f -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/distance_matrix_fp16_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mf16c -mavx512f -mavx512dq -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/distance_matrix_int4_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx2 -mavx512f -mavx512bw -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 distance-int8-avx2:
@@ -105,6 +106,7 @@ distance-neon:
 	$(GOAT) src/inner_product_matrix_fp32_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/mips_euclidean_distance_matrix_fp32_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/distance_matrix_fp16_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/distance_matrix_int4_neon.c --target $(GOAT_TARGET_ARM64) -O3 -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 distance-rvv:
@@ -113,6 +115,8 @@ distance-rvv:
 	$(GOAT) src/euclidean_distance_matrix_fp32_rvv.c --target $(GOAT_TARGET_RVV) -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/inner_product_matrix_fp32_rvv.c --target $(GOAT_TARGET_RVV) -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/mips_euclidean_distance_matrix_fp32_rvv.c --target $(GOAT_TARGET_RVV) -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/inner_product_matrix_int8_rvv.c --target $(GOAT_TARGET_RVV) -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/distance_matrix_int4_rvv.c --target $(GOAT_TARGET_RVV) -O3 -march=rv64imafdv -e=-isystem -e=$(GOAT_RVV_INCLUDE) -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 distance-lasx:
@@ -121,6 +125,8 @@ distance-lasx:
 	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/euclidean_distance_matrix_fp32_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -o $(GOAT_OUTPUT_DIR)
 	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/inner_product_matrix_fp32_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -o $(GOAT_OUTPUT_DIR)
 	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/mips_euclidean_distance_matrix_fp32_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/inner_product_matrix_int8_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/distance_matrix_int4_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 clean:

@@ -91,3 +91,10 @@ func TestInt4DistanceKernelsAVX2(t *testing.T) {
 	}
 	testInt4Kernels(t, innerProductInt4AVX2, squaredEuclideanInt4AVX2, dotNormsInt4AVX2)
 }
+
+func TestInt4DistanceKernelsAVX512(t *testing.T) {
+	if !cpu.X86.HasAVX2 || !cpu.X86.HasAVX512F || !cpu.X86.HasAVX512BW {
+		t.Skip("AVX2, AVX-512F and AVX-512BW are not supported by this CPU")
+	}
+	testInt4Kernels(t, innerProductInt4AVX512, squaredEuclideanInt4AVX512, dotNormsInt4AVX512)
+}
