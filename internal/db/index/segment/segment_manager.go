@@ -341,8 +341,8 @@ func (m *SegmentManager) Fetch(ctx context.Context, primaryKeys []string) ([]Fet
 			return results, err
 		}
 		if found {
-			copy := document.Clone()
-			results[index].Document = &copy
+			// DocumentByPrimaryKey already returns an independent payload.
+			results[index].Document = &document
 		}
 	}
 	return results, nil
@@ -388,12 +388,12 @@ func (m *SegmentManager) LiveDocuments(ctx context.Context) ([]StoredDocument, e
 		return nil
 	}
 	for _, segment := range segments {
-		if err := appendLive(segment.Documents()); err != nil {
+		if err := segment.VisitDocuments(appendLive); err != nil {
 			return nil, err
 		}
 	}
 	if writing != nil {
-		if err := appendLive(writing.Documents()); err != nil {
+		if err := writing.VisitDocuments(appendLive); err != nil {
 			return nil, err
 		}
 	}
@@ -541,4 +541,17 @@ func cmpUint64(left, right uint64) int {
 		return 1
 	}
 	return 0
+}
+
+// Close releases immutable segment mappings. IDMap and WAL ownership stays
+// with CollectionStore. The collection lock excludes concurrent store calls.
+func (m *SegmentManager) Close() error {
+	if m == nil {
+		return nil
+	}
+	var errs []error
+	for _, segment := range m.ImmutableSegments() {
+		errs = append(errs, segment.Close())
+	}
+	return errors.Join(errs...)
 }

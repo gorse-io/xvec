@@ -1405,7 +1405,7 @@ func (c *Collection) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return wrapCollectionError("close collection", c.path, c.closeRetiredSegmentRuntimes())
+		return wrapCollectionError("close collection", c.path, errors.Join(c.closeRetiredSegmentRuntimes(), c.store.Close()))
 	}
 	if err := c.requireNoActiveIteratorsLocked("close collection"); err != nil {
 		return err

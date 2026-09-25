@@ -29,6 +29,7 @@ import (
 	"slices"
 	"sync"
 
+	mmap "github.com/blevesearch/mmap-go"
 	"github.com/gorse-io/xvec/internal/ailego/hash"
 )
 
@@ -236,7 +237,7 @@ func (s *WriteSegment) Metadata() common.SegmentMetadata {
 // Seal writes one immutable segment file relative to collectionDir and makes
 // this write segment reject further appends.
 func (s *WriteSegment) Seal(ctx context.Context, collectionDir, relativeName string) (*ImmutableSegment, error) {
-	return s.writeImmutable(ctx, collectionDir, relativeName, true)
+	return s.writeImmutable(ctx, collectionDir, relativeName, true, false)
 }
 
 // Snapshot writes the current non-empty contents as an immutable segment
@@ -244,10 +245,16 @@ func (s *WriteSegment) Seal(ctx context.Context, collectionDir, relativeName str
 // manifest commit point so a failed publication can safely keep accepting WAL
 // backed writes and retry with fresh immutable artifacts.
 func (s *WriteSegment) Snapshot(ctx context.Context, collectionDir, relativeName string) (*ImmutableSegment, error) {
-	return s.writeImmutable(ctx, collectionDir, relativeName, false)
+	return s.writeImmutable(ctx, collectionDir, relativeName, false, false)
 }
 
-func (s *WriteSegment) writeImmutable(ctx context.Context, collectionDir, relativeName string, seal bool) (*ImmutableSegment, error) {
+// SnapshotWithMmap publishes a read-only file-backed payload view when enabled.
+// The caller owns the returned segment and must close it before removing its file.
+func (s *WriteSegment) SnapshotWithMmap(ctx context.Context, collectionDir, relativeName string, useMmap bool) (*ImmutableSegment, error) {
+	return s.writeImmutable(ctx, collectionDir, relativeName, false, useMmap)
+}
+
+func (s *WriteSegment) writeImmutable(ctx context.Context, collectionDir, relativeName string, seal, useMmap bool) (*ImmutableSegment, error) {
 	if s == nil {
 		return nil, errors.New("db: nil write segment")
 	}
@@ -278,11 +285,17 @@ func (s *WriteSegment) writeImmutable(ctx context.Context, collectionDir, relati
 	if seal {
 		s.sealed = true
 	}
+	if useMmap {
+		return OpenImmutableSegmentWithMmap(ctx, collectionDir, metadata, true)
+	}
 	return newImmutableSegment(metadata, s.docs), nil
 }
 
 // ImmutableSegment is a verified read-only segment snapshot.
 type ImmutableSegment struct {
+	mu          sync.RWMutex
+	mapped      mmap.MMap
+	closed      bool
 	metadata    common.SegmentMetadata
 	docs        []StoredDocument
 	memoryBytes uint64
@@ -299,6 +312,12 @@ func newImmutableSegment(metadata common.SegmentMetadata, docs []StoredDocument)
 
 // OpenImmutableSegment loads and verifies the first data file in metadata.
 func OpenImmutableSegment(ctx context.Context, collectionDir string, metadata common.SegmentMetadata) (*ImmutableSegment, error) {
+	return OpenImmutableSegmentWithMmap(ctx, collectionDir, metadata, false)
+}
+
+// OpenImmutableSegmentWithMmap verifies a segment and owns either its heap
+// buffer or a read-only mapping. Close releases the mapping after readers leave.
+func OpenImmutableSegmentWithMmap(ctx context.Context, collectionDir string, metadata common.SegmentMetadata, useMmap bool) (*ImmutableSegment, error) {
 	if ctx == nil {
 		return nil, errors.New("db: nil segment open context")
 	}
@@ -324,12 +343,28 @@ func OpenImmutableSegment(ctx context.Context, collectionDir string, metadata co
 	if err != nil {
 		return nil, err
 	}
-	if info.Size() < segmentHeaderSize || uint64(info.Size()-segmentHeaderSize) > maxSegmentPayloadSize {
+	if info.Size() < segmentHeaderSize || info.Size() > int64(math.MaxInt) || uint64(info.Size()-segmentHeaderSize) > maxSegmentPayloadSize {
 		return nil, fmt.Errorf("%w: invalid file size %d", ErrSegmentCorrupt, info.Size())
 	}
-	encoded := make([]byte, int(info.Size()))
-	if _, err := io.ReadFull(file, encoded); err != nil {
-		return nil, fmt.Errorf("%w: read file: %v", ErrSegmentCorrupt, err)
+	var encoded []byte
+	var mapped mmap.MMap
+	transferred := false
+	defer func() {
+		if mapped != nil && !transferred {
+			_ = mapped.Unmap()
+		}
+	}()
+	if useMmap {
+		mapped, err = mmap.MapRegion(file, int(info.Size()), mmap.RDONLY, 0, 0)
+		if err != nil {
+			return nil, err
+		}
+		encoded = mapped
+	} else {
+		encoded = make([]byte, int(info.Size()))
+		if _, err := io.ReadFull(file, encoded); err != nil {
+			return nil, fmt.Errorf("%w: read file: %v", ErrSegmentCorrupt, err)
+		}
 	}
 	decodedMetadata, docs, err := decodeSegmentWithPayloadViews(ctx, encoded, true)
 	if err != nil {
@@ -339,7 +374,8 @@ func OpenImmutableSegment(ctx context.Context, collectionDir string, metadata co
 	if !segmentMetadataEqual(decodedMetadata, metadata) {
 		return nil, fmt.Errorf("%w: manifest metadata differs from data file", ErrSegmentCorrupt)
 	}
-	return &ImmutableSegment{metadata: common.CloneSegment(metadata), docs: docs, memoryBytes: storedDocumentsMemoryBytes(docs)}, nil
+	transferred = true
+	return &ImmutableSegment{metadata: common.CloneSegment(metadata), docs: docs, mapped: mapped, memoryBytes: storedDocumentsMemoryBytes(docs)}, nil
 }
 
 // ID returns the immutable segment ID.
@@ -363,6 +399,8 @@ func (s *ImmutableSegment) Document(docID uint64) (StoredDocument, bool) {
 	if s == nil || docID < s.metadata.MinDocID || docID > s.metadata.MaxDocID {
 		return StoredDocument{}, false
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	index := docID - s.metadata.MinDocID
 	if index >= uint64(len(s.docs)) || s.docs[index].DocID != docID {
 		return StoredDocument{}, false
@@ -375,6 +413,8 @@ func (s *ImmutableSegment) Documents() []StoredDocument {
 	if s == nil {
 		return nil
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return CloneDocuments(s.docs)
 }
 
@@ -387,7 +427,34 @@ func (s *ImmutableSegment) VisitDocuments(visit func([]StoredDocument) error) er
 	if visit == nil {
 		return errors.New("db: nil immutable segment visitor")
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return os.ErrClosed
+	}
 	return visit(s.docs)
+}
+
+// Close waits for borrowed readers and releases file mappings. All public
+// document copies remain valid. A failed unmap can be retried.
+func (s *ImmutableSegment) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	if s.mapped != nil {
+		if err := s.mapped.Unmap(); err != nil {
+			return err
+		}
+		s.mapped = nil
+	}
+	s.docs = nil
+	s.closed = true
+	return nil
 }
 
 // MemoryUsageBytes returns the cached encoded record bytes retained by the segment.
