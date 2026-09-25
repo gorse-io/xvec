@@ -47,27 +47,34 @@ func TestDenseHNSWSearchGroupsExpandsForDistinctGroups(t *testing.T) {
 }
 
 func TestScalarQuantizedHNSWSearchGroupsExpandsForDistinctGroups(t *testing.T) {
-	index, err := NewScalarQuantizedHNSWIndex(context.Background(), denseGroupHNSWFixture(), QuantizationInt8, nil)
-	require.NoError(t, err)
+	for _, test := range []struct {
+		name string
+		kind Quantization
+	}{{"INT8", QuantizationInt8}, {"FP16", QuantizationFP16}} {
+		t.Run(test.name, func(t *testing.T) {
+			index, err := NewScalarQuantizedHNSWIndex(context.Background(), denseGroupHNSWFixture(), test.kind, nil)
+			require.NoError(t, err)
 
-	got, err := index.SearchHNSWGroups(context.Background(), []float32{0}, HNSWGroupSearchOptions{
-		GroupByOptions: GroupByOptions{
-			GroupCount: 2, TopKPerGroup: 1,
-			Resolve: func(key uint64) (string, bool) {
-				if key < 20 {
-					return "near", true
-				}
-				return "far", true
-			},
-		},
-		EF: 1,
-	})
-	require.NoError(t, err)
-	require.Len(t, got, 2)
-	require.True(t, got[0].Value == "near")
-	require.True(t, got[1].Value == "far")
-	require.Len(t, got[0].Results, 1)
-	require.Len(t, got[1].Results, 1)
+			got, err := index.SearchHNSWGroups(context.Background(), []float32{0}, HNSWGroupSearchOptions{
+				GroupByOptions: GroupByOptions{
+					GroupCount: 2, TopKPerGroup: 1,
+					Resolve: func(key uint64) (string, bool) {
+						if key < 20 {
+							return "near", true
+						}
+						return "far", true
+					},
+				},
+				EF: 1,
+			})
+			require.NoError(t, err)
+			require.Len(t, got, 2)
+			require.True(t, got[0].Value == "near")
+			require.True(t, got[1].Value == "far")
+			require.Len(t, got[0].Results, 1)
+			require.Len(t, got[1].Results, 1)
+		})
+	}
 }
 
 func TestSparseHNSWSearchGroupsExpandsForDistinctGroups(t *testing.T) {

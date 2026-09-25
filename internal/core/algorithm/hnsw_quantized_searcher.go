@@ -237,7 +237,7 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
 		return nil, err
 	}
 	scoreAt := func(position int) (float32, error) {
-		return QuantizedDistance(i.vectors.metric, i.vectors.codes[position], queryCode)
+		return i.vectors.distanceToCode(position, queryCode)
 	}
 	visited := acquireHNSWVisited(len(i.vectors.keys))
 	defer releaseHNSWVisited(visited)
@@ -319,7 +319,7 @@ func (i *ScalarQuantizedHNSWIndex) search(
 	}
 
 	scoreAt := func(position int) (float32, error) {
-		return QuantizedDistance(i.vectors.metric, i.vectors.codes[position], queryCode)
+		return i.vectors.distanceToCode(position, queryCode)
 	}
 	visited := acquireHNSWVisited(len(i.vectors.keys))
 	defer releaseHNSWVisited(visited)

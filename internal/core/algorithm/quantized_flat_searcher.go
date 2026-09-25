@@ -160,7 +160,7 @@ func (i *ScalarQuantizedFlatIndex) SearchGroups(
 		if options.Filter != nil && !options.Filter(key) {
 			continue
 		}
-		score, err := QuantizedDistance(i.vectors.metric, i.vectors.codes[position], queryCode)
+		score, err := i.vectors.distanceToCode(position, queryCode)
 		if err != nil {
 			return nil, fmt.Errorf("core: score scalar-quantized group candidate %d: %w", position, err)
 		}
@@ -335,6 +335,15 @@ func (s *scalarQuantizedVectors) search(ctx context.Context, query []float32, op
 	return s.searchWithCode(ctx, queryCode, options, positions)
 }
 
+// distanceToCode scores immutable storage against a query validated by
+// quantizedQuery. FP16 codes can go directly to the native half kernels.
+func (s *scalarQuantizedVectors) distanceToCode(position int, query QuantizedVector) (float32, error) {
+	if s.kind == QuantizationFP16 {
+		return fp16CodeDistance(s.metric, s.codes[position].codes, query.codes), nil
+	}
+	return QuantizedDistance(s.metric, s.codes[position], query)
+}
+
 func (s *scalarQuantizedVectors) searchWithCode(ctx context.Context, queryCode QuantizedVector, options SearchOptions, positions []int) ([]Result, error) {
 	accepted := make([]Result, 0, min(options.TopK, len(positions)))
 	for _, position := range positions {
@@ -348,7 +357,7 @@ func (s *scalarQuantizedVectors) searchWithCode(ctx context.Context, queryCode Q
 		if options.Filter != nil && !options.Filter(key) {
 			continue
 		}
-		score, err := QuantizedDistance(s.metric, s.codes[position], queryCode)
+		score, err := s.distanceToCode(position, queryCode)
 		if err != nil {
 			return nil, fmt.Errorf("core: score scalar-quantized candidate %d: %w", position, err)
 		}
