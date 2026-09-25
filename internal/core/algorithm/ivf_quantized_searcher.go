@@ -44,7 +44,7 @@ func NewScalarQuantizedIVFIndex(
 	if err != nil {
 		return nil, err
 	}
-	vectors, err := newScalarQuantizedVectors(
+	vectors, err := newOwnedScalarQuantizedVectors(
 		ctx, snapshot.dimension, snapshot.options.Metric, kind, reformer, snapshot.keys, snapshot.vectors,
 	)
 	if err != nil {

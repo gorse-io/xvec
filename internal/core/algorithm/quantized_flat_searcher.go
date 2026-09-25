@@ -46,16 +46,22 @@ func NewScalarQuantizedFlatIndex(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if dimension <= 0 || dimension > MaxRotationDimension {
+		return nil, fmt.Errorf("%w: got %d", ErrInvalidDimension, dimension)
+	}
+	if len(candidates) > maxPlatformInt()/dimension {
+		return nil, fmt.Errorf("%w: vector storage exceeds platform capacity", ErrInvalidQuantizedVector)
+	}
 	keys := make([]uint64, len(candidates))
-	var vectors []float32
+	vectors := make([]float32, len(candidates)*dimension)
 	for position, candidate := range candidates {
 		if len(candidate.Vector) != dimension {
 			return nil, fmt.Errorf("%w: candidate %d has %d, want %d", ErrInvalidDimension, position, len(candidate.Vector), dimension)
 		}
 		keys[position] = candidate.Key
-		vectors = append(vectors, candidate.Vector...)
+		copy(vectors[position*dimension:(position+1)*dimension], candidate.Vector)
 	}
-	storage, err := newScalarQuantizedVectors(ctx, dimension, metric, kind, reformer, keys, vectors)
+	storage, err := newOwnedScalarQuantizedVectors(ctx, dimension, metric, kind, reformer, keys, vectors)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +187,10 @@ type scalarQuantizedVectors struct {
 	codes     []QuantizedVector
 }
 
-func newScalarQuantizedVectors(
+// newOwnedScalarQuantizedVectors takes ownership of keys and originals.
+// Callers must supply fresh storage or an immutable, privately owned snapshot.
+// Public constructors copy caller-owned input before reaching this helper.
+func newOwnedScalarQuantizedVectors(
 	ctx context.Context,
 	dimension int,
 	metric Metric,
@@ -216,8 +225,8 @@ func newScalarQuantizedVectors(
 		metric:    metric,
 		kind:      kind,
 		reformer:  reformer,
-		keys:      slices.Clone(keys),
-		originals: slices.Clone(originals),
+		keys:      keys,
+		originals: originals,
 		positions: make(map[uint64]int, len(keys)),
 		codes:     make([]QuantizedVector, len(keys)),
 	}

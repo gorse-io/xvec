@@ -52,13 +52,19 @@ func NewScalarQuantizedHNSWIndex(
 	if err != nil {
 		return nil, err
 	}
-	vectors, err := newScalarQuantizedVectors(
-		ctx, snapshot.dimension, snapshot.options.Metric, kind, reformer, snapshot.keys, snapshot.vectors,
+	return newOwnedScalarQuantizedHNSWIndex(ctx, snapshot, kind, reformer)
+}
+
+// The graph is private and immutable: codes, persistence and refinement share
+// its original vectors instead of retaining a second FP32 copy.
+func newOwnedScalarQuantizedHNSWIndex(ctx context.Context, base *HNSWIndex, kind Quantization, reformer DenseReformer) (*ScalarQuantizedHNSWIndex, error) {
+	vectors, err := newOwnedScalarQuantizedVectors(
+		ctx, base.dimension, base.options.Metric, kind, reformer, base.keys, base.vectors,
 	)
 	if err != nil {
 		return nil, err
 	}
-	return &ScalarQuantizedHNSWIndex{base: snapshot, vectors: vectors}, nil
+	return &ScalarQuantizedHNSWIndex{base: base, vectors: vectors}, nil
 }
 
 // Save persists the immutable HNSW topology and original vectors. Scalar codes
@@ -78,7 +84,16 @@ func OpenScalarQuantizedHNSWIndex(ctx context.Context, path string, kind Quantiz
 	if err != nil {
 		return nil, err
 	}
-	return NewScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+	return newOwnedScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+}
+
+// FlatIndex returns an immutable linear-search view sharing the graph's codes
+// and originals. It preserves the quantized scores without another encoding.
+func (i *ScalarQuantizedHNSWIndex) FlatIndex() *ScalarQuantizedFlatIndex {
+	if i == nil {
+		return nil
+	}
+	return &ScalarQuantizedFlatIndex{vectors: i.vectors}
 }
 
 func (i *ScalarQuantizedHNSWIndex) Dimension() int {

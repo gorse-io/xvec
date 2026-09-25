@@ -960,7 +960,7 @@ func buildCollectionIndexes(
 			}
 			if field.DataType.IsDenseVector() {
 				var exact collectionDenseIndex
-				if spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined && field.DataType == DataTypeVectorFP32 {
+				if field.DataType == DataTypeVectorFP32 && (spec.indexType == IndexTypeHNSW || (spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined)) {
 					candidates, candidateErr := collectionDenseBorrowedCandidates(ctx, field, documents)
 					if candidateErr != nil {
 						return fail(candidateErr)
@@ -976,7 +976,8 @@ func buildCollectionIndexes(
 				var flat collectionDenseIndex
 				if spec.quantize == QuantizeTypeUndefined || spec.indexType == IndexTypeHNSWRaBitQ || spec.indexType == IndexTypeIVFRaBitQ {
 					flat = exact
-				} else {
+				} else if spec.indexType != IndexTypeHNSW {
+					// Quantized HNSW supplies a shared Flat view after opening the graph.
 					flat, err = buildCollectionDenseFlat(ctx, schema.Name, field, documents, spec)
 					if err != nil {
 						return fail(err)
@@ -994,14 +995,20 @@ func buildCollectionIndexes(
 					if err != nil {
 						return fail(err)
 					}
-					indexes.denseNative[field.Name] = native
-					continue
-				}
-				native, err = buildCollectionDenseNative(ctx, schema.Name, field, documents, spec, workers, maxBufferSize)
-				if err != nil {
-					return fail(err)
+				} else {
+					native, err = buildCollectionDenseNative(ctx, schema.Name, field, documents, spec, workers, maxBufferSize)
+					if err != nil {
+						return fail(err)
+					}
 				}
 				indexes.denseNative[field.Name] = native
+				if flat == nil {
+					quantized, ok := native.(*core.ScalarQuantizedHNSWIndex)
+					if !ok {
+						return fail(fmt.Errorf("quantized HNSW field %q has an incompatible native index", field.Name))
+					}
+					indexes.denseFlat[field.Name] = quantized.FlatIndex()
+				}
 				continue
 			}
 			exact, err := buildSparseFlatIndex(ctx, field, documents)
@@ -2185,7 +2192,7 @@ func buildCollectionDenseHNSW(
 	spec collectionVectorIndex,
 	workers int,
 ) (collectionHNSWIndex, error) {
-	candidates, err := collectionDenseCandidates(ctx, field, documents)
+	candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
 	if err != nil {
 		return nil, err
 	}

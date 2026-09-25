@@ -55,7 +55,7 @@ func (b *HNSWBuilder) buildScalarQuantizedWithWorkers(
 			return hnswBuildScorers{}, ErrOddInt4Dimension
 		}
 		var err error
-		vectors, err = newScalarQuantizedVectors(
+		vectors, err = newOwnedScalarQuantizedVectors(
 			ctx, index.dimension, index.options.Metric, kind, reformer, index.keys, index.vectors,
 		)
 		if err != nil {
