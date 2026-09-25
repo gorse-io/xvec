@@ -167,3 +167,11 @@ func TestFP16HNSWBuildValidation(t *testing.T) {
 	_, err = fp16BuildScorers(canceled, flat.vectors)
 	require.ErrorIs(t, err, context.Canceled)
 }
+
+func TestHNSWBuildPrefetchRowsBounds(t *testing.T) {
+	rows := [][]float32{nil, {1}, make([]float32, 17)}
+	require.NotPanics(t, func() { prefetchDenseHNSWRows(rows, 100, 100) })
+	require.NotPanics(t, func() { prefetchDenseHNSWRows(nil, 8, 0) })
+	require.NotPanics(t, func() { prefetchDenseHNSWRows(rows, 0, 1) })
+	require.Equal(t, float32(1), rows[1][0])
+}

@@ -7194,3 +7194,39 @@ func TestCollectionHybridRerankersReopen(t *testing.T) {
 		require.Equal(t, writableResults, reopenedResults)
 	}
 }
+
+// Native FP16 fields can also explicitly request the scalar FP16 index. This
+// takes the non-borrowed construction route and must survive persistence.
+func TestCollectionFP16FieldWithFP16QuantizedHNSW(t *testing.T) {
+	ctx := context.Background()
+	params := NewHNSWIndexParams(MetricTypeCosine)
+	params.Quantize = QuantizeTypeFP16
+	params.M, params.EFConstruction = 4, 16
+	field := FieldSchema{Name: "embedding", DataType: DataTypeVectorFP16, Dimension: 2, Index: params}
+	documents := []Document{
+		{DocID: 1, Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(1), Float16FromFloat32(0)}}},
+		{DocID: 2, Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(0), Float16FromFloat32(1)}}},
+		{DocID: 3, Fields: map[string]any{"embedding": VectorFP16{Float16FromFloat32(-1), Float16FromFloat32(0)}}},
+	}
+	for _, rotate := range []bool{false, true} {
+		spec, err := resolveCollectionVectorIndex(field, "test", "")
+		require.NoError(t, err)
+		spec.rotate = rotate
+		built, err := buildCollectionDenseHNSW(ctx, "fp16", field, documents, spec, 2)
+		require.NoError(t, err)
+		index, ok := built.(*core.ScalarQuantizedHNSWIndex)
+		require.True(t, ok)
+		got, err := index.Search(ctx, []float32{1, 0}, 3)
+		require.NoError(t, err)
+		require.Equal(t, uint64(1), got[0].Key)
+		path := filepath.Join(t.TempDir(), "hnsw")
+		require.NoError(t, index.Save(ctx, path))
+		reformer, err := collectionReformer("fp16", field, spec)
+		require.NoError(t, err)
+		reopened, err := core.OpenScalarQuantizedHNSWIndex(ctx, path, core.QuantizationFP16, reformer)
+		require.NoError(t, err)
+		again, err := reopened.Search(ctx, []float32{1, 0}, 3)
+		require.NoError(t, err)
+		require.Equal(t, got, again)
+	}
+}
