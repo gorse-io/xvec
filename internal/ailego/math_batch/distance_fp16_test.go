@@ -49,11 +49,12 @@ func TestFP16Batch4(t *testing.T) {
 						}
 					}
 				}
-				if mode == "zero-all" {
+				switch mode {
+				case "zero-all":
 					for j := range v {
 						clear(v[j])
 					}
-				} else if mode == "extremes" {
+				case "extremes":
 					copy(v[0], v[1])
 					clear(v[2])
 				}
