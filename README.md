@@ -168,11 +168,9 @@ quantization options. Sparse vectors support exact Flat and HNSW
 inner-product search. See the [Go reference](https://pkg.go.dev/github.com/gorse-io/xvec)
 for the complete API.
 
-## Documentation
+## Benchmark
 
-- [Go reference](https://pkg.go.dev/github.com/gorse-io/xvec)
-- [VectorDBBench-compatible Go benchmark](cmd/vector-db-bench/README.md)
-- [Benchmark website development and data](docs/README.md)
+![Benchmark](https://xvec.gorse.io/benchmarks/e2-standard-8-Performance768D100K-1e7009b3d2.svg)
 
 ## License
 
