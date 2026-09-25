@@ -1,0 +1,71 @@
+---
+import logo from '../../logo.png';
+import csv from '../../benchmark-hnsw.csv?raw';
+import ChartCard from '../components/ChartCard.astro';
+import { chartCards } from '../lib/chart-options';
+import { svgAsset } from '../lib/svg-asset';
+import { parseBenchmarks } from '../lib/parse-benchmark';
+import { groupBenchmarks, categories } from '../lib/benchmark';
+import '../styles/global.css';
+
+const records = parseBenchmarks(csv);
+const groups = groupBenchmarks(records);
+const machines = [...new Set(groups.map((group) => group.machine))];
+const datasets = [...new Set(groups.map((group) => group.dataset))];
+const repository = 'https://github.com/gorse-io/xvec';
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Explore xvec and zvec HNSW benchmarks across INT4, INT8, and FP16: throughput, recall, latency, loading, and memory." />
+    <meta name="theme-color" content="#f7f8fa" />
+    <link rel="icon" type="image/png" href={logo.src} />
+    <title>xvec — HNSW benchmarks</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#results">Skip to results</a>
+    <header class="site-header wrap">
+      <a class="brand" href={import.meta.env.BASE_URL} aria-label="Benchmark home"><img src={logo.src} width="34" height="34" alt="" /><span>Benchmark</span><span class="brand-divider"></span><span class="brand-section">HNSW</span></a>
+      <div class="nav-actions">
+      <a id="export-svg" class="export-link" href={`${import.meta.env.BASE_URL}${svgAsset(groups[0])}`} download aria-label="Export SVG" title="Export SVG">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
+          <path d="m21 15-5-5L5 21" />
+        </svg>
+      </a>
+      <a class="repo-link" href={repository} aria-label="GitHub repository" title="GitHub repository">
+        <svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.65 7.65 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+        </svg>
+      </a>
+      </div>
+    </header>
+    <main class="wrap">
+      <section id="results" aria-label="Benchmark results">
+        <div class="filters" id="filters" hidden>
+          <label>Machine<select id="machine">{machines.map((machine) => <option>{machine}</option>)}</select></label>
+          <label>Dataset<select id="dataset">{datasets.map((dataset) => <option>{dataset}</option>)}</select></label>
+          <label class="configuration-filter">Test configuration<select id="configuration">{groups.map((group, index) => <option value={group.id}>Configuration {index + 1}</option>)}</select></label>
+        </div>
+        <p id="selection-status" class="sr-only" aria-live="polite"></p>
+        <noscript><p class="notice">JavaScript is disabled. Enable it to render charts and change benchmark settings.</p></noscript>
+        {groups.map((group, groupIndex) => {
+          const variants = categories(group.records);
+          const incomplete = variants.some((category) => category.records.length < 2);
+          return <section class="comparison-group" id={group.id} data-group={JSON.stringify(group)} data-svg-url={`${import.meta.env.BASE_URL}${svgAsset(group)}`} aria-label={`${group.machine}, ${group.dataset}, configuration ${groupIndex + 1}`}>
+            {incomplete && <p class="notice">Some categories have only one backend result. Missing measurements are left blank, never treated as zero.</p>}
+            <div class="chart-grid">
+              {chartCards.map((card) => <ChartCard {...card} />)}
+            </div>
+          </section>;
+        })}
+      </section>
+    </main>
+    <script>
+      import '../scripts/dashboard';
+    </script>
+  </body>
+</html>

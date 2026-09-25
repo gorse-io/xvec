@@ -1,0 +1,17 @@
+---
+import { metrics, type Metric } from '../lib/benchmark';
+interface Props { kind: string; metric: Metric }
+const { kind, metric } = Astro.props;
+const definition = metrics[metric];
+const label = kind === 'load' ? 'Insert + optimize time' : definition.label;
+---
+<article class="chart-card" data-kind={kind} data-metric={metric}>
+  <div class="card-heading">
+    <h3 data-metric-title>{label}</h3>
+    <span class="direction">{definition.direction === 'Higher is better' ? '↗' : '↘'} {definition.direction}</span>
+  </div>
+  <div class="chart-toolbar">
+    <span class="unit" data-unit>{definition.unit}</span>
+  </div>
+  <div class="chart" role="img" aria-label={`${definition.label} chart.`}></div>
+</article>

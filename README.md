@@ -172,6 +172,7 @@ for the complete API.
 
 - [Go reference](https://pkg.go.dev/github.com/gorse-io/xvec)
 - [VectorDBBench-compatible Go benchmark](cmd/vector-db-bench/README.md)
+- [Benchmark website development and data](docs/README.md)
 
 ## License
 

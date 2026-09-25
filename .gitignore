@@ -5,6 +5,8 @@
 *.test
 *.prof
 /docs/node_modules/
+/docs/.astro/
+/docs/dist/
 /docs/.vuepress/.cache/
 /docs/.vuepress/.temp/
 /docs/.vuepress/dist/
