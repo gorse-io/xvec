@@ -6,6 +6,7 @@
 *.prof
 /docs/node_modules/
 /docs/.astro/
+/docs/.wrangler/
 /docs/dist/
 /docs/.vuepress/.cache/
 /docs/.vuepress/.temp/

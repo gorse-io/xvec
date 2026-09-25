@@ -41,8 +41,38 @@ The production output is `docs/dist`. The [Astro configuration](https://docs.ast
 uses static output and site `https://gorse-io.github.io`. Asset imports and home
 links respect the configured base path. Use `base: '/xvec/'` for GitHub Pages
 project hosting, or `base: '/'` for a root homepage. Update `site` and `base` in
-`astro.config.mjs` before building for another host. This project does not
-publish or deploy automatically.
+`astro.config.mjs` before building for another host. Building alone does not publish or deploy the site.
+
+## Cloudflare Workers deployment
+
+`wrangler.jsonc` deploys `./dist` as
+[Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/).
+The site is fully static: no Cloudflare Astro adapter or Worker script is required.
+Keep this configuration checked in so Wrangler deploys the existing build instead
+of attempting automatic Astro setup, which can fail on `public/.assetsignore`.
+
+Configure Workers Builds with:
+
+| Setting | Value |
+| --- | --- |
+| Worker name | `xvec` (matching `wrangler.jsonc`) |
+| Root directory | `docs` |
+| Build command | `pnpm build` |
+| Deploy command | `npx wrangler deploy` (or `pnpm exec wrangler deploy`) |
+
+Wrangler is pinned in the pnpm dependencies and lockfile. `./dist` is relative to
+`docs/wrangler.jsonc`. Validate without publishing from `docs`:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm build
+pnpm exec wrangler deploy --dry-run
+```
+
+Keep `base: '/'` for the root of a Workers site and set Astro's `site` to the actual
+public URL. Once deployed, the default SVG is available at
+`https://<your-site>/benchmark-hnsw.svg`. Generated files and `.wrangler` local state
+are ignored by Git.
 
 ## Data contract and fair comparisons
 
