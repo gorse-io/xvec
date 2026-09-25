@@ -46,16 +46,22 @@ func NewScalarQuantizedFlatIndex(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if dimension <= 0 || dimension > MaxRotationDimension {
+		return nil, fmt.Errorf("%w: got %d", ErrInvalidDimension, dimension)
+	}
+	if len(candidates) > maxPlatformInt()/dimension {
+		return nil, fmt.Errorf("%w: vector storage exceeds platform capacity", ErrInvalidQuantizedVector)
+	}
 	keys := make([]uint64, len(candidates))
-	var vectors []float32
+	vectors := make([]float32, len(candidates)*dimension)
 	for position, candidate := range candidates {
 		if len(candidate.Vector) != dimension {
 			return nil, fmt.Errorf("%w: candidate %d has %d, want %d", ErrInvalidDimension, position, len(candidate.Vector), dimension)
 		}
 		keys[position] = candidate.Key
-		vectors = append(vectors, candidate.Vector...)
+		copy(vectors[position*dimension:(position+1)*dimension], candidate.Vector)
 	}
-	storage, err := newScalarQuantizedVectors(ctx, dimension, metric, kind, reformer, keys, vectors)
+	storage, err := newOwnedScalarQuantizedVectors(ctx, dimension, metric, kind, reformer, keys, vectors)
 	if err != nil {
 		return nil, err
 	}
@@ -171,17 +177,21 @@ func (i *ScalarQuantizedFlatIndex) SearchGroups(
 }
 
 type scalarQuantizedVectors struct {
-	dimension int
-	metric    Metric
-	kind      Quantization
-	reformer  DenseReformer
-	keys      []uint64
-	originals []float32
-	positions map[uint64]int
-	codes     []QuantizedVector
+	dimension    int
+	metric       Metric
+	kind         Quantization
+	reformer     DenseReformer
+	keys         []uint64
+	originals    []float32
+	originalRows [][]float32
+	positions    map[uint64]int
+	codes        []QuantizedVector
 }
 
-func newScalarQuantizedVectors(
+// newOwnedScalarQuantizedVectors takes ownership of keys and originals.
+// Callers must supply fresh storage or an immutable, privately owned snapshot.
+// Public constructors copy caller-owned input before reaching this helper.
+func newOwnedScalarQuantizedVectors(
 	ctx context.Context,
 	dimension int,
 	metric Metric,
@@ -190,6 +200,10 @@ func newScalarQuantizedVectors(
 	keys []uint64,
 	originals []float32,
 ) (*scalarQuantizedVectors, error) {
+	return newScalarQuantizedVectorStorage(ctx, dimension, metric, kind, reformer, keys, originals, nil)
+}
+
+func newScalarQuantizedVectorStorage(ctx context.Context, dimension int, metric Metric, kind Quantization, reformer DenseReformer, keys []uint64, originals []float32, rows [][]float32) (*scalarQuantizedVectors, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil scalar-quantized index context")
 	}
@@ -208,18 +222,21 @@ func newScalarQuantizedVectors(
 	if reformer != nil && reformer.Dimension() != dimension {
 		return nil, fmt.Errorf("%w: reformer has %d, want %d", ErrInvalidDimension, reformer.Dimension(), dimension)
 	}
-	if len(keys) > maxPlatformInt()/dimension || len(originals) != len(keys)*dimension {
+	if len(keys) > maxPlatformInt()/dimension ||
+		(rows == nil && len(originals) != len(keys)*dimension) ||
+		(rows != nil && (len(rows) != len(keys) || len(originals) != 0)) {
 		return nil, fmt.Errorf("%w: inconsistent vector storage", ErrInvalidQuantizedVector)
 	}
 	storage := &scalarQuantizedVectors{
-		dimension: dimension,
-		metric:    metric,
-		kind:      kind,
-		reformer:  reformer,
-		keys:      slices.Clone(keys),
-		originals: slices.Clone(originals),
-		positions: make(map[uint64]int, len(keys)),
-		codes:     make([]QuantizedVector, len(keys)),
+		dimension:    dimension,
+		metric:       metric,
+		kind:         kind,
+		reformer:     reformer,
+		keys:         keys,
+		originals:    originals,
+		originalRows: rows,
+		positions:    make(map[uint64]int, len(keys)),
+		codes:        make([]QuantizedVector, len(keys)),
 	}
 	for position, key := range storage.keys {
 		if err := ctx.Err(); err != nil {
@@ -229,8 +246,7 @@ func newScalarQuantizedVectors(
 			return nil, fmt.Errorf("%w: %d", ErrDuplicateKey, key)
 		}
 		storage.positions[key] = position
-		start := position * dimension
-		vector := storage.originals[start : start+dimension]
+		vector := storage.originalAt(position)
 		if err := mathutil.ValidateDense(vector, dimension); err != nil {
 			return nil, fmt.Errorf("core: validate scalar-quantized vector %d: %w", position, err)
 		}
@@ -259,8 +275,15 @@ func (s *scalarQuantizedVectors) vector(key uint64) ([]float32, bool) {
 	if !found {
 		return nil, false
 	}
+	return slices.Clone(s.originalAt(position)), true
+}
+
+func (s *scalarQuantizedVectors) originalAt(position int) []float32 {
+	if s.originalRows != nil {
+		return s.originalRows[position]
+	}
 	start := position * s.dimension
-	return slices.Clone(s.originals[start : start+s.dimension]), true
+	return s.originals[start : start+s.dimension]
 }
 
 func (s *scalarQuantizedVectors) validateQuery(query []float32) error {

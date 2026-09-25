@@ -240,11 +240,13 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 	if !locked {
 		return nil, errors.New("db: collection open lock unavailable")
 	}
+	var manager *segmentstore.SegmentManager
 	var primary *common.PrimaryKeyMap
 	var wal *walstore.WAL
 	var idMapWorking string
 	fail := func(failure error) (*CollectionStore, error) {
 		var cleanupErrors []error
+		cleanupErrors = append(cleanupErrors, manager.Close())
 		if wal != nil {
 			cleanupErrors = append(cleanupErrors, wal.Close())
 		}
@@ -279,14 +281,14 @@ func OpenCollection(ctx context.Context, dir string, options CollectionOptions) 
 	if err != nil {
 		return fail(fmt.Errorf("%w: load delete snapshot: %v", ErrCollectionCorrupt, err))
 	}
-	manager := segmentstore.NewSegmentManager(primary, deletes)
+	manager = segmentstore.NewSegmentManager(primary, deletes)
 	for _, metadata := range manifest.PersistedSegments {
-		segment, err := segmentstore.OpenImmutableSegment(ctx, dir, metadata)
+		segment, err := segmentstore.OpenImmutableSegmentWithMmap(ctx, dir, metadata, manifest.EnableMmap)
 		if err != nil {
 			return fail(fmt.Errorf("%w: open segment %d: %v", ErrCollectionCorrupt, metadata.ID, err))
 		}
 		if err := manager.AddImmutable(segment); err != nil {
-			return fail(fmt.Errorf("%w: add segment %d: %v", ErrCollectionCorrupt, metadata.ID, err))
+			return fail(errors.Join(fmt.Errorf("%w: add segment %d: %v", ErrCollectionCorrupt, metadata.ID, err), segment.Close()))
 		}
 	}
 	nextDocID := manifest.WritingSegmentStartDocID
@@ -830,14 +832,22 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	immutable, err := writing.Snapshot(ctx, c.dir, segmentRelative)
+	immutable, err := writing.SnapshotWithMmap(ctx, c.dir, segmentRelative, current.EnableMmap)
 	if err != nil {
+		_ = removeCollectionArtifact(collectionPath(c.dir, segmentRelative))
 		return fmt.Errorf("db: snapshot writing segment: %w", err)
 	}
+	immutableOwned := true
+	defer func() {
+		if immutableOwned {
+			_ = immutable.Close()
+		}
+	}()
 	created := []string{collectionPath(c.dir, segmentRelative)}
 	var nextPrimary *common.PrimaryKeyMap
 	var nextWorking string
 	cleanup := func() {
+		_ = immutable.Close()
 		if nextPrimary != nil {
 			_ = nextPrimary.Close()
 			nextPrimary = nil
@@ -927,6 +937,7 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 		c.poisoned = fmt.Errorf("db: reopen required after committed generation %d failed to rotate: %w", published.Generation, err)
 		return errors.Join(publishErr, c.poisoned, cleanupErr)
 	}
+	immutableOwned = false
 	oldWAL := c.wal
 	oldPrimary := c.manager.PrimaryKeys()
 	oldWorking := c.idMapWorking
@@ -1125,9 +1136,11 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 	if err != nil {
 		return false, fmt.Errorf("db: create rewritten IDMap working copy: %w", err)
 	}
+	var nextManager *segmentstore.SegmentManager
 	candidateOwned := true
 	cleanup := func() {
 		if candidateOwned {
+			_ = nextManager.Close()
 			_ = primary.Close()
 			_ = removeIDMapDirectory(primaryWorking)
 		}
@@ -1137,7 +1150,7 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 	}
 	artifactGeneration := current.Generation + 1
 	deletes := common.NewDeleteStore()
-	nextManager := segmentstore.NewSegmentManager(primary, deletes)
+	nextManager = segmentstore.NewSegmentManager(primary, deletes)
 	segmentMetadata := make([]common.SegmentMetadata, 0, len(runs))
 	for runIndex, run := range runs {
 		segmentID := current.NextSegmentID + uint64(runIndex)
@@ -1162,12 +1175,13 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 		}
 		segmentPath := collectionPath(c.dir, segmentRelative)
 		created = append(created, segmentPath)
-		immutable, snapshotErr := writing.Snapshot(ctx, c.dir, segmentRelative)
+		immutable, snapshotErr := writing.SnapshotWithMmap(ctx, c.dir, segmentRelative, current.EnableMmap)
 		if snapshotErr != nil {
 			cleanup()
 			return false, fmt.Errorf("db: snapshot rewritten segment: %w", snapshotErr)
 		}
 		if addErr := nextManager.AddImmutable(immutable); addErr != nil {
+			_ = immutable.Close()
 			cleanup()
 			return false, addErr
 		}
@@ -1264,7 +1278,8 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 	}
 
 	oldWAL := c.wal
-	oldPrimary := c.manager.PrimaryKeys()
+	oldManager := c.manager
+	oldPrimary := oldManager.PrimaryKeys()
 	oldWorking := c.idMapWorking
 	c.manager = nextManager
 	c.wal = nextWAL
@@ -1274,6 +1289,7 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 	return true, errors.Join(
 		publishErr,
 		oldWAL.Close(),
+		oldManager.Close(),
 		oldPrimary.Close(),
 		removeIDMapDirectory(oldWorking),
 	)
@@ -1347,10 +1363,11 @@ func (c *CollectionStore) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return nil
+		return c.manager.Close()
 	}
 	c.closed = true
 	var errs []error
+	errs = append(errs, c.manager.Close())
 	if c.wal != nil {
 		errs = append(errs, c.wal.Close())
 	}
@@ -1464,21 +1481,23 @@ func applyRecoveredOperation(ctx context.Context, manager *segmentstore.SegmentM
 func validateCollectionState(manager *segmentstore.SegmentManager) error {
 	live := make(map[uint64]string)
 	known := make(map[uint64]struct{})
-	segments := manager.ImmutableSegments()
-	for _, segment := range segments {
-		for _, document := range segment.Documents() {
+	collect := func(documents []segmentstore.StoredDocument) error {
+		for _, document := range documents {
 			known[document.DocID] = struct{}{}
 			if !manager.Deletes().IsDeleted(document.DocID) {
 				live[document.DocID] = document.PrimaryKey
 			}
 		}
+		return nil
+	}
+	for _, segment := range manager.ImmutableSegments() {
+		if err := segment.VisitDocuments(collect); err != nil {
+			return err
+		}
 	}
 	if writing := manager.Writing(); writing != nil {
-		for _, document := range writing.Documents() {
-			known[document.DocID] = struct{}{}
-			if !manager.Deletes().IsDeleted(document.DocID) {
-				live[document.DocID] = document.PrimaryKey
-			}
+		if err := writing.VisitDocuments(collect); err != nil {
+			return err
 		}
 	}
 	var deleteErr error

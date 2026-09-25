@@ -767,12 +767,14 @@ func decodeDocumentValue(dataType DataType, count uint32, data []byte) (any, err
 		}
 		return VectorFP16(result), err
 	case DataTypeVectorFP32:
-		values, err := decodeFixed32(count, data)
-		result := map32(values, math.Float32frombits)
-		if err == nil {
-			err = validateFiniteFloat32s(result)
+		if uint64(count)*4 != uint64(len(data)) {
+			return nil, errors.New("FP32 vector length mismatch")
 		}
-		return VectorFP32(result), err
+		result := make(VectorFP32, int(count))
+		for index := range result {
+			result[index] = math.Float32frombits(binary.LittleEndian.Uint32(data[index*4:]))
+		}
+		return result, validateFiniteFloat32s(result)
 	case DataTypeVectorFP64:
 		values, err := decodeFixed64(count, data)
 		result := map64(values, math.Float64frombits)

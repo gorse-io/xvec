@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1069,4 +1070,100 @@ func TestLifecycleManifestRejectsWritingSegmentBeforePersistedDocuments(t *testi
 	}
 	err := validateLifecycleManifest(manifest)
 	require.ErrorIs(t, err, ErrCollectionCorrupt)
+}
+
+func TestCollectionMappedSegmentsFlushRewriteAndClose(t *testing.T) {
+	ctx := context.Background()
+	for _, useMmap := range []bool{false, true} {
+		t.Run(fmt.Sprint(useMmap), func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{EnableMmap: useMmap})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			_, err = store.Insert(ctx, []WriteInput{{PrimaryKey: "one", Payload: []byte("one")}, {PrimaryKey: "two", Payload: []byte("two")}})
+			require.NoError(t, err)
+			lockVersion := func() *flock.Flock {
+				lock := flock.New(filepath.Join(dir, ".version.lock"))
+				locked, err := lock.TryLock()
+				require.NoError(t, err)
+				require.True(t, locked)
+				return lock
+			}
+			versionLock := lockVersion()
+			deadline, cancel := context.WithTimeout(ctx, 75*time.Millisecond)
+			err = store.Flush(deadline)
+			cancel()
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+			require.NoError(t, versionLock.Close())
+			files, err := filepath.Glob(filepath.Join(dir, "segments", "*", "*.seg"))
+			require.NoError(t, err)
+			require.Empty(t, files, "failed publication must close mappings before removing artifacts")
+			require.NoError(t, store.Flush(ctx))
+			previous := store.manager.ImmutableSegments()[0]
+			live, err := store.LiveDocuments(ctx)
+			require.NoError(t, err)
+			live[0].Payload = []byte("changed")
+			versionLock = lockVersion()
+			deadline, cancel = context.WithTimeout(ctx, 75*time.Millisecond)
+			committed, err := store.RewriteDocuments(deadline, testCollectionSchema, live)
+			cancel()
+			require.False(t, committed)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+			require.NoError(t, versionLock.Close())
+			document, found := previous.Document(live[0].DocID)
+			require.True(t, found)
+			require.Equal(t, "one", string(document.Payload))
+			files, err = filepath.Glob(filepath.Join(dir, "segments", "*", "*.seg"))
+			require.NoError(t, err)
+			require.Len(t, files, 1)
+			committed, err = store.RewriteDocuments(ctx, testCollectionSchema, live)
+			require.NoError(t, err)
+			require.True(t, committed)
+			require.ErrorIs(t, previous.VisitDocuments(func([]segment.StoredDocument) error { return nil }), os.ErrClosed)
+			require.NoError(t, store.PruneObsoleteArtifacts(ctx))
+			current := store.manager.ImmutableSegments()[0]
+			require.NoError(t, store.Close())
+			require.ErrorIs(t, current.VisitDocuments(func([]segment.StoredDocument) error { return nil }), os.ErrClosed)
+			// Persisted mmap preference is honored on reopen; returned values are
+			// still owned even after every mapping is closed.
+			reopened, err := OpenCollection(ctx, dir, CollectionOptions{ReadOnly: true})
+			require.NoError(t, err)
+			fetched, err := reopened.Fetch(ctx, []string{"one", "two"})
+			require.NoError(t, err)
+			require.NoError(t, reopened.Close())
+			require.Equal(t, "changed", string(fetched[0].Document.Payload))
+			require.Equal(t, "two", string(fetched[1].Document.Payload))
+		})
+	}
+}
+
+func TestCollectionMmapOpenFailureClosesEarlierSegments(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := CreateCollection(ctx, dir, testCollectionSchema, CollectionOptions{EnableMmap: true})
+	require.NoError(t, err)
+	for _, key := range []string{"one", "two"} {
+		_, err := store.Insert(ctx, []WriteInput{{PrimaryKey: key, Payload: []byte(key)}})
+		require.NoError(t, err)
+		require.NoError(t, store.Flush(ctx))
+	}
+	manifest := store.Manifest()
+	require.Len(t, manifest.PersistedSegments, 2)
+	require.NoError(t, store.Close())
+	second := collectionPath(dir, manifest.PersistedSegments[1].Files[0])
+	data, err := os.ReadFile(second)
+	require.NoError(t, err)
+	data[len(data)-1] ^= 1
+	require.NoError(t, os.WriteFile(second, data, 0o600))
+	_, err = OpenCollection(ctx, dir, CollectionOptions{})
+	require.ErrorIs(t, err, ErrCollectionCorrupt)
+	if runtime.GOOS == "linux" {
+		maps, err := os.ReadFile("/proc/self/maps")
+		require.NoError(t, err)
+		require.NotContains(t, string(maps), dir, "failed open must release both the verified and corrupt mappings")
+	}
+	// Also detects leaked mappings on platforms that prevent file deletion.
+	for _, metadata := range manifest.PersistedSegments {
+		require.NoError(t, os.Remove(collectionPath(dir, metadata.Files[0])))
+	}
 }

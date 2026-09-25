@@ -21,9 +21,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gorse-io/xvec/internal/ailego/hash"
 	"github.com/gorse-io/xvec/internal/db/index/common"
@@ -337,5 +339,131 @@ func BenchmarkSegmentMemoryUsageBytes(b *testing.B) {
 				}
 			})
 		})
+	}
+}
+
+func TestImmutableSegmentPayloadSharingIsolation(t *testing.T) {
+	ctx := context.Background()
+	writing, err := NewWriteSegment(1, 10, 8)
+	require.NoError(t, err)
+	payload := []byte("original payload")
+	_, err = writing.Append(ctx, "first", payload)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	snapshot, err := writing.Snapshot(ctx, dir, "snapshot.seg")
+	require.NoError(t, err)
+	require.Same(t, &writing.docs[0].Payload[0], &snapshot.docs[0].Payload[0])
+	payload[0] = 'X'
+	returned, found := writing.Document(10)
+	require.True(t, found)
+	returned.Payload[0] = 'Y'
+	for j := 0; j < 6; j++ {
+		_, err = writing.Append(ctx, fmt.Sprint(j), []byte("another"))
+		require.NoError(t, err)
+	}
+	require.Len(t, snapshot.docs, 1)
+	reopened, err := OpenImmutableSegment(ctx, dir, snapshot.Metadata())
+	require.NoError(t, err)
+	for _, segment := range []*ImmutableSegment{snapshot, reopened} {
+		got, found := segment.Document(10)
+		require.True(t, found)
+		require.Equal(t, "original payload", string(got.Payload))
+		got.Payload[0] = 'Z'
+		again, _ := segment.Document(10)
+		require.Equal(t, "original payload", string(again.Payload))
+	}
+	// The general decoder must continue owning its returned payloads.
+	encoded, err := os.ReadFile(filepath.Join(dir, "snapshot.seg"))
+	require.NoError(t, err)
+	_, documents, err := decodeSegment(ctx, encoded)
+	require.NoError(t, err)
+	clear(encoded)
+	require.Equal(t, "original payload", string(documents[0].Payload))
+}
+
+func TestImmutableSegmentMmapLifetime(t *testing.T) {
+	for _, useMmap := range []bool{false, true} {
+		t.Run(fmt.Sprint(useMmap), func(t *testing.T) {
+			ctx := context.Background()
+			writing, err := NewWriteSegment(1, 10, 8)
+			require.NoError(t, err)
+			_, err = writing.Append(ctx, "one", []byte("original payload"))
+			require.NoError(t, err)
+			dir := t.TempDir()
+			segment, err := writing.SnapshotWithMmap(ctx, dir, "data.seg", useMmap)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, segment.Close()) })
+			require.Equal(t, useMmap, segment.mapped != nil)
+			copied, found := segment.Document(10)
+			require.True(t, found)
+			copied.Payload[0] = 'X'
+			again, _ := segment.Document(10)
+			require.Equal(t, "original payload", string(again.Payload))
+			entered, release := make(chan struct{}), make(chan struct{})
+			visited := make(chan error, 1)
+			go func() {
+				visited <- segment.VisitDocuments(func(documents []StoredDocument) error {
+					close(entered)
+					<-release
+					if string(documents[0].Payload) != "original payload" {
+						return fmt.Errorf("payload changed during visit")
+					}
+					return nil
+				})
+			}()
+			<-entered
+			closed := make(chan error, 1)
+			go func() { closed <- segment.Close() }()
+			select {
+			case err := <-closed:
+				t.Fatalf("Close returned before the borrowed reader: %v", err)
+			case <-time.After(10 * time.Millisecond):
+			}
+			close(release)
+			require.NoError(t, <-visited)
+			require.NoError(t, <-closed)
+			require.NoError(t, segment.Close())
+			require.Nil(t, segment.mapped)
+			require.Nil(t, segment.Documents())
+			require.ErrorIs(t, segment.VisitDocuments(func([]StoredDocument) error { return nil }), os.ErrClosed)
+			require.Equal(t, "original payload", string(again.Payload), "returned copies outlive mappings")
+			reopened, err := OpenImmutableSegmentWithMmap(ctx, dir, segment.Metadata(), useMmap)
+			require.NoError(t, err)
+			got, found := reopened.Document(10)
+			require.True(t, found)
+			require.Equal(t, again, got)
+			require.NoError(t, reopened.Close())
+			require.NoError(t, os.Remove(filepath.Join(dir, "data.seg")))
+		})
+	}
+}
+
+func TestImmutableSegmentMmapFailureCleanup(t *testing.T) {
+	ctx := context.Background()
+	writing, err := NewWriteSegment(1, 0, 1)
+	require.NoError(t, err)
+	_, err = writing.Append(ctx, "one", []byte("payload"))
+	require.NoError(t, err)
+	dir := t.TempDir()
+	segment, err := writing.Snapshot(ctx, dir, "data.seg")
+	require.NoError(t, err)
+	metadata := segment.Metadata()
+	require.NoError(t, segment.Close())
+	path := filepath.Join(dir, "data.seg")
+	encoded, err := os.ReadFile(path)
+	require.NoError(t, err)
+	for _, mismatch := range []bool{false, true} {
+		data := slices.Clone(encoded)
+		meta := metadata
+		if mismatch {
+			meta.ID++
+		} else {
+			data[len(data)-1] ^= 1
+		}
+		require.NoError(t, os.WriteFile(path, data, 0o600))
+		_, err := OpenImmutableSegmentWithMmap(ctx, dir, meta, true)
+		require.ErrorIs(t, err, ErrSegmentCorrupt)
+		// In particular, Windows cannot remove a file with a leaked mapping.
+		require.NoError(t, os.Remove(path))
 	}
 }

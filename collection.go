@@ -156,6 +156,7 @@ type collectionSegmentDocuments struct {
 }
 
 type collectionSegmentRuntime struct {
+	documents []Document // Immutable decoded records shared across query snapshots.
 	segmentID uint64
 	key       collectionRuntimeKey
 	indexes   *collectionRuntimeIndexes
@@ -475,7 +476,7 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 		}
 		indexes.key = key
 		runtime := &collectionSegmentRuntime{
-			segmentID: segment.metadata.ID, key: key, indexes: indexes,
+			segmentID: segment.metadata.ID, key: key, indexes: indexes, documents: segment.documents,
 		}
 		runtime.refs.Store(1)
 		created = append(created, runtime)
@@ -541,6 +542,13 @@ func openCollectionDenseArtifact(
 	case IndexTypeHNSW:
 		if spec.quantize == QuantizeTypeUndefined {
 			return core.OpenHNSWIndex(ctx, path)
+		}
+		if field.DataType == DataTypeVectorFP32 {
+			candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
+			if err != nil {
+				return nil, err
+			}
+			return core.OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx, path, kind, reformer, candidates, useMmap)
 		}
 		return core.OpenScalarQuantizedHNSWIndex(ctx, path, kind, reformer)
 	case IndexTypeHNSWRaBitQ:
@@ -612,8 +620,26 @@ func openCollectionFTSRuntime(ctx context.Context, path string, field FieldSchem
 }
 
 func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSegmentDocuments, error) {
+	// Snapshot the cache before visiting storage; do not invert the index/store
+	// lock order. Immutable segment records survive deletes in the live-key map.
+	schemaKey, err := collectionRuntimeKeyFor(c.schema, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.indexMu.RLock()
+	cached := make(map[uint64]*collectionSegmentRuntime, len(c.segmentIndexes))
+	for id, runtime := range c.segmentIndexes {
+		cached[id] = runtime
+	}
+	c.indexMu.RUnlock()
 	segments := make([]collectionSegmentDocuments, 0)
-	err := c.store.VisitSegmentSnapshots(ctx, func(snapshot db.SegmentSnapshot) error {
+	err = c.store.VisitSegmentSnapshots(ctx, func(snapshot db.SegmentSnapshot) error {
+		if runtime := cached[snapshot.Metadata.ID]; !snapshot.Mutable && runtime != nil &&
+			runtime.key.schemaHash == schemaKey.schemaHash && runtime.key.count == len(snapshot.Documents) &&
+			runtime.key.maxDocID == snapshot.Metadata.MaxDocID && len(runtime.documents) == len(snapshot.Documents) {
+			segments = append(segments, collectionSegmentDocuments{metadata: snapshot.Metadata, documents: runtime.documents})
+			return nil
+		}
 		documents := make([]Document, len(snapshot.Documents))
 		for position, item := range snapshot.Documents {
 			document, decodeErr := decodeStoredDocument(item)
@@ -960,7 +986,7 @@ func buildCollectionIndexes(
 			}
 			if field.DataType.IsDenseVector() {
 				var exact collectionDenseIndex
-				if spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined && field.DataType == DataTypeVectorFP32 {
+				if field.DataType == DataTypeVectorFP32 && (spec.indexType == IndexTypeHNSW || (spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined)) {
 					candidates, candidateErr := collectionDenseBorrowedCandidates(ctx, field, documents)
 					if candidateErr != nil {
 						return fail(candidateErr)
@@ -976,7 +1002,8 @@ func buildCollectionIndexes(
 				var flat collectionDenseIndex
 				if spec.quantize == QuantizeTypeUndefined || spec.indexType == IndexTypeHNSWRaBitQ || spec.indexType == IndexTypeIVFRaBitQ {
 					flat = exact
-				} else {
+				} else if spec.indexType != IndexTypeHNSW {
+					// Quantized HNSW supplies a shared Flat view after opening the graph.
 					flat, err = buildCollectionDenseFlat(ctx, schema.Name, field, documents, spec)
 					if err != nil {
 						return fail(err)
@@ -994,14 +1021,20 @@ func buildCollectionIndexes(
 					if err != nil {
 						return fail(err)
 					}
-					indexes.denseNative[field.Name] = native
-					continue
-				}
-				native, err = buildCollectionDenseNative(ctx, schema.Name, field, documents, spec, workers, maxBufferSize)
-				if err != nil {
-					return fail(err)
+				} else {
+					native, err = buildCollectionDenseNative(ctx, schema.Name, field, documents, spec, workers, maxBufferSize)
+					if err != nil {
+						return fail(err)
+					}
 				}
 				indexes.denseNative[field.Name] = native
+				if flat == nil {
+					quantized, ok := native.(*core.ScalarQuantizedHNSWIndex)
+					if !ok {
+						return fail(fmt.Errorf("quantized HNSW field %q has an incompatible native index", field.Name))
+					}
+					indexes.denseFlat[field.Name] = quantized.FlatIndex()
+				}
 				continue
 			}
 			exact, err := buildSparseFlatIndex(ctx, field, documents)
@@ -1372,7 +1405,7 @@ func (c *Collection) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return wrapCollectionError("close collection", c.path, c.closeRetiredSegmentRuntimes())
+		return wrapCollectionError("close collection", c.path, errors.Join(c.closeRetiredSegmentRuntimes(), c.store.Close()))
 	}
 	if err := c.requireNoActiveIteratorsLocked("close collection"); err != nil {
 		return err
@@ -2185,13 +2218,24 @@ func buildCollectionDenseHNSW(
 	spec collectionVectorIndex,
 	workers int,
 ) (collectionHNSWIndex, error) {
-	candidates, err := collectionDenseCandidates(ctx, field, documents)
+	candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
 	if err != nil {
 		return nil, err
 	}
 	options := core.DefaultHNSWBuildOptions(spec.metric)
 	options.M = spec.hnsw.M
 	options.EFConstruction = spec.hnsw.EFConstruction
+	if field.DataType == DataTypeVectorFP32 && spec.quantize != QuantizeTypeUndefined {
+		kind, err := toCoreQuantization(spec.quantize)
+		if err != nil {
+			return nil, err
+		}
+		reformer, err := collectionReformer(schemaName, field, spec)
+		if err != nil {
+			return nil, err
+		}
+		return core.BuildScalarQuantizedHNSWWithBorrowedVectors(ctx, int(field.Dimension), options, kind, reformer, candidates, workers)
+	}
 	var builder *core.HNSWBuilder
 	if field.DataType == DataTypeVectorFP16 && spec.quantize == QuantizeTypeUndefined {
 		builder, err = core.NewHNSWBuilderFP16(int(field.Dimension), options)

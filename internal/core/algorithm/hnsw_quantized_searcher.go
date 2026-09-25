@@ -18,6 +18,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+
+	mmap "github.com/blevesearch/mmap-go"
 	"slices"
 
 	"github.com/gorse-io/xvec/internal/ailego/container"
@@ -52,13 +55,19 @@ func NewScalarQuantizedHNSWIndex(
 	if err != nil {
 		return nil, err
 	}
-	vectors, err := newScalarQuantizedVectors(
-		ctx, snapshot.dimension, snapshot.options.Metric, kind, reformer, snapshot.keys, snapshot.vectors,
+	return newOwnedScalarQuantizedHNSWIndex(ctx, snapshot, kind, reformer)
+}
+
+// The graph is private and immutable: codes, persistence and refinement share
+// its original vectors instead of retaining a second FP32 copy.
+func newOwnedScalarQuantizedHNSWIndex(ctx context.Context, base *HNSWIndex, kind Quantization, reformer DenseReformer) (*ScalarQuantizedHNSWIndex, error) {
+	vectors, err := newScalarQuantizedVectorStorage(
+		ctx, base.dimension, base.options.Metric, kind, reformer, base.keys, base.vectors, base.vectorRows,
 	)
 	if err != nil {
 		return nil, err
 	}
-	return &ScalarQuantizedHNSWIndex{base: snapshot, vectors: vectors}, nil
+	return &ScalarQuantizedHNSWIndex{base: base, vectors: vectors}, nil
 }
 
 // Save persists the immutable HNSW topology and original vectors. Scalar codes
@@ -78,7 +87,66 @@ func OpenScalarQuantizedHNSWIndex(ctx context.Context, path string, kind Quantiz
 	if err != nil {
 		return nil, err
 	}
-	return NewScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+	return newOwnedScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+}
+
+// OpenScalarQuantizedHNSWIndexWithBorrowedVectors shares immutable collection
+// vectors instead of decoding another FP32 copy. Callers must keep candidate
+// vectors immutable for the index lifetime. Keys and slice headers are copied;
+// artifact values are fully verified against the supplied vectors. With
+// useMmap, a temporary read-only mapping avoids an encoded-file heap buffer.
+func OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx context.Context, path string, kind Quantization, reformer DenseReformer, candidates []Candidate, useMmap bool) (*ScalarQuantizedHNSWIndex, error) {
+	if ctx == nil {
+		return nil, errors.New("core: nil scalar-quantized HNSW context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	borrowed := make(map[uint64][]float32, len(candidates))
+	for _, candidate := range candidates {
+		if _, found := borrowed[candidate.Key]; found {
+			return nil, fmt.Errorf("%w: %d", ErrDuplicateKey, candidate.Key)
+		}
+		borrowed[candidate.Key] = candidate.Vector
+	}
+	base, err := openHNSWIndexWithBorrowedVectors(ctx, path, borrowed, useMmap)
+	if err != nil {
+		return nil, err
+	}
+	return newOwnedScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+}
+
+// The mapping is temporary: topology is decoded, and originals come from the
+// immutable collection. Unmapping before quantization avoids retaining a full
+// serialized graph in the Go heap throughout code reconstruction.
+func openHNSWIndexWithBorrowedVectors(ctx context.Context, path string, borrowed map[uint64][]float32, useMmap bool) (index *HNSWIndex, err error) {
+	if !useMmap {
+		encoded, err := readHNSWFile(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		return decodeHNSWIndexWithVectors(ctx, encoded, borrowed)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	encoded, err := mmap.Map(file, mmap.RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, encoded.Unmap()) }()
+	return decodeHNSWIndexWithVectors(ctx, encoded, borrowed)
+}
+
+// FlatIndex returns an immutable linear-search view sharing the graph's codes
+// and originals. It preserves the quantized scores without another encoding.
+func (i *ScalarQuantizedHNSWIndex) FlatIndex() *ScalarQuantizedFlatIndex {
+	if i == nil {
+		return nil
+	}
+	return &ScalarQuantizedFlatIndex{vectors: i.vectors}
 }
 
 func (i *ScalarQuantizedHNSWIndex) Dimension() int {

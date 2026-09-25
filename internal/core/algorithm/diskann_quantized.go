@@ -56,7 +56,7 @@ func NewScalarQuantizedDiskANNIndex(
 		keys[position] = candidate.Key
 		originals = append(originals, candidate.Vector...)
 	}
-	vectors, err := newScalarQuantizedVectors(ctx, dimension, options.Metric, kind, reformer, keys, originals)
+	vectors, err := newOwnedScalarQuantizedVectors(ctx, dimension, options.Metric, kind, reformer, keys, originals)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func OpenScalarQuantizedDiskANNIndexWithMmap(
 		_ = base.Close()
 		return nil, fmt.Errorf("%w: artifact has %d vectors, collection has %d", ErrInvalidQuantizedVector, base.Len(), len(keys))
 	}
-	vectors, err := newScalarQuantizedVectors(ctx, base.Dimension(), base.Metric(), kind, reformer, keys, originals)
+	vectors, err := newOwnedScalarQuantizedVectors(ctx, base.Dimension(), base.Metric(), kind, reformer, keys, originals)
 	if err != nil {
 		_ = base.Close()
 		return nil, err
