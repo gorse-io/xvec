@@ -20,7 +20,7 @@ import (
 	"slices"
 )
 
-// searchBaseQuantized batches immutable INT8 or INT4 codes and maintains
+// searchBaseQuantized batches immutable FP16, INT8 or INT4 codes and maintains
 // candidates with the same BlockHeap used by dense HNSW. Filters and radius
 // searches retain the dual-heap traversal so rejected bridge nodes can still
 // be expanded.
@@ -37,7 +37,7 @@ func (i *ScalarQuantizedHNSWIndex) searchBaseQuantized(
 	visited.batchScores = slices.Grow(visited.batchScores[:0], degree)
 	metric := i.vectors.metric
 
-	score, err := QuantizedDistance(metric, i.vectors.codes[entry], query)
+	score, err := i.vectors.distanceToCode(entry, query)
 	if err != nil {
 		return nil, err
 	}
@@ -82,21 +82,29 @@ func (i *ScalarQuantizedHNSWIndex) searchBaseQuantized(
 			visited.batchCodeDots = append(visited.batchCodeDots, 0)
 			visited.batchScores = append(visited.batchScores, 0)
 		}
-		integerCodeDots(query.kind, query.codes, visited.batchCodes, visited.batchCodeDots)
-		for j, id := range visited.batchIDs {
-			// Stored codes are immutable and validated at construction; the
-			// query was validated and quantized before graph traversal.
-			score, err := quantizedDistanceFromDot(metric, i.vectors.codes[id], query, float64(visited.batchCodeDots[j]))
-			if err != nil {
-				return nil, fmt.Errorf("core: score integer-quantized HNSW neighbor: %w", err)
+		if query.kind == QuantizationFP16 {
+			fp16CodeDistances(metric, query.codes, visited.batchCodes, visited.batchScores)
+			for j := range visited.batchScores {
+				visited.batchScores[j] = blockHeapDistance(metric, visited.batchScores[j])
 			}
-			visited.batchScores[j] = blockHeapDistance(metric, score)
+		} else {
+			integerCodeDots(query.kind, query.codes, visited.batchCodes, visited.batchCodeDots)
+			for j, id := range visited.batchIDs {
+				// Stored codes are immutable and validated at construction; the
+				// query was validated and quantized before graph traversal.
+				score, err := quantizedDistanceFromDot(metric, i.vectors.codes[id], query, float64(visited.batchCodeDots[j]))
+				if err != nil {
+					return nil, fmt.Errorf("core: score integer-quantized HNSW neighbor: %w", err)
+				}
+				visited.batchScores[j] = blockHeapDistance(metric, score)
+			}
 		}
 		visited.blockHeap.pushBlockWithTies(visited.batchScores, visited.batchIDs, visited.batchTies)
 		visited.overflow = appendBlockHeapBoundaryTies(&visited.blockHeap, visited.batchScores, visited.batchIDs, visited.batchTies, visited.overflow)
 	}
 
-	// Integer batch products are exact, so retained scores need no reranking.
+	// Retain the metric scores used during traversal; no precision-changing
+	// reranking is needed.
 	result := make([]hnswScoredNode, visited.blockHeap.Len())
 	for j := range result {
 		result[j] = hnswScoredNode{
