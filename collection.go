@@ -156,6 +156,7 @@ type collectionSegmentDocuments struct {
 }
 
 type collectionSegmentRuntime struct {
+	documents []Document // Immutable decoded records shared across query snapshots.
 	segmentID uint64
 	key       collectionRuntimeKey
 	indexes   *collectionRuntimeIndexes
@@ -475,7 +476,7 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 		}
 		indexes.key = key
 		runtime := &collectionSegmentRuntime{
-			segmentID: segment.metadata.ID, key: key, indexes: indexes,
+			segmentID: segment.metadata.ID, key: key, indexes: indexes, documents: segment.documents,
 		}
 		runtime.refs.Store(1)
 		created = append(created, runtime)
@@ -619,8 +620,26 @@ func openCollectionFTSRuntime(ctx context.Context, path string, field FieldSchem
 }
 
 func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSegmentDocuments, error) {
+	// Snapshot the cache before visiting storage; do not invert the index/store
+	// lock order. Immutable segment records survive deletes in the live-key map.
+	schemaKey, err := collectionRuntimeKeyFor(c.schema, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.indexMu.RLock()
+	cached := make(map[uint64]*collectionSegmentRuntime, len(c.segmentIndexes))
+	for id, runtime := range c.segmentIndexes {
+		cached[id] = runtime
+	}
+	c.indexMu.RUnlock()
 	segments := make([]collectionSegmentDocuments, 0)
-	err := c.store.VisitSegmentSnapshots(ctx, func(snapshot db.SegmentSnapshot) error {
+	err = c.store.VisitSegmentSnapshots(ctx, func(snapshot db.SegmentSnapshot) error {
+		if runtime := cached[snapshot.Metadata.ID]; !snapshot.Mutable && runtime != nil &&
+			runtime.key.schemaHash == schemaKey.schemaHash && runtime.key.count == len(snapshot.Documents) &&
+			runtime.key.maxDocID == snapshot.Metadata.MaxDocID && len(runtime.documents) == len(snapshot.Documents) {
+			segments = append(segments, collectionSegmentDocuments{metadata: snapshot.Metadata, documents: runtime.documents})
+			return nil
+		}
 		documents := make([]Document, len(snapshot.Documents))
 		for position, item := range snapshot.Documents {
 			document, decodeErr := decodeStoredDocument(item)

@@ -107,3 +107,48 @@ func TestHNSWRuntimeSharesFlatAndDefersExact(t *testing.T) {
 		})
 	}
 }
+
+func TestImmutableHNSWDocumentsSharedAcrossQuerySnapshots(t *testing.T) {
+	ctx := context.Background()
+	params := NewHNSWIndexParams(MetricTypeL2)
+	params.M, params.EFConstruction, params.Quantize = 4, 16, QuantizeTypeInt4
+	schema := NewCollectionSchema("snapshot_memory", FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Index: params}, FieldSchema{Name: "rating", DataType: DataTypeInt32})
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "collection"), schema, NewCollectionOptions())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, collection.Close()) }()
+	_, err = collection.Insert(ctx, annDenseDocuments(32))
+	require.NoError(t, err)
+	require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
+	query := VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0, 0, 0}, TopK: 100, Projection: Projection{IncludeVectors: true}}
+	results, err := collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, results, 32)
+	before := collection.querySnapshot.Load()
+	require.NotEmpty(t, before.segments)
+	require.False(t, before.segments[0].mutable)
+	key := before.documents[0].PrimaryKey
+	vector := before.documents[0].Fields["embedding"].(VectorFP32)
+	// Public result mutation must not reach vectors borrowed by the index.
+	results[0].Fields["embedding"].(VectorFP32)[0] += 100
+	_, err = collection.Delete(ctx, []string{key})
+	require.NoError(t, err)
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, results, 31)
+	after := collection.querySnapshot.Load()
+	require.Same(t, before.runtimes[0], after.runtimes[0])
+	require.Same(t, &before.segments[0].documents[0], &after.segments[0].documents[0])
+	require.Same(t, &vector[0], &after.segments[0].documents[0].Fields["embedding"].(VectorFP32)[0])
+	for _, document := range results {
+		require.NotEqual(t, key, document.PrimaryKey)
+	}
+	// Updating a vector must create a new generation, not mutate a shared row.
+	updatedKey := results[0].PrimaryKey
+	_, err = collection.Update(ctx, []Document{{PrimaryKey: updatedKey, Fields: map[string]any{"embedding": VectorFP32{100, 0, 0, 0}}}})
+	require.NoError(t, err)
+	query.DenseVector = VectorFP32{100, 0, 0, 0}
+	results, err = collection.Query(ctx, query)
+	require.NoError(t, err)
+	require.Equal(t, updatedKey, results[0].PrimaryKey)
+	require.Equal(t, VectorFP32{100, 0, 0, 0}, results[0].Fields["embedding"])
+}
