@@ -21,7 +21,7 @@ TEST_LASX_BINARY ?= .test-lasx.loong64.test
 
 .PHONY: generate avx int4-avx2 int4-avx512 int8-avx2 int8-avx512 neon rvv lasx clean test-neon test-rvv test-lasx
 
-generate: avx int4-avx2 int4-avx512 int8-avx2 int8-avx512 neon rvv lasx clean
+generate: avx fp16-avx int4-avx2 int4-avx512 int8-avx2 int8-avx512 neon rvv lasx clean
 
 avx:
 	$(RM) -r $(GOAT_OUTPUT_DIR)
@@ -94,3 +94,9 @@ test-lasx:
 	trap '$(RM) ./$(TEST_LASX_BINARY)' EXIT; \
 	GOOS=linux GOARCH=loong64 CGO_ENABLED=0 $(GO) test -c -o $(TEST_LASX_BINARY) .; \
 	$(LOONG64_QEMU) $(LOONG64_QEMU_FLAGS) ./$(TEST_LASX_BINARY)
+
+.PHONY: fp16-avx
+fp16-avx:
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/distance_batch_fp16_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mf16c -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/distance_batch_fp16_avx.go $(GOAT_OUTPUT_DIR)/distance_batch_fp16_avx.s .

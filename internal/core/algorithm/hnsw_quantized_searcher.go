@@ -335,7 +335,7 @@ func (i *ScalarQuantizedHNSWIndex) search(
 	}
 	capacity := max(options.EF, options.TopK)
 	var candidates []hnswScoredNode
-	if (i.vectors.kind == QuantizationInt8 || i.vectors.kind == QuantizationInt4) && options.Filter == nil && options.Radius == 0 && capacity <= maxBlockHeapSearchCapacity {
+	if (i.vectors.kind == QuantizationInt8 || i.vectors.kind == QuantizationInt4 || i.vectors.kind == QuantizationFP16) && options.Filter == nil && options.Radius == 0 && capacity <= maxBlockHeapSearchCapacity {
 		candidates, err = i.searchBaseQuantized(ctx, queryCode, entry, capacity, options, visited)
 	} else {
 		candidates, err = i.searchBase(ctx, entry, capacity, options, scoreAt, &queryCode, visited)
@@ -441,12 +441,13 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 	visited.reset(len(i.vectors.keys))
 	// Batch scoring is independent of the result queue: large EF, filters, and
 	// radius searches still use the same dual-heap admission and stopping rules.
-	batch := query != nil && (query.kind == QuantizationInt4 || query.kind == QuantizationInt8)
+	batch := query != nil && (query.kind == QuantizationInt4 || query.kind == QuantizationInt8 || query.kind == QuantizationFP16)
 	if batch {
 		degree := min(i.base.maxDegree(0), max(0, len(i.vectors.keys)-1), initialDistanceBatchCapacity)
 		visited.batchPositions = slices.Grow(visited.batchPositions[:0], degree)
 		visited.batchCodes = slices.Grow(visited.batchCodes[:0], degree)
 		visited.batchCodeDots = slices.Grow(visited.batchCodeDots[:0], degree)
+		visited.batchScores = slices.Grow(visited.batchScores[:0], degree)
 	}
 
 	score, err := scoreAt(entry)
@@ -474,6 +475,7 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 			visited.batchPositions = visited.batchPositions[:0]
 			visited.batchCodes = visited.batchCodes[:0]
 			visited.batchCodeDots = visited.batchCodeDots[:0]
+			visited.batchScores = visited.batchScores[:0]
 			for _, neighbor := range neighbors {
 				if visited.seen(neighbor) {
 					continue
@@ -482,14 +484,21 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 				visited.batchPositions = append(visited.batchPositions, neighbor)
 				visited.batchCodes = append(visited.batchCodes, i.vectors.codes[neighbor].codes)
 				visited.batchCodeDots = append(visited.batchCodeDots, 0)
+				visited.batchScores = append(visited.batchScores, 0)
 			}
-			integerCodeDots(query.kind, query.codes, visited.batchCodes, visited.batchCodeDots)
+			if query.kind == QuantizationFP16 {
+				fp16CodeDistances(metric, query.codes, visited.batchCodes, visited.batchScores)
+			} else {
+				integerCodeDots(query.kind, query.codes, visited.batchCodes, visited.batchCodeDots)
+			}
 			neighbors = visited.batchPositions
 		}
 		for j, neighbor := range neighbors {
 			var score float32
 			var err error
-			if batch {
+			if batch && query.kind == QuantizationFP16 {
+				score = visited.batchScores[j]
+			} else if batch {
 				score, err = quantizedDistanceFromDot(metric, i.vectors.codes[neighbor], *query, float64(visited.batchCodeDots[j]))
 			} else {
 				if visited.seen(neighbor) {

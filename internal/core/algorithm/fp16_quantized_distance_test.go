@@ -207,3 +207,34 @@ func TestFP16HNSWTraversalAndReopen(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, original, restored)
 }
+
+func TestFP16CodeBatchDistances(t *testing.T) {
+	for _, dimension := range []int{1, 7, 8, 9, 33, 768, 769} {
+		query, other := fp16DistanceTestVectors(t, dimension)
+		for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
+			for count := range 10 {
+				candidates := make([][]byte, count)
+				output := make([]float32, count)
+				for _, unaligned := range []bool{false, true} {
+					for j := range candidates {
+						candidates[j] = other.codes
+						if j%3 == 0 {
+							candidates[j] = query.codes
+						}
+						if unaligned && j%5 == 0 {
+							candidates[j] = unalignedFP16Codes(candidates[j])
+						}
+					}
+					for _, q := range [][]byte{query.codes, unalignedFP16Codes(query.codes)} {
+						fp16CodeDistances(metric, q, candidates, output)
+						for j := range output {
+							want := fp16CodeDistance(metric, q, candidates[j])
+							require.InDelta(t, want, output[j], 2e-5*max(1, math.Abs(float64(want))))
+						}
+						require.Zero(t, testing.AllocsPerRun(10, func() { fp16CodeDistances(metric, q, candidates, output) }))
+					}
+				}
+			}
+		}
+	}
+}

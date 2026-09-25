@@ -23,46 +23,52 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestQuantizedHNSWInt8BatchMatchesScalar(t *testing.T) {
-	const dimension, count = 33, 80
-	for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
-		t.Run(fmt.Sprint(metric), func(t *testing.T) {
-			base := &HNSWIndex{
-				dimension: dimension, options: HNSWBuildOptions{Metric: metric, M: count, EFConstruction: count},
-				keys: make([]uint64, count), vectors: make([]float32, dimension*count),
-				neighbors: make([][][]int, count), levels: make([]int, count),
-			}
-			for j := range count {
-				base.keys[j] = uint64(count - j)
-				for d := range dimension {
-					if j > 1 {
-						base.vectors[j*dimension+d] = float32((j*13+d*7)%31 - 15)
+func TestQuantizedHNSWInt8FP16BatchMatchesScalar(t *testing.T) {
+	for _, kind := range []Quantization{QuantizationInt8, QuantizationFP16} {
+		t.Run(fmt.Sprint(kind), func(t *testing.T) {
+
+			const dimension, count = 33, 80
+			for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
+				t.Run(fmt.Sprint(metric), func(t *testing.T) {
+					base := &HNSWIndex{
+						dimension: dimension, options: HNSWBuildOptions{Metric: metric, M: count, EFConstruction: count},
+						keys: make([]uint64, count), vectors: make([]float32, dimension*count),
+						neighbors: make([][][]int, count), levels: make([]int, count),
 					}
-				}
-				base.neighbors[j] = make([][]int, 1)
-				for n := range count {
-					if n != j {
-						base.neighbors[j][0] = append(base.neighbors[j][0], n)
+					for j := range count {
+						base.keys[j] = uint64(count - j)
+						for d := range dimension {
+							if j > 1 {
+								base.vectors[j*dimension+d] = float32((j*13+d*7)%31 - 15)
+							}
+						}
+						base.neighbors[j] = make([][]int, 1)
+						for n := range count {
+							if n != j {
+								base.neighbors[j][0] = append(base.neighbors[j][0], n)
+							}
+						}
 					}
-				}
+					index, err := NewScalarQuantizedHNSWIndex(context.Background(), base, kind, nil)
+					require.NoError(t, err)
+					visited := acquireHNSWVisited(count)
+					defer releaseHNSWVisited(visited)
+					for _, query := range [][]float32{make([]float32, dimension), base.vectors[3*dimension : 4*dimension]} {
+						code, err := index.vectors.quantizedQuery(query)
+						require.NoError(t, err)
+						options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: count}, EF: count, PrefetchOffset: 8}
+						scoreAt := func(position int) (float32, error) {
+							return QuantizedDistance(metric, index.vectors.codes[position], code)
+						}
+						want, err := index.searchBase(context.Background(), 0, count, options, scoreAt, nil, visited)
+						require.NoError(t, err)
+						got, err := index.searchBaseQuantized(context.Background(), code, 0, count, options, visited)
+						require.NoError(t, err)
+						require.Equal(t, want, got)
+					}
+				})
 			}
-			index, err := NewScalarQuantizedHNSWIndex(context.Background(), base, QuantizationInt8, nil)
-			require.NoError(t, err)
-			visited := acquireHNSWVisited(count)
-			defer releaseHNSWVisited(visited)
-			for _, query := range [][]float32{make([]float32, dimension), base.vectors[3*dimension : 4*dimension]} {
-				code, err := index.vectors.quantizedQuery(query)
-				require.NoError(t, err)
-				options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: count}, EF: count, PrefetchOffset: 8}
-				scoreAt := func(position int) (float32, error) {
-					return QuantizedDistance(metric, index.vectors.codes[position], code)
-				}
-				want, err := index.searchBase(context.Background(), 0, count, options, scoreAt, nil, visited)
-				require.NoError(t, err)
-				got, err := index.searchBaseQuantized(context.Background(), code, 0, count, options, visited)
-				require.NoError(t, err)
-				require.Equal(t, want, got)
-			}
+
 		})
 	}
 }
@@ -108,51 +114,63 @@ func TestQuantizedHNSWInt4BatchMatchesScalar(t *testing.T) {
 	}
 }
 
-func TestQuantizedHNSWInt8BatchExpandsBoundaryTies(t *testing.T) {
-	base := &HNSWIndex{
-		dimension: 1, options: HNSWBuildOptions{Metric: MetricL2, M: 2, EFConstruction: 3},
-		keys: []uint64{1, 30, 2, 10, 3}, vectors: []float32{0, 1, .5, 1, .25},
-		neighbors: [][][]int{{{2, 1}}, {{4}}, {{3}}, {nil}, {nil}},
+func TestQuantizedHNSWInt8FP16BatchExpandsBoundaryTies(t *testing.T) {
+	for _, kind := range []Quantization{QuantizationInt8, QuantizationFP16} {
+		t.Run(fmt.Sprint(kind), func(t *testing.T) {
+
+			base := &HNSWIndex{
+				dimension: 1, options: HNSWBuildOptions{Metric: MetricL2, M: 2, EFConstruction: 3},
+				keys: []uint64{1, 30, 2, 10, 3}, vectors: []float32{0, 1, .5, 1, .25},
+				neighbors: [][][]int{{{2, 1}}, {{4}}, {{3}}, {nil}, {nil}},
+			}
+			index, err := NewScalarQuantizedHNSWIndex(context.Background(), base, kind, nil)
+			require.NoError(t, err)
+			code, err := index.vectors.quantizedQuery([]float32{0})
+			require.NoError(t, err)
+			visited := acquireHNSWVisited(5)
+			defer releaseHNSWVisited(visited)
+			options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 3}, EF: 3}
+			got, err := index.searchBaseQuantized(context.Background(), code, 0, 3, options, visited)
+			require.NoError(t, err)
+			require.Equal(t, []hnswScoredNode{{position: 0, score: 0}, {position: 4, score: .0625}, {position: 2, score: .25}}, got)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err = index.searchBaseQuantized(ctx, code, 0, 3, options, visited)
+			require.ErrorIs(t, err, context.Canceled)
+
+		})
 	}
-	index, err := NewScalarQuantizedHNSWIndex(context.Background(), base, QuantizationInt8, nil)
-	require.NoError(t, err)
-	code, err := index.vectors.quantizedQuery([]float32{0})
-	require.NoError(t, err)
-	visited := acquireHNSWVisited(5)
-	defer releaseHNSWVisited(visited)
-	options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 3}, EF: 3}
-	got, err := index.searchBaseQuantized(context.Background(), code, 0, 3, options, visited)
-	require.NoError(t, err)
-	require.Equal(t, []hnswScoredNode{{position: 0, score: 0}, {position: 4, score: .0625}, {position: 2, score: .25}}, got)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err = index.searchBaseQuantized(ctx, code, 0, 3, options, visited)
-	require.ErrorIs(t, err, context.Canceled)
 }
 
-func TestQuantizedHNSWInt8FallbackCrossesRejectedBridge(t *testing.T) {
-	const count = DefaultHNSWBruteForceThreshold + 1
-	base := &HNSWIndex{
-		dimension: 1, options: HNSWBuildOptions{Metric: MetricL2, M: 2, EFConstruction: 3},
-		keys: make([]uint64, count), vectors: make([]float32, count),
-		neighbors: make([][][]int, count), levels: make([]int, count),
-	}
-	for j := range count {
-		base.keys[j] = uint64(j + 1)
-		base.neighbors[j] = [][]int{nil}
-	}
-	base.vectors[0], base.vectors[1] = 1, 10
-	base.neighbors[0][0], base.neighbors[1][0] = []int{1}, []int{2}
-	index, err := NewScalarQuantizedHNSWIndex(context.Background(), base, QuantizationInt8, nil)
-	require.NoError(t, err)
-	for _, options := range []HNSWSearchOptions{
-		{SearchOptions: SearchOptions{TopK: 1, Radius: .5}, EF: 1},
-		{SearchOptions: SearchOptions{TopK: 1, Filter: func(key uint64) bool { return key == 3 }}, EF: 1},
-		{SearchOptions: SearchOptions{TopK: 1}, EF: maxBlockHeapSearchCapacity + 1},
-	} {
-		got, err := index.SearchHNSW(context.Background(), []float32{0}, options)
-		require.NoError(t, err)
-		require.Equal(t, []Result{{Key: 3, Score: 0}}, got)
+func TestQuantizedHNSWInt8FP16FallbackCrossesRejectedBridge(t *testing.T) {
+	for _, kind := range []Quantization{QuantizationInt8, QuantizationFP16} {
+		t.Run(fmt.Sprint(kind), func(t *testing.T) {
+
+			const count = DefaultHNSWBruteForceThreshold + 1
+			base := &HNSWIndex{
+				dimension: 1, options: HNSWBuildOptions{Metric: MetricL2, M: 2, EFConstruction: 3},
+				keys: make([]uint64, count), vectors: make([]float32, count),
+				neighbors: make([][][]int, count), levels: make([]int, count),
+			}
+			for j := range count {
+				base.keys[j] = uint64(j + 1)
+				base.neighbors[j] = [][]int{nil}
+			}
+			base.vectors[0], base.vectors[1] = 1, 10
+			base.neighbors[0][0], base.neighbors[1][0] = []int{1}, []int{2}
+			index, err := NewScalarQuantizedHNSWIndex(context.Background(), base, kind, nil)
+			require.NoError(t, err)
+			for _, options := range []HNSWSearchOptions{
+				{SearchOptions: SearchOptions{TopK: 1, Radius: .5}, EF: 1},
+				{SearchOptions: SearchOptions{TopK: 1, Filter: func(key uint64) bool { return key == 3 }}, EF: 1},
+				{SearchOptions: SearchOptions{TopK: 1}, EF: maxBlockHeapSearchCapacity + 1},
+			} {
+				got, err := index.SearchHNSW(context.Background(), []float32{0}, options)
+				require.NoError(t, err)
+				require.Equal(t, []Result{{Key: 3, Score: 0}}, got)
+			}
+
+		})
 	}
 }
 
@@ -206,7 +224,7 @@ func BenchmarkQuantizedHNSWInt8Batch(b *testing.B) {
 func TestQuantizedHNSWDualHeapBatchMatchesScalar(t *testing.T) {
 	const count, dimension = DefaultHNSWBruteForceThreshold + 101, 66
 	ctx := context.Background()
-	for _, kind := range []Quantization{QuantizationInt4, QuantizationInt8} {
+	for _, kind := range []Quantization{QuantizationInt4, QuantizationInt8, QuantizationFP16} {
 		for _, metric := range []Metric{MetricL2, MetricIP, MetricCosine, MetricMIPSL2} {
 			t.Run(fmt.Sprintf("kind=%v/metric=%v", kind, metric), func(t *testing.T) {
 				base := &HNSWIndex{

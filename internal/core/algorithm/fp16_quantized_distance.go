@@ -20,6 +20,7 @@ import (
 	"unsafe"
 
 	mathutil "github.com/gorse-io/xvec/internal/ailego/math"
+	"github.com/gorse-io/xvec/internal/ailego/math_batch"
 	"github.com/gorse-io/xvec/internal/ailego/utility"
 )
 
@@ -94,5 +95,42 @@ func fp16CodeDistanceScalar(metric Metric, left, right []byte) float32 {
 		return 2 - 2*inner/denominator
 	default:
 		panic("invalid metric for validated FP16 codes")
+	}
+}
+
+// fp16CodeDistances scores immutable, validated code buffers four at a time.
+// Native views stay on the stack; unaligned or big-endian codes retain the
+// single-pair portable path. Remaining candidates use the single-pair kernel.
+func fp16CodeDistances(metric Metric, query []byte, candidates [][]byte, output []float32) {
+	q, queryOK := fp16CodeWords(query)
+	var batch func(query, first, second, third, fourth []uint16, output []float32)
+	switch metric {
+	case MetricL2:
+		batch = mathbatch.SquaredEuclideanDistances4FP16
+	case MetricIP:
+		batch = mathbatch.InnerProducts4FP16
+	case MetricCosine:
+		batch = mathbatch.CosineDistances4FP16
+	case MetricMIPSL2:
+		batch = mathbatch.MIPSL2SquaredDistances4FP16
+	}
+	j := 0
+	if queryOK {
+		for ; j+4 <= len(candidates); j += 4 {
+			first, ok1 := fp16CodeWords(candidates[j])
+			second, ok2 := fp16CodeWords(candidates[j+1])
+			third, ok3 := fp16CodeWords(candidates[j+2])
+			fourth, ok4 := fp16CodeWords(candidates[j+3])
+			if ok1 && ok2 && ok3 && ok4 {
+				batch(q, first, second, third, fourth, output[j:])
+			} else {
+				for k := j; k < j+4; k++ {
+					output[k] = fp16CodeDistance(metric, query, candidates[k])
+				}
+			}
+		}
+	}
+	for ; j < len(candidates); j++ {
+		output[j] = fp16CodeDistance(metric, query, candidates[j])
 	}
 }
