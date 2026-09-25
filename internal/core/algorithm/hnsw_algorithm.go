@@ -90,6 +90,7 @@ type HNSWBuilder struct {
 	options     HNSWBuildOptions
 	keys        []uint64
 	vectors     []float32
+	vectorRows  [][]float32
 	vectorsFP16 []uint16
 	fp16        bool
 	positions   map[uint64]int
@@ -271,6 +272,7 @@ func (b *HNSWBuilder) buildWithDistance(
 		distanceFP16: distanceFP16,
 		keys:         b.keys,
 		vectors:      b.vectors,
+		vectorRows:   b.vectorRows,
 		vectorsFP16:  b.vectorsFP16,
 		fp16:         b.fp16,
 		positions:    b.positions,
@@ -323,6 +325,7 @@ func (b *HNSWBuilder) buildWithDistance(
 	b.built = true
 	b.keys = nil
 	b.vectors = nil
+	b.vectorRows = nil
 	b.vectorsFP16 = nil
 	b.positions = nil
 	return index, nil
@@ -340,6 +343,7 @@ type HNSWIndex struct {
 	distanceFP16     mathutil.DenseDistanceFP16
 	keys             []uint64
 	vectors          []float32
+	vectorRows       [][]float32 // Only used by private, immutable quantized graphs.
 	vectorsFP16      []uint16
 	fp16             bool
 	vectorMagnitudes []float32
@@ -408,7 +412,7 @@ func (i *HNSWIndex) Vector(key uint64) ([]float32, bool) {
 		}
 		return vector, true
 	}
-	return slices.Clone(i.vectors[start : start+i.dimension]), true
+	return slices.Clone(i.vectorAt(position)), true
 }
 
 // MaxLevel returns the highest occupied level, or -1 for an empty graph.
@@ -669,6 +673,9 @@ func (i *HNSWIndex) maxDegree(level int) int {
 }
 
 func (i *HNSWIndex) vectorAt(position int) []float32 {
+	if i.vectorRows != nil {
+		return i.vectorRows[position]
+	}
 	start := position * i.dimension
 	return i.vectors[start : start+i.dimension]
 }
@@ -1369,6 +1376,7 @@ func (i *HNSWIndex) Add(ctx context.Context, key uint64, vector []float32) error
 	}
 	i.keys = working.keys
 	i.vectors = working.vectors
+	i.vectorRows = nil
 	i.vectorsFP16 = working.vectorsFP16
 	i.vectorMagnitudes = working.vectorMagnitudes
 	i.positions = working.positions
@@ -1409,6 +1417,12 @@ func cloneHNSWIndex(ctx context.Context, source *HNSWIndex) (*HNSWIndex, error) 
 		entryPoint:       source.entryPoint,
 		maxLevel:         source.maxLevel,
 		levelRNGState:    source.levelRNGState,
+	}
+	if source.vectorRows != nil {
+		clone.vectors = make([]float32, len(source.keys)*source.dimension)
+		for position, vector := range source.vectorRows {
+			copy(clone.vectors[position*source.dimension:], vector)
+		}
 	}
 	for key, position := range source.positions {
 		clone.positions[key] = position
@@ -1511,7 +1525,7 @@ func writeHNSWIndex(ctx context.Context, file *os.File, index *HNSWIndex, payloa
 				node = binary.LittleEndian.AppendUint16(node, value)
 			}
 		} else {
-			for _, value := range index.vectors[start : start+index.dimension] {
+			for _, value := range index.vectorAt(position) {
 				node = binary.LittleEndian.AppendUint32(node, math.Float32bits(value))
 			}
 		}
@@ -1630,7 +1644,7 @@ func encodeHNSWIndex(ctx context.Context, index *HNSWIndex) ([]byte, error) {
 				payload = binary.LittleEndian.AppendUint16(payload, value)
 			}
 		} else {
-			for _, value := range index.vectors[start : start+index.dimension] {
+			for _, value := range index.vectorAt(position) {
 				payload = binary.LittleEndian.AppendUint32(payload, math.Float32bits(value))
 			}
 		}
@@ -1650,6 +1664,12 @@ func encodeHNSWIndex(ctx context.Context, index *HNSWIndex) ([]byte, error) {
 }
 
 func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
+	return decodeHNSWIndexWithVectors(ctx, encoded, nil)
+}
+
+// borrowed holds immutable collection vectors; every component is checked
+// against the artifact before the graph can retain a reference to it.
+func decodeHNSWIndexWithVectors(ctx context.Context, encoded []byte, borrowed map[uint64][]float32) (*HNSWIndex, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil HNSW decode context")
 	}
@@ -1736,9 +1756,15 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 		}
 	}
 	var vectors []float32
+	var vectorRows [][]float32
 	var vectorsFP16 []uint16
+	if borrowed != nil && (fp16 || len(borrowed) != count) {
+		return nil, fmt.Errorf("%w: incompatible external vector storage", ErrInvalidHNSWFile)
+	}
 	if fp16 {
 		vectorsFP16 = make([]uint16, count*dimension)
+	} else if borrowed != nil {
+		vectorRows = make([][]float32, count)
 	} else {
 		vectors = make([]float32, count*dimension)
 	}
@@ -1750,6 +1776,7 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 		distanceFP16:  distanceFP16,
 		keys:          make([]uint64, count),
 		vectors:       vectors,
+		vectorRows:    vectorRows,
 		vectorsFP16:   vectorsFP16,
 		fp16:          fp16,
 		positions:     make(map[uint64]int, count),
@@ -1777,6 +1804,13 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 		}
 		index.keys[position] = key
 		index.positions[key] = position
+		if borrowed != nil {
+			vector, found := borrowed[key]
+			if !found || len(vector) != dimension {
+				return nil, fmt.Errorf("%w: missing or invalid external vector %d", ErrInvalidHNSWFile, key)
+			}
+			index.vectorRows[position] = vector[:dimension:dimension]
+		}
 		level := uint64(binary.LittleEndian.Uint32(payload[offset : offset+4]))
 		offset += 4
 		if level > MaxHNSWLevel {
@@ -1795,7 +1829,13 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 				if !finiteFloat32(value) {
 					return nil, fmt.Errorf("%w: non-finite vector", ErrInvalidHNSWFile)
 				}
-				index.vectors[start+component] = value
+				if borrowed != nil {
+					if math.Float32bits(index.vectorRows[position][component]) != math.Float32bits(value) {
+						return nil, fmt.Errorf("%w: external vector %d differs from artifact", ErrInvalidHNSWFile, key)
+					}
+				} else {
+					index.vectors[start+component] = value
+				}
 			}
 		}
 		for currentLevel := 0; currentLevel <= int(level); currentLevel++ {
@@ -1819,7 +1859,6 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 			if degree != 0 {
 				neighbors = make([]int, degree)
 			}
-			seen := make(map[int]struct{}, degree)
 			for neighborIndex := range neighbors {
 				neighbor64 := uint64(binary.LittleEndian.Uint32(payload[offset : offset+4]))
 				offset += 4
@@ -1827,10 +1866,6 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 					return nil, fmt.Errorf("%w: invalid neighbor reference", ErrInvalidHNSWFile)
 				}
 				neighbor := int(neighbor64)
-				if _, duplicate := seen[neighbor]; duplicate {
-					return nil, fmt.Errorf("%w: duplicate neighbor reference", ErrInvalidHNSWFile)
-				}
-				seen[neighbor] = struct{}{}
 				neighbors[neighborIndex] = neighbor
 			}
 			index.neighbors[position][currentLevel] = neighbors
@@ -1887,6 +1922,12 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 	}
 	count := len(index.keys)
 	validVectorStorage := len(index.vectors) == count*index.dimension && len(index.vectorsFP16) == 0
+	if index.vectorRows != nil {
+		validVectorStorage = !index.fp16 && len(index.vectors) == 0 && len(index.vectorsFP16) == 0 && len(index.vectorRows) == count
+		for _, vector := range index.vectorRows {
+			validVectorStorage = validVectorStorage && len(vector) == index.dimension
+		}
+	}
 	if index.fp16 {
 		validVectorStorage = len(index.vectors) == 0 && len(index.vectorsFP16) == count*index.dimension
 	}
@@ -1933,7 +1974,7 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 				}
 			}
 		} else {
-			for _, value := range index.vectors[start : start+index.dimension] {
+			for _, value := range index.vectorAt(position) {
 				if !finiteFloat32(value) {
 					return fmt.Errorf("%w: non-finite vector", ErrInvalidHNSWFile)
 				}

@@ -290,7 +290,9 @@ type ImmutableSegment struct {
 
 func newImmutableSegment(metadata common.SegmentMetadata, docs []StoredDocument) *ImmutableSegment {
 	return &ImmutableSegment{
-		metadata: common.CloneSegment(metadata), docs: CloneDocuments(docs),
+		// Append owns each payload and never mutates it. Snapshot only the
+		// record headers so later appends cannot change this generation.
+		metadata: common.CloneSegment(metadata), docs: slices.Clone(docs),
 		memoryBytes: storedDocumentsMemoryBytes(docs),
 	}
 }
@@ -329,7 +331,7 @@ func OpenImmutableSegment(ctx context.Context, collectionDir string, metadata co
 	if _, err := io.ReadFull(file, encoded); err != nil {
 		return nil, fmt.Errorf("%w: read file: %v", ErrSegmentCorrupt, err)
 	}
-	decodedMetadata, docs, err := decodeSegment(ctx, encoded)
+	decodedMetadata, docs, err := decodeSegmentWithPayloadViews(ctx, encoded, true)
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +339,7 @@ func OpenImmutableSegment(ctx context.Context, collectionDir string, metadata co
 	if !segmentMetadataEqual(decodedMetadata, metadata) {
 		return nil, fmt.Errorf("%w: manifest metadata differs from data file", ErrSegmentCorrupt)
 	}
-	return newImmutableSegment(metadata, docs), nil
+	return &ImmutableSegment{metadata: common.CloneSegment(metadata), docs: docs, memoryBytes: storedDocumentsMemoryBytes(docs)}, nil
 }
 
 // ID returns the immutable segment ID.
@@ -528,6 +530,12 @@ func encodeSegment(metadata common.SegmentMetadata, docs []StoredDocument) ([]by
 }
 
 func decodeSegment(ctx context.Context, encoded []byte) (common.SegmentMetadata, []StoredDocument, error) {
+	return decodeSegmentWithPayloadViews(ctx, encoded, false)
+}
+
+// Owned file buffers can back immutable payload views. General decoders retain
+// their input-isolation contract; public segment accessors still clone payloads.
+func decodeSegmentWithPayloadViews(ctx context.Context, encoded []byte, owned bool) (common.SegmentMetadata, []StoredDocument, error) {
 	if len(encoded) < segmentHeaderSize {
 		return common.SegmentMetadata{}, nil, fmt.Errorf("%w: file is shorter than header", ErrSegmentCorrupt)
 	}
@@ -559,7 +567,7 @@ func decodeSegment(ctx context.Context, encoded []byte) (common.SegmentMetadata,
 		ID: binary.LittleEndian.Uint64(header[16:24]), MinDocID: binary.LittleEndian.Uint64(header[24:32]),
 		MaxDocID: binary.LittleEndian.Uint64(header[32:40]), DocCount: binary.LittleEndian.Uint64(header[40:48]),
 	}
-	if metadata.DocCount == 0 || metadata.DocCount > uint64(math.MaxInt) {
+	if metadata.DocCount == 0 || metadata.DocCount > uint64(math.MaxInt) || metadata.DocCount > uint64(len(payload))/(segmentRecordHeaderSize+1) {
 		return common.SegmentMetadata{}, nil, fmt.Errorf("%w: invalid document count %d", ErrSegmentCorrupt, metadata.DocCount)
 	}
 	if metadata.MaxDocID < metadata.MinDocID || metadata.DocCount-1 != metadata.MaxDocID-metadata.MinDocID {
@@ -589,7 +597,11 @@ func decodeSegment(ctx context.Context, encoded []byte) (common.SegmentMetadata,
 		}
 		key := string(payload[offset : offset+int(keyLength)])
 		offset += int(keyLength)
-		documentPayload := slices.Clone(payload[offset : offset+int(documentLength)])
+		end := offset + int(documentLength)
+		documentPayload := payload[offset:end:end]
+		if !owned {
+			documentPayload = slices.Clone(documentPayload)
+		}
 		offset += int(documentLength)
 		crc := hashutil.CRC32C([]byte(key))
 		crc = hashutil.UpdateCRC32C(crc, documentPayload)

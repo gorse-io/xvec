@@ -542,6 +542,13 @@ func openCollectionDenseArtifact(
 		if spec.quantize == QuantizeTypeUndefined {
 			return core.OpenHNSWIndex(ctx, path)
 		}
+		if field.DataType == DataTypeVectorFP32 {
+			candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
+			if err != nil {
+				return nil, err
+			}
+			return core.OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx, path, kind, reformer, candidates, useMmap)
+		}
 		return core.OpenScalarQuantizedHNSWIndex(ctx, path, kind, reformer)
 	case IndexTypeHNSWRaBitQ:
 		return core.OpenHNSWRaBitQIndex(ctx, path)
@@ -2199,6 +2206,17 @@ func buildCollectionDenseHNSW(
 	options := core.DefaultHNSWBuildOptions(spec.metric)
 	options.M = spec.hnsw.M
 	options.EFConstruction = spec.hnsw.EFConstruction
+	if field.DataType == DataTypeVectorFP32 && spec.quantize != QuantizeTypeUndefined {
+		kind, err := toCoreQuantization(spec.quantize)
+		if err != nil {
+			return nil, err
+		}
+		reformer, err := collectionReformer(schemaName, field, spec)
+		if err != nil {
+			return nil, err
+		}
+		return core.BuildScalarQuantizedHNSWWithBorrowedVectors(ctx, int(field.Dimension), options, kind, reformer, candidates, workers)
+	}
 	var builder *core.HNSWBuilder
 	if field.DataType == DataTypeVectorFP16 && spec.quantize == QuantizeTypeUndefined {
 		builder, err = core.NewHNSWBuilderFP16(int(field.Dimension), options)

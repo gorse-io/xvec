@@ -339,3 +339,42 @@ func BenchmarkSegmentMemoryUsageBytes(b *testing.B) {
 		})
 	}
 }
+
+func TestImmutableSegmentPayloadSharingIsolation(t *testing.T) {
+	ctx := context.Background()
+	writing, err := NewWriteSegment(1, 10, 8)
+	require.NoError(t, err)
+	payload := []byte("original payload")
+	_, err = writing.Append(ctx, "first", payload)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	snapshot, err := writing.Snapshot(ctx, dir, "snapshot.seg")
+	require.NoError(t, err)
+	require.Same(t, &writing.docs[0].Payload[0], &snapshot.docs[0].Payload[0])
+	payload[0] = 'X'
+	returned, found := writing.Document(10)
+	require.True(t, found)
+	returned.Payload[0] = 'Y'
+	for j := 0; j < 6; j++ {
+		_, err = writing.Append(ctx, fmt.Sprint(j), []byte("another"))
+		require.NoError(t, err)
+	}
+	require.Len(t, snapshot.docs, 1)
+	reopened, err := OpenImmutableSegment(ctx, dir, snapshot.Metadata())
+	require.NoError(t, err)
+	for _, segment := range []*ImmutableSegment{snapshot, reopened} {
+		got, found := segment.Document(10)
+		require.True(t, found)
+		require.Equal(t, "original payload", string(got.Payload))
+		got.Payload[0] = 'Z'
+		again, _ := segment.Document(10)
+		require.Equal(t, "original payload", string(again.Payload))
+	}
+	// The general decoder must continue owning its returned payloads.
+	encoded, err := os.ReadFile(filepath.Join(dir, "snapshot.seg"))
+	require.NoError(t, err)
+	_, documents, err := decodeSegment(ctx, encoded)
+	require.NoError(t, err)
+	clear(encoded)
+	require.Equal(t, "original payload", string(documents[0].Payload))
+}

@@ -17,11 +17,52 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 
 	mathutil "github.com/gorse-io/xvec/internal/ailego/math"
 	mathbatch "github.com/gorse-io/xvec/internal/ailego/math_batch"
 )
+
+// BuildScalarQuantizedHNSWWithBorrowedVectors constructs an immutable graph
+// over collection-owned FP32 vectors. The caller must not modify the vectors
+// for the index lifetime. Candidate keys and slice headers are copied.
+func BuildScalarQuantizedHNSWWithBorrowedVectors(ctx context.Context, dimension int, options HNSWBuildOptions, kind Quantization, reformer DenseReformer, candidates []Candidate, workers int) (*ScalarQuantizedHNSWIndex, error) {
+	if ctx == nil {
+		return nil, errors.New("core: nil borrowed HNSW build context")
+	}
+	if !kind.valid() {
+		return nil, ErrInvalidQuantization
+	}
+	builder, err := NewHNSWBuilder(dimension, options)
+	if err != nil {
+		return nil, err
+	}
+	builder.keys = make([]uint64, len(candidates))
+	builder.vectorRows = make([][]float32, len(candidates))
+	for position, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := mathutil.ValidateDense(candidate.Vector, dimension); err != nil {
+			return nil, err
+		}
+		if _, found := builder.positions[candidate.Key]; found {
+			return nil, fmt.Errorf("%w: %d", ErrDuplicateKey, candidate.Key)
+		}
+		builder.keys[position] = candidate.Key
+		builder.positions[candidate.Key] = position
+		builder.vectorRows[position] = candidate.Vector[:dimension:dimension]
+	}
+	if kind == QuantizationInt8 || kind == QuantizationInt4 {
+		return builder.buildScalarQuantizedWithWorkers(ctx, workers, kind, reformer)
+	}
+	base, err := builder.BuildWithWorkers(ctx, workers)
+	if err != nil {
+		return nil, err
+	}
+	return newOwnedScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+}
 
 // BuildInt8WithWorkers quantizes the collected vectors before graph insertion.
 // Navigation, neighbor selection and reverse-edge pruning all use the same
@@ -55,8 +96,8 @@ func (b *HNSWBuilder) buildScalarQuantizedWithWorkers(
 			return hnswBuildScorers{}, ErrOddInt4Dimension
 		}
 		var err error
-		vectors, err = newOwnedScalarQuantizedVectors(
-			ctx, index.dimension, index.options.Metric, kind, reformer, index.keys, index.vectors,
+		vectors, err = newScalarQuantizedVectorStorage(
+			ctx, index.dimension, index.options.Metric, kind, reformer, index.keys, index.vectors, index.vectorRows,
 		)
 		if err != nil {
 			return hnswBuildScorers{}, err

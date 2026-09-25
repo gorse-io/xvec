@@ -17,6 +17,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -103,4 +104,109 @@ func TestQuantizedFlatStillOwnsCallerInput(t *testing.T) {
 	got, found := index.Vector(key)
 	require.True(t, found)
 	require.Equal(t, original, got)
+}
+
+func TestQuantizedHNSWBorrowedOriginals(t *testing.T) {
+	ctx := context.Background()
+	for _, kind := range []Quantization{QuantizationFP16, QuantizationInt8, QuantizationInt4} {
+		t.Run(fmt.Sprint(kind), func(t *testing.T) {
+			candidates := quantizedIndexCandidates(80)
+			options := DefaultHNSWBuildOptions(MetricCosine)
+			workers := 2
+			if kind == QuantizationFP16 {
+				workers = 1
+			}
+			index, err := BuildScalarQuantizedHNSWWithBorrowedVectors(ctx, 4, options, kind, nil, candidates, workers)
+			require.NoError(t, err)
+			require.Nil(t, index.base.vectors)
+			require.Nil(t, index.vectors.originals)
+			require.Same(t, &candidates[0].Vector[0], &index.base.vectorRows[0][0])
+			query := slices.Clone(candidates[7].Vector)
+			want, err := index.Search(ctx, query, 20)
+			require.NoError(t, err)
+			path := filepath.Join(t.TempDir(), "borrowed")
+			require.NoError(t, index.Save(ctx, path))
+			owned, err := OpenScalarQuantizedHNSWIndex(ctx, path, kind, nil)
+			require.NoError(t, err)
+			// External vectors may be supplied in a different key order.
+			slices.Reverse(candidates)
+			reopened, err := OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx, path, kind, nil, candidates, false)
+			require.NoError(t, err)
+			require.Nil(t, reopened.base.vectors)
+			require.Nil(t, reopened.vectors.originals)
+			mapped, err := OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx, path, kind, nil, candidates, true)
+			require.NoError(t, err)
+			for _, source := range []*ScalarQuantizedHNSWIndex{owned, reopened, mapped} {
+				got, err := source.Search(ctx, query, 20)
+				require.NoError(t, err)
+				require.Equal(t, want, got)
+				vector, found := source.FlatIndex().Vector(candidates[0].Key)
+				require.True(t, found)
+				require.Equal(t, candidates[0].Vector, vector)
+				vector[0] += 100
+				again, _ := source.Vector(candidates[0].Key)
+				require.Equal(t, candidates[0].Vector, again)
+			}
+			resaved := filepath.Join(t.TempDir(), "resaved")
+			require.NoError(t, reopened.Save(ctx, resaved))
+			originalBytes, err := os.ReadFile(path)
+			require.NoError(t, err)
+			resavedBytes, err := os.ReadFile(resaved)
+			require.NoError(t, err)
+			require.Equal(t, originalBytes, resavedBytes)
+			// Copying a graph with external rows must restore independent storage.
+			cloned, err := NewScalarQuantizedHNSWIndex(ctx, reopened.base, kind, nil)
+			require.NoError(t, err)
+			require.Nil(t, cloned.base.vectorRows)
+			key, original := candidates[0].Key, slices.Clone(candidates[0].Vector)
+			candidates[0].Key, candidates[0].Vector = 99999, nil
+			got, found := reopened.Vector(key)
+			require.True(t, found)
+			require.Equal(t, original, got, "candidate headers must not be retained")
+		})
+	}
+}
+
+func TestQuantizedHNSWBorrowedOriginalValidation(t *testing.T) {
+	ctx := context.Background()
+	candidates := quantizedIndexCandidates(8)
+	index, err := BuildScalarQuantizedHNSWWithBorrowedVectors(ctx, 4, DefaultHNSWBuildOptions(MetricL2), QuantizationInt4, nil, candidates, 1)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "index")
+	require.NoError(t, index.Save(ctx, path))
+	for _, change := range []func([]Candidate) []Candidate{
+		func(c []Candidate) []Candidate { return c[:len(c)-1] },
+		func(c []Candidate) []Candidate { c[0].Key = 99999; return c },
+		func(c []Candidate) []Candidate { c[0].Key = c[1].Key; return c },
+		func(c []Candidate) []Candidate { c[0].Vector = c[0].Vector[:3]; return c },
+		func(c []Candidate) []Candidate { c[0].Vector = []float32{100, 200, 300, 400}; return c },
+	} {
+		_, err := OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx, path, QuantizationInt4, nil, change(slices.Clone(candidates)), false)
+		require.Error(t, err)
+	}
+	_, err = OpenScalarQuantizedHNSWIndexWithBorrowedVectors(nil, path, QuantizationInt4, nil, candidates, false)
+	require.Error(t, err)
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = OpenScalarQuantizedHNSWIndexWithBorrowedVectors(canceled, path, QuantizationInt4, nil, candidates, false)
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = BuildScalarQuantizedHNSWWithBorrowedVectors(canceled, 4, DefaultHNSWBuildOptions(MetricL2), QuantizationInt4, nil, candidates, 1)
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = BuildScalarQuantizedHNSWWithBorrowedVectors(ctx, 4, DefaultHNSWBuildOptions(MetricL2), QuantizationInt4, nil, append(slices.Clone(candidates), candidates[0]), 1)
+	require.ErrorIs(t, err, ErrDuplicateKey)
+	_, err = BuildScalarQuantizedHNSWWithBorrowedVectors(ctx, 4, DefaultHNSWBuildOptions(MetricL2), QuantizationInt4, nil, []Candidate{{Key: 1, Vector: []float32{1}}}, 1)
+	require.Error(t, err)
+	encoded, err := os.ReadFile(path)
+	require.NoError(t, err)
+	encoded[len(encoded)-1] ^= 1
+	corrupt := filepath.Join(t.TempDir(), "corrupt")
+	require.NoError(t, os.WriteFile(corrupt, encoded, 0o600))
+	for _, useMmap := range []bool{false, true} {
+		_, err := OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx, corrupt, QuantizationInt4, nil, candidates, useMmap)
+		require.ErrorIs(t, err, ErrHNSWChecksumMismatch)
+		_, err = OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx, filepath.Join(t.TempDir(), "missing"), QuantizationInt4, nil, candidates, useMmap)
+		require.Error(t, err)
+	}
+	var empty *ScalarQuantizedHNSWIndex
+	require.Nil(t, empty.FlatIndex())
 }
