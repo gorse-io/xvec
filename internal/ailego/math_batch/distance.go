@@ -36,6 +36,7 @@ var kernels = struct {
 }
 
 var innerProductsInt8Kernel4 = innerProductsInt8Scalar4
+var innerProductsInt4Kernel4 = innerProductsInt4Scalar4
 
 // InnerProducts2 computes inner products from one query to two candidates
 // while sharing each query load.
@@ -245,9 +246,33 @@ func InnerProductsInt8(query []byte, candidates [][]byte, output []int64) {
 // query and multiple packed signed INT4 candidates. Inputs follow the unchecked
 // distance-kernel contract: every candidate and output must cover the query.
 func InnerProductsInt4(query []byte, candidates [][]byte, output []int64) {
-	for i := range candidates {
+	i := 0
+	for ; i+4 <= len(candidates); i += 4 {
+		innerProductsInt4Kernel4(query, candidates[i], candidates[i+1], candidates[i+2], candidates[i+3], output[i:i+4])
+	}
+	for ; i < len(candidates); i++ {
 		output[i] = mathutil.InnerProductInt4(query, candidates[i][:len(query)])
 	}
+}
+
+func innerProductsInt4Scalar4(query, first, second, third, fourth []byte, output []int64) {
+	var a, b, c, d int64
+	for i, packedQuery := range query {
+		a += int4ProductScalar(packedQuery, first[i])
+		b += int4ProductScalar(packedQuery, second[i])
+		c += int4ProductScalar(packedQuery, third[i])
+		d += int4ProductScalar(packedQuery, fourth[i])
+	}
+	output[0], output[1], output[2], output[3] = a, b, c, d
+}
+
+func int4ProductScalar(left, right byte) int64 {
+	return decodeInt4Scalar(left)*decodeInt4Scalar(right) + decodeInt4Scalar(left>>4)*decodeInt4Scalar(right>>4)
+}
+
+func decodeInt4Scalar(value byte) int64 {
+	nibble := int8(value & 0x0f)
+	return int64((nibble ^ 8) - 8)
 }
 
 func innerProductsInt8Scalar4(query, first, second, third, fourth []byte, output []int64) {

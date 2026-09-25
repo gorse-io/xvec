@@ -28,3 +28,10 @@ func TestRVVBatchKernels(t *testing.T) {
 	}
 	testBatchKernels(t, innerProducts2RVV, innerProducts4RVV, squaredEuclideanDistances2RVV, squaredEuclideanDistances4RVV)
 }
+
+func TestInnerProductsInt4RVV_4(t *testing.T) {
+	if !cpu.RISCV64.HasV {
+		t.Skip("RVV is not supported by this CPU")
+	}
+	testInnerProductsInt4(t, int4BatchWithKernel(innerProductsInt4RVV_4))
+}

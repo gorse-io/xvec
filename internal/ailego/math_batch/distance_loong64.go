@@ -30,6 +30,7 @@ func init() {
 		kernels.dot4 = innerProducts4LASX
 		kernels.l2Squared2 = squaredEuclideanDistances2LASX
 		kernels.l2Squared4 = squaredEuclideanDistances4LASX
+		innerProductsInt4Kernel4 = innerProductsInt4LASX_4
 	}
 }
 
@@ -63,4 +64,23 @@ func squaredEuclideanDistances4LASX(query, first, second, third, fourth []float3
 	}
 	xvec_lasx_batch_squared_euclidean_distances4(unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]), unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)), unsafe.Pointer(&firstDistance), unsafe.Pointer(&secondDistance), unsafe.Pointer(&thirdDistance), unsafe.Pointer(&fourthDistance))
 	return
+}
+
+func innerProductsInt4LASX_4(query, first, second, third, fourth []byte, output []int64) {
+	prefix := len(query) &^ 31
+	if prefix == 0 {
+		innerProductsInt4Scalar4(query, first, second, third, fourth, output)
+		return
+	}
+	xvec_lasx_batch_inner_products_int4_4(
+		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(prefix), unsafe.Pointer(&output[0]),
+	)
+	if prefix != len(query) {
+		var tail [4]int64
+		innerProductsInt4Scalar4(query[prefix:], first[prefix:], second[prefix:], third[prefix:], fourth[prefix:], tail[:])
+		for i := range tail {
+			output[i] += tail[i]
+		}
+	}
 }

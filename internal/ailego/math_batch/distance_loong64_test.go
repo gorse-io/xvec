@@ -28,3 +28,10 @@ func TestLASXBatchKernels(t *testing.T) {
 	}
 	testBatchKernels(t, innerProducts2LASX, innerProducts4LASX, squaredEuclideanDistances2LASX, squaredEuclideanDistances4LASX)
 }
+
+func TestInnerProductsInt4LASX_4(t *testing.T) {
+	if !cpu.Loong64.HasLASX {
+		t.Skip("LASX is not supported by this CPU")
+	}
+	testInnerProductsInt4(t, int4BatchWithKernel(innerProductsInt4LASX_4))
+}

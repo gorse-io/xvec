@@ -29,6 +29,9 @@ func init() {
 		kernels.l2 = squaredEuclideanLASX
 		kernels.dot = innerProductLASX
 		kernels.products = dotNormsLASX
+		kernelsInt4.l2 = squaredEuclideanInt4LASX
+		kernelsInt4.dot = innerProductInt4LASX
+		kernelsInt4.products = dotNormsInt4LASX
 	}
 }
 
@@ -55,4 +58,33 @@ func dotNormsLASX(left, right []float32) (dot, leftNorm, rightNorm float32) {
 		unsafe.Pointer(&dot), unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
 	)
 	return
+}
+
+func innerProductInt4LASX(left, right []byte) int64 {
+	prefix := len(left) &^ 31
+	if prefix == 0 {
+		return innerProductInt4Scalar(left, right)
+	}
+	result := inner_product_int4_lasx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix))
+	return result + innerProductInt4Scalar(left[prefix:], right[prefix:])
+}
+
+func squaredEuclideanInt4LASX(left, right []byte) int64 {
+	prefix := len(left) &^ 31
+	if prefix == 0 {
+		return squaredEuclideanInt4Scalar(left, right)
+	}
+	result := squared_euclidean_int4_lasx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix))
+	return result + squaredEuclideanInt4Scalar(left[prefix:], right[prefix:])
+}
+
+func dotNormsInt4LASX(left, right []byte) (dot, leftNorm, rightNorm int64) {
+	prefix := len(left) &^ 31
+	if prefix == 0 {
+		return dotNormsInt4Scalar(left, right)
+	}
+	var result [3]int64
+	dot_norms_int4_lasx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix), unsafe.Pointer(&result[0]))
+	dotTail, leftNormTail, rightNormTail := dotNormsInt4Scalar(left[prefix:], right[prefix:])
+	return result[0] + dotTail, result[1] + leftNormTail, result[2] + rightNormTail
 }

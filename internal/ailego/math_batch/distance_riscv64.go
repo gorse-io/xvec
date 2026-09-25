@@ -30,6 +30,7 @@ func init() {
 		kernels.dot4 = innerProducts4RVV
 		kernels.l2Squared2 = squaredEuclideanDistances2RVV
 		kernels.l2Squared4 = squaredEuclideanDistances4RVV
+		innerProductsInt4Kernel4 = innerProductsInt4RVV_4
 	}
 }
 
@@ -63,4 +64,15 @@ func squaredEuclideanDistances4RVV(query, first, second, third, fourth []float32
 	}
 	xvec_rvv_batch_squared_euclidean_distances4(unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]), unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)), unsafe.Pointer(&firstDistance), unsafe.Pointer(&secondDistance), unsafe.Pointer(&thirdDistance), unsafe.Pointer(&fourthDistance))
 	return
+}
+
+func innerProductsInt4RVV_4(query, first, second, third, fourth []byte, output []int64) {
+	if len(query) == 0 {
+		output[0], output[1], output[2], output[3] = 0, 0, 0, 0
+		return
+	}
+	xvec_rvv_batch_inner_products_int4_4(
+		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)), unsafe.Pointer(&output[0]),
+	)
 }

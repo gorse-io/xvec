@@ -28,3 +28,10 @@ func TestNEONBatchKernels(t *testing.T) {
 	}
 	testBatchKernels(t, innerProducts2NEON, innerProducts4NEON, squaredEuclideanDistances2NEON, squaredEuclideanDistances4NEON)
 }
+
+func TestInnerProductsInt4NEON_4(t *testing.T) {
+	if !cpu.ARM64.HasASIMD {
+		t.Skip("NEON/ASIMD is not supported by this CPU")
+	}
+	testInnerProductsInt4(t, int4BatchWithKernel(innerProductsInt4NEON_4))
+}

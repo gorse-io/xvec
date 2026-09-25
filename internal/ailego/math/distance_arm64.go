@@ -92,6 +92,9 @@ func dotNormsFP16NEON(left, right []uint16) (dot, leftNorm, rightNorm float32) {
 func init() {
 	if cpu.ARM64.HasASIMD {
 		innerProductInt8Kernel = innerProductInt8NEON
+		kernelsInt4.l2 = squaredEuclideanInt4NEON
+		kernelsInt4.dot = innerProductInt4NEON
+		kernelsInt4.products = dotNormsInt4NEON
 	}
 }
 
@@ -100,4 +103,33 @@ func innerProductInt8NEON(left, right []byte) int64 {
 		return innerProductInt8Scalar(left, right)
 	}
 	return inner_product_int8_neon(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
+}
+
+func innerProductInt4NEON(left, right []byte) int64 {
+	prefix := len(left) &^ 15
+	if prefix == 0 {
+		return innerProductInt4Scalar(left, right)
+	}
+	result := inner_product_int4_neon(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix))
+	return result + innerProductInt4Scalar(left[prefix:], right[prefix:])
+}
+
+func squaredEuclideanInt4NEON(left, right []byte) int64 {
+	prefix := len(left) &^ 15
+	if prefix == 0 {
+		return squaredEuclideanInt4Scalar(left, right)
+	}
+	result := squared_euclidean_int4_neon(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix))
+	return result + squaredEuclideanInt4Scalar(left[prefix:], right[prefix:])
+}
+
+func dotNormsInt4NEON(left, right []byte) (dot, leftNorm, rightNorm int64) {
+	prefix := len(left) &^ 15
+	if prefix == 0 {
+		return dotNormsInt4Scalar(left, right)
+	}
+	var result [3]int64
+	dot_norms_int4_neon(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix), unsafe.Pointer(&result[0]))
+	dotTail, leftNormTail, rightNormTail := dotNormsInt4Scalar(left[prefix:], right[prefix:])
+	return result[0] + dotTail, result[1] + leftNormTail, result[2] + rightNormTail
 }

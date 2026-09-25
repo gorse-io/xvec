@@ -42,3 +42,10 @@ func TestInnerProductInt8NEON(t *testing.T) {
 	}
 	testInnerProductInt8(t, innerProductInt8NEON)
 }
+
+func TestInt4DistanceKernelsNEON(t *testing.T) {
+	if !cpu.ARM64.HasASIMD {
+		t.Skip("NEON/ASIMD is not supported by this CPU")
+	}
+	testInt4Kernels(t, innerProductInt4NEON, squaredEuclideanInt4NEON, dotNormsInt4NEON)
+}
