@@ -2267,6 +2267,13 @@ func buildCollectionDenseHNSW(
 		}
 		return builder.BuildInt4WithWorkers(ctx, workers, reformer)
 	}
+	if spec.quantize == QuantizeTypeFP16 {
+		reformer, err := collectionReformer(schemaName, field, spec)
+		if err != nil {
+			return nil, err
+		}
+		return builder.BuildFP16WithWorkers(ctx, workers, reformer)
+	}
 	base, err := builder.BuildWithWorkers(ctx, workers)
 	if err != nil {
 		return nil, err

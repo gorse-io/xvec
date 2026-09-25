@@ -135,64 +135,77 @@ func TestInt4HNSWBuildUsesQuantizedDistances(t *testing.T) {
 	require.Equal(t, codes, index.vectors.codes)
 }
 
-func TestInt8HNSWBuildRecallAndPersistence(t *testing.T) {
-	ctx := context.Background()
-	const dimension, count = 33, DefaultHNSWBruteForceThreshold + 100
-	candidates := make([]Candidate, count)
-	for n := range candidates {
-		vector := make([]float32, dimension)
-		for d := range vector {
-			vector[d] = float32(math.Sin(float64((n + 1) * (d + 7))))
-		}
-		candidates[n] = Candidate{Key: uint64(n), Vector: vector}
-	}
-	for _, workers := range []int{1, 4} {
-		t.Run(fmt.Sprint(workers), func(t *testing.T) {
-			options := DefaultHNSWBuildOptions(MetricCosine)
-			options.M, options.EFConstruction = 12, 100
-			builder, err := NewHNSWBuilder(dimension, options)
-			require.NoError(t, err)
-			for _, c := range candidates {
-				require.NoError(t, builder.Add(ctx, c.Key, c.Vector))
-			}
-			index, err := builder.BuildInt8WithWorkers(ctx, workers, nil)
-			require.NoError(t, err)
-			assertHNSWGraphInvariants(t, index.base)
-			path := filepath.Join(t.TempDir(), "hnsw")
-			require.NoError(t, index.Save(ctx, path))
-			reopened, err := OpenScalarQuantizedHNSWIndex(ctx, path, QuantizationInt8, nil)
-			require.NoError(t, err)
-			require.Equal(t, index.base.neighbors, reopened.base.neighbors)
-			flat, err := NewScalarQuantizedFlatIndex(ctx, dimension, MetricCosine, QuantizationInt8, nil, candidates)
-			require.NoError(t, err)
-			matched := 0
-			for q := range 20 {
-				query := candidates[q*43].Vector
-				options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 10}, EF: 180}
-				got, err := index.SearchHNSW(ctx, query, options)
-				require.NoError(t, err)
-				saved, err := reopened.SearchHNSW(ctx, query, options)
-				require.NoError(t, err)
-				require.Equal(t, got, saved)
-				truth, err := flat.Search(ctx, query, 10)
-				require.NoError(t, err)
-				for _, result := range got {
-					if slices.ContainsFunc(truth, func(want Result) bool { return want.Key == result.Key }) {
-						matched++
-					}
+func TestScalarHNSWBuildRecallAndPersistence(t *testing.T) {
+	for _, kind := range []Quantization{QuantizationInt8, QuantizationFP16} {
+		t.Run(fmt.Sprint(kind), func(t *testing.T) {
+
+			ctx := context.Background()
+			const dimension, count = 33, DefaultHNSWBruteForceThreshold + 100
+			candidates := make([]Candidate, count)
+			for n := range candidates {
+				vector := make([]float32, dimension)
+				for d := range vector {
+					vector[d] = float32(math.Sin(float64((n + 1) * (d + 7))))
 				}
-				original, found := index.Vector(candidates[q*43].Key)
-				require.True(t, found)
-				require.Equal(t, query, original)
-				original[0] = 12345
-				originalAgain, _ := index.Vector(candidates[q*43].Key)
-				require.Equal(t, query, originalAgain)
-				refined, err := index.SearchWithOptions(ctx, query, SearchOptions{TopK: 1})
-				require.NoError(t, err)
-				require.Equal(t, candidates[q*43].Key, refined[0].Key)
-				require.InDelta(t, 0, refined[0].Score, 1e-5)
+				candidates[n] = Candidate{Key: uint64(n), Vector: vector}
 			}
-			require.GreaterOrEqual(t, float64(matched)/200, .95)
+			for _, workers := range []int{1, 4} {
+				t.Run(fmt.Sprint(workers), func(t *testing.T) {
+					options := DefaultHNSWBuildOptions(MetricCosine)
+					options.M, options.EFConstruction = 12, 100
+					builder, err := NewHNSWBuilder(dimension, options)
+					require.NoError(t, err)
+					for _, c := range candidates {
+						require.NoError(t, builder.Add(ctx, c.Key, c.Vector))
+					}
+					index, err := builder.buildScalarQuantizedWithWorkers(ctx, workers, kind, nil)
+					require.NoError(t, err)
+					assertHNSWGraphInvariants(t, index.base)
+					path := filepath.Join(t.TempDir(), "hnsw")
+					require.NoError(t, index.Save(ctx, path))
+					reopened, err := OpenScalarQuantizedHNSWIndex(ctx, path, kind, nil)
+					require.NoError(t, err)
+					require.Equal(t, index.base.neighbors, reopened.base.neighbors)
+					flat, err := NewScalarQuantizedFlatIndex(ctx, dimension, MetricCosine, kind, nil, candidates)
+					require.NoError(t, err)
+					matched := 0
+					for q := range 20 {
+						query := candidates[q*43].Vector
+						options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 10}, EF: 180}
+						got, err := index.SearchHNSW(ctx, query, options)
+						require.NoError(t, err)
+						saved, err := reopened.SearchHNSW(ctx, query, options)
+						require.NoError(t, err)
+						require.Equal(t, got, saved)
+						truth, err := flat.Search(ctx, query, 10)
+						require.NoError(t, err)
+						for _, result := range got {
+							if slices.ContainsFunc(truth, func(want Result) bool { return want.Key == result.Key }) {
+								matched++
+							}
+						}
+						original, found := index.Vector(candidates[q*43].Key)
+						require.True(t, found)
+						require.Equal(t, query, original)
+						original[0] = 12345
+						originalAgain, _ := index.Vector(candidates[q*43].Key)
+						require.Equal(t, query, originalAgain)
+						refined, err := index.SearchWithOptions(ctx, query, SearchOptions{TopK: 1})
+						require.NoError(t, err)
+						// FP16 may give distinct near-duplicate originals the same
+						// score. Compare with exact quantized ranking, including key ties.
+						exactTop, err := flat.Search(ctx, query, 1)
+						require.NoError(t, err)
+						require.Equal(t, exactTop, refined)
+						if kind == QuantizationInt8 {
+							require.Equal(t, candidates[q*43].Key, refined[0].Key)
+						}
+						require.InDelta(t, 0, refined[0].Score, 1e-5)
+					}
+					require.GreaterOrEqual(t, float64(matched)/200, .95)
+				})
+			}
+
 		})
 	}
 }

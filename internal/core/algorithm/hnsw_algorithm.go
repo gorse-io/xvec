@@ -297,7 +297,7 @@ func (b *HNSWBuilder) buildWithDistance(
 		return nil, err
 	}
 	score := index.computeDistanceAt
-	scorers := hnswBuildScorers{pair: index.computeDistancePairAt}
+	scorers := hnswBuildScorers{pair: index.computeDistancePairAt, batch: index.computeBuildDistances}
 	if prepare != nil {
 		scorers, err = prepare(index)
 		if err != nil {

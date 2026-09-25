@@ -113,3 +113,20 @@ func normalizedPrefetchLines(lines uint32, bytes int) int {
 	lines = min(lines, MaxHNSWPrefetchLines)
 	return int(lines)
 }
+
+// Borrowed collection rows are not one contiguous FP32 allocation. Warm the
+// same bounded prefix as prefetchDenseHNSWNeighbors after gathering row views.
+func prefetchDenseHNSWRows(vectors [][]float32, offset, lines uint32) {
+	var touched uint32
+	for _, vector := range vectors[:prefetchNeighborCount(len(vectors), offset)] {
+		lineCount := normalizedPrefetchLines(lines, len(vector)*4)
+		for line := 0; line < lineCount; line++ {
+			element := line * 16
+			if element >= len(vector) {
+				break
+			}
+			touched ^= math.Float32bits(vector[element])
+		}
+	}
+	runtime.KeepAlive(touched)
+}
