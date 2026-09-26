@@ -113,7 +113,7 @@ test('Flat measurements omit HNSW fields and remain in a separate comparison gro
   assert.equal(configurationLabel(groups[0]), 'M 50 · ef 300 · Concurrency 8');
   assert.equal(configurationLabel(groups[1]), 'K 100 · Concurrency 8');
   assert.deepEqual(seriesFor(flat, 'concurrent_qps').map((series) => series.data), [
-    [427.183612, 365.630953, 193.411485, 158.315286],
+    [509.530878, 317.337282, 219.893384, 167.715352],
     [687.997656, 511.013183, 270.299993, 179.667649],
   ]);
   assert.deepEqual(seriesFor(flat, 'recall_at_k_pct').map((series) => series.data), [
