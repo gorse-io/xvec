@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { parseBenchmarks } from '../src/lib/parse-benchmark';
 import { categories, formatBytes, groupBenchmarks, metricKeys, seriesFor, suiteFields, type Benchmark } from '../src/lib/benchmark';
-import { configurationLabel } from '../src/lib/chart-options';
+import { chartDefinition, configurationLabel } from '../src/lib/chart-options';
 
 const csv = readFileSync(new URL('../benchmark-hnsw.csv', import.meta.url), 'utf8');
 const flatCsv = readFileSync(new URL('../benchmark-flat.csv', import.meta.url), 'utf8');
@@ -125,4 +125,13 @@ test('HNSW parameters remain required only for HNSW; Flat still validates common
   assert.throws(() => parseBenchmarks(flatCsv.split('\n')[0].replace('machine,', ''), 'benchmark-flat.csv'), /benchmark-flat.csv:.*missing required columns: machine/);
   const flat = parseBenchmarks(flatCsv)[0];
   assert.equal(groupBenchmarks([flat, { ...flat, m: 50, ef_construction: 500, ef_search: 300 }]).length, 1);
+});
+
+test('memory axis uses MB and GB rather than compact-number billions', () => {
+  const group = groupBenchmarks(parseBenchmarks(csv))[0];
+  const { options } = chartDefinition(group, 'memory', 'peak_rss_kib');
+  const axis = options.yAxis as { axisLabel: { formatter: (value: number) => string } };
+  assert.equal(axis.axisLabel.formatter(512 * 1024 ** 2), '512 MB');
+  assert.equal(axis.axisLabel.formatter(1024 ** 3), '1 GB');
+  assert.equal(axis.axisLabel.formatter(1.5 * 1024 ** 3), '1.5 GB');
 });
