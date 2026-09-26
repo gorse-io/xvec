@@ -61,8 +61,12 @@ func NewScalarQuantizedHNSWIndex(
 // The graph is private and immutable: codes, persistence and refinement share
 // its original vectors instead of retaining a second FP32 copy.
 func newOwnedScalarQuantizedHNSWIndex(ctx context.Context, base *HNSWIndex, kind Quantization, reformer DenseReformer) (*ScalarQuantizedHNSWIndex, error) {
-	vectors, err := newScalarQuantizedVectorStorage(
-		ctx, base.dimension, base.options.Metric, kind, reformer, base.keys, base.vectors, base.vectorRows,
+	var reader DenseVectorReader
+	if base.encodedVectors != nil {
+		reader = encodedHNSWVectorReader(base.encodedVectors)
+	}
+	vectors, err := newScalarQuantizedVectorStorageWithReader(
+		ctx, base.dimension, base.options.Metric, kind, reformer, base.keys, base.vectors, base.vectorRows, reader,
 	)
 	if err != nil {
 		return nil, err
@@ -119,13 +123,17 @@ func OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx context.Context, path s
 // The mapping is temporary: topology is decoded, and originals come from the
 // immutable collection. Unmapping before quantization avoids retaining a full
 // serialized graph in the Go heap throughout code reconstruction.
-func openHNSWIndexWithBorrowedVectors(ctx context.Context, path string, borrowed map[uint64][]float32, useMmap bool) (index *HNSWIndex, err error) {
+func openHNSWIndexWithBorrowedVectors(ctx context.Context, path string, borrowed map[uint64][]float32, useMmap bool) (*HNSWIndex, error) {
+	return openHNSWIndexWithStorage(ctx, path, borrowed, nil, useMmap)
+}
+
+func openHNSWIndexWithStorage(ctx context.Context, path string, borrowed map[uint64][]float32, encodedOriginals map[uint64][]byte, useMmap bool) (index *HNSWIndex, err error) {
 	if !useMmap {
 		encoded, err := readHNSWFile(ctx, path)
 		if err != nil {
 			return nil, err
 		}
-		return decodeHNSWIndexWithVectors(ctx, encoded, borrowed)
+		return decodeHNSWIndexWithStorage(ctx, encoded, borrowed, encodedOriginals)
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -137,7 +145,7 @@ func openHNSWIndexWithBorrowedVectors(ctx context.Context, path string, borrowed
 		return nil, err
 	}
 	defer func() { err = errors.Join(err, encoded.Unmap()) }()
-	return decodeHNSWIndexWithVectors(ctx, encoded, borrowed)
+	return decodeHNSWIndexWithStorage(ctx, encoded, borrowed, encodedOriginals)
 }
 
 // FlatIndex returns an immutable linear-search view sharing the graph's codes

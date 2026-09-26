@@ -27,6 +27,14 @@ import (
 )
 
 func TestReadOnlyQuantizedFlatEncodedVectors(t *testing.T) {
+	testReadOnlyQuantizedEncodedVectors(t, IndexTypeFlat)
+}
+
+func TestReadOnlyQuantizedHNSWEncodedVectors(t *testing.T) {
+	testReadOnlyQuantizedEncodedVectors(t, IndexTypeHNSW)
+}
+
+func testReadOnlyQuantizedEncodedVectors(t *testing.T, indexType IndexType) {
 	ctx := context.Background()
 	for _, quantize := range []QuantizeType{QuantizeTypeFP16, QuantizeTypeInt8, QuantizeTypeInt4} {
 		for _, useMmap := range []bool{false, true} {
@@ -34,7 +42,24 @@ func TestReadOnlyQuantizedFlatEncodedVectors(t *testing.T) {
 				params := NewFlatIndexParams(MetricTypeL2)
 				params.Quantize = quantize
 				params.Quantizer.EnableRotate = quantize != QuantizeTypeFP16
-				schema := NewCollectionSchema("encoded_flat", FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Nullable: true, Index: params}, FieldSchema{Name: "rating", DataType: DataTypeInt32})
+				var indexParams IndexParams = params
+				if indexType == IndexTypeHNSW {
+					hp := NewHNSWIndexParams(MetricTypeL2)
+					hp.M, hp.EFConstruction, hp.Quantize, hp.Quantizer = 8, 40, quantize, params.Quantizer
+					indexParams = hp
+				}
+				newQueryParams := func(refine bool) QueryParams {
+					if indexType == IndexTypeHNSW {
+						qp := NewHNSWQueryParams()
+						qp.UseRefiner = refine
+						return qp
+					}
+					qp := NewFlatQueryParams()
+					qp.UseRefiner = refine
+					qp.ScaleFactor = 100
+					return qp
+				}
+				schema := NewCollectionSchema("encoded_flat", FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Nullable: true, Index: indexParams}, FieldSchema{Name: "rating", DataType: DataTypeInt32})
 				path := filepath.Join(t.TempDir(), "collection")
 				writer, err := CreateAndOpen(ctx, path, schema, NewCollectionOptions())
 				require.NoError(t, err)
@@ -46,9 +71,7 @@ func TestReadOnlyQuantizedFlatEncodedVectors(t *testing.T) {
 				queries := []VectorQuery{}
 				expected := [][]Document{}
 				for _, refine := range []bool{false, true} {
-					queryParams := NewFlatQueryParams()
-					queryParams.UseRefiner = refine
-					queryParams.ScaleFactor = 100
+					queryParams := newQueryParams(refine)
 					for _, projection := range []Projection{{OutputFields: []string{}}, {IncludeVectors: true}} {
 						for _, byKey := range []bool{false, true} {
 							query := VectorQuery{Field: "embedding", TopK: 8, Params: queryParams, Projection: projection, Filter: "rating >= 1", DenseVector: VectorFP32{.3, -.5, 1, .7}}
@@ -63,8 +86,11 @@ func TestReadOnlyQuantizedFlatEncodedVectors(t *testing.T) {
 						}
 					}
 				}
-				groupParams := NewFlatQueryParams()
-				groupParams.UseRefiner = true
+				groupParams := newQueryParams(true)
+				if hnsw, ok := groupParams.(HNSWQueryParams); ok {
+					hnsw.Linear = true
+					groupParams = hnsw
+				}
 				groupQuery := GroupByVectorQuery{Field: "embedding", DenseVector: VectorFP32{.3, -.5, 1, .7}, Params: groupParams, GroupByField: "rating", GroupCount: 3, TopKPerGroup: 2, Projection: Projection{IncludeVectors: true}}
 				wantGroups, err := writer.GroupByQuery(ctx, groupQuery)
 				require.NoError(t, err)
@@ -92,7 +118,9 @@ func TestReadOnlyQuantizedFlatEncodedVectors(t *testing.T) {
 				groups, err := reader.GroupByQuery(ctx, groupQuery)
 				require.NoError(t, err)
 				require.Equal(t, wantGroups, groups)
-				require.NotNil(t, exact.index)
+				if indexType == IndexTypeFlat {
+					require.NotNil(t, exact.index)
+				}
 			})
 		}
 	}
