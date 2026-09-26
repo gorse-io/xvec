@@ -1,7 +1,7 @@
 # xvec benchmark website
 
-An English, static Astro + TypeScript site for the HNSW, Flat, and DiskANN measurements in
-`benchmark-hnsw.csv`, `benchmark-flat.csv`, and `benchmark-diskann.csv`. ECharts is bundled locally; no backend or external chart
+An English, static Astro + TypeScript site for the HNSW, Flat, DiskANN, and Vamana measurements in
+`benchmark-hnsw.csv`, `benchmark-flat.csv`, `benchmark-diskann.csv`, and `benchmark-vamana.csv`. ECharts is bundled locally; no backend or external chart
 service is needed. The CSV files and `logo.png` stay in this directory and are imported
 through Astro/Vite to generate the homepage at build time.
 
@@ -15,7 +15,7 @@ native `zvec_index_params_set_quantizer_enable_rotate` setter when selecting
 INT4/INT8, matching xvec. The native library is unchanged, and rotation is
 verified through its parameter getter. The Index selector between Dataset and
 Test configuration switches all charts and the SVG export between HNSW
-(the default), Flat, and DiskANN. Configuration labels show the selected index's parameters.
+(the default), Flat, DiskANN, and Vamana. Configuration labels show the selected index's parameters.
 
 `benchmark-diskann.csv` contains four runs: xvec and zvec with FP16 scalar
 quantization or unquantized FP32. It uses the same `Performance768D100K` dataset
@@ -25,6 +25,43 @@ these four columns replace the HNSW parameters. Rotation and refinement are
 disabled. FP32 means no scalar quantization; DiskANN still uses the configured
 product quantization for graph traversal. Both collections use `enable_mmap=true`;
 the benchmark does not flush filesystem caches between queries.
+
+`benchmark-vamana.csv` contains eight runs: xvec and zvec with INT4, INT8,
+FP16, and unquantized FP32 on the same Cohere `Performance768D100K` dataset.
+Both backends use maximum degree 64, construction list size 100, alpha 1.2,
+maximum occlusion size 750, and search list size 200. Graph saturation,
+two-pass construction, contiguous-memory mode, ID maps, and refinement are
+disabled. INT4/INT8 enable rotation, verified through the native parameter getter.
+The Vamana-specific CSV columns record these settings and participate in grouping.
+
+These runs use xvec commit `6a8b120d4284bf16853b2b4ad18465c599e72d82` (merged
+PR #91), zvec-go `v0.7.0+rotate`, and the unchanged native zvec library built from
+`8321c1314a559fd5f909e92498f43e5194bf9b99`. They use Go 1.27.1 with
+`CGO_ENABLED=0`, `GOMAXPROCS=8`, `GOMEMLIMIT=24GiB`, and CPU affinity 0–7
+on e2-standard-8. Each run uses a fresh collection, all 100,000 vectors,
+1,000 serial queries, K=100, batch size 100, optimize concurrency 8,
+30 seconds of 8-worker concurrent queries, and a 3-second serial cooldown.
+A representative run (repeat with a fresh path for each backend and precision):
+
+```sh
+CGO_ENABLED=0 go build -o /tmp/vector-db-bench ./cmd/vector-db-bench
+env GOMAXPROCS=8 GOMEMLIMIT=24GiB taskset -c 0-7 /tmp/vector-db-bench xvec \
+  --path /tmp/xvec-vamana-fp32 --case-type Performance768D100K \
+  --dataset-dir /path/to/dataset --skip-download --index-type vamana \
+  --ef-search 200 --k 100 --batch-size 100 --max-docs-per-segment 10000000 \
+  --optimize-concurrency 8 --num-concurrency 8 --concurrency-duration 30s \
+  --serial-cooldown 3s --payload-profile ids_only --enable-mmap=true \
+  --is-using-refiner=false --output /tmp/xvec-vamana-fp32.json
+```
+
+Run from the repository root. For FP16/INT8/INT4, add `--quantize-type fp16`,
+`int8`, or `int4`. For zvec, set `ZVEC_LIBRARY_PATH` to the native library and
+build with a temporary modfile replacing zvec-go with the local rotation-enabled
+binding described above. An unmodified binding does not reproduce the rotated runs.
+
+Peak RSS is the entire benchmark process's high-water mark from `wait4`, including
+loading, optimization, reopening, and querying. Measurements are single runs;
+QPS should be interpreted together with recall, not as equal-recall comparisons.
 
 ## Development
 
@@ -78,9 +115,9 @@ setting cannot silently disappear from comparison grouping.
 `src/lib/benchmark.ts` defines the typed schema, shared metric labels and units,
 and grouping rules. All fields in `suiteFields` must match: machine, dataset,
 document count, HNSW and runtime parameters, payload, concurrency duration,
-cooldown, and serial query count. HNSW and DiskANN parameters are required only
-for their respective indexes; Flat omits both sets. DiskANN's four parameters
-all participate in grouping. Machine, dataset, index, and test configuration
+cooldown, and serial query count. HNSW, DiskANN, and Vamana parameters are required only
+for their respective indexes; Flat omits all three sets. All applicable index
+parameters participate in grouping. Machine, dataset, index, and test configuration
 selectors expose separate groups as data is added. Single-choice selectors are
 disabled. Quantization and rotation define individual chart categories. An xvec
 and zvec bar are paired only when both category settings match. Incomplete
@@ -89,9 +126,9 @@ pairs remain visible, with missing measurements represented as gaps, not zero.
 There must be at most one record per backend, suite, quantization, and rotation.
 A different backend version does not permit a duplicate: choose the intended
 run explicitly rather than silently combining repeated measurements. Backend
-versions are preserved in the source CSV. In the current data, xvec INT4/INT8,
-FP16, and FP32 use different commits, so these are not controlled quantization-only
-comparisons.
+versions are preserved in the source CSV. The index CSVs were measured at different revisions and times, so comparisons
+across index types are not controlled index-only experiments. All four Vamana
+precisions use the same xvec revision.
 
 `quantize_type=fp32` denotes unquantized FP32 vectors (`--quantize-type` omitted
 in the benchmark runner, whose JSON reports this as `none`). Rotation and
@@ -149,7 +186,7 @@ keep generated files out of Git. Deployment is separate from this build.
 ## Verification
 
 `pnpm test` checks all 104 HNSW chart measurements, Flat QPS and recall,
-DiskANN parameters and its FP16/FP32-only categories, index separation and configuration labels, every metric
+DiskANN parameters and its FP16/FP32-only categories, all Vamana settings and four precisions, index separation and configuration labels, every metric
 series, CSV quoting/BOM/CRLF, malformed data, duplicate records, and separation
 of incompatible configurations. SVG tests cover deterministic output, safe text,
 self-contained chart references, and configuration-specific asset paths. `pnpm check` checks Astro and TypeScript;

@@ -1,11 +1,14 @@
 // Shared by build-time parsing, CSV metadata, and browser charts.
 export const backends = ['xvec', 'zvec'] as const;
-export const indexTypes = ['hnsw', 'flat', 'diskann'] as const;
+export const indexTypes = ['hnsw', 'flat', 'diskann', 'vamana'] as const;
 export type IndexType = typeof indexTypes[number];
-export const indexLabels: Record<IndexType, string> = { hnsw: 'HNSW', flat: 'Flat', diskann: 'DiskANN' };
+export const indexLabels: Record<IndexType, string> = { hnsw: 'HNSW', flat: 'Flat', diskann: 'DiskANN', vamana: 'Vamana' };
 export const hnswFields = ['m', 'ef_construction', 'ef_search'] as const;
 export const diskannFields = ['diskann_max_degree', 'diskann_build_list', 'diskann_pq_chunks', 'diskann_query_list'] as const;
-export const indexFields = [...hnswFields, ...diskannFields];
+export const vamanaIntegerFields = ['vamana_max_degree', 'vamana_build_list', 'vamana_query_list', 'vamana_max_occlusion_size'] as const;
+export const vamanaBooleanFields = ['vamana_saturate_graph', 'vamana_two_pass_build', 'vamana_use_contiguous_memory', 'vamana_use_id_map'] as const;
+export const vamanaFields = [...vamanaIntegerFields, 'vamana_alpha', ...vamanaBooleanFields] as const;
+export const indexFields = [...hnswFields, ...diskannFields, ...vamanaFields];
 export const quantizations = ['int4', 'int8', 'fp16', 'fp32'] as const;
 export const colors = { xvec: '#b47c00', zvec: '#4977cd' };
 
@@ -13,13 +16,14 @@ export const textFields = [
   'machine', 'backend', 'backend_version', 'case', 'index_type', 'quantize_type',
   'payload_profile', 'gomemlimit', 'cpu_affinity', 'go_version',
 ] as const;
-export const booleanFields = ['rotate', 'use_refiner', 'enable_mmap'] as const;
+export const booleanFields = ['rotate', 'use_refiner', 'enable_mmap', ...vamanaBooleanFields] as const;
 export const integerFields = [
-  ...indexFields, 'k', 'batch_size', 'max_docs_per_segment',
+  ...hnswFields, ...diskannFields, ...vamanaIntegerFields, 'k', 'batch_size', 'max_docs_per_segment',
   'optimize_concurrency', 'query_concurrency', 'gomaxprocs', 'inserted_count',
   'serial_queries', 'concurrent_queries', 'peak_rss_kib',
 ] as const;
 export const decimalFields = [
+  'vamana_alpha',
   'concurrency_duration_sec', 'serial_cooldown_sec', 'insert_duration_sec',
   'optimize_duration_sec', 'load_duration_sec', 'insert_rows_per_sec', 'serial_qps',
   'recall_at_k_pct', 'serial_latency_avg_ms', 'serial_latency_p95_ms',
@@ -30,9 +34,10 @@ export const decimalFields = [
 export const requiredFields = [...textFields, ...booleanFields, ...integerFields, ...decimalFields];
 export type NumericField = typeof integerFields[number] | typeof decimalFields[number];
 export type Benchmark = Record<typeof textFields[number], string>
-  & Record<typeof booleanFields[number], boolean>
+  & Record<Exclude<typeof booleanFields[number], typeof vamanaBooleanFields[number]>, boolean>
+  & Partial<Record<typeof vamanaBooleanFields[number], boolean>>
   & Record<Exclude<NumericField, typeof indexFields[number]>, number>
-  & Partial<Record<typeof indexFields[number], number>>
+  & Partial<Record<Extract<NumericField, typeof indexFields[number]>, number>>
   & { backend: typeof backends[number]; quantize_type: typeof quantizations[number]; index_type: IndexType };
 
 // Quantization and rotation define the individual x-axis categories. Every
@@ -43,7 +48,7 @@ export const suiteFields = [
   'optimize_concurrency', 'query_concurrency', 'concurrency_duration_sec',
   'serial_cooldown_sec', 'payload_profile', 'gomaxprocs', 'gomemlimit',
   'cpu_affinity', 'go_version', 'inserted_count', 'serial_queries',
-  ...diskannFields,
+  ...diskannFields, ...vamanaFields,
 ] as const satisfies readonly (keyof Benchmark)[];
 
 export interface ComparisonGroup {
@@ -55,8 +60,9 @@ export interface ComparisonGroup {
 }
 
 export function configurationKey(record: Benchmark): string {
-  // Preserve existing HNSW/Flat asset keys when adding DiskANN-only settings.
+  // Preserve existing asset keys when adding settings for a new index.
   return JSON.stringify(suiteFields
+    .filter((field) => record.index_type === 'vamana' || !(vamanaFields as readonly string[]).includes(field))
     .filter((field) => record.index_type === 'diskann' || !(diskannFields as readonly string[]).includes(field))
     .map((field) => record.index_type !== 'hnsw' && (hnswFields as readonly string[]).includes(field) ? null : record[field]));
 }
