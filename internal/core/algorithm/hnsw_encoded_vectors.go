@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"math"
 )
 
@@ -38,31 +37,28 @@ func OpenScalarQuantizedHNSWIndexWithEncodedVectors(ctx context.Context, path st
 	if originals == nil {
 		return nil, errors.New("core: nil encoded HNSW originals")
 	}
-	base, err := openHNSWIndexWithStorage(ctx, path, nil, originals, useMmap)
+	base, err := openHNSWIndexWithStorage(ctx, path, nil, originals, useMmap, false)
 	if err != nil {
 		return nil, err
 	}
 	return newOwnedScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
 }
 
-// OpenHNSWIndexWithBorrowedVectors verifies the persisted graph while sharing
-// immutable collection originals. Keys and row headers are copied; callers must
-// retain the vectors unchanged. Add clones them before publishing a new generation.
-func OpenHNSWIndexWithBorrowedVectors(ctx context.Context, path string, candidates []Candidate, useMmap bool) (*HNSWIndex, error) {
+// OpenHNSWIndexWithEncodedOriginals verifies the artifact against encoded
+// collection originals and retains one owned contiguous FP32 scoring array.
+// The collection can avoid a second decoded copy without changing search locality.
+// Neither the supplied originals nor the temporary artifact mapping are retained.
+func OpenHNSWIndexWithEncodedOriginals(ctx context.Context, path string, originals map[uint64][]byte, useMmap bool) (*HNSWIndex, error) {
 	if ctx == nil {
-		return nil, errors.New("core: nil borrowed HNSW context")
+		return nil, errors.New("core: nil encoded HNSW context")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	originals := make(map[uint64][]float32, len(candidates))
-	for _, candidate := range candidates {
-		if _, exists := originals[candidate.Key]; exists {
-			return nil, fmt.Errorf("%w: %d", ErrDuplicateKey, candidate.Key)
-		}
-		originals[candidate.Key] = candidate.Vector
+	if originals == nil {
+		return nil, errors.New("core: nil encoded HNSW originals")
 	}
-	return openHNSWIndexWithBorrowedVectors(ctx, path, originals, useMmap)
+	return openHNSWIndexWithStorage(ctx, path, nil, originals, useMmap, true)
 }
 
 type encodedHNSWVectorReader [][]byte

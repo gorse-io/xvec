@@ -130,21 +130,3 @@ func prefetchDenseHNSWRows(vectors [][]float32, offset, lines uint32) {
 	}
 	runtime.KeepAlive(touched)
 }
-
-// prefetchNeighbors supports both owned contiguous and borrowed original rows.
-func (i *HNSWIndex) prefetchNeighbors(neighbors []int, offset, lines uint32) {
-	if i.vectorRows == nil && i.encodedVectors == nil {
-		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, offset, lines)
-		return
-	}
-	count := prefetchNeighborCount(len(neighbors), offset)
-	lineCount := normalizedPrefetchLines(lines, i.dimension*4)
-	var touched uint32
-	for _, position := range neighbors[:count] {
-		vector := i.vectorAt(position)
-		for line := 0; line < lineCount && line*16 < len(vector); line++ {
-			touched ^= math.Float32bits(vector[line*16])
-		}
-	}
-	runtime.KeepAlive(touched)
-}

@@ -541,12 +541,16 @@ func openCollectionDenseArtifact(
 	switch spec.indexType {
 	case IndexTypeHNSW:
 		if spec.quantize == QuantizeTypeUndefined {
-			if field.DataType == DataTypeVectorFP32 {
-				candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
-				if err != nil {
-					return nil, err
+			reader, keys, err := collectionEncodedDenseReader(ctx, field, documents)
+			if err != nil {
+				return nil, err
+			}
+			if reader != nil {
+				originals := make(map[uint64][]byte, len(keys))
+				for position, key := range keys {
+					originals[key] = reader.rows[position]
 				}
-				return core.OpenHNSWIndexWithBorrowedVectors(ctx, path, candidates, useMmap)
+				return core.OpenHNSWIndexWithEncodedOriginals(ctx, path, originals, useMmap)
 			}
 			return core.OpenHNSWIndex(ctx, path)
 		}
@@ -660,7 +664,7 @@ func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSe
 			if err != nil {
 				return nil, err
 			}
-			if (spec.indexType == IndexTypeFlat || spec.indexType == IndexTypeHNSW) && spec.quantize != QuantizeTypeUndefined {
+			if spec.indexType == IndexTypeHNSW || (spec.indexType == IndexTypeFlat && spec.quantize != QuantizeTypeUndefined) {
 				borrowedFields[field.Name] = struct{}{}
 			}
 		}
@@ -2348,9 +2352,6 @@ func buildCollectionDenseHNSW(
 			return nil, err
 		}
 		return core.BuildScalarQuantizedHNSWWithBorrowedVectors(ctx, int(field.Dimension), options, kind, reformer, candidates, workers)
-	}
-	if field.DataType == DataTypeVectorFP32 && spec.quantize == QuantizeTypeUndefined {
-		return core.BuildHNSWWithBorrowedVectors(ctx, int(field.Dimension), options, candidates, workers)
 	}
 	var builder *core.HNSWBuilder
 	if field.DataType == DataTypeVectorFP16 && spec.quantize == QuantizeTypeUndefined {

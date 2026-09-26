@@ -22,7 +22,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 )
 
@@ -116,7 +115,7 @@ func TestHNSWEncodedOriginals(t *testing.T) {
 	}
 }
 
-func TestHNSWBorrowedFP32Ownership(t *testing.T) {
+func TestHNSWEncodedFP32ContiguousStorage(t *testing.T) {
 	ctx := context.Background()
 	candidates := hnswMemoryCandidates()
 	options := DefaultHNSWBuildOptions(MetricCosine)
@@ -124,35 +123,33 @@ func TestHNSWBorrowedFP32Ownership(t *testing.T) {
 	options.EFConstruction = 16
 	builder, err := NewHNSWBuilder(8, options)
 	require.NoError(t, err)
+	originals := make(map[uint64][]byte, len(candidates))
 	for _, c := range candidates {
 		require.NoError(t, builder.Add(ctx, c.Key, c.Vector))
+		for _, v := range c.Vector {
+			originals[c.Key] = binary.LittleEndian.AppendUint32(originals[c.Key], math.Float32bits(v))
+		}
 	}
 	owned, err := builder.Build(ctx)
 	require.NoError(t, err)
-	index, err := BuildHNSWWithBorrowedVectors(ctx, 8, options, candidates, 1)
-	require.NoError(t, err)
-	require.Nil(t, index.vectors)
-	require.Equal(t, owned.neighbors, index.neighbors)
 	path := filepath.Join(t.TempDir(), "index")
-	require.NoError(t, index.Save(ctx, path))
+	require.NoError(t, owned.Save(ctx, path))
 	for _, mmap := range []bool{false, true} {
-		reopened, err := OpenHNSWIndexWithBorrowedVectors(ctx, path, candidates, mmap)
+		reopened, err := OpenHNSWIndexWithEncodedOriginals(ctx, path, originals, mmap)
 		require.NoError(t, err)
-		require.Nil(t, reopened.vectors)
+		require.Nil(t, reopened.vectorRows)
+		require.Nil(t, reopened.encodedVectors)
+		require.Equal(t, owned.vectors, reopened.vectors)
 		options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 8}, EF: 32, PrefetchOffset: 2, PrefetchLines: 2}
 		want, err := owned.SearchHNSW(ctx, candidates[7].Vector, options)
 		require.NoError(t, err)
 		got, err := reopened.SearchHNSW(ctx, candidates[7].Vector, options)
 		require.NoError(t, err)
 		require.Equal(t, want, got)
-		returned, ok := reopened.Vector(candidates[0].Key)
-		require.True(t, ok)
-		returned[0] += 1
-		require.NotEqual(t, returned, candidates[0].Vector)
-		original := slices.Clone(candidates[0].Vector)
 		require.NoError(t, reopened.Add(ctx, 99999, make([]float32, 8)))
-		require.Nil(t, reopened.vectorRows)
-		require.Equal(t, original, candidates[0].Vector)
-		require.Equal(t, original, reopened.vectorAt(0))
+		require.Equal(t, candidates[0].Vector, reopened.vectorAt(0))
 	}
+	originals[candidates[0].Key][0] ^= 1
+	_, err = OpenHNSWIndexWithEncodedOriginals(ctx, path, originals, true)
+	require.ErrorIs(t, err, ErrInvalidHNSWFile)
 }

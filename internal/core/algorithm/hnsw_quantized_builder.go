@@ -29,29 +29,11 @@ import (
 // over collection-owned FP32 vectors. The caller must not modify the vectors
 // for the index lifetime. Candidate keys and slice headers are copied.
 func BuildScalarQuantizedHNSWWithBorrowedVectors(ctx context.Context, dimension int, options HNSWBuildOptions, kind Quantization, reformer DenseReformer, candidates []Candidate, workers int) (*ScalarQuantizedHNSWIndex, error) {
-	if !kind.valid() {
-		return nil, ErrInvalidQuantization
-	}
-	builder, err := newHNSWBuilderWithBorrowedVectors(ctx, dimension, options, candidates)
-	if err != nil {
-		return nil, err
-	}
-	return builder.buildScalarQuantizedWithWorkers(ctx, workers, kind, reformer)
-}
-
-// BuildHNSWWithBorrowedVectors shares immutable original rows. Keys and row
-// headers are copied. Add clones the borrowed generation before modifying it.
-func BuildHNSWWithBorrowedVectors(ctx context.Context, dimension int, options HNSWBuildOptions, candidates []Candidate, workers int) (*HNSWIndex, error) {
-	builder, err := newHNSWBuilderWithBorrowedVectors(ctx, dimension, options, candidates)
-	if err != nil {
-		return nil, err
-	}
-	return builder.BuildWithWorkers(ctx, workers)
-}
-
-func newHNSWBuilderWithBorrowedVectors(ctx context.Context, dimension int, options HNSWBuildOptions, candidates []Candidate) (*HNSWBuilder, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil borrowed HNSW build context")
+	}
+	if !kind.valid() {
+		return nil, ErrInvalidQuantization
 	}
 	builder, err := NewHNSWBuilder(dimension, options)
 	if err != nil {
@@ -73,7 +55,7 @@ func newHNSWBuilderWithBorrowedVectors(ctx context.Context, dimension int, optio
 		builder.positions[candidate.Key] = position
 		builder.vectorRows[position] = candidate.Vector[:dimension:dimension]
 	}
-	return builder, nil
+	return builder.buildScalarQuantizedWithWorkers(ctx, workers, kind, reformer)
 }
 
 // BuildInt8WithWorkers quantizes the collected vectors before graph insertion.

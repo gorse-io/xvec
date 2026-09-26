@@ -36,12 +36,16 @@ func TestReadOnlyQuantizedHNSWEncodedVectors(t *testing.T) {
 
 func testReadOnlyQuantizedEncodedVectors(t *testing.T, indexType IndexType) {
 	ctx := context.Background()
-	for _, quantize := range []QuantizeType{QuantizeTypeFP16, QuantizeTypeInt8, QuantizeTypeInt4} {
+	quantizations := []QuantizeType{QuantizeTypeFP16, QuantizeTypeInt8, QuantizeTypeInt4}
+	if indexType == IndexTypeHNSW {
+		quantizations = append(quantizations, QuantizeTypeUndefined)
+	}
+	for _, quantize := range quantizations {
 		for _, useMmap := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%v/mmap=%v", quantize, useMmap), func(t *testing.T) {
 				params := NewFlatIndexParams(MetricTypeL2)
 				params.Quantize = quantize
-				params.Quantizer.EnableRotate = quantize != QuantizeTypeFP16
+				params.Quantizer.EnableRotate = quantize == QuantizeTypeInt8 || quantize == QuantizeTypeInt4
 				var indexParams IndexParams = params
 				if indexType == IndexTypeHNSW {
 					hp := NewHNSWIndexParams(MetricTypeL2)

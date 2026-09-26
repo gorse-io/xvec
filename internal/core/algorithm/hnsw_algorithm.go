@@ -343,7 +343,7 @@ type HNSWIndex struct {
 	distanceFP16     mathutil.DenseDistanceFP16
 	keys             []uint64
 	vectors          []float32
-	vectorRows       [][]float32 // Borrowed immutable originals; streaming additions clone them.
+	vectorRows       [][]float32 // Only used by private, immutable quantized graphs.
 	encodedVectors   [][]byte    // Validated little-endian originals borrowed by immutable quantized graphs.
 	vectorsFP16      []uint16
 	fp16             bool
@@ -960,7 +960,7 @@ func (i *HNSWIndex) SearchHNSWGroups(
 		return i.queryDistanceAt(query, queryFP16, queryMagnitude, position)
 	}
 	prefetch := func(neighbors []int) {
-		i.prefetchNeighbors(neighbors, options.PrefetchOffset, options.PrefetchLines)
+		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
 	}
 	return expandHNSWGroups(
 		ctx, i.options.Metric, i.keys, i.neighbors, initial, options.GroupByOptions,
@@ -1111,7 +1111,7 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryFP
 			break
 		}
 		neighbors := i.neighbors[current.position][0]
-		i.prefetchNeighbors(neighbors, options.PrefetchOffset, options.PrefetchLines)
+		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
 		visited.batchPositions = visited.batchPositions[:0]
 		visited.batchVectors = visited.batchVectors[:0]
 		visited.batchMagnitudes = visited.batchMagnitudes[:0]
@@ -1223,7 +1223,7 @@ func (i *HNSWIndex) searchHNSWBaseBlockHeap(ctx context.Context, query []float32
 		}
 		visited.markExpanded(int(current))
 		neighbors := i.neighbors[int(current)][0]
-		i.prefetchNeighbors(neighbors, options.PrefetchOffset, options.PrefetchLines)
+		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
 		visited.batchIDs = visited.batchIDs[:0]
 		visited.batchTies = visited.batchTies[:0]
 		visited.batchVectors = visited.batchVectors[:0]
@@ -1697,10 +1697,10 @@ func decodeHNSWIndex(ctx context.Context, encoded []byte) (*HNSWIndex, error) {
 // borrowed holds immutable collection vectors; every component is checked
 // against the artifact before the graph can retain a reference to it.
 func decodeHNSWIndexWithVectors(ctx context.Context, encoded []byte, borrowed map[uint64][]float32) (*HNSWIndex, error) {
-	return decodeHNSWIndexWithStorage(ctx, encoded, borrowed, nil)
+	return decodeHNSWIndexWithStorage(ctx, encoded, borrowed, nil, false)
 }
 
-func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed map[uint64][]float32, encodedOriginals map[uint64][]byte) (*HNSWIndex, error) {
+func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed map[uint64][]float32, encodedOriginals map[uint64][]byte, materialize bool) (*HNSWIndex, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil HNSW decode context")
 	}
@@ -1798,7 +1798,7 @@ func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed ma
 	}
 	if fp16 {
 		vectorsFP16 = make([]uint16, count*dimension)
-	} else if encodedOriginals != nil {
+	} else if encodedOriginals != nil && !materialize {
 		encodedVectors = make([][]byte, count)
 	} else if borrowed != nil {
 		vectorRows = make([][]float32, count)
@@ -1860,7 +1860,9 @@ func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed ma
 			if !found || len(original) != dimension*4 || !bytes.Equal(original, payload[offset:offset+vectorBytes]) {
 				return nil, fmt.Errorf("%w: encoded vector %d differs from artifact", ErrInvalidHNSWFile, key)
 			}
-			index.encodedVectors[position] = original[:len(original):len(original)]
+			if !materialize {
+				index.encodedVectors[position] = original[:len(original):len(original)]
+			}
 		}
 		index.neighbors[position] = make([][]int, int(level)+1)
 		start := position * dimension
@@ -1878,7 +1880,7 @@ func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed ma
 					if math.Float32bits(index.vectorRows[position][component]) != math.Float32bits(value) {
 						return nil, fmt.Errorf("%w: external vector %d differs from artifact", ErrInvalidHNSWFile, key)
 					}
-				} else if encodedOriginals == nil {
+				} else if encodedOriginals == nil || materialize {
 					index.vectors[start+component] = value
 				}
 			}
