@@ -1,6 +1,12 @@
 // Shared by build-time parsing, CSV metadata, and browser charts.
 export const backends = ['xvec', 'zvec'] as const;
-export const quantizations = ['int4', 'int8', 'fp16'] as const;
+export const indexTypes = ['hnsw', 'flat', 'diskann'] as const;
+export type IndexType = typeof indexTypes[number];
+export const indexLabels: Record<IndexType, string> = { hnsw: 'HNSW', flat: 'Flat', diskann: 'DiskANN' };
+export const hnswFields = ['m', 'ef_construction', 'ef_search'] as const;
+export const diskannFields = ['diskann_max_degree', 'diskann_build_list', 'diskann_pq_chunks', 'diskann_query_list'] as const;
+export const indexFields = [...hnswFields, ...diskannFields];
+export const quantizations = ['int4', 'int8', 'fp16', 'fp32'] as const;
 export const colors = { xvec: '#b47c00', zvec: '#4977cd' };
 
 export const textFields = [
@@ -9,7 +15,7 @@ export const textFields = [
 ] as const;
 export const booleanFields = ['rotate', 'use_refiner', 'enable_mmap'] as const;
 export const integerFields = [
-  'm', 'ef_construction', 'ef_search', 'k', 'batch_size', 'max_docs_per_segment',
+  ...indexFields, 'k', 'batch_size', 'max_docs_per_segment',
   'optimize_concurrency', 'query_concurrency', 'gomaxprocs', 'inserted_count',
   'serial_queries', 'concurrent_queries', 'peak_rss_kib',
 ] as const;
@@ -25,8 +31,9 @@ export const requiredFields = [...textFields, ...booleanFields, ...integerFields
 export type NumericField = typeof integerFields[number] | typeof decimalFields[number];
 export type Benchmark = Record<typeof textFields[number], string>
   & Record<typeof booleanFields[number], boolean>
-  & Record<NumericField, number>
-  & { backend: typeof backends[number]; quantize_type: typeof quantizations[number] };
+  & Record<Exclude<NumericField, typeof indexFields[number]>, number>
+  & Partial<Record<typeof indexFields[number], number>>
+  & { backend: typeof backends[number]; quantize_type: typeof quantizations[number]; index_type: IndexType };
 
 // Quantization and rotation define the individual x-axis categories. Every
 // other workload/runtime setting must match before records share a panel.
@@ -36,17 +43,22 @@ export const suiteFields = [
   'optimize_concurrency', 'query_concurrency', 'concurrency_duration_sec',
   'serial_cooldown_sec', 'payload_profile', 'gomaxprocs', 'gomemlimit',
   'cpu_affinity', 'go_version', 'inserted_count', 'serial_queries',
+  ...diskannFields,
 ] as const satisfies readonly (keyof Benchmark)[];
 
 export interface ComparisonGroup {
   id: string;
   machine: string;
   dataset: string;
+  indexType: IndexType;
   records: Benchmark[];
 }
 
 export function configurationKey(record: Benchmark): string {
-  return JSON.stringify(suiteFields.map((field) => record[field]));
+  // Preserve existing HNSW/Flat asset keys when adding DiskANN-only settings.
+  return JSON.stringify(suiteFields
+    .filter((field) => record.index_type === 'diskann' || !(diskannFields as readonly string[]).includes(field))
+    .map((field) => record.index_type !== 'hnsw' && (hnswFields as readonly string[]).includes(field) ? null : record[field]));
 }
 
 export function groupBenchmarks(records: Benchmark[]): ComparisonGroup[] {
@@ -55,7 +67,7 @@ export function groupBenchmarks(records: Benchmark[]): ComparisonGroup[] {
     const key = configurationKey(record);
     let group = groups.get(key);
     if (!group) {
-      group = { id: `group-${groups.size + 1}`, machine: record.machine, dataset: record.case, records: [] };
+      group = { id: `group-${groups.size + 1}`, machine: record.machine, dataset: record.case, indexType: record.index_type, records: [] };
       groups.set(key, group);
     }
     group.records.push(record);

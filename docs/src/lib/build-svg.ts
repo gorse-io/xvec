@@ -1,6 +1,6 @@
 import { echarts } from './chart-runtime';
 import { chartCards, chartDefinition, configurationLabel } from './chart-options';
-import { categories, type ComparisonGroup } from './benchmark';
+import { categories, indexLabels, type ComparisonGroup } from './benchmark';
 
 function escapeXml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[character]!);
@@ -40,14 +40,15 @@ export function renderBenchmarkSvg(group: ComparisonGroup): string {
 
   parts.push(`<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="benchmark-title benchmark-description" font-family="system-ui, sans-serif">
-<title id="benchmark-title">HNSW benchmark results</title>
-<desc id="benchmark-description">${escapeXml(`${group.machine}. ${group.dataset}. ${configurationLabel(group)}.`)}</desc>
+<title id="benchmark-title">${indexLabels[group.indexType]} benchmark results</title>
+<desc id="benchmark-description">${escapeXml(`${group.machine}. ${group.dataset}. ${indexLabels[group.indexType]}. ${configurationLabel(group)}.`)}</desc>
 <rect width="${width}" height="${height}" fill="#f7f8fa"/>`);
   parts.push(box(16, 52, 1240, 96));
   const fields = [
-    { label: 'Machine', value: group.machine, x: 40, width: 320 },
-    { label: 'Dataset', value: group.dataset, x: 380, width: 384 },
-    { label: 'Test configuration', value: configurationLabel(group), x: 784, width: 448 },
+    { label: 'Machine', value: group.machine, x: 40, width: 250 },
+    { label: 'Dataset', value: group.dataset, x: 310, width: 300 },
+    { label: 'Index', value: indexLabels[group.indexType], x: 630, width: 130 },
+    { label: 'Test configuration', value: configurationLabel(group), x: 780, width: 452 },
   ];
   fields.forEach((field, index) => {
     parts.push(text(field.x, 82, field.label, 10, '#627087', 600, 'letter-spacing="0.4"'));

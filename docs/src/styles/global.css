@@ -22,7 +22,7 @@ a, select, summary { -webkit-tap-highlight-color: transparent; }
 .text-link:hover { text-decoration: underline; }
 #results { padding-block: 36px; scroll-margin-top: 24px; }
 h1 { font-size: 26px; letter-spacing: -.8px; font-weight: 600; margin: 0; }
-.filters { display: grid; grid-template-columns: 1fr 1.2fr 1.4fr; gap: 20px; background: white; padding: 20px 24px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 32px; }
+.filters { display: grid; grid-template-columns: 1fr 1.2fr minmax(90px, .5fr) 1.4fr; gap: 20px; background: white; padding: 20px 24px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 32px; }
 .filters label { display: flex; flex-direction: column; gap: 8px; font-size: 10px; font-weight: 600; color: var(--muted); letter-spacing: .4px; min-width: 0; }
 select { color: #27354b; border: 1px solid #dae0e9; border-radius: 5px; padding: 8px 28px 8px 10px; font-size: 12px; background: #fbfcfd; max-width: 100%; text-overflow: ellipsis; }
 select:disabled { opacity: 1; color: #58667a; cursor: default; }
@@ -47,7 +47,7 @@ select:disabled { opacity: 1; color: #58667a; cursor: default; }
   .site-header { height: 72px; } .brand-section, .brand-divider { display: none; } .repo-link { font-size: 11px; }
   .site-header { gap: 8px; } .nav-actions { gap: 8px; } .brand { font-size: 21px; gap: 6px; }
   h1 { font-size: 22px; }
-  .filters { grid-template-columns: 1fr 1fr; gap: 16px; padding: 18px; } .configuration-filter { grid-column: 1 / -1; }
+  .filters { grid-template-columns: 1fr 1fr; gap: 16px; padding: 18px; }
   .chart-grid { grid-template-columns: 1fr; gap: 16px; } .chart-card { padding: 20px 16px 14px; } .card-heading { flex-direction: row; } .card-heading h3 { font-size: 17px; } .direction { font-size: 8px; margin: 0; }
   .chart { height: 255px; }
 }

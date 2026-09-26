@@ -12,7 +12,12 @@ export const chartCards = [
 
 export function configurationLabel(group: ComparisonGroup): string {
   const record = group.records[0];
-  return `M ${record.m} · ef ${record.ef_search} · Concurrency ${record.query_concurrency}`;
+  if (record.index_type === 'diskann') {
+    return `Degree ${record.diskann_max_degree} · Search ${record.diskann_query_list} · Concurrency ${record.query_concurrency}`;
+  }
+  return record.index_type === 'hnsw'
+    ? `M ${record.m} · ef ${record.ef_search} · Concurrency ${record.query_concurrency}`
+    : `K ${record.k} · Concurrency ${record.query_concurrency}`;
 }
 
 // One definition for the live charts and the images produced during a build.
@@ -48,7 +53,9 @@ export function chartDefinition(group: ComparisonGroup, kind: string, metric: Me
     xAxis: { type: 'category', data: labels, axisTick: { show: false }, axisLine: { lineStyle: { color: '#dfe4eb' } }, axisLabel: { color: '#5c677b', fontSize: 11, lineHeight: 18, interval: 0 } },
     yAxis: {
       type: 'value', min: 0, ...(metric === 'recall_at_k_pct' ? { max: 100, interval: 25 } : {}),
-      axisLabel: { color: '#6c7789', formatter: (value: number) => metric === 'recall_at_k_pct' ? `${value}%` : value.toLocaleString('en-US', { notation: 'compact', maximumFractionDigits: 1 }) },
+      axisLabel: { color: '#6c7789', formatter: (value: number) => metric === 'recall_at_k_pct' ? `${value}%`
+        : metric === 'peak_rss_kib' ? formatBytes(value)
+        : value.toLocaleString('en-US', { notation: 'compact', maximumFractionDigits: 1 }) },
       splitLine: { lineStyle: { color: '#edf0f4', type: 'dashed' } },
     },
     series: series.map((entry) => ({
