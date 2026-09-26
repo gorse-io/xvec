@@ -185,13 +185,14 @@ func (b *IVFBuilder) Build(ctx context.Context) (*IVFIndex, error) {
 	}
 
 	index := &IVFIndex{
-		dimension:   b.dimension,
-		options:     b.options,
-		keys:        b.keys,
-		vectors:     b.vectors,
-		vectorsFP16: b.vectorsFP16,
-		fp16:        b.fp16,
-		positions:   b.positions,
+		dimension:        b.dimension,
+		options:          b.options,
+		keys:             b.keys,
+		vectors:          b.vectors,
+		vectorsFP16:      b.vectorsFP16,
+		fp16:             b.fp16,
+		positions:        b.positions,
+		cosineDotRouting: b.options.Metric == MetricCosine,
 	}
 	if len(b.keys) != 0 {
 		trainingStorage := b.vectors
@@ -216,7 +217,14 @@ func (b *IVFBuilder) Build(ctx context.Context) (*IVFIndex, error) {
 		kmeans.Tolerance = b.options.Tolerance
 		kmeans.Workers = b.options.Workers
 		kmeans.Seed = b.options.Seed
-		model, labels, err := trainKMeansWithAssignments(ctx, training, kmeans)
+		var model *KMeansModel
+		var labels []int
+		var err error
+		if index.cosineDotRouting {
+			model, labels, err = trainCosineIVF(ctx, training, kmeans)
+		} else {
+			model, labels, err = trainKMeansWithAssignments(ctx, training, kmeans)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("core: train IVF centroids: %w", err)
 		}
@@ -260,9 +268,12 @@ type IVFIndex struct {
 	fp16               bool
 	vectorMagnitudes   []float32
 	centroidMagnitudes []float32
-	positions          map[uint64]int
-	lists              []ivfList
-	listForPosition    []int
+	// New cosine layouts route normalized queries by centroid dot product.
+	// Legacy layouts and RaBitQ retain their original metric-based routing.
+	cosineDotRouting bool
+	positions        map[uint64]int
+	lists            []ivfList
+	listForPosition  []int
 }
 
 // Dimension returns the fixed vector dimension.
@@ -467,7 +478,7 @@ func (i *IVFIndex) SearchWithOptions(ctx context.Context, query []float32, optio
 	}, true)
 }
 
-// SearchIVF probes the metric-best centroids and exact-scores originals in
+// SearchIVF probes the best centroids using the persisted routing mode and exact-scores originals in
 // only those lists.
 func (i *IVFIndex) SearchIVF(ctx context.Context, query []float32, options IVFSearchOptions) ([]Result, error) {
 	return i.searchIVF(ctx, query, options, true)
@@ -596,7 +607,7 @@ func (i *IVFIndex) searchFP16Lists(ctx context.Context, query []uint16, lists []
 	return results, nil
 }
 
-// ProbedLists returns up to nprobe centroid indexes in metric-best order.
+// ProbedLists returns up to nprobe centroid indexes in the persisted routing order.
 func (i *IVFIndex) ProbedLists(ctx context.Context, query []float32, nprobe int) ([]int, error) {
 	if i == nil {
 		return nil, errors.New("core: nil IVF index")
@@ -692,6 +703,11 @@ func (i *IVFIndex) cacheCosineMagnitudes(ctx context.Context) error {
 	i.centroidMagnitudes = make([]float32, len(i.model.centroids))
 	for index, centroid := range i.model.centroids {
 		i.centroidMagnitudes[index] = mathutil.L2Magnitude(centroid)
+		if i.cosineDotRouting {
+			// Preserve the centroid norm as a routing weight, matching 1-dot
+			// over unit queries rather than renormalizing each centroid.
+			i.centroidMagnitudes[index] = 1
+		}
 	}
 	return nil
 }
@@ -759,10 +775,20 @@ func (i *IVFIndex) Add(ctx context.Context, key uint64, vector []float32) error 
 	if err != nil {
 		return err
 	}
+	centroidForIndex := vectorForIndex
+	centroidMagnitude := vectorMagnitude
+	if i.cosineDotRouting {
+		centroidForIndex = slices.Clone(vectorForIndex)
+		mathutil.NormalizeL2(centroidForIndex)
+		centroidMagnitude = 1
+		distance = func(centroid, vector []float32) float32 {
+			return mathutil.CosineDistanceWithMagnitudes(centroid, vector, 1, vectorMagnitude)
+		}
+	}
 	growCentroids := len(i.lists) < i.options.NList
 	if growCentroids {
 		list = len(i.lists)
-		score = distance(vectorForIndex, vectorForIndex)
+		score = distance(centroidForIndex, vectorForIndex)
 	} else {
 		if i.model == nil {
 			return fmt.Errorf("%w: missing trained centroids", ErrInvalidIVFFile)
@@ -805,7 +831,7 @@ func (i *IVFIndex) Add(ctx context.Context, key uint64, vector []float32) error 
 		i.model = &KMeansModel{
 			metric:     i.options.Metric,
 			dimension:  i.dimension,
-			centroids:  [][]float32{slices.Clone(vectorForIndex)},
+			centroids:  [][]float32{slices.Clone(centroidForIndex)},
 			counts:     []int{1},
 			cost:       cost,
 			iterations: 0,
@@ -813,14 +839,14 @@ func (i *IVFIndex) Add(ctx context.Context, key uint64, vector []float32) error 
 		}
 		i.lists = append(i.lists, ivfList{positions: []int{position}})
 		if i.options.Metric == MetricCosine {
-			i.centroidMagnitudes = append(i.centroidMagnitudes, vectorMagnitude)
+			i.centroidMagnitudes = append(i.centroidMagnitudes, centroidMagnitude)
 		}
 		return nil
 	}
 	if growCentroids {
-		i.model.centroids = append(i.model.centroids, slices.Clone(vectorForIndex))
+		i.model.centroids = append(i.model.centroids, slices.Clone(centroidForIndex))
 		if i.options.Metric == MetricCosine {
-			i.centroidMagnitudes = append(i.centroidMagnitudes, vectorMagnitude)
+			i.centroidMagnitudes = append(i.centroidMagnitudes, centroidMagnitude)
 		}
 		i.model.counts = append(i.model.counts, 1)
 		i.lists = append(i.lists, ivfList{positions: []int{position}})
@@ -838,7 +864,7 @@ var (
 )
 
 const (
-	ivfFileVersion    = 1
+	ivfFileVersion    = 2
 	ivfHeaderSize     = 112
 	ivfReadChunk      = 1 << 20
 	ivfRecordOverhead = 12 // key uint64 plus list uint32
@@ -900,6 +926,7 @@ func (i *IVFIndex) persistenceSnapshot(ctx context.Context) (*IVFIndex, error) {
 		vectors:            append([]float32(nil), i.vectors...),
 		vectorsFP16:        append([]uint16(nil), i.vectorsFP16...),
 		fp16:               i.fp16,
+		cosineDotRouting:   i.cosineDotRouting,
 		vectorMagnitudes:   append([]float32(nil), i.vectorMagnitudes...),
 		centroidMagnitudes: append([]float32(nil), i.centroidMagnitudes...),
 		positions:          make(map[uint64]int, len(i.positions)),
@@ -1009,7 +1036,12 @@ func encodeIVFIndex(ctx context.Context, index *IVFIndex) ([]byte, error) {
 
 	header := make([]byte, ivfHeaderSize)
 	copy(header[:8], ivfFileMagic[:])
-	binary.LittleEndian.PutUint16(header[8:10], ivfFileVersion)
+	version := uint16(1)
+	if index.cosineDotRouting {
+		version = ivfFileVersion
+		header[51] = 1
+	}
+	binary.LittleEndian.PutUint16(header[8:10], version)
 	binary.LittleEndian.PutUint16(header[10:12], ivfHeaderSize)
 	binary.LittleEndian.PutUint64(header[16:24], uint64(ivfHeaderSize+payloadSize))
 	binary.LittleEndian.PutUint64(header[24:32], uint64(payloadSize))
@@ -1052,13 +1084,13 @@ func decodeIVFIndex(ctx context.Context, encoded []byte) (*IVFIndex, error) {
 		return nil, fmt.Errorf("%w: bad magic", ErrInvalidIVFFile)
 	}
 	version := binary.LittleEndian.Uint16(header[8:10])
-	if version != ivfFileVersion {
+	if version != 1 && version != ivfFileVersion {
 		return nil, fmt.Errorf("%w: %d", ErrUnsupportedIVFVersion, version)
 	}
 	if binary.LittleEndian.Uint16(header[10:12]) != ivfHeaderSize {
 		return nil, fmt.Errorf("%w: bad header size", ErrInvalidIVFFile)
 	}
-	if binary.LittleEndian.Uint32(header[12:16]) != 0 || header[50] > 1 || header[51] != 0 ||
+	if binary.LittleEndian.Uint32(header[12:16]) != 0 || header[50] > 1 || header[51] > 1 || (version == 1 && header[51] != 0) ||
 		binary.LittleEndian.Uint64(header[100:108]) != 0 {
 		return nil, fmt.Errorf("%w: nonzero reserved field", ErrInvalidIVFFile)
 	}
@@ -1097,6 +1129,9 @@ func decodeIVFIndex(ctx context.Context, encoded []byte) (*IVFIndex, error) {
 	if err != nil {
 		return nil, err
 	}
+	if header[51] == 1 && options.Metric != MetricCosine {
+		return nil, fmt.Errorf("%w: cosine routing on non-cosine index", ErrInvalidIVFFile)
+	}
 	trainingCost := math.Float64frombits(binary.LittleEndian.Uint64(header[84:92]))
 	trainingIterations := uint64(binary.LittleEndian.Uint32(header[92:96]))
 	converged := header[49]
@@ -1115,15 +1150,16 @@ func decodeIVFIndex(ctx context.Context, encoded []byte) (*IVFIndex, error) {
 		vectors = make([]float32, count*dimension)
 	}
 	index := &IVFIndex{
-		dimension:       dimension,
-		options:         options,
-		keys:            make([]uint64, count),
-		vectors:         vectors,
-		vectorsFP16:     vectorsFP16,
-		fp16:            fp16,
-		positions:       make(map[uint64]int, count),
-		lists:           make([]ivfList, nlist),
-		listForPosition: make([]int, count),
+		dimension:        dimension,
+		options:          options,
+		keys:             make([]uint64, count),
+		vectors:          vectors,
+		vectorsFP16:      vectorsFP16,
+		fp16:             fp16,
+		cosineDotRouting: header[51] == 1,
+		positions:        make(map[uint64]int, count),
+		lists:            make([]ivfList, nlist),
+		listForPosition:  make([]int, count),
 	}
 	offset := 0
 	centroids := make([][]float32, nlist)
@@ -1229,6 +1265,9 @@ func validateIVFIndex(ctx context.Context, index *IVFIndex) error {
 	}
 	if index.options.NList > math.MaxUint32 || index.options.NIterations > math.MaxUint32 {
 		return fmt.Errorf("%w: options exceed format capacity", ErrInvalidIVFFile)
+	}
+	if index.cosineDotRouting && index.options.Metric != MetricCosine {
+		return fmt.Errorf("%w: cosine routing on non-cosine index", ErrInvalidIVFFile)
 	}
 	count := len(index.keys)
 	if _, err := checkedIVFPayloadSize(index.dimension, count, len(index.lists), index.fp16); err != nil {

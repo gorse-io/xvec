@@ -232,6 +232,33 @@ and output path. `--ivf-use-soar` enables SOAR list assignment, while
 `--is-using-refiner` enables query-time refinement using
 `--ivf-scale-factor` candidates. Both are disabled by default.
 
+New cosine IVF indexes follow zvec's coarse routing: K-MC2 initialization,
+L2 training on unit vectors with the original magnitude appended, and
+centroid dot-product assignment/probing. Original vectors still determine
+final cosine scores. This can scan larger lists and improve recall at a fixed
+`--ivf-n-probe`; compare throughput together with Recall@K.
+
+Rebuild existing cosine IVF collections to use this layout. The new reader
+preserves version-1 indexes' original cosine routing. New cosine layouts use
+IVF format version 2, which older binaries cannot read. L2, inner-product, and
+IVF-RaBitQ layouts retain their existing routing and format.
+
+A single-run `Performance768D1M` comparison on an AMD EPYC 7B12 (8 logical
+CPUs, Go 1.27.1, `GOMAXPROCS=8`) with the parameters above, no quantization or
+refiner, TopK=100, 100 warmup queries, 30 seconds of concurrent search, and
+1,000 serial queries produced:
+
+| Backend/layout | Recall@100 | QPS (8 workers) | Concurrent p95 |
+| --- | ---: | ---: | ---: |
+| xvec legacy cosine routing | 76.488% | 743.19 | 14.41 ms |
+| xvec zvec-compatible cosine routing | 88.606% | 86.29 | 152.13 ms |
+| zvec-go v0.7.0 | 88.622% | 153.32 | 93.73 ms |
+
+The higher recall at `nprobe=10` comes with substantially more candidate
+scanning and lower throughput. These measurements align the routing behavior;
+they do not establish a speed improvement. The legacy xvec layout at
+`nprobe=30` reached 89.405% recall and 228.62 QPS in the same workload.
+
 ## Vamana comparison
 
 zvec-go v0.7 exposes zvec's native Vamana index. Select it independently from
