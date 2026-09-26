@@ -29,9 +29,19 @@ test('SVG metadata escapes CSV text and asset names distinguish sanitized labels
   assert.doesNotMatch(svg, /<script>/);
   const slash = groupBenchmarks(records.map((record) => ({ ...record, machine: 'A/B' })))[0];
   const dash = groupBenchmarks(records.map((record) => ({ ...record, machine: 'A-B' })))[0];
-  const otherConfig = groupBenchmarks(records.map((record) => ({ ...record, m: record.m + 1 })))[0];
+  const otherConfig = groupBenchmarks(records.map((record) => ({ ...record, m: record.m! + 1 })))[0];
   assert.match(svgAsset(special), /^benchmarks\/[a-zA-Z0-9_-]+\.svg$/);
   assert.notEqual(svgAsset(slash), svgAsset(dash));
   assert.notEqual(svgAsset(group), svgAsset(otherConfig));
   assert.equal(svgAsset(group), svgAsset({ ...group, id: 'different-order' }));
+});
+
+test('Flat SVG identifies its index and uses a distinct export asset', () => {
+  const flat = groupBenchmarks(parseBenchmarks(readFileSync(new URL('../benchmark-flat.csv', import.meta.url), 'utf8')))[0];
+  const svg = renderBenchmarkSvg(flat);
+  assert.match(svg, /Flat benchmark results/);
+  assert.match(svg, />Index<\/text>/);
+  assert.match(svg, />Flat<\/text>/);
+  assert.doesNotMatch(svg, /HNSW|M undefined|ef undefined/);
+  assert.notEqual(svgAsset(flat), svgAsset(group));
 });

@@ -12,7 +12,9 @@ export const chartCards = [
 
 export function configurationLabel(group: ComparisonGroup): string {
   const record = group.records[0];
-  return `M ${record.m} · ef ${record.ef_search} · Concurrency ${record.query_concurrency}`;
+  return record.index_type === 'hnsw'
+    ? `M ${record.m} · ef ${record.ef_search} · Concurrency ${record.query_concurrency}`
+    : `K ${record.k} · Concurrency ${record.query_concurrency}`;
 }
 
 // One definition for the live charts and the images produced during a build.

@@ -1,9 +1,21 @@
 # xvec benchmark website
 
-An English, static Astro + TypeScript site for the HNSW measurements in
-`benchmark-hnsw.csv`. ECharts is bundled locally; no backend or external chart
-service is needed. The CSV and `logo.png` stay in this directory and are imported
+An English, static Astro + TypeScript site for the HNSW and Flat measurements in
+`benchmark-hnsw.csv` and `benchmark-flat.csv`. ECharts is bundled locally; no backend or external chart
+service is needed. The CSV files and `logo.png` stay in this directory and are imported
 through Astro/Vite to generate the homepage at build time.
+
+`benchmark-flat.csv` contains a separate Flat comparison of xvec and zvec for
+INT4, INT8, FP16, and unquantized FP32 on `Performance768D100K`. It uses the
+same runtime settings and metric units as the HNSW CSV, omitting the inapplicable
+`m`, `ef_construction`, and `ef_search` columns. Both backends enable rotation
+for INT4/INT8 and disable it for FP16/FP32; all runs disable refinement.
+`v0.7.0+rotate` identifies a local zvec-go v0.7.0 modification that calls the
+native `zvec_index_params_set_quantizer_enable_rotate` setter when selecting
+INT4/INT8, matching xvec. The native library is unchanged, and rotation is
+verified through its parameter getter. The Index selector between Dataset and
+Test configuration switches all charts and the SVG export between HNSW
+(the default) and Flat. Flat configuration labels omit HNSW parameters.
 
 ## Development
 
@@ -21,7 +33,7 @@ The repository's Go API and benchmark runner are independent of this project.
 
 ## Updating measurements
 
-1. Edit `docs/benchmark-hnsw.csv`, retaining its header and units.
+1. Edit `docs/benchmark-hnsw.csv` or `docs/benchmark-flat.csv`, retaining its header and units.
 2. Run the checks from `docs`:
 
    ```sh
@@ -32,7 +44,7 @@ The repository's Go API and benchmark runner are independent of this project.
    ```
 
 3. Review the homepage and the generated SVG. Update the published-measurement fixture
-   in `tests/benchmark.test.ts` when intentionally replacing the current six runs.
+   in `tests/benchmark.test.ts` when intentionally updating the measurements.
 4. Commit the CSV, source changes, and `pnpm-lock.yaml` when dependencies change.
    Generated SVG files, `node_modules`, `.astro`, and `dist` are ignored and must
    not be committed.
@@ -57,7 +69,8 @@ setting cannot silently disappear from comparison grouping.
 `src/lib/benchmark.ts` defines the typed schema, shared metric labels and units,
 and grouping rules. All fields in `suiteFields` must match: machine, dataset,
 document count, HNSW and runtime parameters, payload, concurrency duration,
-cooldown, and serial query count. Machine, dataset, and test configuration
+cooldown, and serial query count. HNSW parameters are required for HNSW and
+omitted for Flat; they do not affect Flat grouping. Machine, dataset, index, and test configuration
 selectors expose separate groups as data is added. Single-choice selectors are
 disabled. Quantization and rotation define individual chart categories. An xvec
 and zvec bar are paired only when both category settings match. Incomplete
@@ -66,9 +79,17 @@ pairs remain visible, with missing measurements represented as gaps, not zero.
 There must be at most one record per backend, suite, quantization, and rotation.
 A different backend version does not permit a duplicate: choose the intended
 run explicitly rather than silently combining repeated measurements. Backend
-versions are preserved in the source CSV. In the current data, xvec INT4/INT8
-and FP16 use different commits, so these are not controlled quantization-only
+versions are preserved in the source CSV. In the current data, xvec INT4/INT8,
+FP16, and FP32 use different commits, so these are not controlled quantization-only
 comparisons.
+
+`quantize_type=fp32` denotes unquantized FP32 vectors (`--quantize-type` omitted
+in the benchmark runner, whose JSON reports this as `none`). Rotation and
+refinement are disabled for these runs. The FP32 pair uses the same
+`Performance768D100K` workload and runtime settings as the existing rows:
+M=50, construction EF=500, search EF=300, K=100, eight optimize/search workers,
+30 seconds of concurrent search, a 3-second serial cooldown, CPU affinity 0–7,
+`GOMAXPROCS=8`, and `GOMEMLIMIT=24GiB` on an `e2-standard-8` machine.
 
 Recall uses the serial-phase measurement and a fixed 0–100% axis. Concurrent
 QPS is shown alongside separate average and P99 latency charts. The loading
@@ -117,7 +138,8 @@ keep generated files out of Git. Deployment is separate from this build.
 
 ## Verification
 
-`pnpm test` checks all 78 chart measurements in the current six rows, every metric
+`pnpm test` checks all 104 HNSW chart measurements, Flat QPS and recall,
+index separation and configuration labels, every metric
 series, CSV quoting/BOM/CRLF, malformed data, duplicate records, and separation
 of incompatible configurations. SVG tests cover deterministic output, safe text,
 self-contained chart references, and configuration-specific asset paths. `pnpm check` checks Astro and TypeScript;

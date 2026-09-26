@@ -1,12 +1,10 @@
 import type { APIRoute, GetStaticPaths } from 'astro';
-import csv from '../../benchmark-hnsw.csv?raw';
-import { groupBenchmarks, type ComparisonGroup } from '../lib/benchmark';
-import { parseBenchmarks } from '../lib/parse-benchmark';
+import type { ComparisonGroup } from '../lib/benchmark';
+import { groups } from '../lib/benchmark-data';
 import { renderBenchmarkSvg } from '../lib/build-svg';
 import { svgAsset } from '../lib/svg-asset';
 
 export const getStaticPaths: GetStaticPaths = () => {
-  const groups = groupBenchmarks(parseBenchmarks(csv));
   return [
     { params: { image: 'benchmark-hnsw' }, props: { group: groups[0] } },
     ...groups.map((group) => ({ params: { image: svgAsset(group).slice(0, -4) }, props: { group } })),
