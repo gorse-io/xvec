@@ -1,3 +1,4 @@
+import vamanaCsv from '../../benchmark-vamana.csv?raw';
 import hnswCsv from '../../benchmark-hnsw.csv?raw';
 import flatCsv from '../../benchmark-flat.csv?raw';
 import diskannCsv from '../../benchmark-diskann.csv?raw';
@@ -9,4 +10,5 @@ export const groups = groupBenchmarks([
   ...parseBenchmarks(hnswCsv, 'benchmark-hnsw.csv'),
   ...parseBenchmarks(flatCsv, 'benchmark-flat.csv'),
   ...parseBenchmarks(diskannCsv, 'benchmark-diskann.csv'),
+  ...parseBenchmarks(vamanaCsv, 'benchmark-vamana.csv'),
 ]);

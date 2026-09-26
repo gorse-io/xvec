@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { parseBenchmarks } from '../src/lib/parse-benchmark';
-import { categories, diskannFields, formatBytes, groupBenchmarks, metricKeys, seriesFor, suiteFields, type Benchmark } from '../src/lib/benchmark';
+import { categories, diskannFields, vamanaFields, formatBytes, groupBenchmarks, metricKeys, seriesFor, suiteFields, type Benchmark } from '../src/lib/benchmark';
 import { chartDefinition, configurationLabel } from '../src/lib/chart-options';
 
 const csv = readFileSync(new URL('../benchmark-hnsw.csv', import.meta.url), 'utf8');
@@ -89,7 +89,7 @@ test('duplicate configurations fail even when versions differ', () => {
 test('every suite setting splits incompatible runs, including machine and dataset', () => {
   const record = parseBenchmarks(fixture())[0];
   for (const field of suiteFields) {
-    if ((diskannFields as readonly string[]).includes(field)) continue;
+    if (([...diskannFields, ...vamanaFields] as readonly string[]).includes(field)) continue;
     const current = record[field];
     const different = typeof current === 'number' ? current + 1 : typeof current === 'boolean' ? !current : `${current}-other`;
     const changed = { ...record, [field]: different } as Benchmark;
@@ -166,6 +166,40 @@ test('DiskANN requires and groups by each of its four index parameters', () => {
     const missing = rows.map((row) => row.filter((_, index) => index !== column).join(',')).join('\n');
     assert.throws(() => parseBenchmarks(missing), new RegExp(`field "${field}"`));
     rows[1][column] = '-1';
+    assert.throws(() => parseBenchmarks(rows.map((row) => row.join(',')).join('\n')), new RegExp(`field "${field}"`));
+  }
+});
+
+test('Vamana includes all four precisions and stays separate from other indexes', () => {
+  const records = parseBenchmarks(readFileSync(new URL('../benchmark-vamana.csv', import.meta.url), 'utf8'), 'benchmark-vamana.csv');
+  assert.equal(records.length, 8);
+  assert.ok(records.every((record) => record.index_type === 'vamana' && record.m === undefined && !record.use_refiner));
+  assert.deepEqual(categories(records).map((category) => [category.quantization, category.rotate]), [['int4', true], ['int8', true], ['fp16', false], ['fp32', false]]);
+  const groups = groupBenchmarks([...parseBenchmarks(csv), ...parseBenchmarks(flatCsv), ...parseBenchmarks(diskannCsv), ...records]);
+  assert.deepEqual(groups.map((group) => group.indexType), ['hnsw', 'flat', 'diskann', 'vamana']);
+  assert.equal(configurationLabel(groups[3]), 'Degree 64 · Search 200 · Concurrency 8');
+  assert.deepEqual(records.map((record) => vamanaFields.map((field) => record[field])), Array.from({ length: 8 }, () => [64, 100, 200, 750, 1.2, false, false, false, false]));
+  for (const record of records) {
+    assert.equal(record.inserted_count, 100000);
+    assert.equal(record.serial_queries, 1000);
+    assert.equal(record.backend_version, record.backend === 'xvec' ? '6a8b120d4284bf16853b2b4ad18465c599e72d82' : 'v0.7.0+rotate');
+  }
+});
+
+test('Vamana validates and groups each build/search option without splitting other indexes', () => {
+  const input = readFileSync(new URL('../benchmark-vamana.csv', import.meta.url), 'utf8');
+  const record = parseBenchmarks(input)[0];
+  const hnsw = parseBenchmarks(csv)[0];
+  for (const field of vamanaFields) {
+    const current = record[field];
+    const changed = typeof current === 'boolean' ? !current : current! + 1;
+    assert.equal(groupBenchmarks([record, { ...record, [field]: changed }]).length, 2, field);
+    assert.equal(groupBenchmarks([hnsw, { ...hnsw, [field]: changed }]).length, 1, field);
+    const rows = input.trim().split('\n').map((line) => line.split(','));
+    const column = rows[0].indexOf(field);
+    const missing = rows.map((row) => row.filter((_, index) => index !== column).join(',')).join('\n');
+    assert.throws(() => parseBenchmarks(missing), new RegExp(`field "${field}"`));
+    rows[1][column] = typeof current === 'boolean' ? 'yes' : '-1';
     assert.throws(() => parseBenchmarks(rows.map((row) => row.join(',')).join('\n')), new RegExp(`field "${field}"`));
   }
 });

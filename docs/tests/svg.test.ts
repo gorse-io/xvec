@@ -57,3 +57,14 @@ test('DiskANN SVG identifies its index and only includes FP16 and FP32', () => {
   assert.doesNotMatch(svg, /INT4|INT8|HNSW|undefined/);
   assert.notEqual(svgAsset(diskann), svgAsset(group));
 });
+
+test('Vamana SVG identifies its index, configuration, and all four precisions', () => {
+  const vamana = groupBenchmarks(parseBenchmarks(readFileSync(new URL('../benchmark-vamana.csv', import.meta.url), 'utf8')))[0];
+  const svg = renderBenchmarkSvg(vamana);
+  assert.match(svg, /Vamana benchmark results/);
+  assert.match(svg, />Vamana<\/text>/);
+  assert.match(svg, /Degree 64 · Search 200 · Concurrency 8/);
+  for (const precision of ['INT4', 'INT8', 'FP16', 'FP32']) assert.ok(svg.includes(`>${precision}</text>`));
+  assert.doesNotMatch(svg, /HNSW|undefined/);
+  assert.notEqual(svgAsset(vamana), svgAsset(group));
+});
