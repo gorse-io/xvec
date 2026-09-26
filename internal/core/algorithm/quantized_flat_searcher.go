@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/math"
 )
 
@@ -62,6 +63,22 @@ func NewScalarQuantizedFlatIndex(
 		copy(vectors[position*dimension:(position+1)*dimension], candidate.Vector)
 	}
 	storage, err := newOwnedScalarQuantizedVectors(ctx, dimension, metric, kind, reformer, keys, vectors)
+	if err != nil {
+		return nil, err
+	}
+	return &ScalarQuantizedFlatIndex{vectors: storage}, nil
+}
+
+// NewScalarQuantizedFlatIndexWithBorrowedVectors builds codes while referencing
+// immutable original rows for refinement. The caller must keep vector contents
+// immutable for the lifetime of the index; keys and slice headers are copied.
+func NewScalarQuantizedFlatIndexWithBorrowedVectors(ctx context.Context, dimension int, metric Metric, kind Quantization, reformer DenseReformer, candidates []Candidate) (*ScalarQuantizedFlatIndex, error) {
+	keys := make([]uint64, len(candidates))
+	rows := make([][]float32, len(candidates))
+	for position, candidate := range candidates {
+		keys[position], rows[position] = candidate.Key, candidate.Vector
+	}
+	storage, err := newScalarQuantizedVectorStorage(ctx, dimension, metric, kind, reformer, keys, nil, rows)
 	if err != nil {
 		return nil, err
 	}
@@ -122,11 +139,43 @@ func (i *ScalarQuantizedFlatIndex) SearchWithOptions(ctx context.Context, query 
 	if i == nil || i.vectors == nil {
 		return nil, errors.New("core: nil scalar-quantized Flat index")
 	}
-	positions := make([]int, len(i.vectors.keys))
-	for position := range positions {
-		positions[position] = position
+	if ctx == nil {
+		return nil, errors.New("core: nil scalar-quantized search context")
 	}
-	return i.vectors.search(ctx, query, options, positions)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
+	queryCode, err := i.vectors.quantizedQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	// Scan codes directly and retain only top-k. Materializing every position
+	// and score makes query scratch space grow with the entire collection.
+	k := min(options.TopK, len(i.vectors.keys))
+	metric := i.vectors.metric
+	heap := container.NewHeapWithCapacity(k, func(left, right Result) bool {
+		if left.Score == right.Score {
+			return left.Key > right.Key
+		}
+		return metric.Better(right.Score, left.Score)
+	})
+	for position, key := range i.vectors.keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if options.Filter != nil && !options.Filter(key) {
+			continue
+		}
+		score, err := i.vectors.distanceToCode(position, queryCode)
+		if err != nil {
+			return nil, fmt.Errorf("core: score scalar-quantized candidate %d: %w", position, err)
+		}
+		retainDenseResult(heap, k, metric, options.Radius, Result{Key: key, Score: score})
+	}
+	return MergeSearchResults(metric, k, heap.Values()), nil
 }
 
 // SearchGroups scans scalar codes and retains the best candidates inside each
@@ -316,23 +365,6 @@ func (s *scalarQuantizedVectors) quantizedQuery(query []float32) (QuantizedVecto
 		return QuantizedVector{}, fmt.Errorf("core: quantize query: %w", err)
 	}
 	return code, nil
-}
-
-func (s *scalarQuantizedVectors) search(ctx context.Context, query []float32, options SearchOptions, positions []int) ([]Result, error) {
-	if ctx == nil {
-		return nil, errors.New("core: nil scalar-quantized search context")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := options.Validate(); err != nil {
-		return nil, err
-	}
-	queryCode, err := s.quantizedQuery(query)
-	if err != nil {
-		return nil, err
-	}
-	return s.searchWithCode(ctx, queryCode, options, positions)
 }
 
 // distanceToCode scores immutable storage against a query validated by

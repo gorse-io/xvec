@@ -986,7 +986,10 @@ func buildCollectionIndexes(
 			}
 			if field.DataType.IsDenseVector() {
 				var exact collectionDenseIndex
-				if field.DataType == DataTypeVectorFP32 && (spec.indexType == IndexTypeHNSW || (spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined)) {
+				useLazyExact := spec.indexType == IndexTypeHNSW ||
+					(spec.indexType == IndexTypeFlat && spec.quantize != QuantizeTypeUndefined) ||
+					(spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined)
+				if field.DataType == DataTypeVectorFP32 && useLazyExact {
 					candidates, candidateErr := collectionDenseBorrowedCandidates(ctx, field, documents)
 					if candidateErr != nil {
 						return fail(candidateErr)
@@ -2178,7 +2181,7 @@ func buildCollectionDenseFlat(
 	documents []Document,
 	spec collectionVectorIndex,
 ) (collectionDenseIndex, error) {
-	candidates, err := collectionDenseCandidates(ctx, field, documents)
+	candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
 	if err != nil {
 		return nil, err
 	}
@@ -2207,7 +2210,7 @@ func buildCollectionDenseFlat(
 	if err != nil {
 		return nil, err
 	}
-	return core.NewScalarQuantizedFlatIndex(ctx, int(field.Dimension), spec.metric, kind, reformer, candidates)
+	return core.NewScalarQuantizedFlatIndexWithBorrowedVectors(ctx, int(field.Dimension), spec.metric, kind, reformer, candidates)
 }
 
 func buildCollectionDenseHNSW(
