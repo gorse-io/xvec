@@ -1,5 +1,6 @@
 import hnswCsv from '../../benchmark-hnsw.csv?raw';
 import flatCsv from '../../benchmark-flat.csv?raw';
+import diskannCsv from '../../benchmark-diskann.csv?raw';
 import { groupBenchmarks } from './benchmark';
 import { parseBenchmarks } from './parse-benchmark';
 
@@ -7,4 +8,5 @@ import { parseBenchmarks } from './parse-benchmark';
 export const groups = groupBenchmarks([
   ...parseBenchmarks(hnswCsv, 'benchmark-hnsw.csv'),
   ...parseBenchmarks(flatCsv, 'benchmark-flat.csv'),
+  ...parseBenchmarks(diskannCsv, 'benchmark-diskann.csv'),
 ]);

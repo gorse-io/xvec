@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { parseBenchmarks } from '../src/lib/parse-benchmark';
-import { categories, formatBytes, groupBenchmarks, metricKeys, seriesFor, suiteFields, type Benchmark } from '../src/lib/benchmark';
+import { categories, diskannFields, formatBytes, groupBenchmarks, metricKeys, seriesFor, suiteFields, type Benchmark } from '../src/lib/benchmark';
 import { chartDefinition, configurationLabel } from '../src/lib/chart-options';
 
 const csv = readFileSync(new URL('../benchmark-hnsw.csv', import.meta.url), 'utf8');
 const flatCsv = readFileSync(new URL('../benchmark-flat.csv', import.meta.url), 'utf8');
+const diskannCsv = readFileSync(new URL('../benchmark-diskann.csv', import.meta.url), 'utf8');
 const [header, ...lines] = csv.trim().split('\n');
 const columns = header.split(',');
 const base = lines[0].split(',');
@@ -88,6 +89,7 @@ test('duplicate configurations fail even when versions differ', () => {
 test('every suite setting splits incompatible runs, including machine and dataset', () => {
   const record = parseBenchmarks(fixture())[0];
   for (const field of suiteFields) {
+    if ((diskannFields as readonly string[]).includes(field)) continue;
     const current = record[field];
     const different = typeof current === 'number' ? current + 1 : typeof current === 'boolean' ? !current : `${current}-other`;
     const changed = { ...record, [field]: different } as Benchmark;
@@ -134,4 +136,36 @@ test('memory axis uses MB and GB rather than compact-number billions', () => {
   assert.equal(axis.axisLabel.formatter(512 * 1024 ** 2), '512 MB');
   assert.equal(axis.axisLabel.formatter(1024 ** 3), '1 GB');
   assert.equal(axis.axisLabel.formatter(1.5 * 1024 ** 3), '1.5 GB');
+});
+
+test('DiskANN includes only FP16 and FP32 and has its own comparison group', () => {
+  const records = parseBenchmarks(diskannCsv, 'benchmark-diskann.csv');
+  assert.equal(records.length, 4);
+  assert.ok(records.every((record) => record.index_type === 'diskann' && record.m === undefined && !record.rotate && !record.use_refiner));
+  assert.deepEqual(categories(records).map((category) => [category.quantization, category.records.map((record) => record.backend)]), [
+    ['fp16', ['xvec', 'zvec']], ['fp32', ['xvec', 'zvec']],
+  ]);
+  assert.deepEqual(records.map((record) => diskannFields.map((field) => record[field])), Array.from({ length: 4 }, () => [100, 50, 64, 300]));
+  const groups = groupBenchmarks([...parseBenchmarks(csv), ...parseBenchmarks(flatCsv), ...records]);
+  assert.deepEqual(groups.map((group) => group.indexType), ['hnsw', 'flat', 'diskann']);
+  assert.equal(configurationLabel(groups[2]), 'Degree 100 · Search 300 · Concurrency 8');
+  assert.deepEqual(seriesFor(records, 'concurrent_qps').map((series) => series.data), [
+    [318.855549, 375.522947], [8.02738, 8.030986],
+  ]);
+  assert.deepEqual(seriesFor(records, 'recall_at_k_pct').map((series) => series.data), [
+    [87.396, 87.491], [87.281, 87.347],
+  ]);
+});
+
+test('DiskANN requires and groups by each of its four index parameters', () => {
+  const record = parseBenchmarks(diskannCsv)[0];
+  for (const field of diskannFields) {
+    assert.equal(groupBenchmarks([record, { ...record, [field]: record[field]! + 1 }]).length, 2, field);
+    const rows = diskannCsv.trim().split('\n').map((line) => line.split(','));
+    const column = rows[0].indexOf(field);
+    const missing = rows.map((row) => row.filter((_, index) => index !== column).join(',')).join('\n');
+    assert.throws(() => parseBenchmarks(missing), new RegExp(`field "${field}"`));
+    rows[1][column] = '-1';
+    assert.throws(() => parseBenchmarks(rows.map((row) => row.join(',')).join('\n')), new RegExp(`field "${field}"`));
+  }
 });

@@ -12,6 +12,9 @@ export const chartCards = [
 
 export function configurationLabel(group: ComparisonGroup): string {
   const record = group.records[0];
+  if (record.index_type === 'diskann') {
+    return `Degree ${record.diskann_max_degree} · Search ${record.diskann_query_list} · Concurrency ${record.query_concurrency}`;
+  }
   return record.index_type === 'hnsw'
     ? `M ${record.m} · ef ${record.ef_search} · Concurrency ${record.query_concurrency}`
     : `K ${record.k} · Concurrency ${record.query_concurrency}`;

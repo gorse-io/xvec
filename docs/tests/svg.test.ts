@@ -45,3 +45,15 @@ test('Flat SVG identifies its index and uses a distinct export asset', () => {
   assert.doesNotMatch(svg, /HNSW|M undefined|ef undefined/);
   assert.notEqual(svgAsset(flat), svgAsset(group));
 });
+
+test('DiskANN SVG identifies its index and only includes FP16 and FP32', () => {
+  const diskann = groupBenchmarks(parseBenchmarks(readFileSync(new URL('../benchmark-diskann.csv', import.meta.url), 'utf8')))[0];
+  const svg = renderBenchmarkSvg(diskann);
+  assert.match(svg, /DiskANN benchmark results/);
+  assert.match(svg, />DiskANN<\/text>/);
+  assert.match(svg, /Degree 100 · Search 300 · Concurrency 8/);
+  assert.match(svg, />FP16<\/text>/);
+  assert.match(svg, />FP32<\/text>/);
+  assert.doesNotMatch(svg, /INT4|INT8|HNSW|undefined/);
+  assert.notEqual(svgAsset(diskann), svgAsset(group));
+});

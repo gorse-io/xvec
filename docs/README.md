@@ -1,7 +1,7 @@
 # xvec benchmark website
 
-An English, static Astro + TypeScript site for the HNSW and Flat measurements in
-`benchmark-hnsw.csv` and `benchmark-flat.csv`. ECharts is bundled locally; no backend or external chart
+An English, static Astro + TypeScript site for the HNSW, Flat, and DiskANN measurements in
+`benchmark-hnsw.csv`, `benchmark-flat.csv`, and `benchmark-diskann.csv`. ECharts is bundled locally; no backend or external chart
 service is needed. The CSV files and `logo.png` stay in this directory and are imported
 through Astro/Vite to generate the homepage at build time.
 
@@ -15,7 +15,16 @@ native `zvec_index_params_set_quantizer_enable_rotate` setter when selecting
 INT4/INT8, matching xvec. The native library is unchanged, and rotation is
 verified through its parameter getter. The Index selector between Dataset and
 Test configuration switches all charts and the SVG export between HNSW
-(the default) and Flat. Flat configuration labels omit HNSW parameters.
+(the default), Flat, and DiskANN. Configuration labels show the selected index's parameters.
+
+`benchmark-diskann.csv` contains four runs: xvec and zvec with FP16 scalar
+quantization or unquantized FP32. It uses the same `Performance768D100K` dataset
+and runtime settings as the other CSVs. Both backends explicitly use maximum
+degree 100, construction list size 50, 64 PQ chunks, and query list size 300;
+these four columns replace the HNSW parameters. Rotation and refinement are
+disabled. FP32 means no scalar quantization; DiskANN still uses the configured
+product quantization for graph traversal. Both collections use `enable_mmap=true`;
+the benchmark does not flush filesystem caches between queries.
 
 ## Development
 
@@ -33,7 +42,7 @@ The repository's Go API and benchmark runner are independent of this project.
 
 ## Updating measurements
 
-1. Edit `docs/benchmark-hnsw.csv` or `docs/benchmark-flat.csv`, retaining its header and units.
+1. Edit the appropriate `docs/benchmark-*.csv`, retaining its header and units.
 2. Run the checks from `docs`:
 
    ```sh
@@ -69,8 +78,9 @@ setting cannot silently disappear from comparison grouping.
 `src/lib/benchmark.ts` defines the typed schema, shared metric labels and units,
 and grouping rules. All fields in `suiteFields` must match: machine, dataset,
 document count, HNSW and runtime parameters, payload, concurrency duration,
-cooldown, and serial query count. HNSW parameters are required for HNSW and
-omitted for Flat; they do not affect Flat grouping. Machine, dataset, index, and test configuration
+cooldown, and serial query count. HNSW and DiskANN parameters are required only
+for their respective indexes; Flat omits both sets. DiskANN's four parameters
+all participate in grouping. Machine, dataset, index, and test configuration
 selectors expose separate groups as data is added. Single-choice selectors are
 disabled. Quantization and rotation define individual chart categories. An xvec
 and zvec bar are paired only when both category settings match. Incomplete
@@ -139,7 +149,7 @@ keep generated files out of Git. Deployment is separate from this build.
 ## Verification
 
 `pnpm test` checks all 104 HNSW chart measurements, Flat QPS and recall,
-index separation and configuration labels, every metric
+DiskANN parameters and its FP16/FP32-only categories, index separation and configuration labels, every metric
 series, CSV quoting/BOM/CRLF, malformed data, duplicate records, and separation
 of incompatible configurations. SVG tests cover deterministic output, safe text,
 self-contained chart references, and configuration-specific asset paths. `pnpm check` checks Astro and TypeScript;
