@@ -124,7 +124,23 @@ func (r *FHTRotator) Rotate(vector []float32) ([]float32, error) {
 	if err := r.validateVector(vector); err != nil {
 		return nil, err
 	}
-	result := slices.Clone(vector)
+	result := make([]float32, len(vector))
+	if err := r.RotateInto(vector, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// RotateInto writes the rotation into caller-owned storage. Distinct calls
+// may run concurrently with independent destinations; exact in-place use is valid.
+func (r *FHTRotator) RotateInto(vector, result []float32) error {
+	if err := r.validateVector(vector); err != nil {
+		return err
+	}
+	if len(result) != r.dimension {
+		return mathutil.ErrDimensionMismatch
+	}
+	copy(result, vector)
 	if r.truncated == r.dimension {
 		for round := 0; round < 4; round++ {
 			roundSigns := r.signs[round*r.bytesPerRound : (round+1)*r.bytesPerRound]
@@ -132,7 +148,8 @@ func (r *FHTRotator) Rotate(vector []float32) ([]float32, error) {
 			_ = mathutil.FHTInPlace(result)
 			mathutil.ScaleFloat32(result, r.inverseSqrtSize)
 		}
-		return validateTransformedVector(result)
+		_, err := validateTransformedVector(result)
+		return err
 	}
 
 	start := r.dimension - r.truncated
@@ -148,7 +165,8 @@ func (r *FHTRotator) Rotate(vector []float32) ([]float32, error) {
 		_ = mathutil.FHTKacWalk(result)
 	}
 	mathutil.ScaleFloat32(result, .25)
-	return validateTransformedVector(result)
+	_, err := validateTransformedVector(result)
+	return err
 }
 
 // Unrotate reverses Rotate and returns a new vector.
@@ -268,6 +286,30 @@ func (r *RotationReformer) Transform(vector []float32) ([]float32, error) {
 		return nil, ErrInvalidRotator
 	}
 	return r.rotator.Rotate(vector)
+}
+
+// TransformInto permits index builders to reuse one rotation work buffer.
+func (r *RotationReformer) TransformInto(vector, destination []float32) error {
+	if r == nil || r.rotator == nil {
+		return ErrInvalidRotator
+	}
+	if len(destination) != r.Dimension() {
+		return mathutil.ErrDimensionMismatch
+	}
+	if rotator, ok := r.rotator.(interface {
+		RotateInto([]float32, []float32) error
+	}); ok {
+		return rotator.RotateInto(vector, destination)
+	}
+	transformed, err := r.rotator.Rotate(vector)
+	if err != nil {
+		return err
+	}
+	if len(transformed) != len(destination) {
+		return mathutil.ErrDimensionMismatch
+	}
+	copy(destination, transformed)
+	return nil
 }
 
 // Revert inverse-rotates a vector into original space.

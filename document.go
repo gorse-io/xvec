@@ -183,6 +183,8 @@ func validateDocumentValue(value any) (DataType, error) {
 			return 0, invalidArgument("clone value", "DOUBLE is not finite")
 		}
 		return DataTypeDouble, nil
+	case encodedVectorFP32:
+		return DataTypeVectorFP32, value.validate()
 	case VectorFP32:
 		if err := validateFiniteFloat32s(value); err != nil {
 			return 0, err
@@ -363,6 +365,9 @@ func cloneDocumentValue(value any) (any, DataType, error) {
 			}
 		}
 		return slices.Clone(value), DataTypeVectorFP16, nil
+	case encodedVectorFP32:
+		vector, err := value.decode()
+		return vector, DataTypeVectorFP32, err
 	case VectorFP32:
 		if err := validateFiniteFloat32s(value); err != nil {
 			return nil, 0, err
@@ -496,6 +501,12 @@ func documentValueForEncoding(value any) (any, DataType, error) {
 }
 
 func unmarshalDocumentPayload(encoded []byte) (map[string]any, error) {
+	return unmarshalDocumentPayloadWithBorrowedVectors(encoded, nil)
+}
+
+// borrowedFields is used only for read-only query snapshots whose encoded
+// payloads remain valid until the collection has drained all query leases.
+func unmarshalDocumentPayloadWithBorrowedVectors(encoded []byte, borrowedFields map[string]struct{}) (map[string]any, error) {
 	if len(encoded) < documentHeaderSize {
 		return nil, fmt.Errorf("%w: shorter than header", errDocumentPayloadCorrupt)
 	}
@@ -546,7 +557,19 @@ func unmarshalDocumentPayload(encoded []byte) (map[string]any, error) {
 		}
 		data := payload[offset : offset+int(dataLength)]
 		offset += int(dataLength)
-		value, err := decodeDocumentValue(dataType, count, data)
+		var value any
+		var err error
+		if _, borrowed := borrowedFields[name]; borrowed && dataType == DataTypeVectorFP32 {
+			vector := encodedVectorFP32(data)
+			if uint64(count)*4 != uint64(len(data)) {
+				err = errors.New("FP32 vector length mismatch")
+			} else {
+				err = vector.validate()
+			}
+			value = vector
+		} else {
+			value, err = decodeDocumentValue(dataType, count, data)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%w: field %q: %v", errDocumentPayloadCorrupt, name, err)
 		}

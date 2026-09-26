@@ -541,9 +541,31 @@ func openCollectionDenseArtifact(
 	switch spec.indexType {
 	case IndexTypeHNSW:
 		if spec.quantize == QuantizeTypeUndefined {
+			reader, keys, err := collectionEncodedDenseReader(ctx, field, documents)
+			if err != nil {
+				return nil, err
+			}
+			if reader != nil {
+				originals := make(map[uint64][]byte, len(keys))
+				for position, key := range keys {
+					originals[key] = reader.rows[position]
+				}
+				return core.OpenHNSWIndexWithEncodedOriginals(ctx, path, originals, useMmap)
+			}
 			return core.OpenHNSWIndex(ctx, path)
 		}
 		if field.DataType == DataTypeVectorFP32 {
+			reader, keys, err := collectionEncodedDenseReader(ctx, field, documents)
+			if err != nil {
+				return nil, err
+			}
+			if reader != nil {
+				originals := make(map[uint64][]byte, len(keys))
+				for position, key := range keys {
+					originals[key] = reader.rows[position]
+				}
+				return core.OpenScalarQuantizedHNSWIndexWithEncodedVectors(ctx, path, kind, reformer, originals, useMmap)
+			}
 			candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
 			if err != nil {
 				return nil, err
@@ -632,6 +654,21 @@ func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSe
 		cached[id] = runtime
 	}
 	c.indexMu.RUnlock()
+	borrowedFields := make(map[string]struct{})
+	if c.options.ReadOnly {
+		for _, field := range c.schema.Fields {
+			if field.DataType != DataTypeVectorFP32 {
+				continue
+			}
+			spec, err := resolveCollectionVectorIndex(field, "read-only snapshot", c.path)
+			if err != nil {
+				return nil, err
+			}
+			if spec.indexType == IndexTypeHNSW || (spec.indexType == IndexTypeFlat && spec.quantize != QuantizeTypeUndefined) {
+				borrowedFields[field.Name] = struct{}{}
+			}
+		}
+	}
 	segments := make([]collectionSegmentDocuments, 0)
 	err = c.store.VisitSegmentSnapshots(ctx, func(snapshot db.SegmentSnapshot) error {
 		if runtime := cached[snapshot.Metadata.ID]; !snapshot.Mutable && runtime != nil &&
@@ -642,7 +679,11 @@ func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSe
 		}
 		documents := make([]Document, len(snapshot.Documents))
 		for position, item := range snapshot.Documents {
-			document, decodeErr := decodeStoredDocument(item)
+			fields := borrowedFields
+			if snapshot.Mutable {
+				fields = nil
+			}
+			document, decodeErr := decodeStoredDocumentWithBorrowedVectors(item, fields)
 			if decodeErr != nil {
 				return decodeErr
 			}
@@ -986,12 +1027,23 @@ func buildCollectionIndexes(
 			}
 			if field.DataType.IsDenseVector() {
 				var exact collectionDenseIndex
-				if field.DataType == DataTypeVectorFP32 && (spec.indexType == IndexTypeHNSW || (spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined)) {
-					candidates, candidateErr := collectionDenseBorrowedCandidates(ctx, field, documents)
-					if candidateErr != nil {
-						return fail(candidateErr)
+				useLazyExact := spec.indexType == IndexTypeHNSW ||
+					(spec.indexType == IndexTypeFlat && spec.quantize != QuantizeTypeUndefined) ||
+					(spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined)
+				if field.DataType == DataTypeVectorFP32 && useLazyExact {
+					reader, keys, readerErr := collectionEncodedDenseReader(ctx, field, documents)
+					if readerErr != nil {
+						return fail(readerErr)
 					}
-					exact = newLazyCollectionDenseFlatIndex(int(field.Dimension), spec.metric, candidates)
+					if reader != nil {
+						exact = &lazyCollectionDenseFlatIndex{dimension: int(field.Dimension), metric: spec.metric, reader: reader, keys: keys}
+					} else {
+						candidates, candidateErr := collectionDenseBorrowedCandidates(ctx, field, documents)
+						if candidateErr != nil {
+							return fail(candidateErr)
+						}
+						exact = newLazyCollectionDenseFlatIndex(int(field.Dimension), spec.metric, candidates)
+					}
 				} else {
 					exact, err = buildDenseFlatIndex(ctx, field, spec.metric, documents)
 					if err != nil {
@@ -1950,6 +2002,8 @@ type lazyCollectionDenseFlatIndex struct {
 	dimension  int
 	metric     core.Metric
 	candidates []core.Candidate
+	reader     core.DenseVectorReader
+	keys       []uint64
 	mu         sync.Mutex
 	index      *core.DenseFlatIndex
 }
@@ -1960,7 +2014,12 @@ func newLazyCollectionDenseFlatIndex(dimension int, metric core.Metric, candidat
 
 func (i *lazyCollectionDenseFlatIndex) Dimension() int      { return i.dimension }
 func (i *lazyCollectionDenseFlatIndex) Metric() core.Metric { return i.metric }
-func (i *lazyCollectionDenseFlatIndex) Len() int            { return len(i.candidates) }
+func (i *lazyCollectionDenseFlatIndex) Len() int {
+	if i.reader != nil {
+		return len(i.keys)
+	}
+	return len(i.candidates)
+}
 
 func (i *lazyCollectionDenseFlatIndex) Vector(key uint64) ([]float32, bool) {
 	i.mu.Lock()
@@ -1968,6 +2027,18 @@ func (i *lazyCollectionDenseFlatIndex) Vector(key uint64) ([]float32, bool) {
 	i.mu.Unlock()
 	if index != nil {
 		return index.Vector(key)
+	}
+	if i.reader != nil {
+		for position, candidateKey := range i.keys {
+			if candidateKey == key {
+				vector := make([]float32, i.dimension)
+				if err := i.reader.ReadVector(position, vector); err != nil {
+					return nil, false
+				}
+				return vector, true
+			}
+		}
+		return nil, false
 	}
 	for _, candidate := range i.candidates {
 		if candidate.Key == key {
@@ -2002,12 +2073,42 @@ func (i *lazyCollectionDenseFlatIndex) SearchGroups(
 }
 
 func (i *lazyCollectionDenseFlatIndex) ensure(ctx context.Context) (*core.DenseFlatIndex, error) {
+	if ctx == nil {
+		return nil, errors.New("nil exact Flat build context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.index != nil {
 		return i.index, nil
 	}
-	index, err := core.NewDenseFlatIndexFromValidatedCandidates(ctx, i.dimension, i.metric, i.candidates)
+	var index *core.DenseFlatIndex
+	var err error
+	if i.reader != nil {
+		index, err = core.NewDenseFlatIndex(i.dimension, i.metric)
+		if err == nil {
+			err = index.Reserve(len(i.keys))
+		}
+		if err != nil {
+			return nil, err
+		}
+		vector := make([]float32, i.dimension)
+		for position, key := range i.keys {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if err := i.reader.ReadVector(position, vector); err != nil {
+				return nil, err
+			}
+			if err := index.Add(ctx, key, vector); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		index, err = core.NewDenseFlatIndexFromValidatedCandidates(ctx, i.dimension, i.metric, i.candidates)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2178,7 +2279,23 @@ func buildCollectionDenseFlat(
 	documents []Document,
 	spec collectionVectorIndex,
 ) (collectionDenseIndex, error) {
-	candidates, err := collectionDenseCandidates(ctx, field, documents)
+	reader, keys, err := collectionEncodedDenseReader(ctx, field, documents)
+	if err != nil {
+		return nil, err
+	}
+	if reader != nil {
+		kind, err := toCoreQuantization(spec.quantize)
+		if err != nil {
+			return nil, err
+		}
+		reformer, err := collectionReformer(schemaName, field, spec)
+		if err != nil {
+			return nil, err
+		}
+		return core.NewScalarQuantizedFlatIndexWithVectorReader(ctx, int(field.Dimension), spec.metric, kind, reformer, keys, reader)
+	}
+
+	candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
 	if err != nil {
 		return nil, err
 	}
@@ -2207,7 +2324,7 @@ func buildCollectionDenseFlat(
 	if err != nil {
 		return nil, err
 	}
-	return core.NewScalarQuantizedFlatIndex(ctx, int(field.Dimension), spec.metric, kind, reformer, candidates)
+	return core.NewScalarQuantizedFlatIndexWithBorrowedVectors(ctx, int(field.Dimension), spec.metric, kind, reformer, candidates)
 }
 
 func buildCollectionDenseHNSW(
@@ -5367,6 +5484,9 @@ func validateSparseQueryVector(field FieldSchema, vector SparseVector) (core.Spa
 
 func denseValueToFloat32(value any) ([]float32, error) {
 	switch value := value.(type) {
+	case encodedVectorFP32:
+		vector, err := value.decode()
+		return []float32(vector), err
 	case VectorFP16:
 		result := make([]float32, len(value))
 		for index := range value {
@@ -5986,7 +6106,11 @@ func (c *Collection) fetchOneLocked(ctx context.Context, primaryKey string) (Doc
 }
 
 func decodeStoredDocument(stored segment.StoredDocument) (Document, error) {
-	fields, err := unmarshalDocumentPayload(stored.Payload)
+	return decodeStoredDocumentWithBorrowedVectors(stored, nil)
+}
+
+func decodeStoredDocumentWithBorrowedVectors(stored segment.StoredDocument, borrowedFields map[string]struct{}) (Document, error) {
+	fields, err := unmarshalDocumentPayloadWithBorrowedVectors(stored.Payload, borrowedFields)
 	if err != nil {
 		return Document{}, fmt.Errorf("decode document %d: %w", stored.DocID, err)
 	}

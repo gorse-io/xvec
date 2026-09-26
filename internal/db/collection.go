@@ -455,7 +455,8 @@ func (c *CollectionStore) SegmentSnapshots(ctx context.Context) ([]SegmentSnapsh
 
 // VisitSegmentSnapshots visits retained documents grouped by physical segment
 // without cloning their encoded payloads. Documents are read-only and valid
-// only until visit returns.
+// only until visit returns. For read-only stores, immutable payload byte slices
+// also remain valid until Close; callers retaining them must finish before Close.
 func (c *CollectionStore) VisitSegmentSnapshots(ctx context.Context, visit func(SegmentSnapshot) error) error {
 	if c == nil {
 		return errors.New("db: nil collection")

@@ -109,9 +109,25 @@ func TestHNSWRuntimeSharesFlatAndDefersExact(t *testing.T) {
 }
 
 func TestImmutableHNSWDocumentsSharedAcrossQuerySnapshots(t *testing.T) {
-	ctx := context.Background()
 	params := NewHNSWIndexParams(MetricTypeL2)
 	params.M, params.EFConstruction, params.Quantize = 4, 16, QuantizeTypeInt4
+	testImmutableDocumentsSharedAcrossQuerySnapshots(t, params)
+}
+
+func TestImmutableFlatDocumentsSharedAcrossQuerySnapshots(t *testing.T) {
+	for _, quantize := range []QuantizeType{QuantizeTypeUndefined, QuantizeTypeFP16, QuantizeTypeInt8, QuantizeTypeInt4} {
+		t.Run(fmt.Sprint(quantize), func(t *testing.T) {
+			params := NewFlatIndexParams(MetricTypeL2)
+			params.Quantize = quantize
+			params.Quantizer.EnableRotate = quantize == QuantizeTypeInt4 || quantize == QuantizeTypeInt8
+			testImmutableDocumentsSharedAcrossQuerySnapshots(t, params)
+		})
+	}
+}
+
+func testImmutableDocumentsSharedAcrossQuerySnapshots(t *testing.T, params IndexParams) {
+	t.Helper()
+	ctx := context.Background()
 	schema := NewCollectionSchema("snapshot_memory", FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Index: params}, FieldSchema{Name: "rating", DataType: DataTypeInt32})
 	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "collection"), schema, NewCollectionOptions())
 	require.NoError(t, err)
@@ -151,4 +167,44 @@ func TestImmutableHNSWDocumentsSharedAcrossQuerySnapshots(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, updatedKey, results[0].PrimaryKey)
 	require.Equal(t, VectorFP32{100, 0, 0, 0}, results[0].Fields["embedding"])
+}
+
+func TestQuantizedFlatRuntimeDefersExact(t *testing.T) {
+	ctx := context.Background()
+	for _, quantize := range []QuantizeType{QuantizeTypeFP16, QuantizeTypeInt8, QuantizeTypeInt4} {
+		t.Run(fmt.Sprint(quantize), func(t *testing.T) {
+			params := NewFlatIndexParams(MetricTypeL2)
+			params.Quantize = quantize
+			params.Quantizer.EnableRotate = quantize != QuantizeTypeFP16
+			field := FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Index: params}
+			schema := NewCollectionSchema("flat_memory", field)
+			documents := annDenseDocuments(40)
+			for j := range documents {
+				documents[j].DocID = uint64(j + 1)
+			}
+			indexes, err := buildCollectionRuntimeIndexes(ctx, schema, documents, 2, 0, false, nil)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, indexes.Close()) }()
+			lazy, ok := indexes.denseExact[field.Name].(*lazyCollectionDenseFlatIndex)
+			require.True(t, ok)
+			require.Nil(t, lazy.index)
+			query := []float32{.75, .25, -.5, .125}
+			flat := indexes.denseFlat[field.Name]
+			require.Same(t, flat, indexes.denseNative[field.Name])
+			_, err = flat.SearchWithOptions(ctx, query, core.SearchOptions{TopK: 12})
+			require.NoError(t, err)
+			groups := core.GroupByOptions{GroupCount: 4, TopKPerGroup: 2, Resolve: func(key uint64) (string, bool) { return fmt.Sprint(key % 4), true }}
+			_, err = flat.(core.DenseGroupSearcher).SearchGroups(ctx, query, groups)
+			require.NoError(t, err)
+			require.Nil(t, lazy.index, "quantized searches must not materialize exact FP32 storage")
+			exact, err := buildDenseFlatIndex(ctx, field, core.MetricL2, documents)
+			require.NoError(t, err)
+			want, err := exact.(core.DenseGroupSearcher).SearchGroups(ctx, query, groups)
+			require.NoError(t, err)
+			got, err := lazy.SearchGroups(ctx, query, groups)
+			require.NoError(t, err)
+			require.Equal(t, want, got)
+			require.NotNil(t, lazy.index, "grouped refinement must still support exact scoring")
+		})
+	}
 }

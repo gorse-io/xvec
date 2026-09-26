@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/math"
 )
 
@@ -62,6 +63,42 @@ func NewScalarQuantizedFlatIndex(
 		copy(vectors[position*dimension:(position+1)*dimension], candidate.Vector)
 	}
 	storage, err := newOwnedScalarQuantizedVectors(ctx, dimension, metric, kind, reformer, keys, vectors)
+	if err != nil {
+		return nil, err
+	}
+	return &ScalarQuantizedFlatIndex{vectors: storage}, nil
+}
+
+// NewScalarQuantizedFlatIndexWithBorrowedVectors builds codes while referencing
+// immutable original rows for refinement. The caller must keep vector contents
+// immutable for the lifetime of the index; keys and slice headers are copied.
+func NewScalarQuantizedFlatIndexWithBorrowedVectors(ctx context.Context, dimension int, metric Metric, kind Quantization, reformer DenseReformer, candidates []Candidate) (*ScalarQuantizedFlatIndex, error) {
+	keys := make([]uint64, len(candidates))
+	rows := make([][]float32, len(candidates))
+	for position, candidate := range candidates {
+		keys[position], rows[position] = candidate.Key, candidate.Vector
+	}
+	storage, err := newScalarQuantizedVectorStorage(ctx, dimension, metric, kind, reformer, keys, nil, rows)
+	if err != nil {
+		return nil, err
+	}
+	return &ScalarQuantizedFlatIndex{vectors: storage}, nil
+}
+
+// DenseVectorReader decodes an immutable original vector by position into the
+// supplied destination. It must be safe for concurrent reads and remain valid
+// for the lifetime of the index. It must not retain the destination.
+type DenseVectorReader interface {
+	ReadVector(position int, destination []float32) error
+}
+
+// NewScalarQuantizedFlatIndexWithVectorReader retains encoded originals through
+// a reader and builds codes using bounded decoding/rotation work buffers.
+func NewScalarQuantizedFlatIndexWithVectorReader(ctx context.Context, dimension int, metric Metric, kind Quantization, reformer DenseReformer, keys []uint64, reader DenseVectorReader) (*ScalarQuantizedFlatIndex, error) {
+	if reader == nil {
+		return nil, errors.New("core: nil dense vector reader")
+	}
+	storage, err := newScalarQuantizedVectorStorageWithReader(ctx, dimension, metric, kind, reformer, slices.Clone(keys), nil, nil, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -122,11 +159,43 @@ func (i *ScalarQuantizedFlatIndex) SearchWithOptions(ctx context.Context, query 
 	if i == nil || i.vectors == nil {
 		return nil, errors.New("core: nil scalar-quantized Flat index")
 	}
-	positions := make([]int, len(i.vectors.keys))
-	for position := range positions {
-		positions[position] = position
+	if ctx == nil {
+		return nil, errors.New("core: nil scalar-quantized search context")
 	}
-	return i.vectors.search(ctx, query, options, positions)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := options.Validate(); err != nil {
+		return nil, err
+	}
+	queryCode, err := i.vectors.quantizedQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	// Scan codes directly and retain only top-k. Materializing every position
+	// and score makes query scratch space grow with the entire collection.
+	k := min(options.TopK, len(i.vectors.keys))
+	metric := i.vectors.metric
+	heap := container.NewHeapWithCapacity(k, func(left, right Result) bool {
+		if left.Score == right.Score {
+			return left.Key > right.Key
+		}
+		return metric.Better(right.Score, left.Score)
+	})
+	for position, key := range i.vectors.keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if options.Filter != nil && !options.Filter(key) {
+			continue
+		}
+		score, err := i.vectors.distanceToCode(position, queryCode)
+		if err != nil {
+			return nil, fmt.Errorf("core: score scalar-quantized candidate %d: %w", position, err)
+		}
+		retainDenseResult(heap, k, metric, options.Radius, Result{Key: key, Score: score})
+	}
+	return MergeSearchResults(metric, k, heap.Values()), nil
 }
 
 // SearchGroups scans scalar codes and retains the best candidates inside each
@@ -184,6 +253,7 @@ type scalarQuantizedVectors struct {
 	keys         []uint64
 	originals    []float32
 	originalRows [][]float32
+	reader       DenseVectorReader
 	positions    map[uint64]int
 	codes        []QuantizedVector
 }
@@ -204,6 +274,10 @@ func newOwnedScalarQuantizedVectors(
 }
 
 func newScalarQuantizedVectorStorage(ctx context.Context, dimension int, metric Metric, kind Quantization, reformer DenseReformer, keys []uint64, originals []float32, rows [][]float32) (*scalarQuantizedVectors, error) {
+	return newScalarQuantizedVectorStorageWithReader(ctx, dimension, metric, kind, reformer, keys, originals, rows, nil)
+}
+
+func newScalarQuantizedVectorStorageWithReader(ctx context.Context, dimension int, metric Metric, kind Quantization, reformer DenseReformer, keys []uint64, originals []float32, rows [][]float32, reader DenseVectorReader) (*scalarQuantizedVectors, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil scalar-quantized index context")
 	}
@@ -223,7 +297,7 @@ func newScalarQuantizedVectorStorage(ctx context.Context, dimension int, metric 
 		return nil, fmt.Errorf("%w: reformer has %d, want %d", ErrInvalidDimension, reformer.Dimension(), dimension)
 	}
 	if len(keys) > maxPlatformInt()/dimension ||
-		(rows == nil && len(originals) != len(keys)*dimension) ||
+		(reader == nil && rows == nil && len(originals) != len(keys)*dimension) ||
 		(rows != nil && (len(rows) != len(keys) || len(originals) != 0)) {
 		return nil, fmt.Errorf("%w: inconsistent vector storage", ErrInvalidQuantizedVector)
 	}
@@ -235,8 +309,19 @@ func newScalarQuantizedVectorStorage(ctx context.Context, dimension int, metric 
 		keys:         keys,
 		originals:    originals,
 		originalRows: rows,
+		reader:       reader,
 		positions:    make(map[uint64]int, len(keys)),
 		codes:        make([]QuantizedVector, len(keys)),
+	}
+	var decoded, transformedBuffer []float32
+	if reader != nil {
+		decoded = make([]float32, dimension)
+	}
+	into, reuseTransform := reformer.(interface {
+		TransformInto([]float32, []float32) error
+	})
+	if reuseTransform {
+		transformedBuffer = make([]float32, dimension)
 	}
 	for position, key := range storage.keys {
 		if err := ctx.Err(); err != nil {
@@ -246,14 +331,27 @@ func newScalarQuantizedVectorStorage(ctx context.Context, dimension int, metric 
 			return nil, fmt.Errorf("%w: %d", ErrDuplicateKey, key)
 		}
 		storage.positions[key] = position
-		vector := storage.originalAt(position)
+		var vector []float32
+		if reader != nil {
+			if err := reader.ReadVector(position, decoded); err != nil {
+				return nil, fmt.Errorf("core: read scalar-quantized vector %d: %w", position, err)
+			}
+			vector = decoded
+		} else {
+			vector = storage.originalAt(position)
+		}
 		if err := mathutil.ValidateDense(vector, dimension); err != nil {
 			return nil, fmt.Errorf("core: validate scalar-quantized vector %d: %w", position, err)
 		}
 		transformed := vector
 		if reformer != nil {
 			var err error
-			transformed, err = reformer.Transform(vector)
+			if reuseTransform {
+				err = into.TransformInto(vector, transformedBuffer)
+				transformed = transformedBuffer
+			} else {
+				transformed, err = reformer.Transform(vector)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("core: transform scalar-quantized vector %d: %w", position, err)
 			}
@@ -274,6 +372,13 @@ func (s *scalarQuantizedVectors) vector(key uint64) ([]float32, bool) {
 	position, found := s.positions[key]
 	if !found {
 		return nil, false
+	}
+	if s.reader != nil {
+		vector := make([]float32, s.dimension)
+		if err := s.reader.ReadVector(position, vector); err != nil {
+			return nil, false
+		}
+		return vector, true
 	}
 	return slices.Clone(s.originalAt(position)), true
 }
@@ -316,23 +421,6 @@ func (s *scalarQuantizedVectors) quantizedQuery(query []float32) (QuantizedVecto
 		return QuantizedVector{}, fmt.Errorf("core: quantize query: %w", err)
 	}
 	return code, nil
-}
-
-func (s *scalarQuantizedVectors) search(ctx context.Context, query []float32, options SearchOptions, positions []int) ([]Result, error) {
-	if ctx == nil {
-		return nil, errors.New("core: nil scalar-quantized search context")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := options.Validate(); err != nil {
-		return nil, err
-	}
-	queryCode, err := s.quantizedQuery(query)
-	if err != nil {
-		return nil, err
-	}
-	return s.searchWithCode(ctx, queryCode, options, positions)
 }
 
 // distanceToCode scores immutable storage against a query validated by
