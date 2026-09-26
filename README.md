@@ -152,6 +152,36 @@ disables automatic record-count-based synchronization. `Query` also accepts
 with no target. `MultiQuery` fuses dense, sparse, primary-key-vector, and FTS
 branches over one snapshot.
 
+### gRPC server
+
+Run the optional gRPC service with a server-owned data directory:
+
+```bash
+go run ./cmd/xvec-server --data-dir ./data --listen :50051
+```
+
+Remote applications use `github.com/gorse-io/xvec/client`. The remote collection
+accepts the same `xvec` schemas, documents, query parameters, and index options as
+the embedded API:
+
+```go
+remote, err := client.Dial(ctx, "localhost:50051")
+if err != nil {
+    log.Fatal(err)
+}
+defer remote.Close()
+
+collection, err := remote.Open(ctx, "articles")
+if err != nil {
+    log.Fatal(err)
+}
+results, err := collection.Query(ctx, xvec.VectorQuery{TopK: 10})
+```
+
+The first server version uses plaintext gRPC without authentication. Put it
+behind a trusted network boundary or authenticated proxy. Collection paths and
+runtime storage options remain server-controlled.
+
 ### Choosing an index
 
 | Index | Best for |

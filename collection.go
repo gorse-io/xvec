@@ -3271,6 +3271,23 @@ type BatchWriteError struct {
 	causes []error
 }
 
+// NewBatchWriteError returns a batch error containing each non-nil cause.
+func NewBatchWriteError(causes ...error) *BatchWriteError {
+	err := &BatchWriteError{}
+	for _, cause := range causes {
+		err.add(cause)
+	}
+	return err
+}
+
+// Causes returns an independent copy of the per-document failures.
+func (e *BatchWriteError) Causes() []error {
+	if e == nil {
+		return nil
+	}
+	return slices.Clone(e.causes)
+}
+
 func (e *BatchWriteError) Error() string {
 	if e == nil {
 		return "xvec: batch write failed"
