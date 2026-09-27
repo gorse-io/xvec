@@ -64,6 +64,68 @@ func TestVectorDBBenchEndToEndFTSDataset(t *testing.T) {
 	testVectorDBBenchEndToEndFTSDataset(t, backendXvec)
 }
 
+func TestVectorDBBenchFilteredVectorEndToEnd(t *testing.T) {
+	testVectorDBBenchFilteredVectorEndToEnd(t, backendXvec)
+}
+
+func testVectorDBBenchFilteredVectorEndToEnd(t *testing.T, backend string) {
+	t.Helper()
+	testCases := []struct {
+		name            string
+		caseType        string
+		filterRate      float64
+		labelPercentage float64
+		groundTruthFile string
+		withLabels      bool
+	}{
+		{"integer", caseNewIntFilterPerformance, 0.5, 0, "neighbors_int_50p.parquet", false},
+		{"label", caseLabelFilterPerformance, 0, 0.5, "neighbors_labels_label_50p.parquet", true},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			directory := t.TempDir()
+			datasetDir := filepath.Join(directory, "dataset")
+			require.NoError(t, mkdir(datasetDir))
+			training := []vectorParquetRow{
+				{ID: 3, Embedding: []float32{3, 0}},
+				{ID: 0, Embedding: []float32{0, 0}},
+				{ID: 2, Embedding: []float32{2, 0}},
+				{ID: 1, Embedding: []float32{1, 0}},
+			}
+			queries := []vectorParquetRow{{ID: 100, Embedding: []float32{0, 0}}}
+			neighbors := []neighborParquetRow{{ID: 100, Neighbors: []int64{2}}}
+			require.NoError(t, parquet.WriteFile(filepath.Join(datasetDir, "train.parquet"), training))
+			require.NoError(t, parquet.WriteFile(filepath.Join(datasetDir, testFileName), queries))
+			require.NoError(t, parquet.WriteFile(filepath.Join(datasetDir, testCase.groundTruthFile), neighbors))
+			if testCase.withLabels {
+				require.NoError(t, parquet.WriteFile(filepath.Join(datasetDir, scalarLabelsFileName), []scalarLabelParquetRow{
+					{ID: 0, Label: "other"},
+					{ID: 1, Label: "other"},
+					{ID: 2, Label: "label_50p"},
+					{ID: 3, Label: "label_50p"},
+				}))
+			}
+
+			config := benchConfig{
+				Backend: backend, Path: filepath.Join(directory, "collection"), CaseType: testCase.caseType,
+				DatasetDir: datasetDir, DatasetBaseURL: "https://assets.zilliz.com/benchmark",
+				FilterRate: testCase.filterRate, LabelPercentage: testCase.labelPercentage,
+				K: 1, BatchSize: 2, IndexType: indexFlat, NumConcurrency: "1",
+				SkipDownload: true, SkipConcurrentSearch: true, MaxDocsPerSegment: 1000,
+				MaxBufferSize: 64 << 20, PayloadProfile: "ids_only",
+				caseSpec: benchmarkCase{
+					Name: testCase.caseType, Workload: workloadVector, DatasetName: "custom", DatasetFolder: "custom",
+					Size: 4, Dimension: 2, Metric: "l2", TrainFiles: []string{"train.parquet"},
+				},
+			}
+			report, err := runBenchmark(context.Background(), config, &bytes.Buffer{})
+			require.NoError(t, err)
+			require.NotNil(t, report.Serial)
+			require.InDelta(t, 1, report.Serial.Recall, 1e-12)
+		})
+	}
+}
+
 func testVectorDBBenchEndToEndFTSDataset(t *testing.T, backend string) {
 	t.Helper()
 	directory := t.TempDir()

@@ -161,6 +161,69 @@ func TestParseConfigFlat(t *testing.T) {
 	require.Equal(t, indexFlat, config.IndexType)
 }
 
+func TestParseConfigFilteredVectorCases(t *testing.T) {
+	intConfig, err := parseConfig([]string{
+		backendXvec, "--path", t.TempDir(),
+		"--case-type", caseNewIntFilterPerformance,
+		"--dataset-with-size-type", vectorCohereMedium,
+		"--filter-rate", "0.99",
+	}, &bytes.Buffer{})
+	require.NoError(t, err)
+	require.Equal(t, caseNewIntFilterPerformance, intConfig.caseSpec.Name)
+	require.Equal(t, "cohere_medium_1m", intConfig.caseSpec.DatasetFolder)
+	require.Equal(t, "neighbors_int_99p.parquet", intConfig.groundTruthFile())
+	require.Equal(t, "id >= 990000", intConfig.filterExpression())
+
+	labelConfig, err := parseConfig([]string{
+		backendZvec, "--path", t.TempDir(),
+		"--case-type", caseLabelFilterPerformance,
+		"--dataset-with-size-type", vectorOpenAIMedium,
+		"--label-percentage", "0.001",
+	}, &bytes.Buffer{})
+	require.NoError(t, err)
+	require.Equal(t, caseLabelFilterPerformance, labelConfig.caseSpec.Name)
+	require.Equal(t, "openai_medium_500k", labelConfig.caseSpec.DatasetFolder)
+	require.Equal(t, "neighbors_labels_label_0.1p.parquet", labelConfig.groundTruthFile())
+	require.Equal(t, "labels = 'label_0.1p'", labelConfig.filterExpression())
+	require.True(t, labelConfig.requiresScalarLabels())
+	report := newBenchmarkReport(labelConfig)
+	require.Equal(t, 0.001, report.Config.LabelPercentage)
+	require.Equal(t, "labels = 'label_0.1p'", report.Config.FilterExpression)
+}
+
+func TestParseConfigFilteredVectorCaseValidation(t *testing.T) {
+	_, err := parseConfig([]string{
+		backendXvec, "--path", t.TempDir(),
+		"--case-type", caseNewIntFilterPerformance,
+		"--dataset-with-size-type", vectorCohereMedium,
+	}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "filter-rate must be between 0 and 1")
+
+	_, err = parseConfig([]string{
+		backendXvec, "--path", t.TempDir(),
+		"--case-type", caseNewIntFilterPerformance,
+		"--dataset-with-size-type", vectorCohereSmall,
+		"--filter-rate", "0.99",
+	}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "filter-rate 0.99 is not published")
+
+	_, err = parseConfig([]string{
+		backendXvec, "--path", t.TempDir(),
+		"--case-type", caseLabelFilterPerformance,
+		"--dataset-with-size-type", vectorCohereMedium,
+		"--label-percentage", "1",
+	}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "label-percentage must be between 0 and 1")
+
+	_, err = parseConfig([]string{
+		backendSQLiteVec, "--path", filepath.Join(t.TempDir(), "bench.db"),
+		"--case-type", caseNewIntFilterPerformance,
+		"--dataset-with-size-type", vectorCohereMedium,
+		"--filter-rate", "0.99", "--index-type", indexFlat,
+	}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "sqlite-vec does not support filtered vector workloads")
+}
+
 func TestParseConfigSQLiteVec(t *testing.T) {
 	config, err := parseConfig([]string{
 		backendSQLiteVec, "--path", filepath.Join(t.TempDir(), "bench.db"), "--index-type", indexFlat,
@@ -242,6 +305,10 @@ func TestParseConfigVamana(t *testing.T) {
 }
 
 func TestParseFlexibleDuration(t *testing.T) {
+	require.Equal(t, "0.1p", percentageName(0.001))
+	require.Equal(t, "99p", percentageName(0.99))
+	require.Equal(t, "99.5p", percentageName(0.995))
+
 	duration, err := parseFlexibleDuration("0.25")
 	require.NoError(t, err)
 	require.Equal(t, 250*time.Millisecond, duration)

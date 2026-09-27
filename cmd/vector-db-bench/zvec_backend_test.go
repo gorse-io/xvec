@@ -56,3 +56,10 @@ func TestVectorDBBenchZvecEndToEndFTSDataset(t *testing.T) {
 	}
 	testVectorDBBenchEndToEndFTSDataset(t, backendZvec)
 }
+
+func TestVectorDBBenchZvecFilteredVectorEndToEnd(t *testing.T) {
+	if os.Getenv("ZVEC_LIBRARY_PATH") == "" {
+		t.Skip("ZVEC_LIBRARY_PATH is not set")
+	}
+	testVectorDBBenchFilteredVectorEndToEnd(t, backendZvec)
+}

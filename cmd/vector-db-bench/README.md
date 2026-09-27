@@ -12,6 +12,7 @@ workloads:
 - MS MARCO and HotpotQA BM25 datasets with semantic qrels;
 - Flat, HNSW, IVF, DiskANN, or Vamana loading and optimization;
 - serial Recall@K, QPS, and latency percentiles;
+- integer-range and label-equality filtered vector search;
 - FTS Recall@K, MRR@K, and NDCG@K;
 - sustained concurrent QPS and latency at multiple worker counts;
 - JSON results containing the run configuration and host information.
@@ -60,6 +61,48 @@ presets:
 
 Pass one of these names to `--case-type`. The dataset directory, dimensions,
 metric, and training shards are resolved automatically.
+
+## Filtered vector search
+
+The `NewIntFilterPerformanceCase` and `LabelFilterPerformanceCase` cases use
+VectorDBBench's published filtered ground truth instead of the unfiltered
+`neighbors.parquet` file. Select the vector dataset with
+`--dataset-with-size-type`.
+
+An integer-filter run applies `id >= dataset_size * filter_rate`. Consequently,
+`--filter-rate 0.99` searches approximately the final 1% of the dataset:
+
+```bash
+./vector-db-bench xvec \
+  --path ./cohere-1m-int-filter \
+  --case-type NewIntFilterPerformanceCase \
+  --dataset-with-size-type "Medium Cohere (768dim, 1M)" \
+  --filter-rate 0.99 \
+  --output result-cohere-1m-int-filter.json
+```
+
+A label-filter run reads `scalar_labels.parquet` and applies an equality
+filter. `--label-percentage 0.001` selects the label assigned to approximately
+0.1% of vectors:
+
+```bash
+./vector-db-bench xvec \
+  --path ./cohere-100k-label-filter \
+  --case-type LabelFilterPerformanceCase \
+  --dataset-with-size-type "Small Cohere (768dim, 100K)" \
+  --label-percentage 0.001 \
+  --output result-cohere-100k-label-filter.json
+```
+
+Both xvec and zvec apply the filter inside the vector query and build inverted
+indexes for the filtered scalar fields. sqlite-vec does not support filtered
+vector workloads in this driver.
+
+Published label percentages are `0.001`, `0.002`, `0.005`, `0.01`, `0.02`,
+`0.05`, `0.1`, `0.2`, and `0.5`. Published integer filter rates range from
+`0.001` through `0.999`; Small Cohere and Small OpenAI do not publish integer
+filter ground truth, and the Large LAION artifacts start at `0.5`. Unsupported
+dataset/rate combinations are rejected before downloading data.
 
 ## Full-text search benchmark
 
@@ -264,6 +307,9 @@ The built-in cases use the VectorDBBench schema:
 | `shuffle_train*.parquet` | `id` (`INT64`), `emb` (`LIST<FLOAT>`) |
 | `test.parquet` | `id` (`INT64`), `emb` (`LIST<FLOAT>`) |
 | `neighbors.parquet` | `id` (`INT64`), `neighbors_id` (`LIST<INT64>`) |
+| `scalar_labels.parquet` | `id` (`INT64`), `labels` (`STRING`) |
+| `neighbors_int_<rate>.parquet` | `id` (`INT64`), `neighbors_id` (`LIST<INT64>`) |
+| `neighbors_labels_label_<percentage>.parquet` | `id` (`INT64`), `neighbors_id` (`LIST<INT64>`) |
 
 For offline or preprocessed runs, `--skip-download` accepts either the original
 archive in `--dataset-dir` or three exported files: `documents.jsonl` (`id`,
