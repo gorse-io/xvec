@@ -60,6 +60,9 @@ type reportConfig struct {
 	FTSExtraParams      string   `json:"fts_extra_params,omitempty"`
 	FTSDefaultOperator  string   `json:"fts_default_operator,omitempty"`
 	PayloadProfile      string   `json:"payload_profile"`
+	FilterRate          float64  `json:"filter_rate,omitempty"`
+	LabelPercentage     float64  `json:"label_percentage,omitempty"`
+	FilterExpression    string   `json:"filter_expression,omitempty"`
 }
 
 type loadMetrics struct {
@@ -157,7 +160,8 @@ func newBenchmarkReport(config benchConfig) benchmarkReport {
 			ConcurrencyDuration: config.ConcurrencyDuration.String(), SerialCooldown: config.SerialCooldown.String(),
 			NumConcurrency: config.concurrency, OptimizeConcurrency: config.OptimizeConcurrency,
 			MaxDocsPerSegment: config.MaxDocsPerSegment, EnableMmap: config.EnableMmap,
-			PayloadProfile: config.PayloadProfile,
+			PayloadProfile: config.PayloadProfile, FilterRate: config.FilterRate,
+			LabelPercentage: config.LabelPercentage, FilterExpression: config.filterExpression(),
 		},
 		System: systemInfo{
 			GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Go: runtime.Version(),

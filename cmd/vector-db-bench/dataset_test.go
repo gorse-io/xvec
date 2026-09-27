@@ -117,3 +117,20 @@ func TestDatasetFileNameAndURL(t *testing.T) {
 		datasetFileURL("https://assets.zilliz.com/benchmark/", "cohere_medium_1m", "test.parquet"),
 	)
 }
+
+func TestReadScalarLabels(t *testing.T) {
+	path := filepath.Join(t.TempDir(), scalarLabelsFileName)
+	require.NoError(t, parquet.WriteFile(path, []scalarLabelParquetRow{
+		{ID: 0, Label: "label_50p"},
+		{ID: 1, Label: "other"},
+		{ID: 2, Label: "label_50p"},
+	}))
+
+	labels, err := readScalarLabels(context.Background(), path)
+	require.NoError(t, err)
+	label, err := labels.lookup(2)
+	require.NoError(t, err)
+	require.Equal(t, "label_50p", label)
+	_, err = labels.lookup(3)
+	require.ErrorContains(t, err, "scalar label ID 3")
+}

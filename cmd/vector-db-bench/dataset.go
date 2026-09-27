@@ -35,6 +35,7 @@ import (
 const (
 	testFileName         = "test.parquet"
 	neighborsFileName    = "neighbors.parquet"
+	scalarLabelsFileName = "scalar_labels.parquet"
 	ftsDocumentsFileName = "documents.jsonl"
 	ftsQueriesFileName   = "queries.jsonl"
 	ftsQrelsFileName     = "qrels.jsonl"
@@ -50,6 +51,23 @@ type neighborParquetRow struct {
 	Neighbors []int64 `parquet:"neighbors_id,list"`
 }
 
+type scalarLabelParquetRow struct {
+	ID    int64  `parquet:"id"`
+	Label string `parquet:"labels"`
+}
+
+type scalarLabels struct {
+	codes  []uint8
+	values []string
+}
+
+func (l scalarLabels) lookup(id int64) (string, error) {
+	if id < 0 || id >= int64(len(l.codes)) {
+		return "", fmt.Errorf("scalar label ID %d is outside [0, %d)", id, len(l.codes))
+	}
+	return l.values[l.codes[id]], nil
+}
+
 type queryData struct {
 	IDs         []string
 	Vectors     [][]float32
@@ -61,7 +79,10 @@ func prepareDataset(ctx context.Context, config benchConfig, includeTrain bool, 
 	if config.caseSpec.Workload == workloadFullText {
 		return prepareFTSDataset(ctx, config, includeTrain, log)
 	}
-	files := []string{testFileName, neighborsFileName}
+	files := []string{testFileName, config.groundTruthFile()}
+	if config.requiresScalarLabels() {
+		files = append(files, scalarLabelsFileName)
+	}
 	if includeTrain {
 		files = append(files, config.caseSpec.TrainFiles...)
 	}
@@ -178,12 +199,16 @@ func downloadDatasetFile(ctx context.Context, client *http.Client, remoteURL, lo
 	return nil
 }
 
-func readQueryData(ctx context.Context, datasetDir string, dimension, limit int) (queryData, error) {
+func readQueryData(ctx context.Context, datasetDir string, dimension, limit int, groundTruthFile ...string) (queryData, error) {
+	groundTruthName := neighborsFileName
+	if len(groundTruthFile) > 0 {
+		groundTruthName = groundTruthFile[0]
+	}
 	queries, err := readVectorParquetRows(ctx, filepath.Join(datasetDir, testFileName), limit)
 	if err != nil {
 		return queryData{}, fmt.Errorf("read test vectors: %w", err)
 	}
-	neighbors, err := readNeighborParquetRows(ctx, filepath.Join(datasetDir, neighborsFileName), limit)
+	neighbors, err := readNeighborParquetRows(ctx, filepath.Join(datasetDir, groundTruthName), limit)
 	if err != nil {
 		return queryData{}, fmt.Errorf("read ground truth: %w", err)
 	}
@@ -214,6 +239,51 @@ func readQueryData(ctx context.Context, datasetDir string, dimension, limit int)
 		}
 	}
 	return data, nil
+}
+
+func readScalarLabels(ctx context.Context, path string) (_ scalarLabels, err error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return scalarLabels{}, err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	reader := parquet.NewGenericReader[scalarLabelParquetRow](file)
+	defer func() { err = errors.Join(err, reader.Close()) }()
+
+	labels := scalarLabels{}
+	valueCodes := make(map[string]uint8)
+	rows := make([]scalarLabelParquetRow, 4096)
+	for {
+		if err := ctx.Err(); err != nil {
+			return scalarLabels{}, err
+		}
+		count, readErr := reader.Read(rows)
+		for _, row := range rows[:count] {
+			if row.ID != int64(len(labels.codes)) {
+				return scalarLabels{}, fmt.Errorf("scalar label row %d has ID %d", len(labels.codes), row.ID)
+			}
+			code, found := valueCodes[row.Label]
+			if !found {
+				if len(labels.values) == 256 {
+					return scalarLabels{}, errors.New("scalar labels contain more than 256 distinct values")
+				}
+				code = uint8(len(labels.values))
+				valueCodes[row.Label] = code
+				labels.values = append(labels.values, row.Label)
+			}
+			labels.codes = append(labels.codes, code)
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return scalarLabels{}, readErr
+		}
+	}
+	if len(labels.codes) == 0 {
+		return scalarLabels{}, errors.New("scalar labels file is empty")
+	}
+	return labels, nil
 }
 
 type ftsDocumentRow struct {

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +51,14 @@ func initializeZvecBackend(config benchConfig) (func(), error) {
 }
 
 func loadZvecDataset(ctx context.Context, config benchConfig, log io.Writer) (loadMetrics, error) {
+	var labels scalarLabels
+	var err error
+	if config.requiresScalarLabels() {
+		labels, err = readScalarLabels(ctx, filepath.Join(config.DatasetDir, scalarLabelsFileName))
+		if err != nil {
+			return loadMetrics{}, fmt.Errorf("read scalar labels: %w", err)
+		}
+	}
 	collection, err := writableZvecBenchmarkCollection(config)
 	if err != nil {
 		return loadMetrics{}, err
@@ -131,6 +140,15 @@ func loadZvecDataset(ctx context.Context, config benchConfig, log io.Writer) (lo
 					}
 					if err := document.AddVectorFP32Field("dense", row.Embedding); err != nil {
 						return fmt.Errorf("set zvec document vector %d: %w", row.ID, err)
+					}
+					if config.requiresScalarLabels() {
+						label, err := labels.lookup(row.ID)
+						if err != nil {
+							return err
+						}
+						if err := document.AddStringField("labels", label); err != nil {
+							return fmt.Errorf("set zvec document label %d: %w", row.ID, err)
+						}
 					}
 				}
 				result, err := collection.Insert(documents)
@@ -312,6 +330,16 @@ func writableZvecBenchmarkCollection(config benchConfig) (*zvec.Collection, erro
 		return nil, errors.New("create zvec id field")
 	}
 	defer idField.Destroy()
+	if config.isIntFilterCase() {
+		idIndex, err := zvec.NewInvertIndexParams(true, false)
+		if err != nil {
+			return nil, fmt.Errorf("create zvec id filter index: %w", err)
+		}
+		defer idIndex.Destroy()
+		if err := idField.SetIndexParams(idIndex); err != nil {
+			return nil, fmt.Errorf("set zvec id filter index: %w", err)
+		}
+	}
 	if err := schema.AddField(idField); err != nil {
 		return nil, fmt.Errorf("add zvec id field: %w", err)
 	}
@@ -325,6 +353,24 @@ func writableZvecBenchmarkCollection(config benchConfig) (*zvec.Collection, erro
 	}
 	if err := schema.AddField(vectorField); err != nil {
 		return nil, fmt.Errorf("add zvec vector field: %w", err)
+	}
+	if config.isLabelFilterCase() {
+		labelField := zvec.NewFieldSchema("labels", zvec.DataTypeString, false, 0)
+		if labelField == nil {
+			return nil, errors.New("create zvec label field")
+		}
+		defer labelField.Destroy()
+		labelIndex, err := zvec.NewInvertIndexParams(false, false)
+		if err != nil {
+			return nil, fmt.Errorf("create zvec label filter index: %w", err)
+		}
+		defer labelIndex.Destroy()
+		if err := labelField.SetIndexParams(labelIndex); err != nil {
+			return nil, fmt.Errorf("set zvec label filter index: %w", err)
+		}
+		if err := schema.AddField(labelField); err != nil {
+			return nil, fmt.Errorf("add zvec label field: %w", err)
+		}
 	}
 	collection, err := zvec.CreateAndOpen(config.Path, schema, options)
 	if err != nil {
@@ -393,6 +439,7 @@ type zvecQueryEngine struct {
 	fullText    bool
 	returnText  bool
 	ftsOperator string
+	filter      string
 }
 
 func openZvecQueryEngine(config benchConfig) (benchmarkQueryEngine, io.Closer, error) {
@@ -411,6 +458,7 @@ func openZvecQueryEngine(config benchConfig) (benchmarkQueryEngine, io.Closer, e
 		ivfScale: float32(config.IVFScaleFactor), useRefiner: config.UseRefiner, k: config.K,
 		fullText:   config.caseSpec.Workload == workloadFullText,
 		returnText: config.caseSpec.Workload == workloadFullText && strings.EqualFold(config.PayloadProfile, "text"), ftsOperator: strings.ToUpper(config.FTSDefaultOperator),
+		filter: config.filterExpression(),
 	}, collection, nil
 }
 
@@ -455,6 +503,11 @@ func (e zvecQueryEngine) search(ctx context.Context, benchmarkQuery benchmarkQue
 	}
 	if err := query.SetTopK(e.k); err != nil {
 		return nil, fmt.Errorf("set zvec query top K: %w", err)
+	}
+	if e.filter != "" {
+		if err := query.SetFilter(e.filter); err != nil {
+			return nil, fmt.Errorf("set zvec query filter: %w", err)
+		}
 	}
 	if err := query.SetIncludeVector(false); err != nil {
 		return nil, fmt.Errorf("set zvec query vector projection: %w", err)

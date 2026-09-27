@@ -22,6 +22,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -59,7 +60,7 @@ func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (bench
 	if config.caseSpec.Workload == workloadFullText {
 		data, err = readFTSQueryData(ctx, config, config.QueryLimit)
 	} else {
-		data, err = readQueryData(ctx, config.DatasetDir, config.caseSpec.Dimension, config.QueryLimit)
+		data, err = readQueryData(ctx, config.DatasetDir, config.caseSpec.Dimension, config.QueryLimit, config.groundTruthFile())
 	}
 	if err != nil {
 		return report, err
@@ -103,6 +104,14 @@ func runBenchmark(ctx context.Context, config benchConfig, log io.Writer) (bench
 }
 
 func loadXvecDataset(ctx context.Context, config benchConfig, log io.Writer) (loadMetrics, error) {
+	var labels scalarLabels
+	var err error
+	if config.requiresScalarLabels() {
+		labels, err = readScalarLabels(ctx, filepath.Join(config.DatasetDir, scalarLabelsFileName))
+		if err != nil {
+			return loadMetrics{}, fmt.Errorf("read scalar labels: %w", err)
+		}
+	}
 	collection, err := writableBenchmarkCollection(ctx, config)
 	if err != nil {
 		return loadMetrics{}, err
@@ -152,11 +161,19 @@ func loadXvecDataset(ctx context.Context, config benchConfig, log io.Writer) (lo
 					if len(row.Embedding) != config.caseSpec.Dimension {
 						return fmt.Errorf("training vector %d has dimension %d, want %d", row.ID, len(row.Embedding), config.caseSpec.Dimension)
 					}
+					fields := map[string]any{
+						"id": row.ID, "dense": xvec.VectorFP32(row.Embedding),
+					}
+					if config.requiresScalarLabels() {
+						label, err := labels.lookup(row.ID)
+						if err != nil {
+							return err
+						}
+						fields["labels"] = label
+					}
 					documents[index] = xvec.Document{
 						PrimaryKey: strconv.FormatInt(row.ID, 10),
-						Fields: map[string]any{
-							"id": row.ID, "dense": xvec.VectorFP32(row.Embedding),
-						},
+						Fields:     fields,
 					}
 				}
 				results, err := collection.Insert(ctx, documents)
@@ -286,14 +303,19 @@ func writableBenchmarkCollection(ctx context.Context, config benchConfig) (*xvec
 	default:
 		return nil, fmt.Errorf("unsupported index type %q", config.IndexType)
 	}
-	schema := xvec.NewCollectionSchema("vector_bench_test",
-		// VectorDBBench does not filter on id, and the zvec backend leaves this
-		// field unindexed. Keep both backends on the same vector-only workload.
-		xvec.FieldSchema{Name: "id", DataType: xvec.DataTypeInt64},
-		xvec.FieldSchema{
+	fields := []xvec.FieldSchema{
+		{Name: "id", DataType: xvec.DataTypeInt64},
+		{
 			Name: "dense", DataType: xvec.DataTypeVectorFP32, Dimension: uint32(config.caseSpec.Dimension), Index: index,
 		},
-	)
+	}
+	if config.isIntFilterCase() {
+		fields[0].Index = xvec.NewInvertIndexParams()
+	}
+	if config.isLabelFilterCase() {
+		fields = append(fields, xvec.FieldSchema{Name: "labels", DataType: xvec.DataTypeString, Index: xvec.NewInvertIndexParams()})
+	}
+	schema := xvec.NewCollectionSchema("vector_bench_test", fields...)
 	schema.MaxDocsPerSegment = config.MaxDocsPerSegment
 	collection, err := xvec.CreateAndOpen(ctx, config.Path, schema, options)
 	if err != nil {
@@ -346,6 +368,7 @@ type xvecQueryEngine struct {
 	fullText   bool
 	returnText bool
 	ftsParams  xvec.FTSQueryParams
+	filter     string
 }
 
 func newXvecQueryEngine(collection *xvec.Collection, config benchConfig) xvecQueryEngine {
@@ -382,6 +405,7 @@ func newXvecQueryEngine(collection *xvec.Collection, config benchConfig) xvecQue
 		collection: collection, params: params, k: config.K,
 		fullText:   config.caseSpec.Workload == workloadFullText,
 		returnText: config.caseSpec.Workload == workloadFullText && strings.EqualFold(config.PayloadProfile, "text"), ftsParams: ftsParams,
+		filter: config.filterExpression(),
 	}
 }
 
@@ -391,7 +415,7 @@ func (e xvecQueryEngine) search(ctx context.Context, query benchmarkQuery) ([]st
 		projection.OutputFields = []string{"text"}
 	}
 	request := xvec.VectorQuery{
-		Field: "dense", DenseVector: xvec.VectorFP32(query.Vector), TopK: e.k, Params: e.params, Projection: projection,
+		Field: "dense", DenseVector: xvec.VectorFP32(query.Vector), TopK: e.k, Params: e.params, Projection: projection, Filter: e.filter,
 	}
 	if e.fullText {
 		request.Field = "text"

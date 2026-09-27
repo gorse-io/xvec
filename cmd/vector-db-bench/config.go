@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -40,17 +41,29 @@ const (
 
 	defaultVamanaEFSearch = 200
 
-	casePerformance768D100K  = "Performance768D100K"
-	casePerformance768D1M    = "Performance768D1M"
-	casePerformance768D10M   = "Performance768D10M"
-	casePerformance768D100M  = "Performance768D100M"
-	casePerformance1024D1M   = "Performance1024D1M"
-	casePerformance1024D10M  = "Performance1024D10M"
-	casePerformance1536D50K  = "Performance1536D50K"
-	casePerformance1536D500K = "Performance1536D500K"
-	casePerformance1536D5M   = "Performance1536D5M"
-	caseFTSBm25Performance   = "FTSBm25Performance"
-	caseCustom               = "Custom"
+	casePerformance768D100K     = "Performance768D100K"
+	casePerformance768D1M       = "Performance768D1M"
+	casePerformance768D10M      = "Performance768D10M"
+	casePerformance768D100M     = "Performance768D100M"
+	casePerformance1024D1M      = "Performance1024D1M"
+	casePerformance1024D10M     = "Performance1024D10M"
+	casePerformance1536D50K     = "Performance1536D50K"
+	casePerformance1536D500K    = "Performance1536D500K"
+	casePerformance1536D5M      = "Performance1536D5M"
+	caseNewIntFilterPerformance = "NewIntFilterPerformanceCase"
+	caseLabelFilterPerformance  = "LabelFilterPerformanceCase"
+	caseFTSBm25Performance      = "FTSBm25Performance"
+	caseCustom                  = "Custom"
+
+	vectorCohereSmall  = "Small Cohere (768dim, 100K)"
+	vectorCohereMedium = "Medium Cohere (768dim, 1M)"
+	vectorCohereLarge  = "Large Cohere (768dim, 10M)"
+	vectorLAIONLarge   = "Large LAION (768dim, 100M)"
+	vectorBioasqMedium = "Medium Bioasq (1024dim, 1M)"
+	vectorBioasqLarge  = "Large Bioasq (1024dim, 10M)"
+	vectorOpenAISmall  = "Small OpenAI (1536dim, 50K)"
+	vectorOpenAIMedium = "Medium OpenAI (1536dim, 500K)"
+	vectorOpenAILarge  = "Large OpenAI (1536dim, 5M)"
 
 	ftsMSMarcoSmall  = "MS MARCO Small (100K documents)"
 	ftsMSMarcoMedium = "MS MARCO Medium (1M documents)"
@@ -86,6 +99,8 @@ type benchConfig struct {
 	FTSExtraParams       string
 	FTSDefaultOperator   string
 	PayloadProfile       string
+	FilterRate           float64
+	LabelPercentage      float64
 	K                    int
 	BatchSize            int
 	LoadLimit            int64
@@ -141,7 +156,7 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	flags.SetOutput(stderr)
 	flags.StringVar(&config.Path, "path", "", "collection path (required)")
 	flags.StringVar(&config.CaseType, "case-type", casePerformance768D1M, "VectorDBBench dataset case or Custom; see README for available cases")
-	flags.StringVar(&config.DatasetWithSizeType, "dataset-with-size-type", ftsMSMarcoSmall, "VectorDBBench FTS dataset preset")
+	flags.StringVar(&config.DatasetWithSizeType, "dataset-with-size-type", ftsMSMarcoSmall, "VectorDBBench dataset preset")
 	flags.StringVar(&config.DatasetDir, "dataset-dir", "", "local VectorDBBench dataset directory")
 	flags.StringVar(&config.DatasetBaseURL, "dataset-base-url", "https://assets.zilliz.com/benchmark", "VectorDBBench dataset base URL")
 	flags.IntVar(&config.Dimension, "dimension", 0, "vector dimension for Custom case")
@@ -152,6 +167,8 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	flags.StringVar(&config.FTSExtraParams, "fts-extra-params", "", "FTS analyzer extra parameters as JSON")
 	flags.StringVar(&config.FTSDefaultOperator, "fts-default-operator", "or", "FTS match default operator: or or and")
 	flags.StringVar(&config.PayloadProfile, "payload-profile", "ids_only", "search result payload: ids_only or text")
+	flags.Float64Var(&config.FilterRate, "filter-rate", 0, "integer filter threshold as a fraction of dataset size")
+	flags.Float64Var(&config.LabelPercentage, "label-percentage", 0, "fraction of vectors matching the selected label")
 	flags.IntVar(&config.K, "k", 100, "number of nearest neighbors")
 	flags.IntVar(&config.BatchSize, "batch-size", 100, "documents per insert batch")
 	flags.Int64Var(&config.LoadLimit, "load-limit", 0, "maximum training rows to load; zero means all")
@@ -259,6 +276,22 @@ func (c benchConfig) validate() error {
 	if c.LoadLimit < 0 || c.QueryLimit < 0 {
 		return errors.New("load-limit and query-limit cannot be negative")
 	}
+	if c.isIntFilterCase() {
+		if c.FilterRate <= 0 || c.FilterRate >= 1 {
+			return errors.New("filter-rate must be between 0 and 1")
+		}
+		if !supportedFilterRate(c.FilterRate, c.DatasetWithSizeType) {
+			return fmt.Errorf("filter-rate %g is not published for %q", c.FilterRate, c.DatasetWithSizeType)
+		}
+	}
+	if c.isLabelFilterCase() {
+		if c.LabelPercentage <= 0 || c.LabelPercentage >= 1 {
+			return errors.New("label-percentage must be between 0 and 1")
+		}
+		if !supportedLabelPercentage(c.LabelPercentage) {
+			return fmt.Errorf("label-percentage %g is not published", c.LabelPercentage)
+		}
+	}
 	if c.caseSpec.Workload == workloadVector {
 		switch strings.ToLower(c.IndexType) {
 		case indexFlat:
@@ -331,6 +364,9 @@ func (c benchConfig) validate() error {
 		return fmt.Errorf("unsupported quantize-type %q", c.Quantize)
 	}
 	if c.Backend == backendSQLiteVec {
+		if c.isFilteredVectorCase() {
+			return errors.New("sqlite-vec does not support filtered vector workloads")
+		}
 		if c.caseSpec.Workload == workloadFullText {
 			return errors.New("sqlite-vec does not support full-text workloads")
 		}
@@ -400,6 +436,13 @@ func resolveBenchmarkCase(config benchConfig) (benchmarkCase, error) {
 			Name: casePerformance1536D5M, Workload: workloadVector, DatasetName: "openai", DatasetFolder: "openai_large_5m",
 			Size: 5_000_000, Dimension: 1536, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 10),
 		}, nil
+	case strings.ToLower(caseNewIntFilterPerformance), strings.ToLower(caseLabelFilterPerformance):
+		value, err := resolveVectorDatasetPreset(config.DatasetWithSizeType)
+		if err != nil {
+			return benchmarkCase{}, err
+		}
+		value.Name = config.CaseType
+		return value, nil
 	case strings.ToLower(caseCustom):
 		files := splitNonEmpty(config.TrainFiles)
 		if config.Dimension <= 0 || len(files) == 0 || strings.TrimSpace(config.DatasetDir) == "" {
@@ -443,6 +486,101 @@ func resolveFTSBenchmarkCase(datasetWithSizeType string) (benchmarkCase, error) 
 		}
 	}
 	return benchmarkCase{}, fmt.Errorf("unsupported FTS dataset-with-size-type %q", datasetWithSizeType)
+}
+
+func resolveVectorDatasetPreset(datasetWithSizeType string) (benchmarkCase, error) {
+	presets := []struct {
+		label    string
+		caseSpec benchmarkCase
+	}{
+		{vectorCohereSmall, benchmarkCase{Workload: workloadVector, DatasetName: "cohere", DatasetFolder: "cohere_small_100k", Size: 100_000, Dimension: 768, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1)}},
+		{vectorCohereMedium, benchmarkCase{Workload: workloadVector, DatasetName: "cohere", DatasetFolder: "cohere_medium_1m", Size: 1_000_000, Dimension: 768, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1)}},
+		{vectorCohereLarge, benchmarkCase{Workload: workloadVector, DatasetName: "cohere", DatasetFolder: "cohere_large_10m", Size: 10_000_000, Dimension: 768, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 10)}},
+		{vectorLAIONLarge, benchmarkCase{Workload: workloadVector, DatasetName: "laion", DatasetFolder: "laion_large_100m", Size: 100_000_000, Dimension: 768, Metric: "l2", TrainFiles: vectorDBBenchTrainFiles(false, 100)}},
+		{vectorBioasqMedium, benchmarkCase{Workload: workloadVector, DatasetName: "bioasq", DatasetFolder: "bioasq_medium_1m", Size: 1_000_000, Dimension: 1024, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1)}},
+		{vectorBioasqLarge, benchmarkCase{Workload: workloadVector, DatasetName: "bioasq", DatasetFolder: "bioasq_large_10m", Size: 10_000_000, Dimension: 1024, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 10)}},
+		{vectorOpenAISmall, benchmarkCase{Workload: workloadVector, DatasetName: "openai", DatasetFolder: "openai_small_50k", Size: 50_000, Dimension: 1536, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1)}},
+		{vectorOpenAIMedium, benchmarkCase{Workload: workloadVector, DatasetName: "openai", DatasetFolder: "openai_medium_500k", Size: 500_000, Dimension: 1536, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 1)}},
+		{vectorOpenAILarge, benchmarkCase{Workload: workloadVector, DatasetName: "openai", DatasetFolder: "openai_large_5m", Size: 5_000_000, Dimension: 1536, Metric: "cosine", TrainFiles: vectorDBBenchTrainFiles(true, 10)}},
+	}
+	for _, value := range presets {
+		if strings.EqualFold(datasetWithSizeType, value.label) {
+			return value.caseSpec, nil
+		}
+	}
+	return benchmarkCase{}, fmt.Errorf("unsupported vector dataset-with-size-type %q", datasetWithSizeType)
+}
+
+func (c benchConfig) isIntFilterCase() bool {
+	return strings.EqualFold(c.CaseType, caseNewIntFilterPerformance)
+}
+
+func (c benchConfig) isLabelFilterCase() bool {
+	return strings.EqualFold(c.CaseType, caseLabelFilterPerformance)
+}
+
+func (c benchConfig) isFilteredVectorCase() bool {
+	return c.isIntFilterCase() || c.isLabelFilterCase()
+}
+
+func (c benchConfig) requiresScalarLabels() bool {
+	return c.isLabelFilterCase()
+}
+
+func (c benchConfig) filterExpression() string {
+	if c.isIntFilterCase() {
+		return fmt.Sprintf("id >= %d", int64(float64(c.caseSpec.Size)*c.FilterRate))
+	}
+	if c.isLabelFilterCase() {
+		return fmt.Sprintf("labels = '%s'", labelValue(c.LabelPercentage))
+	}
+	return ""
+}
+
+func (c benchConfig) groundTruthFile() string {
+	if c.isIntFilterCase() {
+		return fmt.Sprintf("neighbors_int_%s.parquet", percentageName(c.FilterRate))
+	}
+	if c.isLabelFilterCase() {
+		return fmt.Sprintf("neighbors_labels_%s.parquet", labelValue(c.LabelPercentage))
+	}
+	return neighborsFileName
+}
+
+func labelValue(value float64) string {
+	return "label_" + percentageName(value)
+}
+
+func percentageName(value float64) string {
+	percentage := value * 100
+	if percentage >= 1 && percentage <= 99 {
+		return fmt.Sprintf("%dp", int(percentage))
+	}
+	return fmt.Sprintf("%.1fp", percentage)
+}
+
+func supportedFilterRate(value float64, dataset string) bool {
+	if strings.EqualFold(dataset, vectorCohereSmall) || strings.EqualFold(dataset, vectorOpenAISmall) {
+		return false
+	}
+	rates := []float64{0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.998, 0.999}
+	if strings.EqualFold(dataset, vectorLAIONLarge) {
+		rates = []float64{0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.998, 0.999}
+	}
+	return containsRate(rates, value)
+}
+
+func supportedLabelPercentage(value float64) bool {
+	return containsRate([]float64{0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5}, value)
+}
+
+func containsRate(values []float64, target float64) bool {
+	for _, value := range values {
+		if math.Abs(value-target) < 1e-9 {
+			return true
+		}
+	}
+	return false
 }
 
 func vectorDBBenchTrainFiles(shuffled bool, count int) []string {
