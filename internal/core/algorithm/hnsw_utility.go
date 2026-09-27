@@ -42,6 +42,26 @@ func prefetchDenseHNSWNeighbors(vectors []float32, dimension int, neighbors []in
 	runtime.KeepAlive(touched)
 }
 
+func prefetchDenseHNSWNeighborsFP16(vectors []uint16, dimension int, neighbors []int, offset, lines uint32) {
+	count := prefetchNeighborCount(len(neighbors), offset)
+	if count == 0 || dimension <= 0 {
+		return
+	}
+	lineCount := normalizedPrefetchLines(lines, dimension*2)
+	var touched uint16
+	for _, position := range neighbors[:count] {
+		start := position * dimension
+		for line := 0; line < lineCount; line++ {
+			element := line * 32
+			if element >= dimension {
+				break
+			}
+			touched ^= vectors[start+element]
+		}
+	}
+	runtime.KeepAlive(touched)
+}
+
 func prefetchSparseHNSWNeighbors(offsets []int, indices []uint32, values []float32, neighbors []int, offset, lines uint32) {
 	count := prefetchNeighborCount(len(neighbors), offset)
 	if count == 0 {

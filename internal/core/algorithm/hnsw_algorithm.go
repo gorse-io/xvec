@@ -960,7 +960,7 @@ func (i *HNSWIndex) SearchHNSWGroups(
 		return i.queryDistanceAt(query, queryFP16, queryMagnitude, position)
 	}
 	prefetch := func(neighbors []int) {
-		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
+		i.prefetchNeighbors(neighbors, options.PrefetchOffset, options.PrefetchLines)
 	}
 	return expandHNSWGroups(
 		ctx, i.options.Metric, i.keys, i.neighbors, initial, options.GroupByOptions,
@@ -1111,7 +1111,7 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryFP
 			break
 		}
 		neighbors := i.neighbors[current.position][0]
-		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
+		i.prefetchNeighbors(neighbors, options.PrefetchOffset, options.PrefetchLines)
 		visited.batchPositions = visited.batchPositions[:0]
 		visited.batchVectors = visited.batchVectors[:0]
 		visited.batchMagnitudes = visited.batchMagnitudes[:0]
@@ -1223,7 +1223,7 @@ func (i *HNSWIndex) searchHNSWBaseBlockHeap(ctx context.Context, query []float32
 		}
 		visited.markExpanded(int(current))
 		neighbors := i.neighbors[int(current)][0]
-		prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
+		i.prefetchNeighbors(neighbors, options.PrefetchOffset, options.PrefetchLines)
 		visited.batchIDs = visited.batchIDs[:0]
 		visited.batchTies = visited.batchTies[:0]
 		visited.batchVectors = visited.batchVectors[:0]
@@ -1281,6 +1281,14 @@ func (i *HNSWIndex) searchHNSWBaseBlockHeap(ctx context.Context, query []float32
 		return 0
 	})
 	return result, nil
+}
+
+func (i *HNSWIndex) prefetchNeighbors(neighbors []int, offset, lines uint32) {
+	if i.fp16 {
+		prefetchDenseHNSWNeighborsFP16(i.vectorsFP16, i.dimension, neighbors, offset, lines)
+		return
+	}
+	prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, offset, lines)
 }
 
 func blockHeapDistance(metric Metric, score float32) float32 {
