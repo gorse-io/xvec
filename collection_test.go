@@ -158,6 +158,38 @@ func TestCollectionBuildsNativeFP16ANNIndexes(t *testing.T) {
 	}
 }
 
+func TestCollectionNativeFP16HNSWQueryPrefetch(t *testing.T) {
+	ctx := context.Background()
+	const dimension, count = 64, 1682
+	params := NewHNSWIndexParams(MetricTypeCosine)
+	params.M, params.EFConstruction = 4, 16
+	schema := NewCollectionSchema("fp16_hnsw_prefetch", FieldSchema{
+		Name: "embedding", DataType: DataTypeVectorFP16, Dimension: dimension, Index: params,
+	})
+	collection, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "fp16-hnsw-prefetch"), schema, NewCollectionOptions())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, collection.Close()) }()
+
+	documents := make([]Document, count)
+	for index := range documents {
+		vector := make(VectorFP16, dimension)
+		for component := range vector {
+			value := float32((index*37+component*17)%101+1) / 101
+			vector[component] = Float16FromFloat32(value)
+		}
+		documents[index] = Document{PrimaryKey: fmt.Sprint(index), Fields: map[string]any{"embedding": vector}}
+	}
+	_, err = collection.Insert(ctx, documents)
+	require.NoError(t, err)
+
+	queryParams := NewHNSWQueryParams()
+	results, err := collection.Query(ctx, VectorQuery{
+		Field: "embedding", DenseVector: documents[0].Fields["embedding"].(VectorFP16), TopK: 100, Params: queryParams,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+}
+
 func TestCollectionCRUDFlushReopenAndReadOnly(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "books")
