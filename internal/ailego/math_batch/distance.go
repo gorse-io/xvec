@@ -229,6 +229,72 @@ func squaredEuclideanDistances4Scalar(query, first, second, third, fourth []floa
 	return
 }
 
+type fp16Batch4Kernel func(query, first, second, third, fourth []uint16, output []float32)
+
+var fp16Kernels = struct {
+	l2, dot, cosine, mips fp16Batch4Kernel
+}{fp16L2Scalar4, fp16DotScalar4, fp16CosineScalar4, fp16MIPSScalar4}
+
+// SquaredEuclideanDistances4FP16 computes squared Euclidean distances from one query to four
+// binary16 candidates, sharing query loads and conversions when supported.
+// Inputs are unchecked: candidates must have the query dimension and output
+// must contain at least four elements.
+func SquaredEuclideanDistances4FP16(query, first, second, third, fourth []uint16, output []float32) {
+	fp16Kernels.l2(query, first, second, third, fourth, output)
+}
+
+func fp16L2Scalar4(query, first, second, third, fourth []uint16, output []float32) {
+	output[0] = mathutil.L2SquaredFP16(query, first)
+	output[1] = mathutil.L2SquaredFP16(query, second)
+	output[2] = mathutil.L2SquaredFP16(query, third)
+	output[3] = mathutil.L2SquaredFP16(query, fourth)
+}
+
+// InnerProducts4FP16 computes inner products from one query to four
+// binary16 candidates, sharing query loads and conversions when supported.
+// Inputs are unchecked: candidates must have the query dimension and output
+// must contain at least four elements.
+func InnerProducts4FP16(query, first, second, third, fourth []uint16, output []float32) {
+	fp16Kernels.dot(query, first, second, third, fourth, output)
+}
+
+func fp16DotScalar4(query, first, second, third, fourth []uint16, output []float32) {
+	output[0] = mathutil.InnerProductFP16(query, first)
+	output[1] = mathutil.InnerProductFP16(query, second)
+	output[2] = mathutil.InnerProductFP16(query, third)
+	output[3] = mathutil.InnerProductFP16(query, fourth)
+}
+
+// CosineDistances4FP16 computes cosine distances from one query to four
+// binary16 candidates, sharing query loads and conversions when supported.
+// Inputs are unchecked: candidates must have the query dimension and output
+// must contain at least four elements.
+func CosineDistances4FP16(query, first, second, third, fourth []uint16, output []float32) {
+	fp16Kernels.cosine(query, first, second, third, fourth, output)
+}
+
+func fp16CosineScalar4(query, first, second, third, fourth []uint16, output []float32) {
+	output[0] = mathutil.CosineDistanceFP16(query, first)
+	output[1] = mathutil.CosineDistanceFP16(query, second)
+	output[2] = mathutil.CosineDistanceFP16(query, third)
+	output[3] = mathutil.CosineDistanceFP16(query, fourth)
+}
+
+// MIPSL2SquaredDistances4FP16 computes localized spherical MIPS distances from one query to four
+// binary16 candidates, sharing query loads and conversions when supported.
+// Inputs are unchecked: candidates must have the query dimension and output
+// must contain at least four elements.
+func MIPSL2SquaredDistances4FP16(query, first, second, third, fourth []uint16, output []float32) {
+	fp16Kernels.mips(query, first, second, third, fourth, output)
+}
+
+func fp16MIPSScalar4(query, first, second, third, fourth []uint16, output []float32) {
+	output[0] = mathutil.MIPSL2SquaredFP16(query, first)
+	output[1] = mathutil.MIPSL2SquaredFP16(query, second)
+	output[2] = mathutil.MIPSL2SquaredFP16(query, third)
+	output[3] = mathutil.MIPSL2SquaredFP16(query, fourth)
+}
+
 // InnerProductsInt8 computes exact signed INT8 dot products for one query and
 // many candidates. Codes are stored as bytes. Every candidate must have at
 // least len(query) bytes; output must have room for all candidates.

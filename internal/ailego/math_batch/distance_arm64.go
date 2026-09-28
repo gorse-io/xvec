@@ -17,6 +17,7 @@
 package mathbatch
 
 import (
+	"math"
 	"unsafe"
 
 	"golang.org/x/sys/cpu"
@@ -32,6 +33,63 @@ func init() {
 		kernels.l2Squared4 = squaredEuclideanDistances4NEON
 		innerProductsInt4Kernel4 = innerProductsInt4NEON_4
 		innerProductsInt8Kernel4 = innerProductsInt8NEON_4
+	}
+	if cpu.ARM64.HasFPHP && cpu.ARM64.HasASIMDHP {
+		fp16Kernels.l2 = fp16L2NEON4
+		fp16Kernels.dot = fp16DotNEON4
+		fp16Kernels.cosine = fp16CosineNEON4
+		fp16Kernels.mips = fp16MIPSNEON4
+	}
+}
+
+func fp16L2NEON4(query, first, second, third, fourth []uint16, output []float32) {
+	if len(query) < 8 {
+		fp16L2Scalar4(query, first, second, third, fourth, output)
+		return
+	}
+	fp16_l2_neon4(unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)), unsafe.Pointer(&output[0]))
+}
+
+func fp16DotNEON4(query, first, second, third, fourth []uint16, output []float32) {
+	if len(query) < 8 {
+		fp16DotScalar4(query, first, second, third, fourth, output)
+		return
+	}
+	fp16_dot_neon4(unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)), unsafe.Pointer(&output[0]))
+}
+
+func fp16ProductsNEON4(query, first, second, third, fourth []uint16) (products [9]float32) {
+	fp16_products_neon4(unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)), unsafe.Pointer(&products[0]))
+	return
+}
+
+func fp16CosineNEON4(query, first, second, third, fourth []uint16, output []float32) {
+	if len(query) < 8 {
+		fp16CosineScalar4(query, first, second, third, fourth, output)
+		return
+	}
+	products := fp16ProductsNEON4(query, first, second, third, fourth)
+	queryMagnitude := float32(math.Sqrt(float64(products[4])))
+	for j := range 4 {
+		output[j] = cosineDistanceFromProduct(products[j], queryMagnitude, float32(math.Sqrt(float64(products[5+j]))))
+	}
+}
+
+func fp16MIPSNEON4(query, first, second, third, fourth []uint16, output []float32) {
+	if len(query) < 8 {
+		fp16MIPSScalar4(query, first, second, third, fourth, output)
+		return
+	}
+	products := fp16ProductsNEON4(query, first, second, third, fourth)
+	for j := range 4 {
+		denominator := max(products[4], products[5+j])
+		output[j] = 0
+		if denominator != 0 {
+			output[j] = 2 - 2*products[j]/denominator
+		}
 	}
 }
 

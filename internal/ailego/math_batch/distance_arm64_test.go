@@ -29,6 +29,13 @@ func TestNEONBatchKernels(t *testing.T) {
 	testBatchKernels(t, innerProducts2NEON, innerProducts4NEON, squaredEuclideanDistances2NEON, squaredEuclideanDistances4NEON)
 }
 
+func TestFP16NEONBatchKernels(t *testing.T) {
+	if !cpu.ARM64.HasFPHP || !cpu.ARM64.HasASIMDHP {
+		t.Skip("NEON FP16 is not supported by this CPU")
+	}
+	testFP16BatchKernels(t, fp16L2NEON4, fp16DotNEON4, fp16CosineNEON4, fp16MIPSNEON4)
+}
+
 func TestInnerProductsInt4NEON_4(t *testing.T) {
 	if !cpu.ARM64.HasASIMD {
 		t.Skip("NEON/ASIMD is not supported by this CPU")

@@ -22,7 +22,7 @@ import (
 	"golang.org/x/sys/cpu"
 )
 
-//go:generate make avx int4-avx2 int4-avx512 int8-avx2 int8-avx512
+//go:generate make avx avx512 int4-avx2 int4-avx512 int8-avx2 int8-avx512
 
 func init() {
 	if cpu.X86.HasAVX {
@@ -30,6 +30,12 @@ func init() {
 		kernels.dot4 = innerProducts4AVX
 		kernels.l2Squared2 = squaredEuclideanDistances2AVX
 		kernels.l2Squared4 = squaredEuclideanDistances4AVX
+	}
+	if cpu.X86.HasAVX512F {
+		kernels.dot2 = innerProducts2AVX512
+		kernels.dot4 = innerProducts4AVX512
+		kernels.l2Squared2 = squaredEuclideanDistances2AVX512
+		kernels.l2Squared4 = squaredEuclideanDistances4AVX512
 	}
 	if cpu.X86.HasAVX2 {
 		innerProductsInt4Kernel4 = innerProductsInt4AVX2_4
@@ -41,6 +47,54 @@ func init() {
 	if cpu.X86.HasAVX2 && cpu.X86.HasAVX512F && cpu.X86.HasAVX512BW {
 		innerProductsInt4Kernel4 = innerProductsInt4AVX512_4
 	}
+}
+
+func innerProducts2AVX512(query, first, second []float32) (firstProduct, secondProduct float32) {
+	if len(query) < 16 {
+		return innerProducts2Scalar(query, first, second)
+	}
+	xvec_avx512_batch_inner_products2(
+		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]), int64(len(query)),
+		unsafe.Pointer(&firstProduct), unsafe.Pointer(&secondProduct),
+	)
+	return
+}
+
+func innerProducts4AVX512(query, first, second, third, fourth []float32) (firstProduct, secondProduct, thirdProduct, fourthProduct float32) {
+	if len(query) < 16 {
+		return innerProducts4Scalar(query, first, second, third, fourth)
+	}
+	xvec_avx512_batch_inner_products4(
+		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)),
+		unsafe.Pointer(&firstProduct), unsafe.Pointer(&secondProduct),
+		unsafe.Pointer(&thirdProduct), unsafe.Pointer(&fourthProduct),
+	)
+	return
+}
+
+func squaredEuclideanDistances2AVX512(query, first, second []float32) (firstDistance, secondDistance float32) {
+	if len(query) < 16 {
+		return squaredEuclideanDistances2Scalar(query, first, second)
+	}
+	xvec_avx512_batch_squared_euclidean_distances2(
+		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]), int64(len(query)),
+		unsafe.Pointer(&firstDistance), unsafe.Pointer(&secondDistance),
+	)
+	return
+}
+
+func squaredEuclideanDistances4AVX512(query, first, second, third, fourth []float32) (firstDistance, secondDistance, thirdDistance, fourthDistance float32) {
+	if len(query) < 16 {
+		return squaredEuclideanDistances4Scalar(query, first, second, third, fourth)
+	}
+	xvec_avx512_batch_squared_euclidean_distances4(
+		unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(len(query)),
+		unsafe.Pointer(&firstDistance), unsafe.Pointer(&secondDistance),
+		unsafe.Pointer(&thirdDistance), unsafe.Pointer(&fourthDistance),
+	)
+	return
 }
 
 func innerProducts2AVX(query, first, second []float32) (firstProduct, secondProduct float32) {
