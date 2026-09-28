@@ -478,7 +478,6 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 			break
 		}
 		neighbors := i.base.neighbors[current.position][0]
-		prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
 		if batch {
 			visited.batchPositions = visited.batchPositions[:0]
 			visited.batchCodes = visited.batchCodes[:0]
@@ -494,12 +493,17 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 				visited.batchCodeDots = append(visited.batchCodeDots, 0)
 				visited.batchScores = append(visited.batchScores, 0)
 			}
+			// Like zvec's filtered dual-heap traversal, prefetch only the
+			// unvisited neighbors that will actually be scored in this batch.
+			prefetchQuantizedHNSWNeighbors(i.vectors.codes, visited.batchPositions, options.PrefetchOffset, options.PrefetchLines)
 			if query.kind == QuantizationFP16 {
 				fp16CodeDistances(metric, query.codes, visited.batchCodes, visited.batchScores)
 			} else {
 				integerCodeDots(query.kind, query.codes, visited.batchCodes, visited.batchCodeDots)
 			}
 			neighbors = visited.batchPositions
+		} else {
+			prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
 		}
 		for j, neighbor := range neighbors {
 			var score float32

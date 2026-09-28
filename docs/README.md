@@ -5,6 +5,16 @@ An English, static Astro + TypeScript site for the HNSW, Flat, DiskANN, and Vama
 service is needed. The CSV files and `logo.png` stay in this directory and are imported
 through Astro/Vite to generate the homepage at build time.
 
+The [FP16 HNSW label-filter comparison](benchmark-hnsw-label-filter.md) covers
+Cohere 100K at nine matching-label percentages. Its standalone
+[`benchmark-hnsw-label-filter.csv`](benchmark-hnsw-label-filter.csv) includes
+filter settings, query metrics, and separate build/query memory measurements.
+
+The [FP16 HNSW integer-filter comparison](benchmark-hnsw-int-filter.md) runs
+`NewIntFilterPerformanceCase` on Cohere 100K with locally generated exact
+ground truth. Its [CSV](benchmark-hnsw-int-filter.csv) records both the excluded
+fraction (`filter_rate`) and matching fraction to distinguish the two meanings.
+
 `benchmark-flat.csv` contains a separate Flat comparison of xvec and zvec for
 INT4, INT8, FP16, and unquantized FP32 on `Performance768D100K`. It uses the
 same runtime settings and metric units as the HNSW CSV, omitting the inapplicable

@@ -1,0 +1,31 @@
+//go:build amd64 && !noasm
+
+// Copyright 2026-present the xvec project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "textflag.h"
+
+// Each address is the start of a cache line within the validated code slice.
+TEXT ·prefetchQuantizedCacheLines(SB), NOSPLIT, $0-16
+ MOVQ base+0(FP), AX
+ MOVQ lines+8(FP), CX
+ TESTQ CX, CX
+ JE done
+loop:
+ PREFETCHT0 (AX)
+ ADDQ $64, AX
+ DECQ CX
+ JNZ loop
+done:
+ RET

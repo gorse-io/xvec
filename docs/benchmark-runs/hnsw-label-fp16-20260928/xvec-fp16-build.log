@@ -1,0 +1,4 @@
+inserted 100000 vectors (9730.7 rows/s)
+case=LabelFilterPerformanceCase dataset=/home/zhenghaoz/hnsw-label-20260928/dataset
+load rows=100000 duration=154.190s insert=10.277s optimize=143.906s rows/s=9730.6
+result=/home/zhenghaoz/hnsw-label-20260928/xvec-fp16-build.json

@@ -1,0 +1,106 @@
+{
+  "schema_version": "vector-db-bench/v1",
+  "tool": "xvec/cmd/vector-db-bench",
+  "timestamp": "2026-09-28T15:00:50.792867204Z",
+  "case": {
+    "name": "NewIntFilterPerformanceCase",
+    "workload": "vector",
+    "dataset_name": "cohere",
+    "dataset_folder": "cohere_small_100k",
+    "size": 100000,
+    "dimension": 768,
+    "metric": "cosine",
+    "train_files": [
+      "shuffle_train.parquet"
+    ]
+  },
+  "dataset_dir": "/home/zhenghaoz/hnsw-int-20260928/dataset",
+  "config": {
+    "backend": "zvec",
+    "path": "/home/zhenghaoz/hnsw-int-20260928/zvec-fp16.collection",
+    "db_label": "zvec-go",
+    "index_type": "hnsw",
+    "m": 50,
+    "ef_construction": 500,
+    "ef_search": 300,
+    "ivf_n_list": 1024,
+    "ivf_n_iterations": 10,
+    "ivf_use_soar": false,
+    "ivf_n_probe": 10,
+    "ivf_scale_factor": 10,
+    "diskann_max_degree": 100,
+    "diskann_build_list": 50,
+    "diskann_pq_chunks": 0,
+    "diskann_query_list": 300,
+    "quantize_type": "fp16",
+    "use_refiner": false,
+    "k": 100,
+    "batch_size": 100,
+    "concurrency_duration": "30s",
+    "serial_cooldown": "3s",
+    "num_concurrency": [
+      8
+    ],
+    "optimize_concurrency": 8,
+    "max_docs_per_segment": 10000000,
+    "enable_mmap": true,
+    "payload_profile": "ids_only",
+    "filter_rate": 0.95,
+    "local_int_ground_truth": true,
+    "filter_expression": "id \u003e= 95000"
+  },
+  "note": "Cohere 100K HNSW integer range filter; locally generated exact truth; FP16; query resources measured separately",
+  "system": {
+    "goos": "linux",
+    "goarch": "amd64",
+    "go_version": "go1.27.1",
+    "num_cpu": 8,
+    "compiler": "gc"
+  },
+  "serial": {
+    "queries": 1000,
+    "qps": 186.83209341211875,
+    "recall": 0.9982700000000012,
+    "latency_avg_ms": 5.299313750999997,
+    "latency_p95_ms": 6.07805545,
+    "latency_p99_ms": 6.619839599999999
+  },
+  "concurrent": [
+    {
+      "concurrency": 8,
+      "queries": 42238,
+      "qps": 1407.4922233000618,
+      "latency_avg_ms": 5.679615135565106,
+      "latency_p95_ms": 8.392003150000003,
+      "latency_p99_ms": 10.796514899999995
+    }
+  ],
+  "vectordbbench_metrics": {
+    "inserted_count": 0,
+    "insert_duration": 0,
+    "optimize_duration": 0,
+    "load_duration": 0,
+    "qps": 1407.4922233000618,
+    "recall": 0.9982700000000012,
+    "mrr": 0,
+    "ndcg": 0,
+    "payload_profile": "ids_only",
+    "serial_latency_p99": 0.006619839599999999,
+    "serial_latency_p95": 0.00607805545,
+    "conc_num_list": [
+      8
+    ],
+    "conc_qps_list": [
+      1407.4922233000618
+    ],
+    "conc_latency_p99_list": [
+      0.010796514899999995
+    ],
+    "conc_latency_p95_list": [
+      0.008392003150000002
+    ],
+    "conc_latency_avg_list": [
+      0.005679615135565106
+    ]
+  }
+}

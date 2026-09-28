@@ -19,9 +19,10 @@ import (
 	"runtime"
 )
 
-// The Go runtime has no portable non-faulting prefetch intrinsic. These
-// helpers synchronously warm the same bounded cache-line prefix requested by
-// the public hint. They never change candidate ordering or admission.
+// The Go runtime has no portable non-faulting prefetch intrinsic. Dense and
+// sparse helpers synchronously warm the bounded cache-line prefix requested
+// by the hint; quantized codes use platform prefetch where available. These
+// hints never change candidate ordering or admission.
 func prefetchDenseHNSWNeighbors(vectors []float32, dimension int, neighbors []int, offset, lines uint32) {
 	count := prefetchNeighborCount(len(neighbors), offset)
 	if count == 0 || dimension <= 0 {
@@ -98,19 +99,10 @@ func prefetchQuantizedHNSWNeighbors(codes []QuantizedVector, neighbors []int, of
 	if count == 0 {
 		return
 	}
-	var touched byte
 	for _, position := range neighbors[:count] {
 		code := codes[position].codes
-		lineCount := normalizedPrefetchLines(lines, len(code))
-		for line := 0; line < lineCount; line++ {
-			element := line * 64
-			if element >= len(code) {
-				break
-			}
-			touched ^= code[element]
-		}
+		prefetchQuantizedCode(code, normalizedPrefetchLines(lines, len(code)))
 	}
-	runtime.KeepAlive(touched)
 }
 
 func prefetchNeighborCount(length int, offset uint32) int {

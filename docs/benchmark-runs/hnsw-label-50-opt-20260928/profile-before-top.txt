@@ -1,0 +1,39 @@
+File: vector-db-bench-profile
+Build ID: 9696adfc54d9cb000c09ea730b1110ec215adb3e
+Type: cpu
+Time: 2026-09-28 14:06:52 UTC
+Duration: 15.03s, Total samples = 116.51s (775.17%)
+Showing nodes accounting for 103.67s, 88.98% of 116.51s total
+Dropped 445 nodes (cum <= 0.58s)
+Showing top 30 nodes out of 73
+      flat  flat%   sum%        cum   cum%
+    24.62s 21.13% 21.13%     24.62s 21.13%  internal/runtime/maps.ctrlGroup.matchH2 (inline)
+    19.07s 16.37% 37.50%     19.07s 16.37%  github.com/gorse-io/xvec/internal/ailego/math_batch.fp16_products_avx4
+    13.05s 11.20% 48.70%     13.16s 11.30%  github.com/gorse-io/xvec/internal/core/algorithm.prefetchQuantizedHNSWNeighbors
+     8.21s  7.05% 55.75%     31.27s 26.84%  github.com/gorse-io/xvec/internal/core/algorithm.(*ScalarQuantizedHNSWIndex).searchBase
+     7.28s  6.25% 61.99%     29.50s 25.32%  runtime.mapaccess2_fast64
+     5.64s  4.84% 66.84%     57.19s 49.09%  github.com/gorse-io/xvec.evaluateSnapshotFilters
+     4.05s  3.48% 70.31%      4.05s  3.48%  github.com/gorse-io/xvec/internal/ailego/math.inner_product_and_squared_norm_fp16_avx
+     1.81s  1.55% 71.87%      4.49s  3.85%  github.com/gorse-io/xvec/internal/core/algorithm.(*ScalarQuantizedHNSWIndex).acceptResult
+     1.64s  1.41% 73.27%      1.64s  1.41%  runtime.memclrNoHeapPointers
+     1.58s  1.36% 74.63%      1.58s  1.36%  internal/runtime/maps.memHash64AES
+     1.37s  1.18% 75.80%      4.20s  3.60%  internal/runtime/maps.(*table).uncheckedPutSlot
+     1.36s  1.17% 76.97%     16.58s 14.23%  runtime.mapassign_fast64
+     1.32s  1.13% 78.10%      1.38s  1.18%  context.(*cancelCtx).Err
+     1.24s  1.06% 79.17%      1.28s  1.10%  runtime.findObject
+     1.23s  1.06% 80.22%      1.23s  1.06%  github.com/gorse-io/xvec/internal/core/algorithm.(*hnswVisited).seen (inline)
+     1.15s  0.99% 81.21%      1.15s  0.99%  internal/runtime/maps.h1 (inline)
+     1.04s  0.89% 82.10%      1.35s  1.16%  runtime.tryDeferToSpanScan
+     1.02s  0.88% 82.98%      9.14s  7.84%  internal/runtime/maps.(*table).split
+     0.83s  0.71% 83.69%      0.83s  0.71%  runtime.memmove
+     0.83s  0.71% 84.40%      1.16s     1%  runtime.typedmemmove
+     0.67s  0.58% 84.98%      0.67s  0.58%  internal/runtime/maps.(*groupReference).elem (inline)
+     0.66s  0.57% 85.55%      1.66s  1.42%  github.com/gorse-io/xvec.evaluateFilterDocumentsByOrdinal.func2
+     0.65s  0.56% 86.10%      0.78s  0.67%  github.com/gorse-io/xvec/internal/ailego/container.(*Heap[go.shape.struct { github.com/gorse-io/xvec/internal/core/algorithm.position int; github.com/gorse-io/xvec/internal/core/algorithm.score float32 }]).siftDown
+     0.62s  0.53% 86.64%      1.79s  1.54%  github.com/RoaringBitmap/roaring/v2.(*intIterator).Next
+     0.62s  0.53% 87.17%      2.68s  2.30%  github.com/RoaringBitmap/roaring/v2/roaring64.(*intIterator).Next
+     0.51s  0.44% 87.61%      5.33s  4.57%  github.com/gorse-io/xvec/internal/ailego/container.(*Bitmap).Range
+     0.48s  0.41% 88.02%      1.64s  1.41%  internal/runtime/maps.typedmemmove
+     0.38s  0.33% 88.34%      1.81s  1.55%  runtime.scanObject
+     0.38s  0.33% 88.67%      0.97s  0.83%  runtime.scanObjectsSmall
+     0.36s  0.31% 88.98%      0.91s  0.78%  github.com/RoaringBitmap/roaring/v2.(*bitmapContainerShortIterator).next

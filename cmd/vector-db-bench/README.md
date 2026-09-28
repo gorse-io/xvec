@@ -104,6 +104,14 @@ Published label percentages are `0.001`, `0.002`, `0.005`, `0.01`, `0.02`,
 filter ground truth, and the Large LAION artifacts start at `0.5`. Unsupported
 dataset/rate combinations are rejected before downloading data.
 
+For integer-filter datasets without published ground truth, explicitly pass
+`--local-int-ground-truth --skip-download` after generating exact neighbors
+locally. Provide `neighbors_int_<filter-percentage>p.parquet` in `--dataset-dir`,
+with the usual `id` and `neighbors_id` columns. The ground truth must use the
+same training vectors, query IDs, distance metric, and `id >= size * filter_rate`
+condition as the run. Reports record `local_int_ground_truth: true`; these runs
+must be identified separately from published-ground-truth results.
+
 ## Full-text search benchmark
 
 The `FTSBm25Performance` case mirrors VectorDBBench's June 2026 full-text

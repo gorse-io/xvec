@@ -1,0 +1,4 @@
+inserted 100000 vectors (13255.2 rows/s)
+case=NewIntFilterPerformanceCase dataset=/home/zhenghaoz/hnsw-int-20260928/dataset
+load rows=100000 duration=160.014s insert=7.544s optimize=152.460s rows/s=13255.1
+result=/home/zhenghaoz/hnsw-int-20260928/xvec-fp16-build.json

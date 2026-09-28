@@ -1,0 +1,62 @@
+[
+  {
+    "file": "scalar_labels.parquet",
+    "url": "https://assets.zilliz.com/benchmark/cohere_small_100k/scalar_labels.parquet",
+    "size": 167638,
+    "sha256": "737b19e395ab035a5b6baf46405bccad12404504eb819cc39a19f988b2f09152"
+  },
+  {
+    "file": "neighbors_labels_label_0.1p.parquet",
+    "url": "https://assets.zilliz.com/benchmark/cohere_small_100k/neighbors_labels_label_0.1p.parquet",
+    "size": 130051,
+    "sha256": "b0afbadc4b366cc58305683a6de0c6535c76f58c3941ace4c24de050cacda975"
+  },
+  {
+    "file": "neighbors_labels_label_0.2p.parquet",
+    "url": "https://assets.zilliz.com/benchmark/cohere_small_100k/neighbors_labels_label_0.2p.parquet",
+    "size": 290299,
+    "sha256": "a78ddce2109ac5d790fe9502475ba384bc967fe4e73d35a3bba2da14e1feb9d8"
+  },
+  {
+    "file": "neighbors_labels_label_0.5p.parquet",
+    "url": "https://assets.zilliz.com/benchmark/cohere_small_100k/neighbors_labels_label_0.5p.parquet",
+    "size": 827037,
+    "sha256": "0e9c6efa569a47a14e780dfd21d980d655cdc7aea14ba8beb1fc0368a3ec5158"
+  },
+  {
+    "file": "neighbors_labels_label_1p.parquet",
+    "url": "https://assets.zilliz.com/benchmark/cohere_small_100k/neighbors_labels_label_1p.parquet",
+    "size": 1812546,
+    "sha256": "936adb24257610c154f26f9ebf8c61ac9fe40a29548557a78fffbb53af595f8a"
+  },
+  {
+    "file": "neighbors_labels_label_2p.parquet",
+    "url": "https://assets.zilliz.com/benchmark/cohere_small_100k/neighbors_labels_label_2p.parquet",
+    "size": 1993611,
+    "sha256": "b0b41a455f915a71502dbd0009f099ed11dfdb830049c4288f54a7be48812537"
+  },
+  {
+    "file": "neighbors_labels_label_5p.parquet",
+    "url": "https://assets.zilliz.com/benchmark/cohere_small_100k/neighbors_labels_label_5p.parquet",
+    "size": 2186666,
+    "sha256": "000a61808ae6f794e8239a4a62842d1784e939ca452261aa16abd9db74298680"
+  },
+  {
+    "file": "neighbors_labels_label_10p.parquet",
+    "url": "https://assets.zilliz.com/benchmark/cohere_small_100k/neighbors_labels_label_10p.parquet",
+    "size": 2343346,
+    "sha256": "207f49d2a6d8ac97ce9c6cb684f0e9f6d3ea363597c0da28277f974c48adadf0"
+  },
+  {
+    "file": "neighbors_labels_label_20p.parquet",
+    "url": "https://assets.zilliz.com/benchmark/cohere_small_100k/neighbors_labels_label_20p.parquet",
+    "size": 2498339,
+    "sha256": "df06fa01a262798a5d6a19c8247d9ff0a3669a6978b91d856d9735627aecbf0c"
+  },
+  {
+    "file": "neighbors_labels_label_50p.parquet",
+    "url": "https://assets.zilliz.com/benchmark/cohere_small_100k/neighbors_labels_label_50p.parquet",
+    "size": 2683296,
+    "sha256": "16e5e7f7939b39b93fd34271f7a5401f5ee4f08ee84117166e4fdd743b1e1ba1"
+  }
+]

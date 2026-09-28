@@ -1,0 +1,3 @@
+PASS: 2 fresh builds and 18 successful query runs; all CSV parameters, metrics and resources match raw reports.
+PASS: Local exact ground truth, input datasets, binary, native library and measured source hashes verified.
+PASS: Source patch reverse check and git diff --check.

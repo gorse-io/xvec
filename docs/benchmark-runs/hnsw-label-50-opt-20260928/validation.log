@@ -1,0 +1,4 @@
+PASS: 18 unique successful runs; CSV settings, metrics, resources and archived reports match.
+PASS: All nine xvec recall values unchanged; original build metrics and versions preserved.
+PASS: Current source matches measured patch; binary, native release and dataset hashes verified.
+PASS: Source patch reverse check and git diff --check.

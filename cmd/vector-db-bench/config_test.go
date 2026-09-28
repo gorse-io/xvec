@@ -316,3 +316,18 @@ func TestParseFlexibleDuration(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 250*time.Millisecond, duration)
 }
+
+func TestParseConfigLocalIntegerGroundTruth(t *testing.T) {
+	base := []string{backendXvec, "--path", t.TempDir(), "--case-type", caseNewIntFilterPerformance,
+		"--dataset-with-size-type", vectorCohereSmall, "--filter-rate", "0.999", "--local-int-ground-truth"}
+	_, err := parseConfig(base, &bytes.Buffer{})
+	require.ErrorContains(t, err, "requires NewIntFilterPerformanceCase and --skip-download")
+	config, err := parseConfig(append(base, "--skip-download"), &bytes.Buffer{})
+	require.NoError(t, err)
+	require.Equal(t, "id >= 99900", config.filterExpression())
+	require.Equal(t, "neighbors_int_99.9p.parquet", config.groundTruthFile())
+	require.True(t, newBenchmarkReport(config).Config.LocalIntGroundTruth)
+	_, err = parseConfig([]string{backendXvec, "--path", t.TempDir(), "--case-type", caseLabelFilterPerformance,
+		"--dataset-with-size-type", vectorCohereSmall, "--label-percentage", "0.001", "--local-int-ground-truth", "--skip-download"}, &bytes.Buffer{})
+	require.ErrorContains(t, err, "requires NewIntFilterPerformanceCase")
+}

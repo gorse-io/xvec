@@ -156,6 +156,16 @@ func (i *ScalarQuantizedFlatIndex) Search(ctx context.Context, query []float32, 
 }
 
 func (i *ScalarQuantizedFlatIndex) SearchWithOptions(ctx context.Context, query []float32, options SearchOptions) ([]Result, error) {
+	return i.searchWithOptions(ctx, query, options, nil, false)
+}
+
+// SearchKeysWithOptions scans only the supplied document keys. Missing keys
+// (including nullable vectors) are ignored; duplicates are scored once.
+func (i *ScalarQuantizedFlatIndex) SearchKeysWithOptions(ctx context.Context, query []float32, keys []uint64, options SearchOptions) ([]Result, error) {
+	return i.searchWithOptions(ctx, query, options, keys, true)
+}
+
+func (i *ScalarQuantizedFlatIndex) searchWithOptions(ctx context.Context, query []float32, options SearchOptions, keys []uint64, byKeys bool) ([]Result, error) {
 	if i == nil || i.vectors == nil {
 		return nil, errors.New("core: nil scalar-quantized Flat index")
 	}
@@ -182,18 +192,42 @@ func (i *ScalarQuantizedFlatIndex) SearchWithOptions(ctx context.Context, query 
 		}
 		return metric.Better(right.Score, left.Score)
 	})
-	for position, key := range i.vectors.keys {
+	visit := func(position int, key uint64) error {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return err
 		}
 		if options.Filter != nil && !options.Filter(key) {
-			continue
+			return nil
 		}
 		score, err := i.vectors.distanceToCode(position, queryCode)
 		if err != nil {
-			return nil, fmt.Errorf("core: score scalar-quantized candidate %d: %w", position, err)
+			return fmt.Errorf("core: score scalar-quantized candidate %d: %w", position, err)
 		}
 		retainDenseResult(heap, k, metric, options.Radius, Result{Key: key, Score: score})
+		return nil
+	}
+	if byKeys {
+		seen := make(map[uint64]struct{}, len(keys))
+		for _, key := range keys {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if _, duplicate := seen[key]; duplicate {
+				continue
+			}
+			seen[key] = struct{}{}
+			if position, found := i.vectors.positions[key]; found {
+				if err := visit(position, key); err != nil {
+					return nil, err
+				}
+			}
+		}
+	} else {
+		for position, key := range i.vectors.keys {
+			if err := visit(position, key); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return MergeSearchResults(metric, k, heap.Values()), nil
 }

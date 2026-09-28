@@ -1,0 +1,71 @@
+{
+  "document_count": 100000,
+  "ground_truth": {
+    "label_0.1p": {
+      "matching_documents": 100,
+      "max_neighbors": 100,
+      "min_neighbors": 100,
+      "query_count": 1000
+    },
+    "label_0.2p": {
+      "matching_documents": 200,
+      "max_neighbors": 200,
+      "min_neighbors": 200,
+      "query_count": 1000
+    },
+    "label_0.5p": {
+      "matching_documents": 500,
+      "max_neighbors": 500,
+      "min_neighbors": 500,
+      "query_count": 1000
+    },
+    "label_10p": {
+      "matching_documents": 10000,
+      "max_neighbors": 1000,
+      "min_neighbors": 1000,
+      "query_count": 1000
+    },
+    "label_1p": {
+      "matching_documents": 1000,
+      "max_neighbors": 1000,
+      "min_neighbors": 1000,
+      "query_count": 1000
+    },
+    "label_20p": {
+      "matching_documents": 20000,
+      "max_neighbors": 1000,
+      "min_neighbors": 1000,
+      "query_count": 1000
+    },
+    "label_2p": {
+      "matching_documents": 2000,
+      "max_neighbors": 1000,
+      "min_neighbors": 1000,
+      "query_count": 1000
+    },
+    "label_50p": {
+      "matching_documents": 50000,
+      "max_neighbors": 1000,
+      "min_neighbors": 1000,
+      "query_count": 1000
+    },
+    "label_5p": {
+      "matching_documents": 5000,
+      "max_neighbors": 1000,
+      "min_neighbors": 1000,
+      "query_count": 1000
+    }
+  },
+  "label_counts": {
+    "label_0.1p": 100,
+    "label_0.2p": 200,
+    "label_0.5p": 500,
+    "label_10p": 10000,
+    "label_1p": 1000,
+    "label_20p": 20000,
+    "label_2p": 2000,
+    "label_50p": 50000,
+    "label_5p": 5000,
+    "label_foo": 11200
+  }
+}
