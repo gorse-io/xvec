@@ -1,0 +1,20 @@
+File: bench
+Build ID: 1ef83183ffe11bd27dae6e004019fa2d7f349822
+Type: inuse_space
+Time: 2026-09-28 12:03:00 UTC
+Showing nodes accounting for 1376.71MB, 97.91% of 1406.09MB total
+Dropped 67 nodes (cum <= 7.03MB)
+Showing top 12 nodes out of 38
+      flat  flat%   sum%        cum   cum%
+  335.60MB 23.87% 23.87%   336.32MB 23.92%  github.com/gorse-io/xvec/internal/core/algorithm.decodeVamanaIndex
+  309.05MB 21.98% 45.85%   309.05MB 21.98%  github.com/gorse-io/xvec/internal/core/algorithm.readHNSWFile
+  297.71MB 21.17% 67.02%   297.71MB 21.17%  github.com/gorse-io/xvec/internal/core/algorithm.newDenseFlatIndexFromValidatedCandidates
+  294.85MB 20.97% 87.99%   294.85MB 20.97%  github.com/gorse-io/xvec.decodeDocumentValue
+   47.21MB  3.36% 91.35%    57.72MB  4.11%  main.readQueryData
+   40.01MB  2.85% 94.19%    40.01MB  2.85%  github.com/gorse-io/xvec/internal/core/algorithm.quantizeInteger
+   36.51MB  2.60% 96.79%   331.36MB 23.57%  github.com/gorse-io/xvec.unmarshalDocumentPayloadWithBorrowedVectors
+    8.65MB  0.62% 97.41%    48.67MB  3.46%  github.com/gorse-io/xvec/internal/core/algorithm.newScalarQuantizedVectorStorageWithReader
+    3.82MB  0.27% 97.68%   335.18MB 23.84%  github.com/gorse-io/xvec.(*Collection).segmentDocumentsLocked.func1
+    3.29MB  0.23% 97.91%    51.96MB  3.70%  github.com/gorse-io/xvec/internal/core/algorithm.NewScalarQuantizedFlatIndexWithBorrowedVectors
+         0     0% 97.91%  1334.04MB 94.88%  github.com/gorse-io/xvec.(*Collection).Query
+         0     0% 97.91%  1334.04MB 94.88%  github.com/gorse-io/xvec.(*Collection).acquireQuerySnapshotLocked

@@ -1,0 +1,20 @@
+File: bench
+Build ID: 1ef83183ffe11bd27dae6e004019fa2d7f349822
+Type: alloc_space
+Time: 2026-09-28 12:03:00 UTC
+Showing nodes accounting for 6679.51MB, 74.98% of 8908.46MB total
+Dropped 223 nodes (cum <= 44.54MB)
+Showing top 12 nodes out of 101
+      flat  flat%   sum%        cum   cum%
+ 1882.86MB 21.14% 21.14%  1882.86MB 21.14%  github.com/gorse-io/xvec/internal/ailego/container.(*Heap[go.shape.struct { github.com/gorse-io/xvec/internal/core/algorithm.position int; github.com/gorse-io/xvec/internal/core/algorithm.distance float32 }]).Push
+  705.61MB  7.92% 29.06%   705.61MB  7.92%  main.decodeVectorParquetRow
+  666.92MB  7.49% 36.54%   666.92MB  7.49%  slices.Clone[go.shape.[]uint8,go.shape.uint8]
+  596.30MB  6.69% 43.24%   881.12MB  9.89%  github.com/gorse-io/xvec.marshalDocumentPayload
+  584.18MB  6.56% 49.79%   584.18MB  6.56%  github.com/gorse-io/xvec.decodeDocumentValue
+  356.21MB  4.00% 53.79%   468.75MB  5.26%  github.com/gorse-io/xvec/internal/core/algorithm.newScalarQuantizedVectorStorageWithReader
+  350.15MB  3.93% 57.72%   350.15MB  3.93%  github.com/gorse-io/xvec/internal/db/index/storage/wal.encodeWALRecord
+  335.60MB  3.77% 61.49%   336.32MB  3.78%  github.com/gorse-io/xvec/internal/core/algorithm.decodeVamanaIndex
+  309.05MB  3.47% 64.96%   309.05MB  3.47%  github.com/gorse-io/xvec/internal/core/algorithm.readHNSWFile
+  298.87MB  3.35% 68.31%   672.25MB  7.55%  github.com/gorse-io/xvec/internal/core/algorithm.NewScalarQuantizedFlatIndex
+  297.71MB  3.34% 71.66%   297.71MB  3.34%  github.com/gorse-io/xvec/internal/core/algorithm.newDenseFlatIndexFromValidatedCandidates
+  296.02MB  3.32% 74.98%   296.02MB  3.32%  github.com/gorse-io/xvec/internal/core/algorithm.(*VamanaBuilder).Reserve

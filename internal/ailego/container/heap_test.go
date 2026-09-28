@@ -53,3 +53,22 @@ func TestHeapWithCapacityRejectsInvalidArguments(t *testing.T) {
 	require.Panics(t, func() { NewHeapWithCapacity(-1, func(a, b int) bool { return a < b }) })
 	require.Panics(t, func() { NewHeapWithCapacity[int](0, nil) })
 }
+
+func TestHeapClearReusesStorageAndReleasesValues(t *testing.T) {
+	first, second := 1, 2
+	heap := NewHeapWithCapacity(4, func(a, b *int) bool { return *a < *b })
+	heap.Push(&first)
+	heap.Push(&second)
+	storage := heap.values[:cap(heap.values)]
+	heap.Clear()
+	require.Zero(t, heap.Len())
+	require.Equal(t, 4, cap(heap.values))
+	for _, value := range storage {
+		require.Nil(t, value)
+	}
+	heap.Push(&second)
+	heap.Push(&first)
+	value, found := heap.Pop()
+	require.True(t, found)
+	require.Same(t, &first, value)
+}

@@ -47,8 +47,26 @@ func NewScalarQuantizedVamanaIndex(
 	if err != nil {
 		return nil, err
 	}
-	vectors, err := newOwnedScalarQuantizedVectors(
-		ctx, snapshot.dimension, snapshot.options.Metric, kind, reformer, snapshot.keys, snapshot.vectors,
+	return newOwnedScalarQuantizedVamanaIndex(ctx, snapshot, kind, reformer)
+}
+
+// BuildScalarQuantizedInterleavedWithWorkers transfers the completed graph to
+// an immutable quantized index without cloning its vectors and adjacency.
+func (b *VamanaBuilder) BuildScalarQuantizedInterleavedWithWorkers(ctx context.Context, workers int, kind Quantization, reformer DenseReformer) (*ScalarQuantizedVamanaIndex, error) {
+	base, err := b.BuildInterleavedWithWorkers(ctx, workers)
+	if err != nil {
+		return nil, err
+	}
+	return newOwnedScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
+}
+
+func newOwnedScalarQuantizedVamanaIndex(ctx context.Context, snapshot *VamanaIndex, kind Quantization, reformer DenseReformer) (*ScalarQuantizedVamanaIndex, error) {
+	var reader DenseVectorReader
+	if snapshot.encodedVectors != nil {
+		reader = encodedHNSWVectorReader(snapshot.encodedVectors)
+	}
+	vectors, err := newScalarQuantizedVectorStorageWithReader(
+		ctx, snapshot.dimension, snapshot.options.Metric, kind, reformer, snapshot.keys, snapshot.vectors, snapshot.vectorRows, reader,
 	)
 	if err != nil {
 		return nil, err
@@ -72,7 +90,26 @@ func OpenScalarQuantizedVamanaIndex(ctx context.Context, path string, kind Quant
 	if err != nil {
 		return nil, err
 	}
-	return NewScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
+	return newOwnedScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
+}
+
+// FlatIndex returns an immutable linear-search view sharing scalar codes and
+// original vectors with the graph. No vectors are copied or quantized again.
+func (i *ScalarQuantizedVamanaIndex) FlatIndex() *ScalarQuantizedFlatIndex {
+	if i == nil {
+		return nil
+	}
+	return &ScalarQuantizedFlatIndex{vectors: i.vectors}
+}
+
+// OpenScalarQuantizedVamanaIndexWithMmap uses a temporary read-only file mapping
+// while decoding, releasing it before scalar codes are reconstructed.
+func OpenScalarQuantizedVamanaIndexWithMmap(ctx context.Context, path string, kind Quantization, reformer DenseReformer, useMmap bool) (*ScalarQuantizedVamanaIndex, error) {
+	base, err := OpenVamanaIndexWithMmap(ctx, path, useMmap)
+	if err != nil {
+		return nil, err
+	}
+	return newOwnedScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
 }
 
 func (i *ScalarQuantizedVamanaIndex) Dimension() int {
@@ -188,3 +225,22 @@ var (
 	_ DenseSearcher      = (*ScalarQuantizedVamanaIndex)(nil)
 	_ DenseQuerySearcher = (*ScalarQuantizedVamanaIndex)(nil)
 )
+
+// OpenScalarQuantizedVamanaIndexWithEncodedVectors verifies persisted originals
+// against immutable collection-owned little-endian FP32 bytes, then retains
+// those bytes for refinement instead of a second full decoded vector array.
+// The caller must keep the bytes immutable and alive for the index's lifetime.
+// The map and temporary artifact mapping are not retained.
+func OpenScalarQuantizedVamanaIndexWithEncodedVectors(ctx context.Context, path string, kind Quantization, reformer DenseReformer, originals map[uint64][]byte, useMmap bool) (*ScalarQuantizedVamanaIndex, error) {
+	if originals == nil {
+		return nil, errors.New("core: nil encoded Vamana originals")
+	}
+	if !kind.valid() {
+		return nil, ErrInvalidQuantization
+	}
+	base, err := openVamanaIndexWithStorage(ctx, path, useMmap, originals)
+	if err != nil {
+		return nil, err
+	}
+	return newOwnedScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
+}

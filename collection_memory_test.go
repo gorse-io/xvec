@@ -26,12 +26,30 @@ import (
 )
 
 func TestHNSWRuntimeSharesFlatAndDefersExact(t *testing.T) {
+	testGraphRuntimeSharesFlatAndDefersExact(t, IndexTypeHNSW)
+}
+
+func TestVamanaRuntimeSharesFlatAndDefersExact(t *testing.T) {
+	testGraphRuntimeSharesFlatAndDefersExact(t, IndexTypeVamana)
+}
+
+func testGraphRuntimeSharesFlatAndDefersExact(t *testing.T, indexType IndexType) {
 	ctx := context.Background()
 	for _, quantize := range []QuantizeType{QuantizeTypeUndefined, QuantizeTypeFP16, QuantizeTypeInt8, QuantizeTypeInt4} {
 		t.Run(fmt.Sprint(quantize), func(t *testing.T) {
-			params := NewHNSWIndexParams(MetricTypeL2)
-			params.M, params.EFConstruction, params.Quantize = 4, 16, quantize
-			params.Quantizer.EnableRotate = quantize == QuantizeTypeInt4 || quantize == QuantizeTypeInt8
+			var params IndexParams
+			rotate := quantize == QuantizeTypeInt4 || quantize == QuantizeTypeInt8
+			if indexType == IndexTypeVamana {
+				value := NewVamanaIndexParams(MetricTypeL2)
+				value.MaxDegree, value.SearchListSize, value.Quantize = 4, 16, quantize
+				value.Quantizer.EnableRotate = rotate
+				params = value
+			} else {
+				value := NewHNSWIndexParams(MetricTypeL2)
+				value.M, value.EFConstruction, value.Quantize = 4, 16, quantize
+				value.Quantizer.EnableRotate = rotate
+				params = value
+			}
 			field := FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 4, Nullable: true, Index: params}
 			schema := NewCollectionSchema("shared_hnsw", field)
 			documents := annDenseDocuments(48)
@@ -100,10 +118,20 @@ func TestHNSWRuntimeSharesFlatAndDefersExact(t *testing.T) {
 					require.NoError(t, indexes.denseNative[field.Name].(interface {
 						Save(context.Context, string) error
 					}).Save(ctx, path))
-					artifacts = map[string]string{collectionIndexArtifactKey(field.Name, collectionVectorArtifactKind(IndexTypeHNSW)): path}
+					artifacts = map[string]string{collectionIndexArtifactKey(field.Name, collectionVectorArtifactKind(indexType)): path}
 				}
 				require.NoError(t, indexes.Close())
 			}
+		})
+	}
+}
+
+func TestImmutableVamanaDocumentsSharedAcrossQuerySnapshots(t *testing.T) {
+	for _, kind := range []QuantizeType{QuantizeTypeUndefined, QuantizeTypeInt4} {
+		t.Run(fmt.Sprint(kind), func(t *testing.T) {
+			params := NewVamanaIndexParams(MetricTypeL2)
+			params.MaxDegree, params.SearchListSize, params.Quantize = 4, 16, kind
+			testImmutableDocumentsSharedAcrossQuerySnapshots(t, params)
 		})
 	}
 }

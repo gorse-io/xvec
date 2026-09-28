@@ -538,7 +538,7 @@ func (c *CollectionStore) OptimizationNeeded(ctx context.Context) (bool, error) 
 	if c.closed {
 		return false, ErrCollectionClosed
 	}
-	if writing := c.manager.Writing(); writing != nil && len(writing.Documents()) != 0 {
+	if writing := c.manager.Writing(); writing != nil && writing.Metadata().DocCount != 0 {
 		return true, nil
 	}
 	if c.manager.Deletes().Count() != 0 {

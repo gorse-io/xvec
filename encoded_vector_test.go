@@ -30,6 +30,10 @@ func TestReadOnlyQuantizedFlatEncodedVectors(t *testing.T) {
 	testReadOnlyQuantizedEncodedVectors(t, IndexTypeFlat)
 }
 
+func TestReadOnlyQuantizedVamanaEncodedVectors(t *testing.T) {
+	testReadOnlyQuantizedEncodedVectors(t, IndexTypeVamana)
+}
+
 func TestReadOnlyQuantizedHNSWEncodedVectors(t *testing.T) {
 	testReadOnlyQuantizedEncodedVectors(t, IndexTypeHNSW)
 }
@@ -52,7 +56,17 @@ func testReadOnlyQuantizedEncodedVectors(t *testing.T, indexType IndexType) {
 					hp.M, hp.EFConstruction, hp.Quantize, hp.Quantizer = 8, 40, quantize, params.Quantizer
 					indexParams = hp
 				}
+				if indexType == IndexTypeVamana {
+					vp := NewVamanaIndexParams(MetricTypeL2)
+					vp.MaxDegree, vp.SearchListSize, vp.Quantize, vp.Quantizer = 8, 40, quantize, params.Quantizer
+					indexParams = vp
+				}
 				newQueryParams := func(refine bool) QueryParams {
+					if indexType == IndexTypeVamana {
+						qp := NewVamanaQueryParams()
+						qp.UseRefiner = refine
+						return qp
+					}
 					if indexType == IndexTypeHNSW {
 						qp := NewHNSWQueryParams()
 						qp.UseRefiner = refine
@@ -94,6 +108,10 @@ func testReadOnlyQuantizedEncodedVectors(t *testing.T, indexType IndexType) {
 				if hnsw, ok := groupParams.(HNSWQueryParams); ok {
 					hnsw.Linear = true
 					groupParams = hnsw
+				}
+				if vamana, ok := groupParams.(VamanaQueryParams); ok {
+					vamana.Linear = true
+					groupParams = vamana
 				}
 				groupQuery := GroupByVectorQuery{Field: "embedding", DenseVector: VectorFP32{.3, -.5, 1, .7}, Params: groupParams, GroupByField: "rating", GroupCount: 3, TopKPerGroup: 2, Projection: Projection{IncludeVectors: true}}
 				wantGroups, err := writer.GroupByQuery(ctx, groupQuery)

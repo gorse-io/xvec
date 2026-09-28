@@ -1,0 +1,7 @@
+inserted 100000 vectors (17376.1 rows/s)
+cooling down for 3s before serial search
+case=Performance768D100K dataset=/home/zhenghaoz/vamana-retest-20260928/dataset
+load rows=100000 duration=69.855s insert=5.755s optimize=64.093s rows/s=17375.9
+serial queries=1000 qps=163.43 recall=0.9936 mrr=0.0000 ndcg=0.0000 avg=5.845ms p95=7.819ms p99=8.671ms
+concurrent workers=8 queries=29568 qps=985.35 avg=8.116ms p95=11.003ms p99=12.514ms
+result=/home/zhenghaoz/vamana-retest-20260928/xvec-fp16.json

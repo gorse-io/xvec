@@ -41,6 +41,12 @@ func NewHeapWithCapacity[T any](capacity int, less func(a, b T) bool) *Heap[T] {
 // Len returns the number of values in h.
 func (h *Heap[T]) Len() int { return len(h.values) }
 
+// Clear removes all values while retaining capacity for the next traversal.
+func (h *Heap[T]) Clear() {
+	clear(h.values)
+	h.values = h.values[:0]
+}
+
 // Push inserts value into h.
 func (h *Heap[T]) Push(value T) {
 	h.values = append(h.values, value)

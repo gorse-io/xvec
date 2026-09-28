@@ -1,0 +1,1043 @@
+diff --git a/collection.go b/collection.go
+index d62eb29..230745c 100644
+--- a/collection.go
++++ b/collection.go
+@@ -584,9 +584,22 @@ func openCollectionDenseArtifact(
+ 		return core.OpenScalarQuantizedIVFIndex(ctx, path, kind, reformer)
+ 	case IndexTypeVamana:
+ 		if spec.quantize == QuantizeTypeUndefined {
+-			return core.OpenVamanaIndex(ctx, path)
++			return core.OpenVamanaIndexWithMmap(ctx, path, useMmap)
+ 		}
+-		return core.OpenScalarQuantizedVamanaIndex(ctx, path, kind, reformer)
++		if field.DataType == DataTypeVectorFP32 {
++			reader, keys, err := collectionEncodedDenseReader(ctx, field, documents)
++			if err != nil {
++				return nil, err
++			}
++			if reader != nil {
++				originals := make(map[uint64][]byte, len(keys))
++				for position, key := range keys {
++					originals[key] = reader.rows[position]
++				}
++				return core.OpenScalarQuantizedVamanaIndexWithEncodedVectors(ctx, path, kind, reformer, originals, useMmap)
++			}
++		}
++		return core.OpenScalarQuantizedVamanaIndexWithMmap(ctx, path, kind, reformer, useMmap)
+ 	case IndexTypeDiskANN:
+ 		if spec.quantize == QuantizeTypeUndefined {
+ 			candidateCount, candidateErr := collectionDenseCandidateCount(ctx, field, documents)
+@@ -664,7 +677,7 @@ func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSe
+ 			if err != nil {
+ 				return nil, err
+ 			}
+-			if spec.indexType == IndexTypeHNSW || (spec.indexType == IndexTypeFlat && spec.quantize != QuantizeTypeUndefined) {
++			if spec.indexType == IndexTypeHNSW || spec.indexType == IndexTypeVamana || (spec.indexType == IndexTypeFlat && spec.quantize != QuantizeTypeUndefined) {
+ 				borrowedFields[field.Name] = struct{}{}
+ 			}
+ 		}
+@@ -1027,7 +1040,7 @@ func buildCollectionIndexes(
+ 			}
+ 			if field.DataType.IsDenseVector() {
+ 				var exact collectionDenseIndex
+-				useLazyExact := spec.indexType == IndexTypeHNSW ||
++				useLazyExact := spec.indexType == IndexTypeHNSW || spec.indexType == IndexTypeVamana ||
+ 					(spec.indexType == IndexTypeFlat && spec.quantize != QuantizeTypeUndefined) ||
+ 					(spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined)
+ 				if field.DataType == DataTypeVectorFP32 && useLazyExact {
+@@ -1054,8 +1067,8 @@ func buildCollectionIndexes(
+ 				var flat collectionDenseIndex
+ 				if spec.quantize == QuantizeTypeUndefined || spec.indexType == IndexTypeHNSWRaBitQ || spec.indexType == IndexTypeIVFRaBitQ {
+ 					flat = exact
+-				} else if spec.indexType != IndexTypeHNSW {
+-					// Quantized HNSW supplies a shared Flat view after opening the graph.
++				} else if spec.indexType != IndexTypeHNSW && spec.indexType != IndexTypeVamana {
++					// Quantized graphs supply a shared Flat view after opening.
+ 					flat, err = buildCollectionDenseFlat(ctx, schema.Name, field, documents, spec)
+ 					if err != nil {
+ 						return fail(err)
+@@ -1081,9 +1094,11 @@ func buildCollectionIndexes(
+ 				}
+ 				indexes.denseNative[field.Name] = native
+ 				if flat == nil {
+-					quantized, ok := native.(*core.ScalarQuantizedHNSWIndex)
++					quantized, ok := native.(interface {
++						FlatIndex() *core.ScalarQuantizedFlatIndex
++					})
+ 					if !ok {
+-						return fail(fmt.Errorf("quantized HNSW field %q has an incompatible native index", field.Name))
++						return fail(fmt.Errorf("quantized graph field %q has an incompatible native index", field.Name))
+ 					}
+ 					indexes.denseFlat[field.Name] = quantized.FlatIndex()
+ 				}
+@@ -2529,7 +2544,7 @@ func buildCollectionDenseVamana(
+ 	spec collectionVectorIndex,
+ 	workers int,
+ ) (collectionVamanaIndex, error) {
+-	candidates, err := collectionDenseCandidates(ctx, field, documents)
++	count, err := collectionDenseCandidateCount(ctx, field, documents)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -2542,6 +2557,24 @@ func buildCollectionDenseVamana(
+ 		options.MaxOcclusionSize = core.DefaultVamanaMaxOcclusionSize
+ 	}
+ 	options.SaturateGraph = spec.vamana.SaturateGraph
++	if field.DataType == DataTypeVectorFP32 {
++		candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
++		if err != nil {
++			return nil, err
++		}
++		if spec.quantize == QuantizeTypeUndefined {
++			return core.BuildVamanaWithBorrowedVectors(ctx, int(field.Dimension), options, candidates, workers)
++		}
++		kind, err := toCoreQuantization(spec.quantize)
++		if err != nil {
++			return nil, err
++		}
++		reformer, err := collectionReformer(schemaName, field, spec)
++		if err != nil {
++			return nil, err
++		}
++		return core.BuildScalarQuantizedVamanaWithBorrowedVectors(ctx, int(field.Dimension), options, candidates, workers, kind, reformer)
++	}
+ 	var builder *core.VamanaBuilder
+ 	if field.DataType == DataTypeVectorFP16 && spec.quantize == QuantizeTypeUndefined {
+ 		builder, err = core.NewVamanaBuilderFP16(int(field.Dimension), options)
+@@ -2551,17 +2584,27 @@ func buildCollectionDenseVamana(
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	for _, candidate := range candidates {
+-		if err := builder.Add(ctx, candidate.Key, candidate.Vector); err != nil {
++	if err := builder.Reserve(count); err != nil {
++		return nil, err
++	}
++	for _, document := range documents {
++		if err := ctx.Err(); err != nil {
++			return nil, err
++		}
++		value, found := document.Fields[field.Name]
++		if !found || value == nil {
++			continue
++		}
++		vector, err := denseValueToFloat32Borrowed(value)
++		if err != nil {
++			return nil, fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, err)
++		}
++		if err := builder.Add(ctx, document.DocID, vector); err != nil {
+ 			return nil, err
+ 		}
+-	}
+-	base, err := builder.BuildInterleavedWithWorkers(ctx, workers)
+-	if err != nil {
+-		return nil, err
+ 	}
+ 	if spec.quantize == QuantizeTypeUndefined {
+-		return base, nil
++		return builder.BuildInterleavedWithWorkers(ctx, workers)
+ 	}
+ 	kind, err := toCoreQuantization(spec.quantize)
+ 	if err != nil {
+@@ -2571,7 +2614,7 @@ func buildCollectionDenseVamana(
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	return core.NewScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
++	return builder.BuildScalarQuantizedInterleavedWithWorkers(ctx, workers, kind, reformer)
+ }
+ 
+ func buildCollectionDenseDiskANN(
+diff --git a/internal/ailego/container/heap.go b/internal/ailego/container/heap.go
+index dd981ef..5e88123 100644
+--- a/internal/ailego/container/heap.go
++++ b/internal/ailego/container/heap.go
+@@ -41,6 +41,12 @@ func NewHeapWithCapacity[T any](capacity int, less func(a, b T) bool) *Heap[T] {
+ // Len returns the number of values in h.
+ func (h *Heap[T]) Len() int { return len(h.values) }
+ 
++// Clear removes all values while retaining capacity for the next traversal.
++func (h *Heap[T]) Clear() {
++	clear(h.values)
++	h.values = h.values[:0]
++}
++
+ // Push inserts value into h.
+ func (h *Heap[T]) Push(value T) {
+ 	h.values = append(h.values, value)
+diff --git a/internal/core/algorithm/vamana_algorithm.go b/internal/core/algorithm/vamana_algorithm.go
+index 84cba77..3461221 100644
+--- a/internal/core/algorithm/vamana_algorithm.go
++++ b/internal/core/algorithm/vamana_algorithm.go
+@@ -22,9 +22,11 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"math"
++	"os"
+ 	"slices"
+ 	"sync"
+ 
++	mmap "github.com/blevesearch/mmap-go"
+ 	"github.com/gorse-io/xvec/internal/ailego/container"
+ 	"github.com/gorse-io/xvec/internal/ailego/hash"
+ 	"github.com/gorse-io/xvec/internal/ailego/io"
+@@ -100,6 +102,7 @@ type VamanaBuilder struct {
+ 	options     VamanaBuildOptions
+ 	keys        []uint64
+ 	vectors     []float32
++	vectorRows  [][]float32
+ 	vectorsFP16 []uint16
+ 	fp16        bool
+ 	positions   map[uint64]int
+@@ -148,6 +151,46 @@ func newBorrowedVamanaBuilder(
+ 	return builder, nil
+ }
+ 
++// Reserve preallocates storage for at least count total vectors. It does not
++// change the builder length or the ownership guarantees of Add.
++func (b *VamanaBuilder) Reserve(count int) error {
++	if b == nil {
++		return errors.New("core: nil Vamana builder")
++	}
++	if count < 0 || uint64(count) >= math.MaxUint32 || (count > 0 && count > maxPlatformInt()/b.dimension) {
++		return ErrVamanaCapacity
++	}
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	if b.built {
++		return ErrBuilderClosed
++	}
++	vectorCapacity := cap(b.vectors)
++	if b.fp16 {
++		vectorCapacity = cap(b.vectorsFP16)
++	}
++	if count <= cap(b.keys) && count*b.dimension <= vectorCapacity {
++		return nil
++	}
++	reservedKeys := make([]uint64, len(b.keys), max(count, len(b.keys)))
++	copy(reservedKeys, b.keys)
++	var reservedVectors []float32
++	var reservedVectorsFP16 []uint16
++	if b.fp16 {
++		reservedVectorsFP16 = make([]uint16, len(b.vectorsFP16), max(count*b.dimension, len(b.vectorsFP16)))
++		copy(reservedVectorsFP16, b.vectorsFP16)
++	} else {
++		reservedVectors = make([]float32, len(b.vectors), max(count*b.dimension, len(b.vectors)))
++		copy(reservedVectors, b.vectors)
++	}
++	reservedPositions := make(map[uint64]int, max(count, len(b.positions)))
++	for key, position := range b.positions {
++		reservedPositions[key] = position
++	}
++	b.keys, b.vectors, b.vectorsFP16, b.positions = reservedKeys, reservedVectors, reservedVectorsFP16, reservedPositions
++	return nil
++}
++
+ // Add validates and clones one unique vector while the builder is open.
+ func (b *VamanaBuilder) Add(ctx context.Context, key uint64, vector []float32) error {
+ 	if b == nil {
+@@ -253,7 +296,7 @@ func (b *VamanaBuilder) build(ctx context.Context, workers int) (*VamanaIndex, e
+ 	index := &VamanaIndex{
+ 		dimension: b.dimension, options: b.options,
+ 		distance: distance, distanceFP16: distanceFP16,
+-		keys: b.keys, vectors: b.vectors, vectorsFP16: b.vectorsFP16, fp16: b.fp16, positions: b.positions,
++		keys: b.keys, vectors: b.vectors, vectorRows: b.vectorRows, vectorsFP16: b.vectorsFP16, fp16: b.fp16, positions: b.positions,
+ 		neighbors: make([][]int, len(b.keys)), neighborDistances: make([][]float32, len(b.keys)),
+ 		entryPoint: -1,
+ 	}
+@@ -310,6 +353,7 @@ func (b *VamanaBuilder) build(ctx context.Context, workers int) (*VamanaIndex, e
+ 	b.built = true
+ 	b.keys = nil
+ 	b.vectors = nil
++	b.vectorRows = nil
+ 	b.vectorsFP16 = nil
+ 	b.positions = nil
+ 	return index, nil
+@@ -348,7 +392,7 @@ func (b *VamanaBuilder) buildInterleaved(ctx context.Context, workers int) (*Vam
+ 	index := &VamanaIndex{
+ 		dimension: b.dimension, options: b.options,
+ 		distance: distance, distanceFP16: distanceFP16,
+-		keys: b.keys, vectors: b.vectors, vectorsFP16: b.vectorsFP16, fp16: b.fp16, positions: b.positions,
++		keys: b.keys, vectors: b.vectors, vectorRows: b.vectorRows, vectorsFP16: b.vectorsFP16, fp16: b.fp16, positions: b.positions,
+ 		neighbors: make([][]int, len(b.keys)), neighborDistances: make([][]float32, len(b.keys)),
+ 		entryPoint: -1,
+ 	}
+@@ -410,6 +454,7 @@ func (b *VamanaBuilder) buildInterleaved(ctx context.Context, workers int) (*Vam
+ 	b.built = true
+ 	b.keys = nil
+ 	b.vectors = nil
++	b.vectorRows = nil
+ 	b.vectorsFP16 = nil
+ 	b.positions = nil
+ 	return index, nil
+@@ -438,6 +483,8 @@ type VamanaIndex struct {
+ 	distanceFP16      mathutil.DenseDistanceFP16
+ 	keys              []uint64
+ 	vectors           []float32
++	vectorRows        [][]float32 // Immutable FP32 rows borrowed during collection builds.
++	encodedVectors    [][]byte    // Immutable originals borrowed by scalar-quantized readers.
+ 	vectorsFP16       []uint16
+ 	fp16              bool
+ 	vectorMagnitudes  []float32
+@@ -562,6 +609,8 @@ type vamanaPruneScratch struct {
+ }
+ 
+ type vamanaSearchScratch struct {
++	frontier   *container.Heap[vamanaDistanceNode]
++	retained   *container.Heap[vamanaDistanceNode]
+ 	visited    []uint32
+ 	generation uint32
+ 	neighbors  []int
+@@ -572,12 +621,11 @@ func (i *VamanaIndex) searchBuildCandidates(ctx context.Context, queryPosition,
+ 	if limit <= 0 {
+ 		return []vamanaDistanceNode{}, nil
+ 	}
+-	better := func(left, right vamanaDistanceNode) bool { return vamanaDistanceBetter(left, right) }
+-	worse := func(left, right vamanaDistanceNode) bool { return vamanaDistanceBetter(right, left) }
+-	frontier := container.NewHeap(better)
+-	retained := container.NewHeap(worse)
+ 	scratch := i.acquireVamanaSearchScratch()
+ 	defer i.releaseVamanaSearchScratch(scratch)
++	frontier, retained := scratch.frontier, scratch.retained
++	frontier.Clear()
++	retained.Clear()
+ 	visited, generation := scratch.visited, scratch.generation
+ 	distance, err := i.graphDistanceAt(queryPosition, entry)
+ 	if err != nil {
+@@ -631,12 +679,11 @@ func (i *VamanaIndex) searchBuildCandidatesInterleaved(
+ 	if limit <= 0 {
+ 		return []vamanaDistanceNode{}, nil
+ 	}
+-	better := func(left, right vamanaDistanceNode) bool { return vamanaDistanceBetter(left, right) }
+-	worse := func(left, right vamanaDistanceNode) bool { return vamanaDistanceBetter(right, left) }
+-	frontier := container.NewHeap(better)
+-	retained := container.NewHeap(worse)
+ 	scratch := i.acquireVamanaSearchScratch()
+ 	defer i.releaseVamanaSearchScratch(scratch)
++	frontier, retained := scratch.frontier, scratch.retained
++	frontier.Clear()
++	retained.Clear()
+ 	visited, generation := scratch.visited, scratch.generation
+ 	distance, err := i.graphDistanceAt(queryPosition, entry)
+ 	if err != nil {
+@@ -688,7 +735,10 @@ func (i *VamanaIndex) acquireVamanaSearchScratch() *vamanaSearchScratch {
+ 	value := i.searchScratch.Get()
+ 	var scratch *vamanaSearchScratch
+ 	if value == nil {
+-		scratch = &vamanaSearchScratch{}
++		scratch = &vamanaSearchScratch{
++			frontier: container.NewHeap(vamanaDistanceBetter),
++			retained: container.NewHeap(func(left, right vamanaDistanceNode) bool { return vamanaDistanceBetter(right, left) }),
++		}
+ 	} else {
+ 		scratch = value.(*vamanaSearchScratch)
+ 	}
+@@ -1030,6 +1080,17 @@ func (i *VamanaIndex) cacheCosineMagnitudes(ctx context.Context, workers int) er
+ 		return nil
+ 	}
+ 	i.vectorMagnitudes = make([]float32, len(i.keys))
++	if i.encodedVectors != nil {
++		vector := make([]float32, i.dimension)
++		for position, encoded := range i.encodedVectors {
++			if err := ctx.Err(); err != nil {
++				return err
++			}
++			decodeHNSWVector(encoded, vector)
++			i.vectorMagnitudes[position] = mathutil.L2Magnitude(vector)
++		}
++		return nil
++	}
+ 	if err := parallel.ParallelFor(ctx, len(i.keys), workers, func(_ context.Context, position int) error {
+ 		if i.fp16 {
+ 			i.vectorMagnitudes[position] = mathutil.L2MagnitudeFP16(i.vectorFP16At(position))
+@@ -1095,6 +1156,14 @@ func (i *VamanaIndex) calculateMedoid(ctx context.Context) (int, error) {
+ }
+ 
+ func (i *VamanaIndex) vectorAt(position int) []float32 {
++	if i.vectorRows != nil {
++		return i.vectorRows[position]
++	}
++	if i.encodedVectors != nil {
++		vector := make([]float32, i.dimension)
++		decodeHNSWVector(i.encodedVectors[position], vector)
++		return vector
++	}
+ 	start := position * i.dimension
+ 	return i.vectors[start : start+i.dimension]
+ }
+@@ -1134,7 +1203,21 @@ func cloneVamanaIndex(ctx context.Context, source *VamanaIndex) (*VamanaIndex, e
+ 		keys: slices.Clone(source.keys), vectors: slices.Clone(source.vectors), vectorsFP16: slices.Clone(source.vectorsFP16),
+ 		vectorMagnitudes: slices.Clone(source.vectorMagnitudes),
+ 		positions:        cloneUint64Positions(source.positions), entryPoint: source.entryPoint,
+-		neighbors: make([][]int, len(source.neighbors)), neighborDistances: make([][]float32, len(source.neighborDistances)),
++		neighbors: make([][]int, len(source.neighbors)), neighborDistances: make([][]float32, len(source.neighbors)),
++	}
++	if source.vectorRows != nil || source.encodedVectors != nil {
++		clone.vectors = make([]float32, len(source.keys)*source.dimension)
++		for position := range source.keys {
++			if err := ctx.Err(); err != nil {
++				return nil, err
++			}
++			destination := clone.vectors[position*source.dimension : (position+1)*source.dimension]
++			if source.encodedVectors != nil {
++				decodeHNSWVector(source.encodedVectors[position], destination)
++			} else {
++				copy(destination, source.vectorRows[position])
++			}
++		}
+ 	}
+ 	for position := range clone.neighbors {
+ 		if position&255 == 0 {
+@@ -1143,7 +1226,18 @@ func cloneVamanaIndex(ctx context.Context, source *VamanaIndex) (*VamanaIndex, e
+ 			}
+ 		}
+ 		clone.neighbors[position] = slices.Clone(source.neighbors[position])
+-		clone.neighborDistances[position] = slices.Clone(source.neighborDistances[position])
++		if source.neighborDistances != nil {
++			clone.neighborDistances[position] = slices.Clone(source.neighborDistances[position])
++		} else {
++			clone.neighborDistances[position] = make([]float32, len(clone.neighbors[position]))
++			for offset, neighbor := range clone.neighbors[position] {
++				distance, err := clone.graphDistanceAt(position, neighbor)
++				if err != nil {
++					return nil, err
++				}
++				clone.neighborDistances[position][offset] = distance
++			}
++		}
+ 	}
+ 	return clone, nil
+ }
+@@ -1168,8 +1262,22 @@ func validateVamanaIndex(ctx context.Context, index *VamanaIndex) error {
+ 	wantVectors := count * index.dimension
+ 	validVectors := (!index.fp16 && len(index.vectors) == wantVectors && len(index.vectorsFP16) == 0) ||
+ 		(index.fp16 && len(index.vectors) == 0 && len(index.vectorsFP16) == wantVectors)
++	if index.vectorRows != nil {
++		validVectors = !index.fp16 && len(index.vectors) == 0 && len(index.vectorsFP16) == 0 && index.encodedVectors == nil && len(index.vectorRows) == count
++	}
++	if index.encodedVectors != nil {
++		validVectors = !index.fp16 && len(index.vectors) == 0 && len(index.vectorsFP16) == 0 && index.vectorRows == nil && len(index.encodedVectors) == count
++		for _, vector := range index.encodedVectors {
++			if len(vector) != index.dimension*4 {
++				validVectors = false
++				break
++			}
++		}
++	}
++	// Edge-distance caches are unnecessary for immutable quantized readers.
++	missingDistances := index.encodedVectors != nil && index.neighborDistances == nil
+ 	if !validVectors || len(index.positions) != count ||
+-		len(index.neighbors) != count || len(index.neighborDistances) != count {
++		len(index.neighbors) != count || (!missingDistances && len(index.neighborDistances) != count) {
+ 		return errors.New("core: inconsistent Vamana storage")
+ 	}
+ 	if (index.options.Metric == MetricCosine && len(index.vectorMagnitudes) != count) ||
+@@ -1179,28 +1287,40 @@ func validateVamanaIndex(ctx context.Context, index *VamanaIndex) error {
+ 	if (count == 0 && index.entryPoint != -1) || (count > 0 && (index.entryPoint < 0 || index.entryPoint >= count)) {
+ 		return errors.New("core: invalid Vamana entry point")
+ 	}
+-	seenKeys := make(map[uint64]struct{}, count)
++	// The key-to-position bijection also detects duplicate keys.
++	seenNeighbors := make(map[int]struct{}, index.options.MaxDegree)
++	var vectorScratch []float32
++	if index.fp16 || index.encodedVectors != nil {
++		vectorScratch = make([]float32, index.dimension)
++	}
+ 	for position, key := range index.keys {
+ 		if position&255 == 0 {
+ 			if err := ctx.Err(); err != nil {
+ 				return err
+ 			}
+ 		}
+-		if _, found := seenKeys[key]; found || index.positions[key] != position {
++		if mapped, found := index.positions[key]; !found || mapped != position {
+ 			return errors.New("core: invalid Vamana key map")
+ 		}
+-		seenKeys[key] = struct{}{}
+ 		if index.fp16 {
+-			if err := validateTrainingVector(float32VectorFromFP16(index.vectorFP16At(position)), index.dimension); err != nil {
++			for offset, value := range index.vectorFP16At(position) {
++				vectorScratch[offset] = utility.Float16BitsToFloat32(value)
++			}
++			if err := validateTrainingVector(vectorScratch, index.dimension); err != nil {
++				return err
++			}
++		} else if index.encodedVectors != nil {
++			decodeHNSWVector(index.encodedVectors[position], vectorScratch)
++			if err := validateTrainingVector(vectorScratch, index.dimension); err != nil {
+ 				return err
+ 			}
+ 		} else if err := validateTrainingVector(index.vectorAt(position), index.dimension); err != nil {
+ 			return err
+ 		}
+-		if len(index.neighbors[position]) > index.options.MaxDegree || len(index.neighbors[position]) != len(index.neighborDistances[position]) {
++		if len(index.neighbors[position]) > index.options.MaxDegree || (!missingDistances && len(index.neighbors[position]) != len(index.neighborDistances[position])) {
+ 			return errors.New("core: invalid Vamana degree")
+ 		}
+-		seenNeighbors := make(map[int]struct{}, len(index.neighbors[position]))
++		clear(seenNeighbors)
+ 		for offset, neighbor := range index.neighbors[position] {
+ 			if neighbor < 0 || neighbor >= count || neighbor == position {
+ 				return errors.New("core: invalid Vamana neighbor")
+@@ -1209,6 +1329,9 @@ func validateVamanaIndex(ctx context.Context, index *VamanaIndex) error {
+ 				return errors.New("core: duplicate Vamana neighbor")
+ 			}
+ 			seenNeighbors[neighbor] = struct{}{}
++			if missingDistances {
++				continue
++			}
+ 			distance := index.neighborDistances[position][offset]
+ 			if math.IsNaN(float64(distance)) || math.IsInf(float64(distance), 0) {
+ 				return errors.New("core: invalid Vamana neighbor distance")
+@@ -1369,7 +1492,13 @@ func (i *VamanaIndex) searchVamana(ctx context.Context, query []float32, options
+ 		return denseDistances(i.options.Metric, query, batch.vectors, queryMagnitude, batch.magnitudes, scores)
+ 	}
+ 	prefetch := func(neighbors []int) {
+-		if !i.fp16 {
++		if i.vectorRows != nil {
++			batch.vectors = batch.vectors[:0]
++			for _, position := range neighbors {
++				batch.vectors = append(batch.vectors, i.vectorRows[position])
++			}
++			prefetchDenseHNSWRows(batch.vectors, options.PrefetchOffset, options.PrefetchLines)
++		} else if !i.fp16 && i.encodedVectors == nil {
+ 			prefetchDenseHNSWNeighbors(i.vectors, i.dimension, neighbors, options.PrefetchOffset, options.PrefetchLines)
+ 		}
+ 	}
+@@ -1402,13 +1531,14 @@ func searchVamanaGraph(
+ 	worse := func(left, right hnswScoredNode) bool { return resultBetter(right, left) }
+ 	frontier := container.NewHeap(better)
+ 	accepted := container.NewHeap(worse)
+-	visited := make([]bool, len(keys))
++	visited := acquireHNSWVisited(len(keys))
++	defer releaseHNSWVisited(visited)
+ 	score, err := scoreAt(entry)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("core: score Vamana entry point: %w", err)
+ 	}
+ 	start := hnswScoredNode{position: entry, score: score}
+-	visited[entry] = true
++	visited.mark(entry)
+ 	frontier.Push(start)
+ 	if acceptVamanaNode(metric, keys, start, options.SearchOptions) {
+ 		accepted.Push(start)
+@@ -1429,10 +1559,10 @@ func searchVamanaGraph(
+ 		batch.positions = batch.positions[:0]
+ 		batch.scores = batch.scores[:0]
+ 		for _, neighbor := range adjacent {
+-			if visited[neighbor] {
++			if visited.seen(neighbor) {
+ 				continue
+ 			}
+-			visited[neighbor] = true
++			visited.mark(neighbor)
+ 			batch.positions = append(batch.positions, neighbor)
+ 			batch.scores = append(batch.scores, 0)
+ 		}
+@@ -1508,7 +1638,8 @@ func searchVamanaGraphBlockHeap(
+ ) ([]Result, error) {
+ 	capacity := min(len(keys), max(options.TopK, options.EFSearch))
+ 	batch.blockHeap.Reset(capacity, cap(batch.positions))
+-	states := make([]uint8, len(keys))
++	states := acquireHNSWVisited(len(keys))
++	defer releaseHNSWVisited(states)
+ 	score, err := scoreAt(entry)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("core: score Vamana entry point: %w", err)
+@@ -1519,7 +1650,7 @@ func searchVamanaGraphBlockHeap(
+ 	batch.blockHeap.pushBlockWithTies([]float32{entryDistance}, []uint32{entryID}, []uint64{entryTie})
+ 	batch.overflow = batch.overflow[:0]
+ 	overflowCursor := 0
+-	states[entry] = 1
++	states.mark(entry)
+ 
+ 	for batch.blockHeap.HasNext() || overflowCursor < len(batch.overflow) {
+ 		if err := ctx.Err(); err != nil {
+@@ -1532,10 +1663,10 @@ func searchVamanaGraphBlockHeap(
+ 			current = batch.overflow[overflowCursor]
+ 			overflowCursor++
+ 		}
+-		if states[current] == 2 {
++		if states.expanded(int(current)) {
+ 			continue
+ 		}
+-		states[current] = 2
++		states.markExpanded(int(current))
+ 		adjacent := neighbors[int(current)]
+ 		if prefetch != nil {
+ 			prefetch(adjacent)
+@@ -1545,10 +1676,10 @@ func searchVamanaGraphBlockHeap(
+ 		batch.ties = batch.ties[:0]
+ 		batch.scores = batch.scores[:0]
+ 		for _, neighbor := range adjacent {
+-			if states[neighbor] != 0 {
++			if states.seen(neighbor) {
+ 				continue
+ 			}
+-			states[neighbor] = 1
++			states.mark(neighbor)
+ 			batch.positions = append(batch.positions, neighbor)
+ 			batch.ids = append(batch.ids, uint32(neighbor))
+ 			batch.ties = append(batch.ties, keys[neighbor])
+@@ -1630,7 +1761,7 @@ func (i *VamanaIndex) Add(ctx context.Context, key uint64, vector []float32) err
+ 		i.mu.RUnlock()
+ 		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
+ 	}
+-	vectorCount := len(i.vectors)
++	vectorCount := len(i.keys) * i.dimension
+ 	if i.fp16 {
+ 		vectorCount = len(i.vectorsFP16)
+ 	}
+@@ -1683,6 +1814,7 @@ func (i *VamanaIndex) Add(ctx context.Context, key uint64, vector []float32) err
+ 		i.mu.Unlock()
+ 		return err
+ 	}
++	i.vectorRows, i.encodedVectors = nil, nil
+ 	i.keys, i.vectors, i.vectorsFP16, i.vectorMagnitudes, i.positions = working.keys, working.vectors, working.vectorsFP16, working.vectorMagnitudes, working.positions
+ 	i.neighbors, i.neighborDistances, i.entryPoint = working.neighbors, working.neighborDistances, working.entryPoint
+ 	i.mu.Unlock()
+@@ -1724,17 +1856,24 @@ func (i *VamanaIndex) Save(ctx context.Context, path string) error {
+ 	if i == nil {
+ 		return fmt.Errorf("%w: nil index", ErrInvalidVamanaFile)
+ 	}
++	// Add publishes a new generation without mutating existing storage. Holding
++	// the read lock keeps this generation stable while it is streamed to disk.
+ 	i.mu.RLock()
+-	snapshot, err := cloneVamanaIndex(ctx, i)
+-	i.mu.RUnlock()
+-	if err != nil {
+-		return err
+-	}
+-	encoded, err := encodeVamanaIndex(ctx, snapshot)
+-	if err != nil {
++	defer i.mu.RUnlock()
++	if err := ioutil.WriteFileAtomicFunc(ctx, path, 0o600, func(file *os.File) error {
++		if _, err := file.Write(make([]byte, vamanaHeaderSize)); err != nil {
++			return err
++		}
++		header, err := writeVamanaPayload(ctx, i, func(data []byte) error {
++			_, err := file.Write(data)
++			return err
++		})
++		if err != nil {
++			return err
++		}
++		_, err = file.WriteAt(header, 0)
+ 		return err
+-	}
+-	if err := ioutil.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
++	}); err != nil {
+ 		return fmt.Errorf("core: save Vamana file: %w", err)
+ 	}
+ 	return nil
+@@ -1742,6 +1881,17 @@ func (i *VamanaIndex) Save(ctx context.Context, path string) error {
+ 
+ // OpenVamanaIndex reads and verifies a native Go Vamana artifact.
+ func OpenVamanaIndex(ctx context.Context, path string) (*VamanaIndex, error) {
++	return OpenVamanaIndexWithMmap(ctx, path, false)
++}
++
++// OpenVamanaIndexWithMmap decodes an owned index using an optional temporary
++// read-only mapping, avoiding a serialized full-file copy in the Go heap.
++// No references to the mapping survive the call.
++func OpenVamanaIndexWithMmap(ctx context.Context, path string, useMmap bool) (*VamanaIndex, error) {
++	return openVamanaIndexWithStorage(ctx, path, useMmap, nil)
++}
++
++func openVamanaIndexWithStorage(ctx context.Context, path string, useMmap bool, originals map[uint64][]byte) (index *VamanaIndex, resultErr error) {
+ 	if ctx == nil {
+ 		return nil, errors.New("core: nil Vamana open context")
+ 	}
+@@ -1751,11 +1901,24 @@ func OpenVamanaIndex(ctx context.Context, path string) (*VamanaIndex, error) {
+ 	if path == "" {
+ 		return nil, fmt.Errorf("%w: empty path", ErrInvalidVamanaFile)
+ 	}
++	if useMmap {
++		file, err := os.Open(path)
++		if err != nil {
++			return nil, err
++		}
++		defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
++		encoded, err := mmap.Map(file, mmap.RDONLY, 0)
++		if err != nil {
++			return nil, err
++		}
++		defer func() { resultErr = errors.Join(resultErr, encoded.Unmap()) }()
++		return decodeVamanaIndexWithStorage(ctx, encoded, originals)
++	}
+ 	encoded, err := readHNSWFile(ctx, path)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("core: read Vamana file: %w", err)
+ 	}
+-	index, err := decodeVamanaIndex(ctx, encoded)
++	index, err = decodeVamanaIndexWithStorage(ctx, encoded, originals)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("core: open Vamana file: %w", err)
+ 	}
+@@ -1763,6 +1926,21 @@ func OpenVamanaIndex(ctx context.Context, path string) (*VamanaIndex, error) {
+ }
+ 
+ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error) {
++	encoded := make([]byte, vamanaHeaderSize)
++	header, err := writeVamanaPayload(ctx, index, func(data []byte) error {
++		encoded = append(encoded, data...)
++		return nil
++	})
++	if err != nil {
++		return nil, err
++	}
++	copy(encoded, header)
++	return encoded, nil
++}
++
++// writeVamanaPayload bounds serialization scratch space independently of vector
++// count. The returned header contains the checksum of the streamed payload.
++func writeVamanaPayload(ctx context.Context, index *VamanaIndex, write func([]byte) error) ([]byte, error) {
+ 	if ctx == nil {
+ 		return nil, errors.New("core: nil Vamana encode context")
+ 	}
+@@ -1786,7 +1964,21 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	payload := make([]byte, 0, payloadSize)
++	payload := make([]byte, 0, 64<<10)
++	var checksum uint32
++	written := 0
++	flush := func() error {
++		if err := ctx.Err(); err != nil {
++			return err
++		}
++		if err := write(payload); err != nil {
++			return err
++		}
++		checksum = hashutil.UpdateCRC32C(checksum, payload)
++		written += len(payload)
++		payload = payload[:0]
++		return nil
++	}
+ 	for position, key := range index.keys {
+ 		if position&1023 == 0 {
+ 			if err := ctx.Err(); err != nil {
+@@ -1794,6 +1986,11 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error)
+ 			}
+ 		}
+ 		payload = binary.LittleEndian.AppendUint64(payload, key)
++		if len(payload) >= (64<<10)-8 {
++			if err := flush(); err != nil {
++				return nil, err
++			}
++		}
+ 	}
+ 	if index.fp16 {
+ 		for position, value := range index.vectorsFP16 {
+@@ -1803,17 +2000,41 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error)
+ 				}
+ 			}
+ 			payload = binary.LittleEndian.AppendUint16(payload, value)
++			if len(payload) >= (64<<10)-8 {
++				if err := flush(); err != nil {
++					return nil, err
++				}
++			}
++		}
++	} else if index.encodedVectors != nil {
++		for _, raw := range index.encodedVectors {
++			for len(raw) != 0 {
++				n := min(len(raw), (64<<10)-len(payload))
++				payload = append(payload, raw[:n]...)
++				raw = raw[n:]
++				if len(payload) >= (64<<10)-8 {
++					if err := flush(); err != nil {
++						return nil, err
++					}
++				}
++			}
+ 		}
+ 	} else {
+-		for position, value := range index.vectors {
+-			if position&16383 == 0 {
+-				if err := ctx.Err(); err != nil {
+-					return nil, err
++		for position := range index.keys {
++			if err := ctx.Err(); err != nil {
++				return nil, err
++			}
++			for _, value := range index.vectorAt(position) {
++				payload = binary.LittleEndian.AppendUint32(payload, math.Float32bits(value))
++				if len(payload) >= (64<<10)-8 {
++					if err := flush(); err != nil {
++						return nil, err
++					}
+ 				}
+ 			}
+-			payload = binary.LittleEndian.AppendUint32(payload, math.Float32bits(value))
+ 		}
+ 	}
++
+ 	for position, adjacent := range index.neighbors {
+ 		if position&255 == 0 {
+ 			if err := ctx.Err(); err != nil {
+@@ -1821,11 +2042,24 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error)
+ 			}
+ 		}
+ 		payload = binary.LittleEndian.AppendUint32(payload, uint32(len(adjacent)))
++		if len(payload) >= (64<<10)-8 {
++			if err := flush(); err != nil {
++				return nil, err
++			}
++		}
+ 		for _, neighbor := range adjacent {
+ 			payload = binary.LittleEndian.AppendUint32(payload, uint32(neighbor))
++			if len(payload) >= (64<<10)-8 {
++				if err := flush(); err != nil {
++					return nil, err
++				}
++			}
+ 		}
+ 	}
+-	if len(payload) != payloadSize {
++	if err := flush(); err != nil {
++		return nil, err
++	}
++	if written != payloadSize {
+ 		return nil, fmt.Errorf("%w: internal payload length", ErrInvalidVamanaFile)
+ 	}
+ 	header := make([]byte, vamanaHeaderSize)
+@@ -1853,12 +2087,16 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error)
+ 		entry = uint64(index.entryPoint)
+ 	}
+ 	binary.LittleEndian.PutUint64(header[72:80], entry)
+-	binary.LittleEndian.PutUint32(header[80:84], hashutil.CRC32C(payload))
++	binary.LittleEndian.PutUint32(header[80:84], checksum)
+ 	binary.LittleEndian.PutUint32(header[124:128], hashutil.CRC32C(header[:124]))
+-	return append(header, payload...), nil
++	return header, nil
+ }
+ 
+ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error) {
++	return decodeVamanaIndexWithStorage(ctx, encoded, nil)
++}
++
++func decodeVamanaIndexWithStorage(ctx context.Context, encoded []byte, originals map[uint64][]byte) (*VamanaIndex, error) {
+ 	if ctx == nil {
+ 		return nil, errors.New("core: nil Vamana decode context")
+ 	}
+@@ -1964,7 +2202,24 @@ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error
+ 		}
+ 		index.keys[position], index.positions[key] = key, position
+ 	}
+-	if fp16 {
++	if originals != nil {
++		if fp16 || len(originals) != count {
++			return nil, fmt.Errorf("%w: incompatible encoded originals", ErrInvalidVamanaFile)
++		}
++		index.encodedVectors = make([][]byte, count)
++		index.neighborDistances = nil
++		for position, key := range index.keys {
++			if err := ctx.Err(); err != nil {
++				return nil, err
++			}
++			original, found := originals[key]
++			if !found || len(original) != dimension*4 || !bytes.Equal(original, payload[offset:offset+dimension*4]) {
++				return nil, fmt.Errorf("%w: encoded vector %d differs from artifact", ErrInvalidVamanaFile, key)
++			}
++			index.encodedVectors[position] = original[:len(original):len(original)]
++			offset += dimension * 4
++		}
++	} else if fp16 {
+ 		index.distanceFP16, err = denseDistanceFP16(options.Metric)
+ 		if err != nil {
+ 			return nil, err
+@@ -2022,6 +2277,9 @@ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error
+ 		return nil, fmt.Errorf("%w: inconsistent edge payload", ErrInvalidVamanaFile)
+ 	}
+ 	for position, adjacent := range index.neighbors {
++		if index.neighborDistances == nil {
++			break
++		}
+ 		if position&255 == 0 {
+ 			if err := ctx.Err(); err != nil {
+ 				return nil, err
+diff --git a/internal/core/algorithm/vamana_quantized_searcher.go b/internal/core/algorithm/vamana_quantized_searcher.go
+index 6cbba85..456e1fd 100644
+--- a/internal/core/algorithm/vamana_quantized_searcher.go
++++ b/internal/core/algorithm/vamana_quantized_searcher.go
+@@ -47,8 +47,26 @@ func NewScalarQuantizedVamanaIndex(
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	vectors, err := newOwnedScalarQuantizedVectors(
+-		ctx, snapshot.dimension, snapshot.options.Metric, kind, reformer, snapshot.keys, snapshot.vectors,
++	return newOwnedScalarQuantizedVamanaIndex(ctx, snapshot, kind, reformer)
++}
++
++// BuildScalarQuantizedInterleavedWithWorkers transfers the completed graph to
++// an immutable quantized index without cloning its vectors and adjacency.
++func (b *VamanaBuilder) BuildScalarQuantizedInterleavedWithWorkers(ctx context.Context, workers int, kind Quantization, reformer DenseReformer) (*ScalarQuantizedVamanaIndex, error) {
++	base, err := b.BuildInterleavedWithWorkers(ctx, workers)
++	if err != nil {
++		return nil, err
++	}
++	return newOwnedScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
++}
++
++func newOwnedScalarQuantizedVamanaIndex(ctx context.Context, snapshot *VamanaIndex, kind Quantization, reformer DenseReformer) (*ScalarQuantizedVamanaIndex, error) {
++	var reader DenseVectorReader
++	if snapshot.encodedVectors != nil {
++		reader = encodedHNSWVectorReader(snapshot.encodedVectors)
++	}
++	vectors, err := newScalarQuantizedVectorStorageWithReader(
++		ctx, snapshot.dimension, snapshot.options.Metric, kind, reformer, snapshot.keys, snapshot.vectors, snapshot.vectorRows, reader,
+ 	)
+ 	if err != nil {
+ 		return nil, err
+@@ -72,7 +90,26 @@ func OpenScalarQuantizedVamanaIndex(ctx context.Context, path string, kind Quant
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	return NewScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
++	return newOwnedScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
++}
++
++// FlatIndex returns an immutable linear-search view sharing scalar codes and
++// original vectors with the graph. No vectors are copied or quantized again.
++func (i *ScalarQuantizedVamanaIndex) FlatIndex() *ScalarQuantizedFlatIndex {
++	if i == nil {
++		return nil
++	}
++	return &ScalarQuantizedFlatIndex{vectors: i.vectors}
++}
++
++// OpenScalarQuantizedVamanaIndexWithMmap uses a temporary read-only file mapping
++// while decoding, releasing it before scalar codes are reconstructed.
++func OpenScalarQuantizedVamanaIndexWithMmap(ctx context.Context, path string, kind Quantization, reformer DenseReformer, useMmap bool) (*ScalarQuantizedVamanaIndex, error) {
++	base, err := OpenVamanaIndexWithMmap(ctx, path, useMmap)
++	if err != nil {
++		return nil, err
++	}
++	return newOwnedScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
+ }
+ 
+ func (i *ScalarQuantizedVamanaIndex) Dimension() int {
+@@ -188,3 +225,22 @@ var (
+ 	_ DenseSearcher      = (*ScalarQuantizedVamanaIndex)(nil)
+ 	_ DenseQuerySearcher = (*ScalarQuantizedVamanaIndex)(nil)
+ )
++
++// OpenScalarQuantizedVamanaIndexWithEncodedVectors verifies persisted originals
++// against immutable collection-owned little-endian FP32 bytes, then retains
++// those bytes for refinement instead of a second full decoded vector array.
++// The caller must keep the bytes immutable and alive for the index's lifetime.
++// The map and temporary artifact mapping are not retained.
++func OpenScalarQuantizedVamanaIndexWithEncodedVectors(ctx context.Context, path string, kind Quantization, reformer DenseReformer, originals map[uint64][]byte, useMmap bool) (*ScalarQuantizedVamanaIndex, error) {
++	if originals == nil {
++		return nil, errors.New("core: nil encoded Vamana originals")
++	}
++	if !kind.valid() {
++		return nil, ErrInvalidQuantization
++	}
++	base, err := openVamanaIndexWithStorage(ctx, path, useMmap, originals)
++	if err != nil {
++		return nil, err
++	}
++	return newOwnedScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
++}
+diff --git a/internal/db/collection.go b/internal/db/collection.go
+index a13c666..9e0ff97 100644
+--- a/internal/db/collection.go
++++ b/internal/db/collection.go
+@@ -538,7 +538,7 @@ func (c *CollectionStore) OptimizationNeeded(ctx context.Context) (bool, error)
+ 	if c.closed {
+ 		return false, ErrCollectionClosed
+ 	}
+-	if writing := c.manager.Writing(); writing != nil && len(writing.Documents()) != 0 {
++	if writing := c.manager.Writing(); writing != nil && writing.Metadata().DocCount != 0 {
+ 		return true, nil
+ 	}
+ 	if c.manager.Deletes().Count() != 0 {
+diff --git a/internal/core/algorithm/vamana_borrowed_vectors.go b/internal/core/algorithm/vamana_borrowed_vectors.go
+new file mode 100644
+index 0000000..51236e4
+--- /dev/null
++++ b/internal/core/algorithm/vamana_borrowed_vectors.go
+@@ -0,0 +1,79 @@
++// Copyright 2026-present the xvec project
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package core
++
++import (
++	"context"
++	"errors"
++	"fmt"
++)
++
++// BuildVamanaWithBorrowedVectors builds an index over immutable FP32 rows.
++// The caller must keep the rows immutable and alive for the index's lifetime.
++// The candidate slice itself is not retained. Add uses copy-on-write storage.
++func BuildVamanaWithBorrowedVectors(ctx context.Context, dimension int, options VamanaBuildOptions, candidates []Candidate, workers int) (*VamanaIndex, error) {
++	builder, err := newVamanaBuilderWithBorrowedRows(ctx, dimension, options, candidates)
++	if err != nil {
++		return nil, err
++	}
++	return builder.BuildInterleavedWithWorkers(ctx, workers)
++}
++
++// BuildScalarQuantizedVamanaWithBorrowedVectors builds and quantizes immutable
++// FP32 rows without cloning the originals. Ownership matches
++// BuildVamanaWithBorrowedVectors; codes and topology are owned by the result.
++func BuildScalarQuantizedVamanaWithBorrowedVectors(ctx context.Context, dimension int, options VamanaBuildOptions, candidates []Candidate, workers int, kind Quantization, reformer DenseReformer) (*ScalarQuantizedVamanaIndex, error) {
++	if !kind.valid() {
++		return nil, ErrInvalidQuantization
++	}
++	builder, err := newVamanaBuilderWithBorrowedRows(ctx, dimension, options, candidates)
++	if err != nil {
++		return nil, err
++	}
++	return builder.BuildScalarQuantizedInterleavedWithWorkers(ctx, workers, kind, reformer)
++}
++
++func newVamanaBuilderWithBorrowedRows(ctx context.Context, dimension int, options VamanaBuildOptions, candidates []Candidate) (*VamanaBuilder, error) {
++	if ctx == nil {
++		return nil, errors.New("core: nil borrowed Vamana context")
++	}
++	if err := ctx.Err(); err != nil {
++		return nil, err
++	}
++	builder, err := NewVamanaBuilder(dimension, options)
++	if err != nil {
++		return nil, err
++	}
++	if len(candidates) > maxPlatformInt()/dimension {
++		return nil, ErrVamanaCapacity
++	}
++	builder.keys = make([]uint64, len(candidates))
++	builder.vectorRows = make([][]float32, len(candidates))
++	builder.positions = make(map[uint64]int, len(candidates))
++	for position, candidate := range candidates {
++		if err := ctx.Err(); err != nil {
++			return nil, err
++		}
++		if err := validateTrainingVector(candidate.Vector, dimension); err != nil {
++			return nil, err
++		}
++		if _, duplicate := builder.positions[candidate.Key]; duplicate {
++			return nil, fmt.Errorf("%w: %d", ErrDuplicateKey, candidate.Key)
++		}
++		builder.keys[position], builder.positions[candidate.Key] = candidate.Key, position
++		builder.vectorRows[position] = candidate.Vector[:dimension:dimension]
++	}
++	return builder, nil
++}

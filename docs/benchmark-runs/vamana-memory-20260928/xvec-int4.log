@@ -1,0 +1,7 @@
+inserted 100000 vectors (14356.8 rows/s)
+cooling down for 3s before serial search
+case=Performance768D100K dataset=/home/zhenghaoz/vamana-retest-20260928/dataset
+load rows=100000 duration=72.844s insert=6.965s optimize=65.870s rows/s=14356.6
+serial queries=1000 qps=225.58 recall=0.8702 mrr=0.0000 ndcg=0.0000 avg=4.147ms p95=5.389ms p99=5.960ms
+concurrent workers=8 queries=42323 qps=1409.99 avg=5.671ms p95=8.041ms p99=9.508ms
+result=/home/zhenghaoz/vamana-retest-20260928/xvec-int4.json
