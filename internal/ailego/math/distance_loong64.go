@@ -29,11 +29,45 @@ func init() {
 		kernels.l2 = squaredEuclideanLASX
 		kernels.dot = innerProductLASX
 		kernels.products = dotNormsLASX
+		kernelsFP16.l2 = squaredEuclideanFP16LASX
+		kernelsFP16.dot = innerProductFP16LASX
+		kernelsFP16.products = dotNormsFP16LASX
 		innerProductInt8Kernel = innerProductInt8LASX
 		kernelsInt4.l2 = squaredEuclideanInt4LASX
 		kernelsInt4.dot = innerProductInt4LASX
 		kernelsInt4.products = dotNormsInt4LASX
 	}
+}
+
+func squaredEuclideanFP16LASX(left, right []uint16) float32 {
+	prefix := len(left) &^ 15
+	if prefix == 0 {
+		return squaredEuclideanFP16Scalar(left, right)
+	}
+	result := squared_euclidean_distance_fp16_lasx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix))
+	return result + squaredEuclideanFP16Scalar(left[prefix:], right[prefix:])
+}
+
+func innerProductFP16LASX(left, right []uint16) float32 {
+	prefix := len(left) &^ 15
+	if prefix == 0 {
+		return innerProductFP16Scalar(left, right)
+	}
+	result := inner_product_fp16_lasx(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix))
+	return result + innerProductFP16Scalar(left[prefix:], right[prefix:])
+}
+
+func dotNormsFP16LASX(left, right []uint16) (dot, leftNorm, rightNorm float32) {
+	prefix := len(left) &^ 15
+	if prefix == 0 {
+		return dotNormsFP16Scalar(left, right)
+	}
+	dot = inner_product_and_squared_norm_fp16_lasx(
+		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(prefix),
+		unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
+	)
+	dotTail, leftNormTail, rightNormTail := dotNormsFP16Scalar(left[prefix:], right[prefix:])
+	return dot + dotTail, leftNorm + leftNormTail, rightNorm + rightNormTail
 }
 
 func squaredEuclideanLASX(left, right []float32) float32 {

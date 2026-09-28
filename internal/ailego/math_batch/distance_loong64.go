@@ -17,8 +17,10 @@
 package mathbatch
 
 import (
+	"math"
 	"unsafe"
 
+	mathutil "github.com/gorse-io/xvec/internal/ailego/math"
 	"golang.org/x/sys/cpu"
 )
 
@@ -32,6 +34,89 @@ func init() {
 		kernels.l2Squared4 = squaredEuclideanDistances4LASX
 		innerProductsInt4Kernel4 = innerProductsInt4LASX_4
 		innerProductsInt8Kernel4 = innerProductsInt8LASX_4
+		fp16Kernels.l2 = fp16L2LASX4
+		fp16Kernels.dot = fp16DotLASX4
+		fp16Kernels.cosine = fp16CosineLASX4
+		fp16Kernels.mips = fp16MIPSLASX4
+	}
+}
+
+func fp16L2LASX4(query, first, second, third, fourth []uint16, output []float32) {
+	prefix := len(query) &^ 15
+	if prefix == 0 {
+		fp16L2Scalar4(query, first, second, third, fourth, output)
+		return
+	}
+	fp16_l2_lasx4(unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(prefix), unsafe.Pointer(&output[0]))
+	if prefix != len(query) {
+		var tail [4]float32
+		fp16L2Scalar4(query[prefix:], first[prefix:], second[prefix:], third[prefix:], fourth[prefix:], tail[:])
+		for j := range tail {
+			output[j] += tail[j]
+		}
+	}
+}
+
+func fp16DotLASX4(query, first, second, third, fourth []uint16, output []float32) {
+	prefix := len(query) &^ 15
+	if prefix == 0 {
+		fp16DotScalar4(query, first, second, third, fourth, output)
+		return
+	}
+	fp16_dot_lasx4(unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+		unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(prefix), unsafe.Pointer(&output[0]))
+	if prefix != len(query) {
+		var tail [4]float32
+		fp16DotScalar4(query[prefix:], first[prefix:], second[prefix:], third[prefix:], fourth[prefix:], tail[:])
+		for j := range tail {
+			output[j] += tail[j]
+		}
+	}
+}
+
+func fp16ProductsLASX4(query, first, second, third, fourth []uint16) (products [9]float32) {
+	prefix := len(query) &^ 15
+	if prefix != 0 {
+		fp16_products_lasx4(unsafe.Pointer(&query[0]), unsafe.Pointer(&first[0]), unsafe.Pointer(&second[0]),
+			unsafe.Pointer(&third[0]), unsafe.Pointer(&fourth[0]), int64(prefix), unsafe.Pointer(&products[0]))
+	}
+	if prefix != len(query) {
+		queryTail := query[prefix:]
+		candidates := [4][]uint16{first[prefix:], second[prefix:], third[prefix:], fourth[prefix:]}
+		products[4] += mathutil.InnerProductFP16(queryTail, queryTail)
+		for j := range candidates {
+			products[j] += mathutil.InnerProductFP16(queryTail, candidates[j])
+			products[5+j] += mathutil.InnerProductFP16(candidates[j], candidates[j])
+		}
+	}
+	return
+}
+
+func fp16CosineLASX4(query, first, second, third, fourth []uint16, output []float32) {
+	if len(query) < 16 {
+		fp16CosineScalar4(query, first, second, third, fourth, output)
+		return
+	}
+	products := fp16ProductsLASX4(query, first, second, third, fourth)
+	queryMagnitude := float32(math.Sqrt(float64(products[4])))
+	for j := range 4 {
+		output[j] = cosineDistanceFromProduct(products[j], queryMagnitude, float32(math.Sqrt(float64(products[5+j]))))
+	}
+}
+
+func fp16MIPSLASX4(query, first, second, third, fourth []uint16, output []float32) {
+	if len(query) < 16 {
+		fp16MIPSScalar4(query, first, second, third, fourth, output)
+		return
+	}
+	products := fp16ProductsLASX4(query, first, second, third, fourth)
+	for j := range 4 {
+		denominator := max(products[4], products[5+j])
+		output[j] = 0
+		if denominator != 0 {
+			output[j] = 2 - 2*products[j]/denominator
+		}
 	}
 }
 

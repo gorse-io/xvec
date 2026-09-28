@@ -125,6 +125,7 @@ distance-lasx:
 	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/euclidean_distance_matrix_fp32_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -o $(GOAT_OUTPUT_DIR)
 	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/inner_product_matrix_fp32_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -o $(GOAT_OUTPUT_DIR)
 	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/mips_euclidean_distance_matrix_fp32_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/distance_matrix_fp16_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/inner_product_matrix_int8_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/distance_matrix_int4_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .

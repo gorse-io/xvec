@@ -19,14 +19,20 @@ TEST_NEON_BINARY ?= .test-neon.arm64.test
 TEST_RVV_BINARY ?= .test-rvv.riscv64.test
 TEST_LASX_BINARY ?= .test-lasx.loong64.test
 
-.PHONY: generate avx int4-avx2 int4-avx512 int8-avx2 int8-avx512 neon rvv lasx clean test-neon test-rvv test-lasx
+.PHONY: generate avx avx512 fp16-avx fp16-avx512 int4-avx2 int4-avx512 int8-avx2 int8-avx512 neon rvv lasx clean test-neon test-rvv test-lasx
 
-generate: avx fp16-avx int4-avx2 int4-avx512 int8-avx2 int8-avx512 neon rvv lasx clean
+generate: avx avx512 fp16-avx fp16-avx512 int4-avx2 int4-avx512 int8-avx2 int8-avx512 neon rvv lasx clean
 
 avx:
 	$(RM) -r $(GOAT_OUTPUT_DIR)
 	mkdir -p $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/inner_product_batch_fp32_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
+
+avx512:
+	$(RM) -r $(GOAT_OUTPUT_DIR)
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/distance_batch_fp32_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx512f -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
 
 int8-avx2:
@@ -53,6 +59,7 @@ neon:
 	$(RM) -r $(GOAT_OUTPUT_DIR)
 	mkdir -p $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/distance_batch_fp32_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/distance_batch_fp16_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/inner_product_batch_int4_neon.c --target $(GOAT_TARGET_ARM64) -O3 -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/inner_product_batch_int8_neon.c --target $(GOAT_TARGET_ARM64) -O3 -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
@@ -69,6 +76,7 @@ lasx:
 	$(RM) -r $(GOAT_OUTPUT_DIR)
 	mkdir -p $(GOAT_OUTPUT_DIR)
 	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/distance_batch_fp32_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -o $(GOAT_OUTPUT_DIR)
+	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/distance_batch_fp16_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/inner_product_batch_int4_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	OBJDUMP=$(LASX_OBJDUMP) $(GOAT) src/inner_product_batch_int8_lasx.c --target $(GOAT_TARGET_LASX) -O3 -mlasx -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/*.go $(GOAT_OUTPUT_DIR)/*.s .
@@ -95,8 +103,12 @@ test-lasx:
 	GOOS=linux GOARCH=loong64 CGO_ENABLED=0 $(GO) test -c -o $(TEST_LASX_BINARY) .; \
 	$(LOONG64_QEMU) $(LOONG64_QEMU_FLAGS) ./$(TEST_LASX_BINARY)
 
-.PHONY: fp16-avx
 fp16-avx:
 	mkdir -p $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/distance_batch_fp16_avx.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mf16c -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/distance_batch_fp16_avx.go $(GOAT_OUTPUT_DIR)/distance_batch_fp16_avx.s .
+
+fp16-avx512:
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/distance_batch_fp16_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx -mf16c -mavx512f -mavx512dq -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/distance_batch_fp16_avx512.go $(GOAT_OUTPUT_DIR)/distance_batch_fp16_avx512.s .

@@ -19,6 +19,7 @@ package mathbatch
 import (
 	"testing"
 
+	"github.com/klauspost/cpuid/v2"
 	"golang.org/x/sys/cpu"
 )
 
@@ -27,6 +28,20 @@ func TestAVXBatchKernels(t *testing.T) {
 		t.Skip("AVX is not supported")
 	}
 	testBatchKernels(t, innerProducts2AVX, innerProducts4AVX, squaredEuclideanDistances2AVX, squaredEuclideanDistances4AVX)
+}
+
+func TestAVX512BatchKernels(t *testing.T) {
+	if !cpu.X86.HasAVX512F {
+		t.Skip("AVX-512F is not supported")
+	}
+	testBatchKernels(t, innerProducts2AVX512, innerProducts4AVX512, squaredEuclideanDistances2AVX512, squaredEuclideanDistances4AVX512)
+}
+
+func TestFP16AVX512BatchKernels(t *testing.T) {
+	if !cpuid.CPU.Supports(cpuid.AVX, cpuid.F16C, cpuid.AVX512F, cpuid.AVX512DQ) {
+		t.Skip("AVX, F16C, AVX-512F and AVX-512DQ are not supported")
+	}
+	testFP16BatchKernels(t, fp16L2AVX512_4, fp16DotAVX512_4, fp16CosineAVX512_4, fp16MIPSAVX512_4)
 }
 
 func TestInnerProductsInt8AVX2_4(t *testing.T) {
