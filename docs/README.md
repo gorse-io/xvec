@@ -6,19 +6,34 @@ service is needed. The CSV files and `logo.png` stay in this directory and are i
 through Astro/Vite to generate the homepage at build time.
 
 The [FP16 HNSW label-filter results](benchmark-hnsw-label-filter.csv) contain
-26 latest xvec/zvec measurements on Cohere 100K at nine matching-label rates,
+26 xvec/zvec measurements on Cohere 100K at nine matching-label rates,
 using the corresponding published filtered ground truth. Each backend has
 three repetitions at 20% and 50%, and one measurement at each other rate.
 The CSV preserves individual runs, query-source revisions, timestamps, recall,
 latencies and process resources. Collection-build metrics retain their original
-source and build timestamp; no index was rebuilt for this rerun.
+source and build timestamp; no index was rebuilt for these query measurements.
 
 The [FP16 HNSW integer-filter results](benchmark-hnsw-int-filter.csv) contain
-26 latest xvec/zvec measurements for `NewIntFilterPerformanceCase` on Cohere
+26 xvec/zvec measurements for `NewIntFilterPerformanceCase` on Cohere
 100K with locally generated exact ground truth. All nine matching rates are
 covered, with three repetitions per backend at 20% and 50%. The CSV records
 the excluded fraction (`filter_rate`), matching fraction/percentage, query-source
 and collection-build revisions, latencies, recall and process resources.
+
+In both filter CSVs, the six xvec runs at 20% and 50% matching now use the
+specialized, reusable dual heaps at `43ab0e9`. Other rows retain the preceding
+paired rerun's source and timestamp; zvec was not rerun for this heap comparison.
+A separate controlled comparison ran both xvec revisions three times at each
+high rate on the same persisted graphs. Median QPS changed by -2.02% / -3.93%
+for integer filtering and -1.26% / +0.74% for label filtering at 20% / 50%,
+respectively, with identical aggregate recall. These runs do not demonstrate
+a consistent QPS improvement. Raw reports remain local under the ignored
+`benchmark-runs` directory.
+
+The existing INT8 filtered-search microbenchmark (2,000 vectors, 128 dimensions,
+an always-true filter) reduces query allocations from 19 to 6 and allocated
+bytes from 11,448 to 5,108. Its median query time changes from 39.520 to
+33.166 microseconds; these figures describe that separate microbenchmark.
 
 `benchmark-flat.csv` contains a separate Flat comparison of xvec and zvec for
 INT4, INT8, FP16, and unquantized FP32 on `Performance768D100K`. It uses the
