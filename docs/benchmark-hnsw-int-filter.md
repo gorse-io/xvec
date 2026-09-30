@@ -4,7 +4,74 @@
 `id >= dataset_size * filter_rate`. **Filter rate is the excluded fraction**;
 `filter_rate=0.999` matches 0.1% (100 rows). The tables show matching percentages.
 
-## High-match query optimization with portable prefetch, 2026-09-30
+## Latest paired xvec/zvec rerun, 2026-09-30
+
+Both backends are freshly rerun in this comparison. xvec and the common
+benchmark harness use clean source `9f56d32132b8ede851d2197e58fff7f21a5648e1`;
+zvec uses the unchanged official v0.7.0 native library and zvec-go binding.
+Both reopen their original persisted integer-filter collections, with no
+rebuild or re-optimization. xvec uses the generic prefetch helper.
+
+| Matching documents | Filter | xvec QPS | zvec QPS | zvec/xvec | xvec Recall@100 (%) | zvec Recall@100 (%) | xvec P99 (ms) | zvec P99 (ms) | Runs per backend |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.1% | `id >= 99900` | 24300.95 | 10128.33 | 0.42× | 100.000 | 100.000 | 1.093 | 2.491 | 1 |
+| 0.2% | `id >= 99800` | 14865.40 | 9063.33 | 0.61× | 99.989 | 99.946 | 1.739 | 2.812 | 1 |
+| 0.5% | `id >= 99500` | 9686.80 | 8488.49 | 0.88× | 99.970 | 99.891 | 2.762 | 2.679 | 1 |
+| 1% | `id >= 99000` | 6910.12 | 6871.16 | 0.99× | 99.959 | 99.868 | 2.998 | 3.186 | 1 |
+| 2% | `id >= 98000` | 3296.80 | 4769.24 | 1.45× | 99.970 | 99.837 | 6.741 | 4.394 | 1 |
+| 5% | `id >= 95000` | 1042.02 | 2085.85 | 2.00× | 99.965 | 99.827 | 17.610 | 8.020 | 1 |
+| 10% | `id >= 90000` | 589.21 | 1078.87 | 1.83× | 99.961 | 99.783 | 25.914 | 12.516 | 1 |
+| 20% | `id >= 80000` | 401.73 | 527.98 | 1.31× | 99.884 | 99.752 | 37.189 | 23.753 | 3 |
+| 50% | `id >= 50000` | 725.49 | 923.32 | 1.27× | 99.806 | 99.665 | 21.082 | 15.009 | 3 |
+
+QPS and P99 at 20% and 50% are the **separate medians of three measurements
+per backend**. Each other rate has one new measurement per backend. The ratio
+is zvec median QPS divided by xvec median QPS. These are fixed-EF comparisons;
+xvec and zvec have slightly different recall. Every aggregate recall exactly
+matches the corresponding preceding measurement.
+
+Observed variation in the three-run conditions:
+
+| Matching documents | Backend | QPS range | P99 range (ms) |
+| --- | --- | ---: | ---: |
+| 20% | xvec | 399.68–413.28 | 36.308–37.419 |
+| 20% | zvec | 526.83–536.90 | 22.971–23.786 |
+| 50% | xvec | 675.58–761.44 | 20.334–23.293 |
+| 50% | zvec | 913.89–975.84 | 13.781–15.095 |
+
+There are **26 new timed processes**: twelve runs across the two high matching
+rates (three per backend and rate), followed by fourteen runs across the other
+seven rates (one per backend and rate). Run order: repetition 1 measures 50%
+xvec/zvec then 20% zvec/xvec; repetition 2 measures 20% zvec/xvec then 50%
+xvec/zvec; repetition 3 repeats the repetition-1 order. The other rates are
+0.1%, 0.2%, 0.5%, 1%, 2%, 5%, 10%, alternating xvec/zvec and zvec/xvec order.
+
+Settings are unchanged: Cohere 100K / 768 dimensions, cosine, FP16 HNSW,
+M=50, EFConstruction=500, EFSearch=300, K=100, no rotation/refinement,
+mmap and ID-only results. Each process warms up 100 queries, measures eight
+workers for 30 seconds, cools down three seconds, and evaluates all 1,000
+queries serially against locally generated exhaustive float64 cosine truth.
+Same e2-standard-8 / AMD EPYC 7B12 host, affinity 0–7, Go 1.27.1,
+CGO_ENABLED=0, GOMAXPROCS=8 and GOMEMLIMIT=24GiB. No profiler; filesystem
+caches are not flushed. Three runs do not establish statistical significance;
+single-run results elsewhere should be interpreted with that limitation.
+
+All processes succeed. Source, query settings, raw metrics and process
+resources are validated. Binary, native-library, dataset and exact-neighbor
+hashes are checked. xvec's graph and zvec's scalar payload hashes are unchanged.
+For zvec's native indexes, restoring only the two close timestamps and footer
+CRC reproduces the initial whole-file hashes; all graph/vector bytes are
+unchanged. No extra audit query is included in the timed results.
+
+The [latest paired CSV](benchmark-hnsw-int-filter.csv) records all 26
+measurements, including each repetition, timestamp, source/build revision,
+query settings, recall, latency and process resources. Summary medians do not
+replace individual measurements in that CSV. Raw reports, command scripts,
+profiles and binaries remain local under the ignored `docs/benchmark-runs/`.
+The sections below retain the earlier measurements with their original source
+and method; they are separate experiments.
+
+## Historical high-match query optimization with portable prefetch, 2026-09-30
 
 This rerun compares the portable-prefetch baseline `4c8d22c42eee5205fb68b0a4093987e346f2d0c5`
 with `97ab79323137cb5174c096a17051cad5f7374add` on the identical persisted xvec
@@ -54,11 +121,11 @@ in ascending order.
 
 All 21 aggregate recalls exactly match the preceding measurements. Binary,
 dataset, exact-neighbor and graph hashes are checked; the persisted collection
-is not rebuilt. The [high-match comparison CSV](benchmark-hnsw-int-filter-high-match.csv)
-contains every repetition, measured query-source revision, original build
-revision and process resource measurement. zvec was **not rerun** for this
-optimization; the xvec/zvec table below remains the earlier range-aggregation
-comparison at its stated revision.
+is not rebuilt. Individual repetitions, source revisions and process resource
+measurements for this historical experiment remain in the local archive;
+its separate CSV has been removed. zvec was not rerun in that earlier
+optimization experiment. The later paired experiment is the first section,
+and the earlier range-aggregation comparison follows below.
 
 The implementation makes integer-range block aggregates immutable, so queries
 can union them without cloning each source. Exact indexed filters retain a
@@ -79,8 +146,9 @@ are preserved. The generic prefetch implementation and its defaults are retained
 Follow-up source `ea2ee1dc004c3f2204affb8a310e6869ba178f64` keeps the original
 cosine scoring path on AVX-512, whose scalar and batch reduction orders differ.
 It preserves score precision on that target. The measured EPYC 7B12 uses AVX2,
-so this constructor guard leaves its measured search path unchanged; the CSV
-correctly records the actual timed source `97ab793`, rather than relabeling it.
+so this constructor guard leaves that measured search path unchanged. The
+historical results above retain their actual timed source `97ab793`. The latest
+paired CSV records its own clean source `9f56d32`.
 
 ## Historical end-to-end rerun after integer range aggregation, 2026-09-30
 
@@ -145,12 +213,12 @@ without confidence intervals; the observed QPS differences are not estimates
 of a statistically established regression. Aggregate recall is identical
 between implementations and to the preceding measurements.
 
-The [prefetch comparison CSV](benchmark-hnsw-int-filter-prefetch.csv) records
-all four runs. The nine-rate xvec/zvec table and range-aggregation before/after
-table above retain their original measured source and results; they do not
-represent the later portable revision. zvec and label filtering were not
-rerun for this simplification. Raw reports, resources, binary hashes, and
-reproduction scripts remain local under the ignored `docs/benchmark-runs/`.
+All four prefetch runs are retained in the local archive; the separate prefetch
+CSV has been removed. The historical nine-rate xvec/zvec and range-aggregation
+before/after tables retain their original measured source and results. zvec and
+label filtering were not rerun in that prefetch experiment. Raw reports,
+resources, binary hashes and reproduction scripts remain local under the
+ignored `docs/benchmark-runs/` directory.
 
 ## Range-aggregation implementation
 
@@ -207,9 +275,9 @@ are recorded and validated locally.
 | xvec | 160.01 | 1766.41 | 1008.09–1262.36 | 38.54–51.95 |
 | zvec | 104.25 | 782.38 | 169.19–302.94 | 33.96–42.31 |
 
-Build values are the **original 2026-09-28 measurements**, repeated in the
-CSV for context. No build time or build memory was measured for the optimized
-source. Query RSS is a process high-water mark including index opening and
+Build values in this historical table are the **original 2026-09-28 measurements**.
+The latest query-only CSV does not report these as new build measurements.
+No build time or build memory was measured for the optimized source. Query RSS is a process high-water mark including index opening and
 input loading, not steady-state index memory. Whole-process wall time includes
 opening, warmup, concurrent and serial phases, and teardown; it is not a
 standalone cold-open timer.
@@ -245,24 +313,27 @@ The CSV identifies the source and the exact ground-truth filename.
 
 ## Results and checks
 
-The [final optimization source CI](https://github.com/gorse-io/xvec/actions/runs/36724023919)
+- [Latest paired xvec/zvec results](benchmark-hnsw-int-filter.csv):
+  all 26 freshly rerun measurements across nine matching rates; three repetitions
+  per backend at 20% and 50%, one per backend elsewhere.
+
+The [measured source CI](https://github.com/gorse-io/xvec/actions/runs/36725415011)
 passes Linux x64/ARM, macOS, Windows x64/ARM, lint and SIMD checks. Local
 targeted tests pass with default and `noasm` kernels; race tests cover frozen
 bitmap ownership, range unions, lazy filters and FP16 cosine cache equivalence.
 
-- [Range-aggregation xvec/zvec results](benchmark-hnsw-int-filter.csv): all 18
-  query conditions, with separate query-source and collection-build versions.
-- [Controlled xvec before/after results](benchmark-hnsw-int-filter-before-after.csv):
-  six conditions at 10%, 20%, and 50% matching.
-- [High-match optimization with portable prefetch](benchmark-hnsw-int-filter-high-match.csv):
-  all 21 new conditions, including three repetitions per revision at 20% and 50%.
-- [Portable/AMD64 prefetch comparison](benchmark-hnsw-int-filter-prefetch.csv): four conditions.
+Historical range-aggregation, high-match optimization and portable-prefetch
+comparisons retain their summary tables above and raw reports in the local
+archive. Only `benchmark-hnsw-int-filter.csv` is published for integer filtering;
+it contains the latest paired rerun.
+
 - [Label-filter comparison](benchmark-hnsw-label-filter.md).
 
-All 21 historical range-aggregation query runs and all 21 new high-match query
-runs completed successfully. CSV parameters, metrics and process
-resources were checked against the raw reports. Recall matches the original
-results at every rate and matches between xvec revisions for all three
+All 26 latest paired query runs, 21 historical range-aggregation runs, 21
+historical high-match optimization runs and four historical prefetch runs
+completed successfully. The latest CSV parameters, metrics and process
+resources were checked against all 26 corresponding raw reports. Recall matches
+the original results at every rate and matches between xvec revisions for all three
 controlled conditions. Immutable graph/vector, dataset and ground-truth hashes
 were verified. Raw reports, commands, exact neighbors and scripts remain local
 under the ignored `docs/benchmark-runs/` directory.

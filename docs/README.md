@@ -12,17 +12,12 @@ filter settings, query metrics, and separate build/query memory measurements.
 
 The [FP16 HNSW integer-filter comparison](benchmark-hnsw-int-filter.md) runs
 `NewIntFilterPerformanceCase` on Cohere 100K with locally generated exact
-ground truth. Its [CSV](benchmark-hnsw-int-filter.csv) records both the excluded
-fraction (`filter_rate`) and matching fraction to distinguish the two meanings.
-The [before/after CSV](benchmark-hnsw-int-filter-before-after.csv) compares the
-integer range aggregation optimization at 10%, 20%, and 50% matching documents
-on the same persisted xvec collection.
-The [prefetch comparison CSV](benchmark-hnsw-int-filter-prefetch.csv) separately
-compares AMD64 cache hints with portable cache-line reads at 20% and 50% matching.
-The [high-match optimization CSV](benchmark-hnsw-int-filter-high-match.csv) records
-21 newer runs using portable prefetch, including three before/after repetitions
-each at 20% and 50%, and a complete optimized nine-rate sweep. The report keeps
-their measured source revisions separate from the earlier xvec/zvec comparison.
+ground truth. Its single [CSV](benchmark-hnsw-int-filter.csv) contains all 26
+latest xvec/zvec measurements across nine matching rates, with three repetitions
+per backend at 20% and 50%. It records the excluded fraction (`filter_rate`),
+matching fraction/percentage, query-source and collection-build revisions,
+latencies, recall and process resources. Earlier experiments remain in the
+report with their measured source revisions; their separate CSVs are removed.
 
 `benchmark-flat.csv` contains a separate Flat comparison of xvec and zvec for
 INT4, INT8, FP16, and unquantized FP32 on `Performance768D100K`. It uses the
