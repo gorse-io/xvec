@@ -85,6 +85,7 @@ type InvertedIndex struct {
 	nonNull     *container.Bitmap
 	postings    map[scalarKey]*container.Bitmap
 	ordered     []scalarKey
+	rangeBlocks []*container.Bitmap
 	arrayLength map[uint32]*container.Bitmap
 	lengths     []uint32
 }
@@ -195,6 +196,7 @@ func (i *InvertedIndex) Seal() error {
 		i.lengths = append(i.lengths, length)
 	}
 	sort.Slice(i.lengths, func(left, right int) bool { return i.lengths[left] < i.lengths[right] })
+	i.buildRangeBlocks()
 	i.sealed = true
 	return nil
 }
@@ -383,9 +385,7 @@ func (i *InvertedIndex) searchRange(predicate BoundPredicate) (InvertedResult, e
 		if err != nil {
 			return InvertedResult{}, err
 		}
-		for _, key := range i.ordered[start:end] {
-			bitmap.Or(i.postings[key])
-		}
+		i.unionOrderedRange(bitmap, start, end)
 		terms = end - start
 	} else {
 		for key, posting := range i.postings {

@@ -268,6 +268,7 @@ func OpenInvertedIndex(ctx context.Context, path string) (*InvertedIndex, error)
 	if err := errors.Join(lengths.Error(), lengths.Close()); err != nil {
 		return nil, invertedCorruption("iterate array lengths", err)
 	}
+	index.buildRangeBlocks()
 	index.sealed = true
 	return index, nil
 }
@@ -481,19 +482,14 @@ func bitmapFromPersistedWords(words []uint64) *container.Bitmap {
 }
 
 func bitmapSubset(left, right *container.Bitmap) bool {
-	leftWords, rightWords := left.Snapshot(), right.Snapshot()
-	for index, word := range leftWords {
-		if index >= len(rightWords) {
-			if word != 0 {
-				return false
-			}
-			continue
-		}
-		if word&^rightWords[index] != 0 {
-			return false
-		}
-	}
-	return true
+	// Postings are often singletons. Do not materialize the entire non-NULL
+	// domain for every term while opening a high-cardinality integer index.
+	subset := true
+	left.Range(func(row uint64) bool {
+		subset = right.Contains(row)
+		return subset
+	})
+	return subset
 }
 
 func bitmapPartition(rows, nulls, nonNull *container.Bitmap) bool {

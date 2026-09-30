@@ -76,6 +76,71 @@ jobs:
       - name: Test with coverage
         if: matrix.os == 'ubuntu-latest'
         run: go test -coverprofile=coverage.txt -coverpkg=./... ./...
+      - name: Check integer range concurrency and performance
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          go test -race ./internal/db/sqlengine -run 'TestInverted(IntegerRange|RangeBlocks|BitmapSubset)'
+          go test ./internal/db/sqlengine -run '^        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  simd:
+    name: Test SIMD architectures
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user
+      - name: Test RISC-V RVV
+        run: |
+          make -C internal/ailego/math test-rvv
+          make -C internal/ailego/math_batch test-rvv
+          make -C pkg/rabitq/simd test-rvv
+      - name: Test LoongArch LASX
+        run: |
+          make -C internal/ailego/math test-lasx
+          make -C internal/ailego/math_batch test-lasx
+          make -C pkg/rabitq/simd test-lasx
+ -bench '^BenchmarkInvertedIntegerRange        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  simd:
+    name: Test SIMD architectures
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user
+      - name: Test RISC-V RVV
+        run: |
+          make -C internal/ailego/math test-rvv
+          make -C internal/ailego/math_batch test-rvv
+          make -C pkg/rabitq/simd test-rvv
+      - name: Test LoongArch LASX
+        run: |
+          make -C internal/ailego/math test-lasx
+          make -C internal/ailego/math_batch test-lasx
+          make -C pkg/rabitq/simd test-lasx
+ -benchmem -benchtime=200ms -count=3
       - name: Upload coverage reports to Codecov
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v5
