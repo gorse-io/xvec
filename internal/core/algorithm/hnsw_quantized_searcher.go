@@ -25,6 +25,7 @@ import (
 	"slices"
 
 	"github.com/gorse-io/xvec/internal/ailego/container"
+	mathbatch "github.com/gorse-io/xvec/internal/ailego/math_batch"
 )
 
 // ScalarQuantizedHNSWIndex owns a stable HNSW topology, original vectors for
@@ -583,7 +584,7 @@ var (
 // The cache is derived on build/open and does not change the persisted format.
 func newScalarQuantizedHNSWWithStorage(ctx context.Context, base *HNSWIndex, vectors *scalarQuantizedVectors) (*ScalarQuantizedHNSWIndex, error) {
 	index := &ScalarQuantizedHNSWIndex{base: base, vectors: vectors}
-	if vectors.kind == QuantizationFP16 && vectors.metric == MetricCosine {
+	if vectors.kind == QuantizationFP16 && vectors.metric == MetricCosine && mathbatch.FP16CosineCacheCompatible() {
 		index.fp16Magnitudes = make([]float32, len(vectors.codes))
 		for position, code := range vectors.codes {
 			if err := ctx.Err(); err != nil {

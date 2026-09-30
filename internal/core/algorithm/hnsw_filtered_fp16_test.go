@@ -19,6 +19,7 @@ import (
 	"math"
 	"testing"
 
+	mathbatch "github.com/gorse-io/xvec/internal/ailego/math_batch"
 	"github.com/stretchr/testify/require"
 )
 
@@ -66,8 +67,12 @@ func TestScalarQuantizedHNSWFP16CosineCacheMatchesUncached(t *testing.T) {
 		}
 		index, err := NewScalarQuantizedHNSWIndex(ctx, base, QuantizationFP16, nil)
 		require.NoError(t, err)
-		require.Len(t, index.fp16Magnitudes, count)
-		require.Equal(t, float32(0), index.fp16Magnitudes[0])
+		if mathbatch.FP16CosineCacheCompatible() {
+			require.Len(t, index.fp16Magnitudes, count)
+			require.Equal(t, float32(0), index.fp16Magnitudes[0])
+		} else {
+			require.Nil(t, index.fp16Magnitudes)
+		}
 		uncached := *index
 		uncached.fp16Magnitudes = nil
 		for _, query := range [][]float32{make([]float32, dimension), base.vectors[3*dimension : 4*dimension]} {
