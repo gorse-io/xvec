@@ -1,5 +1,3 @@
-//go:build !amd64 || noasm
-
 // Copyright 2026-present the xvec project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +16,8 @@ package core
 
 import "runtime"
 
-// Other targets retain the bounded portable cache warming fallback.
+// prefetchQuantizedCode warms a bounded number of cache lines using portable
+// reads. Unlike a hardware prefetch hint, each read waits for the data.
 func prefetchQuantizedCode(code []byte, lines int) {
 	if len(code) == 0 || lines <= 0 {
 		return

@@ -90,10 +90,15 @@ This round retains those changes and adds:
   gathers unvisited neighbors before prefetching them, following
   `dual_heap_search_neighbors` in zvec's
   `src/core/algorithm/hnsw/hnsw_algorithm.cc`.
-- [AMD64 prefetch](../internal/core/algorithm/hnsw_prefetch_amd64.go) issues
+- [AMD64 prefetch in the measured revision](https://github.com/gorse-io/xvec/blob/bc810b5b0c948b4728fa1a997d1f58c16aba4e98/internal/core/algorithm/hnsw_prefetch_amd64.go) issues
   bounded `PREFETCHT0` hints like zvec's `ailego_prefetch`, replacing synchronous
   cache-line reads for quantized vectors. Other architectures and `noasm`
   retain the portable fallback. Explicit prefetch limits are respected.
+
+The PR subsequently switches all architectures to the
+[portable cache-warming helper](../internal/core/algorithm/hnsw_prefetch_generic.go).
+The label measurements above describe the earlier implementation with AMD64
+prefetch instructions; they have not been rerun for this later simplification.
 
 The final change preserves precision, distance scoring, radius/refinement
 behavior, EF, graph topology, the file format, and GC settings. The measurements
