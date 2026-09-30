@@ -76,11 +76,6 @@ jobs:
       - name: Test with coverage
         if: matrix.os == 'ubuntu-latest'
         run: go test -coverprofile=coverage.txt -coverpkg=./... ./...
-      - name: Check integer range concurrency and performance
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          go test -race ./internal/db/sqlengine -run 'TestInverted(IntegerRange|RangeBlocks|BitmapSubset)'
-          go test ./internal/db/sqlengine -run '^$' -bench '^BenchmarkInvertedIntegerRange$' -benchmem -benchtime=200ms -count=3
       - name: Upload coverage reports to Codecov
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v5

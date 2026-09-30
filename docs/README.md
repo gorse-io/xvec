@@ -10,14 +10,12 @@ Cohere 100K at nine matching-label percentages. Its standalone
 [`benchmark-hnsw-label-filter.csv`](benchmark-hnsw-label-filter.csv) includes
 filter settings, query metrics, and separate build/query memory measurements.
 
-The [FP16 HNSW integer-filter comparison](benchmark-hnsw-int-filter.md) runs
-`NewIntFilterPerformanceCase` on Cohere 100K with locally generated exact
-ground truth. Its single [CSV](benchmark-hnsw-int-filter.csv) contains all 26
-latest xvec/zvec measurements across nine matching rates, with three repetitions
-per backend at 20% and 50%. It records the excluded fraction (`filter_rate`),
-matching fraction/percentage, query-source and collection-build revisions,
-latencies, recall and process resources. Earlier experiments remain in the
-report with their measured source revisions; their separate CSVs are removed.
+The [FP16 HNSW integer-filter results](benchmark-hnsw-int-filter.csv) contain
+26 latest xvec/zvec measurements for `NewIntFilterPerformanceCase` on Cohere
+100K with locally generated exact ground truth. All nine matching rates are
+covered, with three repetitions per backend at 20% and 50%. The CSV records
+the excluded fraction (`filter_rate`), matching fraction/percentage, query-source
+and collection-build revisions, latencies, recall and process resources.
 
 `benchmark-flat.csv` contains a separate Flat comparison of xvec and zvec for
 INT4, INT8, FP16, and unquantized FP32 on `Performance768D100K`. It uses the
