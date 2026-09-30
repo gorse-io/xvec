@@ -1,5 +1,0 @@
-cooling down for 3s before serial search
-case=LabelFilterPerformanceCase dataset=/home/zhenghaoz/hnsw-label-20260928/dataset
-serial queries=1000 qps=1015.32 recall=1.0000 mrr=0.0000 ndcg=0.0000 avg=0.943ms p95=1.481ms p99=1.686ms
-concurrent workers=8 queries=228053 qps=7599.57 avg=1.051ms p95=2.164ms p99=3.312ms
-result=/home/zhenghaoz/hnsw-filter-50-opt-20260928/zvec-fp16-label-0.1p.json

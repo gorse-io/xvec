@@ -1,5 +1,0 @@
-cooling down for 3s before serial search
-case=LabelFilterPerformanceCase dataset=/home/zhenghaoz/hnsw-label-20260928/dataset
-serial queries=1000 qps=81.64 recall=0.9983 mrr=0.0000 ndcg=0.0000 avg=11.956ms p95=14.786ms p99=16.164ms
-concurrent workers=8 queries=14410 qps=480.19 avg=16.650ms p95=21.739ms p99=27.374ms
-result=/home/zhenghaoz/hnsw-filter-50-opt-20260928/step2-profile.json

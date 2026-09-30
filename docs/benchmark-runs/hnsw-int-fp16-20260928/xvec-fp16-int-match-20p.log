@@ -1,5 +1,0 @@
-cooling down for 3s before serial search
-case=NewIntFilterPerformanceCase dataset=/home/zhenghaoz/hnsw-int-20260928/dataset
-serial queries=1000 qps=17.27 recall=0.9988 mrr=0.0000 ndcg=0.0000 avg=57.815ms p95=66.142ms p99=75.138ms
-concurrent workers=8 queries=2576 qps=85.76 avg=93.044ms p95=135.804ms p99=154.675ms
-result=/home/zhenghaoz/hnsw-int-20260928/xvec-fp16-int-match-20p.json

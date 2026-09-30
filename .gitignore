@@ -14,6 +14,7 @@
 # Local databases and benchmarks
 /data/
 /benchdata/
+/docs/benchmark-runs/
 *.zvec/
 
 # Editors and operating systems

@@ -1,6 +1,0 @@
-{
-  "native_version": "v0.7.0",
-  "fp16_quantization_enum": 1,
-  "fp16_rotate": false,
-  "brute_force_by_keys_ratio": 0.10000000149011612
-}

@@ -149,5 +149,7 @@ filter thresholds, matching counts, ground-truth provenance, and source,
 binary, dataset and native-library hashes.
 
 - [CSV](benchmark-hnsw-int-filter.csv)
-- [Raw reports, commands, exact neighbors and generation code](benchmark-runs/hnsw-int-fp16-20260928/)
 - [Previous label-filter evaluation](benchmark-hnsw-label-filter.md)
+
+Raw reports, commands, exact neighbors and generation code are retained locally
+and are not included in the repository.

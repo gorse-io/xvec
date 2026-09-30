@@ -1,5 +1,1 @@
 *.utf8 text eol=lf
-
-# Preserve verbatim benchmark patches and Go build metadata.
-docs/benchmark-runs/hnsw-*/source.patch -whitespace
-docs/benchmark-runs/hnsw-*/build-info.txt -whitespace

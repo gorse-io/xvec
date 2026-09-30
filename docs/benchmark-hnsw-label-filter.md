@@ -166,8 +166,6 @@ All eighteen reports, CSV fields, preserved build measurements and source,
 binary, native-library and dataset hashes are checked together.
 
 - [Current CSV](benchmark-hnsw-label-filter.csv): all 18 query measurements.
-- [Current raw reports, profiles, patch and commands](benchmark-runs/hnsw-label-50-opt-20260928/).
-- [Previous comparison](benchmark-runs/hnsw-label-50-opt-20260928/previous.md)
-  and [CSV](benchmark-runs/hnsw-label-50-opt-20260928/previous.csv).
-- [First optimization reports](benchmark-runs/hnsw-label-opt-20260928/).
-- [Original builds and baseline reports](benchmark-runs/hnsw-label-fp16-20260928/).
+
+Raw reports, profiles, patches, commands and previous comparisons are retained
+locally and are not included in the repository.
