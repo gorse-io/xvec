@@ -24,7 +24,6 @@ import (
 	mmap "github.com/blevesearch/mmap-go"
 	"slices"
 
-	"github.com/gorse-io/xvec/internal/ailego/container"
 	mathbatch "github.com/gorse-io/xvec/internal/ailego/math_batch"
 )
 
@@ -372,10 +371,9 @@ func (i *ScalarQuantizedHNSWIndex) searchLayer(
 		return []hnswScoredNode{}, nil
 	}
 	metric := i.vectors.metric
-	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, left, right) }
-	worse := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, right, left) }
-	candidates := container.NewHeap(better)
-	results := container.NewHeap(worse)
+	candidates, results := &visited.frontierHeap, &visited.acceptedHeap
+	candidates.reset(limit, metric, nil, false)
+	results.reset(limit, metric, nil, true)
 	visited.reset(len(i.vectors.keys))
 	for _, entry := range entries {
 		if entry < 0 || entry >= len(i.vectors.keys) || i.base.levels[entry] < level || visited.seen(entry) {
@@ -419,17 +417,7 @@ func (i *ScalarQuantizedHNSWIndex) searchLayer(
 			}
 		}
 	}
-	result := results.Values()
-	slices.SortFunc(result, func(left, right hnswScoredNode) int {
-		if hnswNodeBetter(metric, left, right) {
-			return -1
-		}
-		if hnswNodeBetter(metric, right, left) {
-			return 1
-		}
-		return 0
-	})
-	return result, nil
+	return results.results(), nil
 }
 
 func (i *ScalarQuantizedHNSWIndex) searchBase(
@@ -441,11 +429,10 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 	visited *hnswVisited,
 ) ([]hnswScoredNode, error) {
 	metric := i.vectors.metric
-	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, left, right) }
-	worse := func(left, right hnswScoredNode) bool { return i.resultNodeBetter(right, left) }
 	reserve := min(capacity, len(i.vectors.keys))
-	frontier := container.NewHeapWithCapacity(reserve, better)
-	accepted := container.NewHeapWithCapacity(reserve, worse)
+	frontier, accepted := &visited.frontierHeap, &visited.acceptedHeap
+	frontier.reset(reserve, metric, nil, false)
+	accepted.reset(reserve, metric, i.vectors.keys, true)
 	visited.reset(len(i.vectors.keys))
 	// Batch scoring is independent of the result queue: large EF, filters, and
 	// radius searches still use the same dual-heap admission and stopping rules.
@@ -548,17 +535,7 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 			}
 		}
 	}
-	result := accepted.Values()
-	slices.SortFunc(result, func(left, right hnswScoredNode) int {
-		if i.resultNodeBetter(left, right) {
-			return -1
-		}
-		if i.resultNodeBetter(right, left) {
-			return 1
-		}
-		return 0
-	})
-	return result, nil
+	return accepted.results(), nil
 }
 
 func (i *ScalarQuantizedHNSWIndex) resultNodeBetter(left, right hnswScoredNode) bool {
