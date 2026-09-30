@@ -19,6 +19,10 @@ integer range aggregation optimization at 10%, 20%, and 50% matching documents
 on the same persisted xvec collection.
 The [prefetch comparison CSV](benchmark-hnsw-int-filter-prefetch.csv) separately
 compares AMD64 cache hints with portable cache-line reads at 20% and 50% matching.
+The [high-match optimization CSV](benchmark-hnsw-int-filter-high-match.csv) records
+21 newer runs using portable prefetch, including three before/after repetitions
+each at 20% and 50%, and a complete optimized nine-rate sweep. The report keeps
+their measured source revisions separate from the earlier xvec/zvec comparison.
 
 `benchmark-flat.csv` contains a separate Flat comparison of xvec and zvec for
 INT4, INT8, FP16, and unquantized FP32 on `Performance768D100K`. It uses the

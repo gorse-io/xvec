@@ -4,7 +4,85 @@
 `id >= dataset_size * filter_rate`. **Filter rate is the excluded fraction**;
 `filter_rate=0.999` matches 0.1% (100 rows). The tables show matching percentages.
 
-## End-to-end rerun after integer range aggregation, 2026-09-30
+## High-match query optimization with portable prefetch, 2026-09-30
+
+This rerun compares the portable-prefetch baseline `4c8d22c42eee5205fb68b0a4093987e346f2d0c5`
+with `97ab79323137cb5174c096a17051cad5f7374add` on the identical persisted xvec
+collection. Both revisions use the portable cache-line helper. The graph, EF,
+quantization, query vectors and exact ground truth are unchanged.
+
+| Matching documents | Before QPS | After QPS | QPS change | Before P99 (ms) | After P99 (ms) | Recall@100 (%) | Runs per revision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.1% | 24890.18 | 25210.34 | +1.29% | 1.138 | 0.875 | 100.000 | 1 |
+| 10% | 581.49 | 600.89 | +3.34% | 27.187 | 26.245 | 99.961 | 1 |
+| 20% | 382.15 | 395.76 | +3.56% | 40.686 | 34.660 | 99.884 | 3 |
+| 50% | 598.32 | 692.82 | +15.79% | 34.738 | 24.867 | 99.806 | 3 |
+
+QPS and P99 at 20% and 50% are the **separate medians of three runs** for each
+revision. At 50%, median P99 decreases by 28.42%; all three paired runs improve
+QPS. At 20%, median QPS improves modestly, and one paired run is slower. Before
+and after QPS ranges are 362.61–408.47 and 369.59–438.41 at 20%, and
+446.10–632.83 and 478.52–756.23 at 50%. The overlapping ranges and small sample
+size do not establish statistical significance. Other conditions are single
+measurements. These numbers should not be combined with earlier runs into a
+larger before/after ratio.
+
+The complete optimized nine-rate sweep is:
+
+| Matching documents | xvec QPS | Recall@100 (%) | P99 (ms) | Measurements |
+| --- | ---: | ---: | ---: | ---: |
+| 0.1% | 25210.34 | 100.000 | 0.875 | 1 |
+| 0.2% | 14603.19 | 99.989 | 1.845 | 1 |
+| 0.5% | 9998.26 | 99.970 | 2.887 | 1 |
+| 1% | 6904.72 | 99.959 | 3.783 | 1 |
+| 2% | 3444.84 | 99.970 | 9.498 | 1 |
+| 5% | 1035.81 | 99.965 | 18.089 | 1 |
+| 10% | 600.89 | 99.961 | 26.245 | 1 |
+| 20% | 395.76 | 99.884 | 34.660 | 3 |
+| 50% | 692.82 | 99.806 | 24.867 | 3 |
+
+There are 21 timed runs: three before/after repetitions each at 20% and 50%,
+one before/after pair each at 0.1% and 10%, and one optimized run each at the
+remaining five rates. Every process reopens the same collection and uses the
+runtime settings below: 100 warmup queries, eight workers for 30 seconds,
+three seconds of cooldown, and all 1,000 serial recall queries. No profiler;
+filesystem caches are not flushed. High-match order is 50% before/after then
+20% after/before in repetition 1, 20% after/before then 50% before/after in
+repetition 2, and the repetition-1 order again in repetition 3. The 0.1% pair
+runs before/after, the 10% pair after/before, followed by the other five rates
+in ascending order.
+
+All 21 aggregate recalls exactly match the preceding measurements. Binary,
+dataset, exact-neighbor and graph hashes are checked; the persisted collection
+is not rebuilt. The [high-match comparison CSV](benchmark-hnsw-int-filter-high-match.csv)
+contains every repetition, measured query-source revision, original build
+revision and process resource measurement. zvec was **not rerun** for this
+optimization; the xvec/zvec table below remains the earlier range-aggregation
+comparison at its stated revision.
+
+The implementation makes integer-range block aggregates immutable, so queries
+can union them without cloning each source. Exact indexed filters retain a
+query-owned immutable candidate bitmap and enumerate row ordinals only when
+linear search, visibility intersection or multi-segment merging needs them.
+A fully live single-segment filtered HNSW query uses the bitmap predicate
+directly. Flat, sparse, full-text, deletion and multiple-segment behavior is
+covered by regression tests.
+
+FP16 cosine HNSW caches magnitudes of the encoded vectors when scalar and
+batch kernels use compatible reductions, reusing dot products during search.
+This adds four bytes per indexed vector (about 0.38 MiB per 100K vectors) and
+one pass on build/open, without changing the persisted format. Result heaps
+reserve bounded capacity and replace their worst accepted result in one heap
+operation. Search admission, stopping, tie ordering and rejected-node traversal
+are preserved. The generic prefetch implementation and its defaults are retained.
+
+Follow-up source `ea2ee1dc004c3f2204affb8a310e6869ba178f64` keeps the original
+cosine scoring path on AVX-512, whose scalar and batch reduction orders differ.
+It preserves score precision on that target. The measured EPYC 7B12 uses AVX2,
+so this constructor guard leaves its measured search path unchanged; the CSV
+correctly records the actual timed source `97ab793`, rather than relabeling it.
+
+## Historical end-to-end rerun after integer range aggregation, 2026-09-30
 
 The xvec integer-range aggregation revision and zvec v0.7.0 were rerun on their original persisted
 100K integer-indexed collections. The graphs were not rebuilt or re-optimized.
@@ -28,7 +106,7 @@ At 50% matching, xvec reaches **688.86 QPS**, compared with
 zvec's **1015.85 QPS**. Their Recall@100 values are
 99.806% and 99.665%, respectively.
 
-## Controlled xvec before/after comparison
+## Historical controlled range-aggregation comparison
 
 The pre-optimization PR source was also rerun at 10%, 20%, and 50%, using
 the identical xvec collection, query vectors and ground truth. Only the query
@@ -74,7 +152,7 @@ represent the later portable revision. zvec and label filtering were not
 rerun for this simplification. Raw reports, resources, binary hashes, and
 reproduction scripts remain local under the ignored `docs/benchmark-runs/`.
 
-## Implementation
+## Range-aggregation implementation
 
 Like zvec's pre-aggregated range postings, xvec now caches the union of every
 256 ordered integer terms. Queries merge complete blocks and individual
@@ -85,10 +163,11 @@ integer terms uses 530 bitmap unions instead of 50,000.
 
 Index-opening validation now checks a posting's set bits against the non-NULL
 domain instead of rebuilding dense snapshots of the full domain for every
-term. Both changes preserve exact candidates; vector scoring, EF, quantization
-and refinement settings are unchanged.
+term. These range-aggregation changes preserve exact candidates; their rerun keeps
+vector scoring, EF, quantization and refinement settings unchanged. The later
+high-match changes are described in the first section.
 
-## Method and provenance
+## Shared method and historical range-aggregation provenance
 
 - Dataset: Small Cohere (768dim, 100K), cosine, 100,000 training vectors,
   all 1,000 test queries; integer IDs 0 through 99,999.
@@ -99,10 +178,10 @@ and refinement settings are unchanged.
 - Each condition warms up 100 queries, measures concurrent search for
   30 seconds, cools down for 3 seconds, then evaluates all 1,000 queries
   serially. Seed 0. Filesystem caches are not flushed.
-- Execution order: 50%, 20%, 10%, 0.1%, 0.2%, 0.5%, 1%, 2%, 5% matching.
+- Range-aggregation rerun execution order: 50%, 20%, 10%, 0.1%, 0.2%, 0.5%, 1%, 2%, 5% matching.
   Alternate xvec/zvec order at each rate; run the pre-optimization xvec
   condition immediately after each of the first three pairs.
-- Single measurement per condition, without a profiler or confidence
+- Range-aggregation rerun: single measurement per condition, without a profiler or confidence
   intervals. Fixed-EF comparison; the backends have slightly different recall.
 - Both default planners use candidate linear search at at most 10%
   matching documents and filtered HNSW traversal at 20% and 50%.
@@ -166,13 +245,22 @@ The CSV identifies the source and the exact ground-truth filename.
 
 ## Results and checks
 
+The [final optimization source CI](https://github.com/gorse-io/xvec/actions/runs/36724023919)
+passes Linux x64/ARM, macOS, Windows x64/ARM, lint and SIMD checks. Local
+targeted tests pass with default and `noasm` kernels; race tests cover frozen
+bitmap ownership, range unions, lazy filters and FP16 cosine cache equivalence.
+
 - [Range-aggregation xvec/zvec results](benchmark-hnsw-int-filter.csv): all 18
   query conditions, with separate query-source and collection-build versions.
 - [Controlled xvec before/after results](benchmark-hnsw-int-filter-before-after.csv):
   six conditions at 10%, 20%, and 50% matching.
+- [High-match optimization with portable prefetch](benchmark-hnsw-int-filter-high-match.csv):
+  all 21 new conditions, including three repetitions per revision at 20% and 50%.
+- [Portable/AMD64 prefetch comparison](benchmark-hnsw-int-filter-prefetch.csv): four conditions.
 - [Label-filter comparison](benchmark-hnsw-label-filter.md).
 
-All 21 query runs completed successfully. CSV parameters, metrics and process
+All 21 historical range-aggregation query runs and all 21 new high-match query
+runs completed successfully. CSV parameters, metrics and process
 resources were checked against the raw reports. Recall matches the original
 results at every rate and matches between xvec revisions for all three
 controlled conditions. Immutable graph/vector, dataset and ground-truth hashes
