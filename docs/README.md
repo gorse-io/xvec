@@ -14,6 +14,9 @@ The [FP16 HNSW integer-filter comparison](benchmark-hnsw-int-filter.md) runs
 `NewIntFilterPerformanceCase` on Cohere 100K with locally generated exact
 ground truth. Its [CSV](benchmark-hnsw-int-filter.csv) records both the excluded
 fraction (`filter_rate`) and matching fraction to distinguish the two meanings.
+The [before/after CSV](benchmark-hnsw-int-filter-before-after.csv) compares the
+integer range aggregation optimization at 10%, 20%, and 50% matching documents
+on the same persisted xvec collection.
 
 `benchmark-flat.csv` contains a separate Flat comparison of xvec and zvec for
 INT4, INT8, FP16, and unquantized FP32 on `Performance768D100K`. It uses the

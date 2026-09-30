@@ -1,81 +1,110 @@
 # HNSW integer filtering on Cohere 100K
 
-`NewIntFilterPerformanceCase` compares xvec and zvec using FP16 HNSW and
+`NewIntFilterPerformanceCase` compares FP16 HNSW using
 `id >= dataset_size * filter_rate`. **Filter rate is the excluded fraction**;
-for example `filter_rate=0.999` means `id >= 99900`, matching 0.1% (100 rows).
-The nine matching percentages mirror the previous label-filter evaluation,
-but the predicate and matching document sets differ.
+`filter_rate=0.999` matches 0.1% (100 rows). The tables show matching percentages.
 
-## Results
+## End-to-end rerun after integer range aggregation, 2026-09-30
 
-QPS and P99 are from the 8-worker concurrent phase. Recall@100 is measured
-against locally generated exact ground truth across all 1,000 serial queries.
-These are fixed-EF, single-run measurements, not matched-recall comparisons or
-confidence intervals. Each backend uses a fresh integer-indexed collection;
-these are not before/after measurements on the label-filter graphs.
-At 0.1%, only 100 documents match K=100, so 100% recall primarily verifies
-that all candidates are returned; it does not validate ranking quality.
+The current xvec PR source and zvec v0.7.0 were rerun on their original persisted
+100K integer-indexed collections. The graphs were not rebuilt or re-optimized.
+All nine conditions use fresh query processes. QPS and P99 come from the
+8-worker concurrent phase; Recall@100 uses all 1,000 serial queries against
+locally generated exhaustive ground truth.
 
 | Matching documents | Filter | xvec QPS | zvec QPS | zvec/xvec | xvec Recall@100 (%) | zvec Recall@100 (%) | xvec P99 (ms) | zvec P99 (ms) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0.1% | `id >= 99900` | 19482.95 | 7872.05 | 0.40× | 100.000 | 100.000 | 2.096 | 3.208 |
-| 0.2% | `id >= 99800` | 12049.10 | 7649.95 | 0.63× | 99.989 | 99.946 | 3.482 | 3.172 |
-| 0.5% | `id >= 99500` | 3162.01 | 6211.67 | 1.96× | 99.970 | 99.891 | 14.259 | 4.068 |
-| 1% | `id >= 99000` | 2110.18 | 5463.13 | 2.59× | 99.959 | 99.868 | 16.580 | 4.242 |
-| 2% | `id >= 98000` | 804.02 | 3630.11 | 4.51× | 99.970 | 99.837 | 29.630 | 5.974 |
-| 5% | `id >= 95000` | 277.39 | 1407.49 | 5.07× | 99.965 | 99.827 | 55.104 | 10.797 |
-| 10% | `id >= 90000` | 132.99 | 687.86 | 5.17× | 99.961 | 99.783 | 96.977 | 19.565 |
-| 20% | `id >= 80000` | 85.76 | 330.98 | 3.86× | 99.884 | 99.752 | 154.675 | 38.920 |
-| 50% | `id >= 50000` | 54.95 | 681.16 | 12.40× | 99.806 | 99.665 | 194.909 | 19.196 |
+| 0.1% | `id >= 99900` | 25265.40 | 10234.98 | 0.41× | 100.000 | 100.000 | 1.211 | 2.432 |
+| 0.2% | `id >= 99800` | 15526.45 | 9419.15 | 0.61× | 99.989 | 99.946 | 1.728 | 2.587 |
+| 0.5% | `id >= 99500` | 8806.20 | 7611.97 | 0.86× | 99.970 | 99.891 | 3.580 | 3.152 |
+| 1% | `id >= 99000` | 6264.32 | 6559.28 | 1.05× | 99.959 | 99.868 | 3.554 | 3.454 |
+| 2% | `id >= 98000` | 2807.03 | 4572.43 | 1.63× | 99.970 | 99.837 | 8.452 | 4.693 |
+| 5% | `id >= 95000` | 978.40 | 1983.76 | 2.03× | 99.965 | 99.827 | 18.540 | 8.272 |
+| 10% | `id >= 90000` | 564.17 | 1068.51 | 1.89× | 99.961 | 99.783 | 30.740 | 12.719 |
+| 20% | `id >= 80000` | 418.96 | 561.12 | 1.34× | 99.884 | 99.752 | 37.866 | 21.555 |
+| 50% | `id >= 50000` | 688.86 | 1015.85 | 1.47× | 99.806 | 99.665 | 30.167 | 12.720 |
 
-xvec leads at 0.1% and 0.2% matching documents; zvec leads at the remaining
-seven percentages. The largest throughput gap is at 50%: zvec reaches
-681.16 QPS versus xvec's 54.95
-(12.40×). Concurrent P99 is
-194.909 ms for xvec versus
-19.196 ms for zvec. xvec's Recall@100 is
-99.806% versus 99.665% for zvec;
-the comparison therefore includes a small recall difference.
+At 50% matching, xvec reaches **688.86 QPS**, compared with
+zvec's **1015.85 QPS**. Their Recall@100 values are
+99.806% and 99.665%, respectively.
 
-| Backend | Insert (s) | Optimize (s) | Total load (s) | Build peak RSS (MiB) | Query peak RSS range (MiB) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| xvec | 7.54 | 152.46 | 160.01 | 1766.41 | 1084.16–1259.43 |
-| zvec | 10.44 | 93.75 | 104.25 | 782.38 | 127.51–294.02 |
+## Controlled xvec before/after comparison
 
-| Backend | Whole query-process wall time range (s) |
-| --- | ---: |
-| xvec | 168.43–254.63 |
-| zvec | 34.16–49.24 |
+The pre-optimization PR source was also rerun at 10%, 20%, and 50%, using
+the identical xvec collection, query vectors and ground truth. Only the query
+binary changes. These end-to-end numbers are distinct from the scalar-filter
+microbenchmarks. Both xvec revisions return the same aggregate recall.
 
-Build and query RSS are separate process high-water marks. Query RSS includes
-loading test queries and ground truth and opening the index; it is not
-steady-state index memory. Build values repeated in the CSV represent the same
-single build per backend, not nine independent builds.
+| Matching documents | xvec before QPS | xvec after QPS | Speedup | Before P99 (ms) | After P99 (ms) | Recall@100 (%) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10% | 176.25 | 564.17 | 3.20× | 78.737 | 30.740 | 99.961 |
+| 20% | 119.73 | 418.96 | 3.50× | 111.345 | 37.866 | 99.884 |
+| 50% | 79.41 | 688.86 | 8.68× | 139.313 | 30.167 | 99.806 |
 
-## Integer-index observations
+## Implementation
 
-The query-process wall time includes index opening, input loading, warmup,
-concurrent search, cooldown, serial evaluation and teardown. It is recorded
-separately in the CSV and must not be treated as a direct cold-open timer.
-Opening the xvec integer collection repeatedly incurred substantial startup
-work before the measured query phase.
+Like zvec's pre-aggregated range postings, xvec now caches the union of every
+256 ordered integer terms. Queries merge complete blocks and individual
+boundary terms instead of unioning every matching posting. The cache applies
+to range-enabled scalar integer fields and is rebuilt on sealing or opening,
+without changing the persisted format. A 50%-matching range over 100K unique
+integer terms uses 530 bitmap unions instead of 50,000.
 
-Static inspection identifies two paths to profile next:
+Index-opening validation now checks a posting's set bits against the non-NULL
+domain instead of rebuilding dense snapshots of the full domain for every
+term. Both changes preserve exact candidates; vector scoring, EF, quantization
+and refinement settings are unchanged.
 
-- [`InvertedIndex.searchRange`](../internal/db/sqlengine/inverted.go) binary
-  searches the ordered terms, then unions one posting for every matching
-  integer value. With unique IDs, the nine ranges require 100 through 50,000
-  postings per query. [`Bitmap.Or`](../internal/ailego/container/bitmap.go)
-  clones each source bitmap before merging. This cost differs from looking
-  up a single equal-label posting.
-- [`OpenInvertedIndex`](../internal/db/sqlengine/inverted_pebble.go) reads and
-  validates 100,000 distinct term postings. Its `bitmapSubset` check creates
-  dense snapshots of both the posting and the same non-NULL row-domain bitmap
-  on every call, repeatedly traversing that domain.
+## Method and provenance
 
-These are code-based explanations to investigate, not measured CPU-profile
-attributions. This evaluation keeps the vector library unchanged and does not
-isolate the proportion of time spent filtering versus searching vectors.
+- Dataset: Small Cohere (768dim, 100K), cosine, 100,000 training vectors,
+  all 1,000 test queries; integer IDs 0 through 99,999.
+- FP16 HNSW: M=50, EFConstruction=500, EFSearch=300, K=100; rotation and
+  refinement disabled, mmap enabled, ID-only results.
+- Same e2-standard-8 host, AMD EPYC 7B12, CPU affinity 0–7, Go 1.27.1,
+  CGO_ENABLED=0, GOMAXPROCS=8, GOMEMLIMIT=24GiB; 8 query workers.
+- Each condition warms up 100 queries, measures concurrent search for
+  30 seconds, cools down for 3 seconds, then evaluates all 1,000 queries
+  serially. Seed 0. Filesystem caches are not flushed.
+- Execution order: 50%, 20%, 10%, 0.1%, 0.2%, 0.5%, 1%, 2%, 5% matching.
+  Alternate xvec/zvec order at each rate; run the pre-optimization xvec
+  condition immediately after each of the first three pairs.
+- Single measurement per condition, without a profiler or confidence
+  intervals. Fixed-EF comparison; the backends have slightly different recall.
+- Both default planners use candidate linear search at at most 10%
+  matching documents and filtered HNSW traversal at 20% and 50%.
+
+The optimized xvec and harness revision is `bc810b5b0c948b4728fa1a997d1f58c16aba4e98`;
+the controlled pre-optimization revision is `0042d0f1ac276c930a576412ae32e0189162e3c3`.
+These are clean standalone PR builds, excluding the Vamana changes from PR #97.
+zvec uses the official v0.7.0 native release and unmodified zvec-go binding;
+its native-library hash matches the previous evaluation.
+
+The reused xvec collection was built on `bc87d5a7db1fde4251574fe458b520485cb2c92f+intfilter.9c8ec3044bf4`;
+zvec's was built on v0.7.0. The xvec graph file and zvec scalar payload hashes
+were unchanged after all 21 query processes. zvec rewrites container and chunk
+update timestamps on close. Restoring only those two timestamps and the
+container footer CRC reproduces each native index file's original SHA-256,
+verifying that all other bytes, including graphs and vectors, are unchanged.
+A separate one-query audit confirms these metadata writes and is excluded
+from the results. Dataset, ground-truth, binaries and native-library hashes
+are recorded and validated locally.
+
+| Backend | Original load (s) | Original build peak RSS (MiB) | Rerun query peak RSS (MiB) | Whole query-process wall time (s) |
+| --- | ---: | ---: | ---: | ---: |
+| xvec | 160.01 | 1766.41 | 1008.09–1262.36 | 38.54–51.95 |
+| zvec | 104.25 | 782.38 | 169.19–302.94 | 33.96–42.31 |
+
+Build values are the **original 2026-09-28 measurements**, repeated in the
+CSV for context. No build time or build memory was measured for the optimized
+source. Query RSS is a process high-water mark including index opening and
+input loading, not steady-state index memory. Whole-process wall time includes
+opening, warmup, concurrent and serial phases, and teardown; it is not a
+standalone cold-open timer.
+
+Concurrent QPS is the primary throughput metric. Serial QPS includes recall
+calculation; serial latency times only the search call. At 0.1%, exactly
+100 documents match K=100, so full recall primarily checks candidate inclusion.
 
 ## Ground truth
 
@@ -102,54 +131,17 @@ The harness now supports an explicit `--local-int-ground-truth` flag, requiring
 combinations and records `local_int_ground_truth: true` in each raw report.
 The CSV identifies the source and the exact ground-truth filename.
 
-The archived measurements were taken on `bc87d5a` plus the recorded patches.
-The standalone filtering PR is based on `main` and excludes the Vamana changes
-from PR #97. The archives retain their actual measured revisions; these results
-have not been rerun on the standalone PR head.
+## Results and checks
 
-## Method
+- [Current xvec/zvec results](benchmark-hnsw-int-filter.csv): all 18 current
+  query conditions, with separate query-source and collection-build versions.
+- [Controlled xvec before/after results](benchmark-hnsw-int-filter-before-after.csv):
+  six conditions at 10%, 20%, and 50% matching.
+- [Label-filter comparison](benchmark-hnsw-label-filter.md).
 
-- `Small Cohere (768dim, 100K)`, cosine, `NewIntFilterPerformanceCase`.
-- FP16 HNSW: M=50, EFConstruction=500, EFSearch=300, K=100; rotation and
-  refinement disabled, mmap enabled, ID-only query results.
-- Fresh collection per backend, including a range-enabled inverted index on
-  the integer `id` field. Load batch size 100, maximum documents per segment
-  10,000,000, 8 optimize workers. Reuse each collection across its nine filters.
-- Each query condition opens in a fresh process, warms up with 100 queries,
-  runs 8 concurrent workers for 30 seconds, cools down for 3 seconds, then
-  evaluates all 1,000 queries serially. Seed 0; alternate backend order between
-  percentages. Filesystem caches are not flushed.
-- Machine: e2-standard-8, AMD EPYC 7B12, CPUs 0–7, Go 1.27.1,
-  CGO_ENABLED=0, GOMAXPROCS=8, GOMEMLIMIT=24GiB. Both use the same Go harness.
-- Resources use `wait4`. Data generation, validation, downloads and compilation
-  are excluded from measurements.
-
-Both backends use their default filter planner with a brute-force-by-keys
-ratio of 0.1. At most 10% matching documents uses candidate linear search;
-20% and 50% use filtered graph search. This evaluates default HNSW-collection
-filtering, including the selective-filter fallback.
-
-Concurrent QPS is the main throughput metric. Serial QPS includes the harness's
-recall calculation; serial latency measures only the search call. FP16
-approximation can lower recall even when candidates are scanned linearly.
-
-xvec uses base `bc87d5a7db1fde4251574fe458b520485cb2c92f` with the archived patch
-`9c8ec3044bf43841eab5f9611be1bda6c5cc2ef4b93e7bc2fa4c206485659e8e`. Its vector-search implementation is unchanged from
-`bc87d5a7db1fde4251574fe458b520485cb2c92f+filter50.cab34db9caab`; this turn adds only benchmark support
-for explicitly identified local integer ground truth. zvec uses the unmodified
-zvec-go v0.7.0 binding and official v0.7.0 native library, with the same verified
-native-library hash as the preceding label comparison.
-
-## Artifacts and checks
-
-The benchmark-harness tests pass, including rejection of implicit unpublished
-ground truth and validation/reporting of the explicit local option. The result
-audit checks both builds and all eighteen query runs, CSV/raw-report agreement,
-filter thresholds, matching counts, ground-truth provenance, and source,
-binary, dataset and native-library hashes.
-
-- [CSV](benchmark-hnsw-int-filter.csv)
-- [Previous label-filter evaluation](benchmark-hnsw-label-filter.md)
-
-Raw reports, commands, exact neighbors and generation code are retained locally
-and are not included in the repository.
+All 21 query runs completed successfully. CSV parameters, metrics and process
+resources were checked against the raw reports. Recall matches the original
+results at every rate and matches between xvec revisions for all three
+controlled conditions. Immutable graph/vector, dataset and ground-truth hashes
+were verified. Raw reports, commands, exact neighbors and scripts remain local
+under the ignored `docs/benchmark-runs/` directory.
