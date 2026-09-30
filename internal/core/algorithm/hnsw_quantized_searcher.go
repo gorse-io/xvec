@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 
 	mmap "github.com/blevesearch/mmap-go"
@@ -31,8 +32,9 @@ import (
 // It is immutable; stream additions belong to the unquantized source index and
 // require constructing a new quantized snapshot.
 type ScalarQuantizedHNSWIndex struct {
-	base    *HNSWIndex
-	vectors *scalarQuantizedVectors
+	base           *HNSWIndex
+	vectors        *scalarQuantizedVectors
+	fp16Magnitudes []float32
 }
 
 // NewScalarQuantizedHNSWIndex snapshots base and quantizes every vector after
@@ -71,7 +73,7 @@ func newOwnedScalarQuantizedHNSWIndex(ctx context.Context, base *HNSWIndex, kind
 	if err != nil {
 		return nil, err
 	}
-	return &ScalarQuantizedHNSWIndex{base: base, vectors: vectors}, nil
+	return newScalarQuantizedHNSWWithStorage(ctx, base, vectors)
 }
 
 // Save persists the immutable HNSW topology and original vectors. Scalar codes
@@ -244,9 +246,7 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
 	if err != nil {
 		return nil, err
 	}
-	scoreAt := func(position int) (float32, error) {
-		return i.vectors.distanceToCode(position, queryCode)
-	}
+	scoreAt := i.scoreAtCode(queryCode)
 	visited := acquireHNSWVisited(len(i.vectors.keys))
 	defer releaseHNSWVisited(visited)
 	entry := i.base.entryPoint
@@ -326,9 +326,7 @@ func (i *ScalarQuantizedHNSWIndex) search(
 		return i.vectors.searchWithCode(ctx, queryCode, options.SearchOptions, positions)
 	}
 
-	scoreAt := func(position int) (float32, error) {
-		return i.vectors.distanceToCode(position, queryCode)
-	}
+	scoreAt := i.scoreAtCode(queryCode)
 	visited := acquireHNSWVisited(len(i.vectors.keys))
 	defer releaseHNSWVisited(visited)
 	entry := i.base.entryPoint
@@ -444,12 +442,20 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 	metric := i.vectors.metric
 	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, left, right) }
 	worse := func(left, right hnswScoredNode) bool { return i.resultNodeBetter(right, left) }
-	frontier := container.NewHeap(better)
-	accepted := container.NewHeap(worse)
+	reserve := min(capacity, len(i.vectors.keys))
+	frontier := container.NewHeapWithCapacity(reserve, better)
+	accepted := container.NewHeapWithCapacity(reserve, worse)
 	visited.reset(len(i.vectors.keys))
 	// Batch scoring is independent of the result queue: large EF, filters, and
 	// radius searches still use the same dual-heap admission and stopping rules.
 	batch := query != nil && (query.kind == QuantizationInt4 || query.kind == QuantizationInt8 || query.kind == QuantizationFP16)
+	cachedCosine := batch && query.kind == QuantizationFP16 && i.fp16Magnitudes != nil
+	scoreMetric := metric
+	var queryMagnitude float32
+	if cachedCosine {
+		scoreMetric = MetricIP
+		queryMagnitude = fp16CodeMagnitude(query.codes)
+	}
 	if batch {
 		degree := min(i.base.maxDegree(0), max(0, len(i.vectors.keys)-1), initialDistanceBatchCapacity)
 		visited.batchPositions = slices.Grow(visited.batchPositions[:0], degree)
@@ -497,7 +503,7 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 			// unvisited neighbors that will actually be scored in this batch.
 			prefetchQuantizedHNSWNeighbors(i.vectors.codes, visited.batchPositions, options.PrefetchOffset, options.PrefetchLines)
 			if query.kind == QuantizationFP16 {
-				fp16CodeDistances(metric, query.codes, visited.batchCodes, visited.batchScores)
+				fp16CodeDistances(scoreMetric, query.codes, visited.batchCodes, visited.batchScores)
 			} else {
 				integerCodeDots(query.kind, query.codes, visited.batchCodes, visited.batchCodeDots)
 			}
@@ -510,6 +516,9 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 			var err error
 			if batch && query.kind == QuantizationFP16 {
 				score = visited.batchScores[j]
+				if cachedCosine {
+					score = cosineDistanceFromDot(score, queryMagnitude, i.fp16Magnitudes[neighbor])
+				}
 			} else if batch {
 				score, err = quantizedDistanceFromDot(metric, i.vectors.codes[neighbor], *query, float64(visited.batchCodeDots[j]))
 			} else {
@@ -527,9 +536,12 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 			if accepted.Len() < capacity || !hasWorst || !metric.Better(worst.score, node.score) {
 				frontier.Push(node)
 				if i.acceptResult(node, options.SearchOptions) {
-					accepted.Push(node)
-					if accepted.Len() > capacity {
-						_, _ = accepted.Pop()
+					if accepted.Len() < capacity {
+						accepted.Push(node)
+					} else if i.resultNodeBetter(node, worst) {
+						// Replace the worst result with one sift-down, preserving
+						// score/key ties and the independent traversal frontier.
+						accepted.Replace(node)
 					}
 				}
 			}
@@ -566,3 +578,35 @@ var (
 	_ DenseSearcher      = (*ScalarQuantizedHNSWIndex)(nil)
 	_ DenseQuerySearcher = (*ScalarQuantizedHNSWIndex)(nil)
 )
+
+// Cache norms of the encoded FP16 values, rather than the original FP32 values.
+// The cache is derived on build/open and does not change the persisted format.
+func newScalarQuantizedHNSWWithStorage(ctx context.Context, base *HNSWIndex, vectors *scalarQuantizedVectors) (*ScalarQuantizedHNSWIndex, error) {
+	index := &ScalarQuantizedHNSWIndex{base: base, vectors: vectors}
+	if vectors.kind == QuantizationFP16 && vectors.metric == MetricCosine {
+		index.fp16Magnitudes = make([]float32, len(vectors.codes))
+		for position, code := range vectors.codes {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			index.fp16Magnitudes[position] = fp16CodeMagnitude(code.codes)
+		}
+	}
+	return index, nil
+}
+
+func fp16CodeMagnitude(code []byte) float32 {
+	squared := fp16CodeDistance(MetricIP, code, code)
+	return float32(math.Sqrt(float64(max(float32(0), squared))))
+}
+
+func (i *ScalarQuantizedHNSWIndex) scoreAtCode(query QuantizedVector) func(int) (float32, error) {
+	if i.fp16Magnitudes != nil {
+		magnitude := fp16CodeMagnitude(query.codes)
+		return func(position int) (float32, error) {
+			dot := fp16CodeDistance(MetricIP, i.vectors.codes[position].codes, query.codes)
+			return cosineDistanceFromDot(dot, i.fp16Magnitudes[position], magnitude), nil
+		}
+	}
+	return func(position int) (float32, error) { return i.vectors.distanceToCode(position, query) }
+}

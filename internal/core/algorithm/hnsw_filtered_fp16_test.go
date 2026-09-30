@@ -42,3 +42,43 @@ func TestScalarQuantizedHNSWFilteredFP16Prefetch(t *testing.T) {
 		}
 	}
 }
+
+func TestScalarQuantizedHNSWFP16CosineCacheMatchesUncached(t *testing.T) {
+	ctx := context.Background()
+	const count = DefaultHNSWBruteForceThreshold + 101
+	for _, dimension := range []int{7, 33, 768} {
+		base := &HNSWIndex{
+			dimension: dimension, options: HNSWBuildOptions{Metric: MetricCosine, M: 16, EFConstruction: 300},
+			keys: make([]uint64, count), vectors: make([]float32, count*dimension),
+			neighbors: make([][][]int, count), levels: make([]int, count),
+		}
+		for row := range count {
+			base.keys[row] = uint64(count - row + 5000)
+			for d := range dimension {
+				if row%7 != 0 {
+					base.vectors[row*dimension+d] = float32(((row%137)*13+d*7)%31-15) / 16
+				}
+			}
+			base.neighbors[row] = make([][]int, 1)
+			for n := range 32 {
+				base.neighbors[row][0] = append(base.neighbors[row][0], (row+n*37+1)%count)
+			}
+		}
+		index, err := NewScalarQuantizedHNSWIndex(ctx, base, QuantizationFP16, nil)
+		require.NoError(t, err)
+		require.Len(t, index.fp16Magnitudes, count)
+		require.Equal(t, float32(0), index.fp16Magnitudes[0])
+		uncached := *index
+		uncached.fp16Magnitudes = nil
+		for _, query := range [][]float32{make([]float32, dimension), base.vectors[3*dimension : 4*dimension]} {
+			for _, filter := range []CandidateFilter{nil, func(key uint64) bool { return key%3 == 0 }} {
+				options := HNSWSearchOptions{SearchOptions: SearchOptions{TopK: 100, Filter: filter}, EF: 300, PrefetchOffset: 8}
+				want, err := uncached.SearchHNSW(ctx, query, options)
+				require.NoError(t, err)
+				got, err := index.SearchHNSW(ctx, query, options)
+				require.NoError(t, err)
+				require.Equal(t, want, got, "dimension=%d", dimension)
+			}
+		}
+	}
+}
