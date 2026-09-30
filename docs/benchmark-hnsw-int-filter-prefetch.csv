@@ -1,0 +1,5 @@
+matching_percent,implementation,xvec_revision,filter_rate,qps,p99_ms,recall_at_100_percent,query_peak_rss_mib,concurrency,concurrent_duration_seconds,serial_queries,ef_search,quantization
+20,amd64,bc810b5b0c948b4728fa1a997d1f58c16aba4e98,0.8,437.30,36.967,99.884,1002.90,8,30,1000,300,fp16
+20,portable,4c8d22c42eee5205fb68b0a4093987e346f2d0c5,0.8,402.43,43.330,99.884,1002.50,8,30,1000,300,fp16
+50,amd64,bc810b5b0c948b4728fa1a997d1f58c16aba4e98,0.5,668.97,31.253,99.806,1048.66,8,30,1000,300,fp16
+50,portable,4c8d22c42eee5205fb68b0a4093987e346f2d0c5,0.5,659.25,31.961,99.806,1051.91,8,30,1000,300,fp16

@@ -6,7 +6,7 @@
 
 ## End-to-end rerun after integer range aggregation, 2026-09-30
 
-The current xvec PR source and zvec v0.7.0 were rerun on their original persisted
+The xvec integer-range aggregation revision and zvec v0.7.0 were rerun on their original persisted
 100K integer-indexed collections. The graphs were not rebuilt or re-optimized.
 All nine conditions use fresh query processes. QPS and P99 come from the
 8-worker concurrent phase; Recall@100 uses all 1,000 serial queries against
@@ -41,6 +41,39 @@ microbenchmarks. Both xvec revisions return the same aggregate recall.
 | 20% | 119.73 | 418.96 | 3.50× | 111.345 | 37.866 | 99.884 |
 | 50% | 79.41 | 688.86 | 8.68× | 139.313 | 30.167 | 99.806 |
 
+## Portable prefetch comparison, 2026-09-30
+
+The PR subsequently removes the AMD64-specific Go and assembly prefetch files
+and uses the portable helper on every architecture, including `noasm` builds.
+The portable helper synchronously reads one byte per requested cache line;
+the preceding AMD64 implementation issues `PREFETCHT0` hints.
+
+Both implementations were rerun at 20% and 50% matching on the same original
+persisted xvec collection, without a profiler. All dataset and xvec index
+artifact hashes are unchanged. Each run uses the parameters documented below:
+100 warmup queries, 8 workers for 30 seconds, 3 seconds of cooldown, and all
+1,000 serial recall queries. Run order is AMD64 then portable at 50%, followed
+by portable then AMD64 at 20%. Filesystem caches are not flushed.
+
+| Matching documents | AMD64 QPS | Portable QPS | Change | AMD64 P99 (ms) | Portable P99 (ms) | Recall@100 (%) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 20% | 437.30 | 402.43 | -7.97% | 36.967 | 43.330 | 99.884 |
+| 50% | 668.97 | 659.25 | -1.45% | 31.253 | 31.961 | 99.806 |
+
+The portable revision is `4c8d22c42eee5205fb68b0a4093987e346f2d0c5`;
+the AMD64 binary is the clean `bc810b5b0c948b4728fa1a997d1f58c16aba4e98`
+build used in the range-aggregation rerun. These are single measurements
+without confidence intervals; the observed QPS differences are not estimates
+of a statistically established regression. Aggregate recall is identical
+between implementations and to the preceding measurements.
+
+The [prefetch comparison CSV](benchmark-hnsw-int-filter-prefetch.csv) records
+all four runs. The nine-rate xvec/zvec table and range-aggregation before/after
+table above retain their original measured source and results; they do not
+represent the later portable revision. zvec and label filtering were not
+rerun for this simplification. Raw reports, resources, binary hashes, and
+reproduction scripts remain local under the ignored `docs/benchmark-runs/`.
+
 ## Implementation
 
 Like zvec's pre-aggregated range postings, xvec now caches the union of every
@@ -74,7 +107,7 @@ and refinement settings are unchanged.
 - Both default planners use candidate linear search at at most 10%
   matching documents and filtered HNSW traversal at 20% and 50%.
 
-The optimized xvec and harness revision is `bc810b5b0c948b4728fa1a997d1f58c16aba4e98`;
+The range-aggregation xvec and harness revision is `bc810b5b0c948b4728fa1a997d1f58c16aba4e98`;
 the controlled pre-optimization revision is `0042d0f1ac276c930a576412ae32e0189162e3c3`.
 These are clean standalone PR builds, excluding the Vamana changes from PR #97.
 zvec uses the official v0.7.0 native release and unmodified zvec-go binding;
@@ -133,7 +166,7 @@ The CSV identifies the source and the exact ground-truth filename.
 
 ## Results and checks
 
-- [Current xvec/zvec results](benchmark-hnsw-int-filter.csv): all 18 current
+- [Range-aggregation xvec/zvec results](benchmark-hnsw-int-filter.csv): all 18
   query conditions, with separate query-source and collection-build versions.
 - [Controlled xvec before/after results](benchmark-hnsw-int-filter-before-after.csv):
   six conditions at 10%, 20%, and 50% matching.
