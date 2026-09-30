@@ -222,3 +222,42 @@ func TestBitmapConcurrentAccess(t *testing.T) {
 	wg.Wait()
 	require.True(t, bitmap.Count() == 1000)
 }
+
+func TestFrozenBitmapOwnershipAndConcurrentUnion(t *testing.T) {
+	source := NewBitmap(1 << 20)
+	for _, bit := range []uint64{1, 64, 65537, 1 << 40} {
+		source.Set(bit)
+	}
+	frozen := source.Freeze()
+	source.And(nil)
+	source.Set(2)
+	require.Equal(t, uint64(4), frozen.Count())
+	require.False(t, frozen.Within(1<<40))
+	require.True(t, frozen.Within((1<<40)+1))
+	require.True(t, NewBitmap(0).Freeze().Within(0))
+	frozen.Range(nil)
+	var first []uint64
+	frozen.Range(func(bit uint64) bool { first = append(first, bit); return false })
+	require.Equal(t, []uint64{1}, first)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				target := NewBitmap(0)
+				target.OrFrozen(nil)
+				target.OrFrozen(frozen)
+				target.Clear(64)
+				target.Set(2)
+				target.OrFrozen(frozen)
+				if target.Count() != 5 || !frozen.Contains(64) || frozen.Contains(2) {
+					t.Error("frozen bitmap shares mutable state")
+				}
+				target.And(nil)
+			}
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, uint64(4), frozen.Count())
+}

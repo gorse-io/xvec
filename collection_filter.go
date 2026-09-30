@@ -22,6 +22,37 @@ import (
 	"github.com/gorse-io/xvec/internal/db/sqlengine"
 )
 
+// materializeOrdinals is query-local: copies of an evaluated filter can share
+// the immutable bitmap while independently materializing their row lists.
+func (f *evaluatedFilter) materializeOrdinals(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if f.bitmap == nil {
+		return nil
+	}
+	ordinals := make([]uint32, 0, f.matched)
+	var err error
+	f.bitmap.Range(func(ordinal uint64) bool {
+		if len(ordinals)%1024 == 0 {
+			if err = ctx.Err(); err != nil {
+				return false
+			}
+		}
+		ordinals = append(ordinals, uint32(ordinal))
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.ordinals = ordinals
+	f.bitmap = nil
+	return nil
+}
+
 // evaluateSnapshotFilters intersects inverted/forward candidates with the
 // snapshot's existing visibility masks. Work scales with matches, not with a
 // new traversal of every live document on every query.
@@ -66,6 +97,9 @@ func evaluateSnapshotFilters(ctx context.Context, plan *sqlengine.Plan, snapshot
 		}
 		// A nil visibility predicate means every segment document is live.
 		if live.predicate != nil {
+			if err := local.materializeOrdinals(ctx); err != nil {
+				return evaluatedSegmentFilters{}, err
+			}
 			matches := make(map[uint64]struct{}, len(local.ordinals))
 			accepted := local.ordinals[:0]
 			for _, ordinal := range local.ordinals {
@@ -92,6 +126,10 @@ func evaluateSnapshotFilters(ctx context.Context, plan *sqlengine.Plan, snapshot
 			return result, nil
 		}
 		result.global.usedIndex = result.global.usedIndex || local.usedIndex
+		if err := local.materializeOrdinals(ctx); err != nil {
+			return evaluatedSegmentFilters{}, err
+		}
+		result.local[segment.metadata.ID] = local
 		for _, ordinal := range local.ordinals {
 			if err := ctx.Err(); err != nil {
 				return evaluatedSegmentFilters{}, err

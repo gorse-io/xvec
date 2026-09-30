@@ -17,10 +17,13 @@ package xvec
 import (
 	"context"
 	"fmt"
+	"github.com/gorse-io/xvec/internal/ailego/container"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/gorse-io/xvec/internal/db/index/common"
+	"github.com/gorse-io/xvec/internal/db/sqlengine"
 	"github.com/stretchr/testify/require"
 )
 
@@ -73,7 +76,14 @@ func TestSnapshotFilterCandidatesMatchForwardEvaluation(t *testing.T) {
 			}
 			mask, err := evaluateSegmentFilters(ctx, nil, live, localSegments, nil, .9)
 			require.NoError(t, err)
-			snapshot := &collectionQuerySnapshot{schema: schema, documents: live, documentOrdinals: indexDocumentOrdinals(live), segments: localSegments, liveFilter: mask}
+			var runtimes []*collectionSegmentRuntime
+			for _, segment := range localSegments {
+				if len(segment.documents) == 0 {
+					continue
+				}
+				runtimes = append(runtimes, &collectionSegmentRuntime{segmentID: segment.metadata.ID, documentOrdinals: indexDocumentOrdinals(segment.documents), indexes: &collectionRuntimeIndexes{}})
+			}
+			snapshot := &collectionQuerySnapshot{runtimes: runtimes, schema: schema, documents: live, documentOrdinals: indexDocumentOrdinals(live), segments: localSegments, liveFilter: mask}
 			for _, expr := range expressions {
 				for _, ratio := range []float32{.1, .9} {
 					t.Run(fmt.Sprintf("%s/%.1f", expr, ratio), func(t *testing.T) {
@@ -85,6 +95,7 @@ func TestSnapshotFilterCandidatesMatchForwardEvaluation(t *testing.T) {
 						require.NoError(t, err)
 						bitmapFilter, err := evaluateFilterDocumentsByOrdinal(ctx, plan, live, ratio, indexDocumentOrdinals(live))
 						require.NoError(t, err)
+						require.NoError(t, bitmapFilter.materializeOrdinals(ctx))
 						require.True(t, slices.Equal(expected.ordinals, bitmapFilter.ordinals))
 						for _, doc := range docs {
 							require.Equal(t, expected.predicate(doc.DocID), bitmapFilter.predicate(doc.DocID))
@@ -93,6 +104,11 @@ func TestSnapshotFilterCandidatesMatchForwardEvaluation(t *testing.T) {
 						require.NoError(t, err)
 						require.Equal(t, expected.matched, got.global.matched)
 						require.Equal(t, expected.total, got.global.total)
+						// A single wholly live segment retains the exact bitmap lazily.
+						if (visibility == "single" || visibility == "single-empty") && got.global.bitmap != nil {
+							require.Nil(t, got.global.ordinals)
+						}
+						require.NoError(t, got.global.materializeOrdinals(ctx))
 						require.True(t, slices.Equal(expected.ordinals, got.global.ordinals))
 						for _, doc := range docs {
 							require.Equal(t, expected.predicate(doc.DocID), got.global.predicate(doc.DocID))
@@ -104,6 +120,7 @@ func TestSnapshotFilterCandidatesMatchForwardEvaluation(t *testing.T) {
 								continue
 							}
 							local := got.local[segment.metadata.ID]
+							require.NoError(t, local.materializeOrdinals(ctx))
 							var want []uint32
 							for ordinal, doc := range segment.documents {
 								if expected.predicate(doc.DocID) {
@@ -125,4 +142,52 @@ func TestSnapshotFilterCandidatesMatchForwardEvaluation(t *testing.T) {
 			require.ErrorIs(t, err, context.Canceled)
 		})
 	}
+}
+
+func TestLazyFilterOrdinalsConcurrentAndCanceled(t *testing.T) {
+	bitmap := container.NewBitmap(0)
+	for row := uint64(100); row < 5000; row++ {
+		bitmap.Set(row)
+	}
+	filter := evaluatedFilter{bitmap: bitmap.Freeze(), matched: 4900, total: 5000, present: true}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	copy := filter
+	require.ErrorIs(t, copy.materializeOrdinals(canceled), context.Canceled)
+	require.Nil(t, copy.ordinals)
+	require.NotNil(t, copy.bitmap)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			local := filter
+			if err := local.materializeOrdinals(context.Background()); err != nil {
+				t.Error(err)
+				return
+			}
+			if len(local.ordinals) != 4900 || local.ordinals[0] != 100 || local.ordinals[4899] != 4999 {
+				t.Error("incorrect lazy candidates")
+			}
+			local.ordinals[0] = 0
+		}()
+	}
+	wg.Wait()
+	require.Nil(t, filter.ordinals)
+	require.NoError(t, filter.materializeOrdinals(context.Background()))
+	require.Equal(t, uint32(100), filter.ordinals[0])
+}
+
+func TestLazyFilterRejectsOutOfRangeCandidates(t *testing.T) {
+	schema := NewCollectionSchema("invalid_candidates", FieldSchema{Name: "number", DataType: DataTypeInt64, Index: NewInvertIndexParams()})
+	plan, err := buildFilterPlan("number >= 0", schema)
+	require.NoError(t, err)
+	field := plan.Fields()[0]
+	index, err := sqlengine.NewInvertedIndex(field)
+	require.NoError(t, err)
+	require.NoError(t, index.Add(100, sqlengine.Int64Value(1)))
+	require.NoError(t, index.Seal())
+	docs := []Document{{DocID: 101}, {DocID: 102}}
+	_, err = evaluateFilterDocumentsByOrdinal(context.Background(), plan, docs, .9, indexDocumentOrdinals(docs), sqlengine.IndexSet{"number": index})
+	require.ErrorContains(t, err, "out of range")
 }

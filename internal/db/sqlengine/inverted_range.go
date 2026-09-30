@@ -32,14 +32,14 @@ func (i *InvertedIndex) buildRangeBlocks() {
 	default:
 		return
 	}
-	i.rangeBlocks = make([]*container.Bitmap, len(i.ordered)/invertedRangeBlockSize)
+	i.rangeBlocks = make([]*container.FrozenBitmap, len(i.ordered)/invertedRangeBlockSize)
 	for block := range i.rangeBlocks {
 		bitmap := container.NewBitmap(0)
 		start := block * invertedRangeBlockSize
 		for _, key := range i.ordered[start : start+invertedRangeBlockSize] {
 			bitmap.Or(i.postings[key])
 		}
-		i.rangeBlocks[block] = bitmap
+		i.rangeBlocks[block] = bitmap.Freeze()
 	}
 }
 
@@ -50,7 +50,7 @@ func (i *InvertedIndex) unionOrderedRange(bitmap *container.Bitmap, start, end i
 	for start < end {
 		if len(i.rangeBlocks) != 0 && start%invertedRangeBlockSize == 0 &&
 			end-start >= invertedRangeBlockSize {
-			bitmap.Or(i.rangeBlocks[start/invertedRangeBlockSize])
+			bitmap.OrFrozen(i.rangeBlocks[start/invertedRangeBlockSize])
 			start += invertedRangeBlockSize
 		} else {
 			bitmap.Or(i.postings[i.ordered[start]])

@@ -85,7 +85,7 @@ type InvertedIndex struct {
 	nonNull     *container.Bitmap
 	postings    map[scalarKey]*container.Bitmap
 	ordered     []scalarKey
-	rangeBlocks []*container.Bitmap
+	rangeBlocks []*container.FrozenBitmap
 	arrayLength map[uint32]*container.Bitmap
 	lengths     []uint32
 }

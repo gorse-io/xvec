@@ -3440,6 +3440,7 @@ func filterValueKind(dataType DataType) (kind sqlengine.ValueKind, array, suppor
 type evaluatedFilter struct {
 	predicate core.CandidateFilter
 	ordinals  []uint32
+	bitmap    *container.FrozenBitmap
 	matched   uint64
 	total     uint64
 	present   bool
@@ -3537,28 +3538,21 @@ func evaluateFilterDocumentsByOrdinal(
 		candidatesUsed = false
 	}
 	if candidatesUsed && exact && documentOrdinals != nil {
-		// Keep the inverted bitmap instead of rebuilding a document-key hash set.
-		ordinals := make([]uint32, 0, candidates.Count())
-		candidates.Range(func(ordinal uint64) bool {
-			if err = ctx.Err(); err != nil {
-				return false
-			}
-			if ordinal >= uint64(len(documents)) {
-				err = fmt.Errorf("filter candidate ordinal %d is out of range", ordinal)
-				return false
-			}
-			ordinals = append(ordinals, uint32(ordinal))
-			return true
-		})
-		if err != nil {
+		// Graph queries only need membership and cardinality. Defer enumeration
+		// until a key scan or visibility/global-ordinal merge actually needs it.
+		bitmap := candidates.Freeze()
+		if !bitmap.Within(uint64(len(documents))) {
+			return evaluatedFilter{}, fmt.Errorf("filter candidate ordinal is out of range")
+		}
+		if err := ctx.Err(); err != nil {
 			return evaluatedFilter{}, err
 		}
 		return evaluatedFilter{
 			predicate: func(key uint64) bool {
 				ordinal, found := documentOrdinals[key]
-				return found && candidates.Contains(uint64(ordinal))
+				return found && bitmap.Contains(uint64(ordinal))
 			},
-			ordinals: ordinals, matched: uint64(len(ordinals)), total: uint64(len(documents)), present: true, usedIndex: true,
+			bitmap: bitmap, matched: bitmap.Count(), total: uint64(len(documents)), present: true, usedIndex: true,
 		}, nil
 	}
 	capacity := min(len(documents), 64)
@@ -5025,9 +5019,15 @@ func (c *Collection) searchFTSSegments(
 		runtime := *base
 		runtime.scorer = scorer
 		filtered := runtime.withFilter(local.predicate)
+		bruteForce := local.useBruteForce(runtimeConfig.FTSBruteForceByKeysRatio)
+		if bruteForce {
+			if err := local.materializeOrdinals(ctx); err != nil {
+				return err
+			}
+		}
 		results, err := searchCollectionFTS(
 			ctx, filtered, clause, queryParams, topK, local.ordinals,
-			local.useBruteForce(runtimeConfig.FTSBruteForceByKeysRatio),
+			bruteForce,
 		)
 		if err != nil {
 			return err
@@ -5074,6 +5074,9 @@ func (c *Collection) searchVectorSnapshotResolved(
 		}
 		var candidateKeys [][]uint64
 		if candidateFilter.present && (params.options.Linear || vectorIndex.indexType == IndexTypeFlat) {
+			if err := candidateFilter.materializeOrdinals(ctx); err != nil {
+				return nil, err
+			}
 			keys := make([]uint64, len(candidateFilter.ordinals))
 			for position, ordinal := range candidateFilter.ordinals {
 				keys[position] = documents[ordinal].DocID

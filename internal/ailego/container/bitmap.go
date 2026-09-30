@@ -27,6 +27,58 @@ type Bitmap struct {
 	logicalWords int
 }
 
+// FrozenBitmap is an immutable snapshot. Readers need neither locks nor
+// iterator snapshots. It never shares mutable storage with its source.
+type FrozenBitmap struct {
+	bitmap       roaring64.Bitmap
+	logicalWords int
+}
+
+// Freeze copies b once for immutable publication.
+func (b *Bitmap) Freeze() *FrozenBitmap {
+	bitmap, logicalWords := b.snapshot()
+	return &FrozenBitmap{bitmap: *bitmap, logicalWords: logicalWords}
+}
+
+// Contains reports whether bit is set in the immutable snapshot.
+func (b *FrozenBitmap) Contains(bit uint64) bool {
+	bitmapWordIndex(bit)
+	return b.bitmap.Contains(bit)
+}
+
+// Count returns the snapshot's number of set bits.
+func (b *FrozenBitmap) Count() uint64 { return b.bitmap.GetCardinality() }
+
+// Within reports whether all set bits are below bitCount, without enumerating.
+func (b *FrozenBitmap) Within(bitCount uint64) bool {
+	return b.bitmap.IsEmpty() || (bitCount > 0 && b.bitmap.Maximum() < bitCount)
+}
+
+// Range visits immutable set bits in ascending order, stopping on false.
+func (b *FrozenBitmap) Range(yield func(uint64) bool) {
+	if yield == nil {
+		return
+	}
+	iterator := b.bitmap.Iterator()
+	for iterator.HasNext() {
+		if !yield(iterator.Next()) {
+			return
+		}
+	}
+}
+
+// OrFrozen merges a published snapshot without cloning the source. Roaring's
+// union copies containers that are inserted into the mutable destination.
+func (b *Bitmap) OrFrozen(other *FrozenBitmap) {
+	if other == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.bitmap.Or(&other.bitmap)
+	b.logicalWords = max(b.logicalWords, other.logicalWords)
+}
+
 // NewBitmap returns a bitmap with a logical capacity for bitCount bits. All
 // bits are initially clear. Storage remains sparse until bits are set.
 func NewBitmap(bitCount uint64) *Bitmap {
