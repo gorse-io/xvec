@@ -195,6 +195,7 @@ func (i *ScalarQuantizedFlatIndex) searchWithOptions(ctx context.Context, query 
 	if err != nil {
 		return nil, err
 	}
+	scoreAt := i.vectors.codeScorer(queryCode)
 	// Scan codes directly and retain only top-k. Materializing every position
 	// and score makes query scratch space grow with the entire collection.
 	k := min(options.TopK, len(i.vectors.keys))
@@ -212,7 +213,7 @@ func (i *ScalarQuantizedFlatIndex) searchWithOptions(ctx context.Context, query 
 		if options.Filter != nil && !options.Filter(key) {
 			return nil
 		}
-		score, err := i.vectors.distanceToCode(position, queryCode)
+		score, err := scoreAt(position)
 		if err != nil {
 			return fmt.Errorf("core: score scalar-quantized candidate %d: %w", position, err)
 		}
@@ -273,6 +274,7 @@ func (i *ScalarQuantizedFlatIndex) SearchGroups(
 	if err != nil {
 		return nil, err
 	}
+	scoreAt := i.vectors.codeScorer(queryCode)
 	accumulator := newGroupAccumulator(i.vectors.metric, options.TopKPerGroup)
 	for position, key := range i.vectors.keys {
 		if err := ctx.Err(); err != nil {
@@ -281,7 +283,7 @@ func (i *ScalarQuantizedFlatIndex) SearchGroups(
 		if options.Filter != nil && !options.Filter(key) {
 			continue
 		}
-		score, err := i.vectors.distanceToCode(position, queryCode)
+		score, err := scoreAt(position)
 		if err != nil {
 			return nil, fmt.Errorf("core: score scalar-quantized group candidate %d: %w", position, err)
 		}
@@ -301,6 +303,8 @@ type scalarQuantizedVectors struct {
 	codeMu       sync.RWMutex
 	mappedCodes  mmap.MMap
 	closed       bool
+	lazyFP16     bool // Flat searches encode into query-local scratch until graph traversal needs codes.
+	fp16Cache    *fp16CodeCache
 	dimension    int
 	metric       Metric
 	kind         Quantization
@@ -337,6 +341,10 @@ func newScalarQuantizedVectorStorageWithReader(ctx context.Context, dimension in
 }
 
 func newScalarQuantizedVectorStorageWithCodes(ctx context.Context, dimension int, metric Metric, kind Quantization, reformer DenseReformer, keys []uint64, originals []float32, rows [][]float32, reader DenseVectorReader, fp16Codes []byte) (*scalarQuantizedVectors, error) {
+	return newScalarQuantizedVectorStorageWithCodesMode(ctx, dimension, metric, kind, reformer, keys, originals, rows, reader, fp16Codes, false)
+}
+
+func newScalarQuantizedVectorStorageWithCodesMode(ctx context.Context, dimension int, metric Metric, kind Quantization, reformer DenseReformer, keys []uint64, originals []float32, rows [][]float32, reader DenseVectorReader, fp16Codes []byte, lazyFP16 bool) (*scalarQuantizedVectors, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil scalar-quantized index context")
 	}
@@ -351,6 +359,9 @@ func newScalarQuantizedVectorStorageWithCodes(ctx context.Context, dimension int
 	}
 	if !kind.valid() {
 		return nil, ErrInvalidQuantization
+	}
+	if lazyFP16 && (kind != QuantizationFP16 || reader == nil || fp16Codes != nil) {
+		return nil, fmt.Errorf("%w: lazy FP16 requires immutable reader storage", ErrInvalidQuantizedVector)
 	}
 	if reformer != nil && reformer.Dimension() != dimension {
 		return nil, fmt.Errorf("%w: reformer has %d, want %d", ErrInvalidDimension, reformer.Dimension(), dimension)
@@ -370,7 +381,12 @@ func newScalarQuantizedVectorStorageWithCodes(ctx context.Context, dimension int
 		originalRows: rows,
 		reader:       reader,
 		positions:    make(map[uint64]int, len(keys)),
-		codes:        make([]QuantizedVector, len(keys)),
+		lazyFP16:     lazyFP16,
+	}
+	if !lazyFP16 {
+		storage.codes = make([]QuantizedVector, len(keys))
+	} else {
+		storage.fp16Cache = newFP16CodeCache(dimension, len(keys), 16<<20)
 	}
 	// Keep FP16 codes in one arena rather than one heap object per vector.
 	// Each row has a bounded capacity, so appending cannot overwrite another.
@@ -378,7 +394,11 @@ func newScalarQuantizedVectorStorageWithCodes(ctx context.Context, dimension int
 		if len(keys) > maxPlatformInt()/(dimension*2) {
 			return nil, fmt.Errorf("%w: scalar codes exceed platform capacity", ErrInvalidQuantizedVector)
 		}
-		if fp16Codes == nil {
+		if lazyFP16 {
+			// Validate all rows at open, including overflow after reforming, with
+			// one reusable row instead of retaining a collection-sized arena.
+			fp16Codes = make([]byte, dimension*2)
+		} else if fp16Codes == nil {
 			fp16Codes = make([]byte, len(keys)*dimension*2)
 		} else if len(fp16Codes) != len(keys)*dimension*2 {
 			return nil, fmt.Errorf("%w: inconsistent FP16 code storage", ErrInvalidQuantizedVector)
@@ -435,6 +455,9 @@ func newScalarQuantizedVectorStorageWithCodes(ctx context.Context, dimension int
 		if kind == QuantizationFP16 {
 			if err = mathutil.ValidateDense(transformed, dimension); err == nil {
 				start, end := position*dimension*2, (position+1)*dimension*2
+				if lazyFP16 {
+					start, end = 0, dimension*2
+				}
 				code, err = quantizeFP16Into(transformed, fp16Codes[start:end:end])
 			}
 		} else {
@@ -443,7 +466,9 @@ func newScalarQuantizedVectorStorageWithCodes(ctx context.Context, dimension int
 		if err != nil {
 			return nil, fmt.Errorf("core: quantize vector %d: %w", position, err)
 		}
-		storage.codes[position] = code
+		if !lazyFP16 {
+			storage.codes[position] = code
+		}
 	}
 	return storage, nil
 }
@@ -510,6 +535,52 @@ func (s *scalarQuantizedVectors) distanceToCode(position int, query QuantizedVec
 		return fp16CodeDistance(s.metric, s.codes[position].codes, query.codes), nil
 	}
 	return QuantizedDistance(s.metric, s.codes[position], query)
+}
+
+// codeScorer is called while codeMu is read-locked. Scratch belongs to this
+// search, so concurrent sparse scans share only immutable entries in a bounded cache.
+func (s *scalarQuantizedVectors) codeScorer(query QuantizedVector) func(int) (float32, error) {
+	if !s.lazyFP16 || s.codes != nil {
+		return func(position int) (float32, error) { return s.distanceToCode(position, query) }
+	}
+	decoded := make([]float32, s.dimension)
+	codes := make([]byte, s.dimension*2)
+	var transformedBuffer []float32
+	into, reusable := s.reformer.(interface {
+		TransformInto([]float32, []float32) error
+	})
+	if reusable {
+		transformedBuffer = make([]float32, s.dimension)
+	}
+	return func(position int) (float32, error) {
+		if cached := s.fp16Cache.get(position); cached != nil {
+			return fp16CodeDistance(s.metric, cached, query.codes), nil
+		}
+		if err := s.reader.ReadVector(position, decoded); err != nil {
+			return 0, err
+		}
+		transformed := decoded
+		if s.reformer != nil {
+			var err error
+			if reusable {
+				err = into.TransformInto(decoded, transformedBuffer)
+				transformed = transformedBuffer
+			} else {
+				transformed, err = s.reformer.Transform(decoded)
+			}
+			if err != nil {
+				return 0, err
+			}
+			if len(transformed) != s.dimension {
+				return 0, ErrInvalidDimension
+			}
+		}
+		if _, err := quantizeFP16Into(transformed, codes); err != nil {
+			return 0, err
+		}
+		cached := s.fp16Cache.put(position, codes)
+		return fp16CodeDistance(s.metric, cached, query.codes), nil
+	}
 }
 
 func (s *scalarQuantizedVectors) searchWithCode(ctx context.Context, queryCode QuantizedVector, options SearchOptions, positions []int) ([]Result, error) {

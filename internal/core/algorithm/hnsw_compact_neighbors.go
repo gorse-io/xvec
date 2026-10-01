@@ -61,8 +61,8 @@ func (i *HNSWIndex) neighborLevelCount(position int) int {
 // Size the arena before decoding, avoiding geometric growth and intermediate
 // wide lists. This structural pass does not touch vector bytes; full validation
 // remains in the decoder and validateHNSWIndex.
-func newHNSWCompactNeighbors(ctx context.Context, payload []byte, count, vectorBytes, m int) (*hnswCompactNeighbors, error) {
-	levels, edges, offset := 0, 0, 0
+func newHNSWCompactNeighbors(ctx context.Context, payload []byte, count, vectorBytes, m int, discard func(int, int)) (*hnswCompactNeighbors, error) {
+	levels, edges, offset, released := 0, 0, 0, 0
 	for position := 0; position < count; position++ {
 		if position&255 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -94,6 +94,13 @@ func newHNSWCompactNeighbors(ctx context.Context, payload []byte, count, vectorB
 			edges += int(degree)
 			levels++
 		}
+		if discard != nil && offset-released >= 4<<20 {
+			discard(hnswHeaderSize+released, hnswHeaderSize+offset)
+			released = offset
+		}
+	}
+	if discard != nil {
+		discard(hnswHeaderSize+released, hnswHeaderSize+offset)
 	}
 	if offset != len(payload) {
 		return nil, fmt.Errorf("%w: trailing payload data", ErrInvalidHNSWFile)

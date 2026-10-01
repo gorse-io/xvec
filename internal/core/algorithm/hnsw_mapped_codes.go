@@ -69,6 +69,45 @@ func (s *scalarQuantizedVectors) lockCodes() error {
 	return nil
 }
 
+// Code publication and Close use the same lock as Flat searches. No reader can
+// see a partial arena, and a canceled construction releases its mapping.
+func (i *ScalarQuantizedHNSWIndex) ensureCodes(ctx context.Context) error {
+	s := i.vectors
+	if !s.lazyFP16 {
+		return nil
+	}
+	if err := s.lockCodes(); err != nil {
+		return err
+	}
+	ready := s.codes != nil
+	s.codeMu.RUnlock()
+	if ready {
+		return nil
+	}
+	if ctx == nil {
+		return errors.New("core: nil deferred FP16 context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.codeMu.Lock()
+	defer s.codeMu.Unlock()
+	if s.closed {
+		return ErrScalarQuantizedIndexClosed
+	}
+	if s.codes != nil {
+		return nil
+	}
+	index, err := newOwnedScalarQuantizedHNSWIndexWithMmap(ctx, i.base, QuantizationFP16, s.reformer, i.deferredMmap)
+	if err != nil {
+		return err
+	}
+	s.codes, s.mappedCodes = index.vectors.codes, index.vectors.mappedCodes
+	s.fp16Cache = nil
+	i.fp16Magnitudes = index.fp16Magnitudes
+	return nil
+}
+
 // Close releases the code arena after in-flight HNSW and shared Flat searches
 // finish. It is idempotent. Subsequent searches through either view return
 // ErrScalarQuantizedIndexClosed. Original vectors and topology are unchanged.
@@ -88,6 +127,7 @@ func (i *ScalarQuantizedHNSWIndex) Close() error {
 		}
 	}
 	s.codes = nil
+	s.fp16Cache = nil
 	s.closed = true
 	return nil
 }

@@ -1726,6 +1726,12 @@ func decodeHNSWIndexWithVectors(ctx context.Context, encoded []byte, borrowed ma
 }
 
 func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed map[uint64][]float32, encodedOriginals map[uint64][]byte, materialize bool) (*HNSWIndex, error) {
+	return decodeHNSWIndexWithStorageAndDiscard(ctx, encoded, borrowed, encodedOriginals, materialize, nil)
+}
+
+// discard releases only file-backed pages of the temporary artifact mapping.
+// All retained originals belong to the caller; decoded neighbors own their IDs.
+func decodeHNSWIndexWithStorageAndDiscard(ctx context.Context, encoded []byte, borrowed map[uint64][]float32, encodedOriginals map[uint64][]byte, materialize bool, discard func(int, int)) (*HNSWIndex, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil HNSW decode context")
 	}
@@ -1759,7 +1765,19 @@ func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed ma
 		return nil, fmt.Errorf("%w: inconsistent file length", ErrInvalidHNSWFile)
 	}
 	payload := encoded[hnswHeaderSize:]
-	if got, want := hashutil.CRC32C(payload), binary.LittleEndian.Uint32(header[84:88]); got != want {
+	var payloadCRC uint32
+	for start := 0; start < len(payload); {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		end := start + min(4<<20, len(payload)-start)
+		payloadCRC = hashutil.UpdateCRC32C(payloadCRC, payload[start:end])
+		if discard != nil {
+			discard(hnswHeaderSize+start, hnswHeaderSize+end)
+		}
+		start = end
+	}
+	if got, want := payloadCRC, binary.LittleEndian.Uint32(header[84:88]); got != want {
 		return nil, fmt.Errorf("%w: payload got %08x, want %08x", ErrHNSWChecksumMismatch, got, want)
 	}
 
@@ -1854,14 +1872,14 @@ func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed ma
 		levelRNGState:  binary.LittleEndian.Uint64(header[76:84]),
 	}
 	if encodedOriginals != nil && !materialize {
-		graph, err := newHNSWCompactNeighbors(ctx, payload, count, dimension*hnswVectorWidth(fp16), options.M)
+		graph, err := newHNSWCompactNeighbors(ctx, payload, count, dimension*hnswVectorWidth(fp16), options.M, discard)
 		if err != nil {
 			return nil, err
 		}
 		index.compactNeighbors = graph
 		index.neighbors = nil
 	}
-	offset := 0
+	offset, released := 0, 0
 	for position := 0; position < count; position++ {
 		if position&255 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -1968,6 +1986,13 @@ func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed ma
 				index.neighbors[position][currentLevel] = neighbors
 			}
 		}
+		if discard != nil && offset-released >= 4<<20 {
+			discard(hnswHeaderSize+released, hnswHeaderSize+offset)
+			released = offset
+		}
+	}
+	if discard != nil {
+		discard(hnswHeaderSize+released, hnswHeaderSize+offset)
 	}
 	if index.compactNeighbors != nil {
 		graph := index.compactNeighbors

@@ -24,6 +24,7 @@ import (
 	mmap "github.com/blevesearch/mmap-go"
 	"slices"
 
+	ioutil "github.com/gorse-io/xvec/internal/ailego/io"
 	mathbatch "github.com/gorse-io/xvec/internal/ailego/math_batch"
 )
 
@@ -35,6 +36,7 @@ type ScalarQuantizedHNSWIndex struct {
 	base           *HNSWIndex
 	vectors        *scalarQuantizedVectors
 	fp16Magnitudes []float32
+	deferredMmap   bool
 }
 
 // NewScalarQuantizedHNSWIndex snapshots base and quantizes every vector after
@@ -138,7 +140,9 @@ func openHNSWIndexWithStorage(ctx context.Context, path string, borrowed map[uin
 		return nil, err
 	}
 	defer func() { err = errors.Join(err, encoded.Unmap()) }()
-	return decodeHNSWIndexWithStorage(ctx, encoded, borrowed, encodedOriginals, materialize)
+	return decodeHNSWIndexWithStorageAndDiscard(ctx, encoded, borrowed, encodedOriginals, materialize, func(start, end int) {
+		ioutil.DiscardReadOnlyMappedPages(encoded, start, end)
+	})
 }
 
 // FlatIndex returns an immutable linear-search view sharing the graph's codes
@@ -217,6 +221,9 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
 	if i == nil || i.base == nil || i.vectors == nil {
 		return nil, errors.New("core: nil scalar-quantized HNSW index")
 	}
+	if err := i.ensureCodes(ctx); err != nil {
+		return nil, err
+	}
 	if err := i.vectors.lockCodes(); err != nil {
 		return nil, err
 	}
@@ -285,6 +292,9 @@ func (i *ScalarQuantizedHNSWIndex) search(
 ) ([]Result, error) {
 	if i == nil || i.base == nil || i.vectors == nil {
 		return nil, errors.New("core: nil scalar-quantized HNSW index")
+	}
+	if err := i.ensureCodes(ctx); err != nil {
+		return nil, err
 	}
 	if err := i.vectors.lockCodes(); err != nil {
 		return nil, err

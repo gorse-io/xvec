@@ -292,6 +292,18 @@ func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQueryS
 		segments: segments, runtimes: runtimes, liveFilter: liveFilter, ftsScorers: ftsScorers,
 	}
 	snapshot.retainRuntimes()
+	if c.options.ReadOnly && c.options.EnableMmap {
+		for _, field := range schema.Fields {
+			if field.DataType != DataTypeVectorFP32 || field.IndexType() != IndexTypeHNSW {
+				continue
+			}
+			spec, err := resolveCollectionVectorIndex(field, "release validated originals", c.path)
+			if err == nil && spec.quantize == QuantizeTypeFP16 {
+				c.store.DiscardReadOnlyMappedPages()
+				break
+			}
+		}
+	}
 	c.querySnapshot.Store(snapshot)
 	c.querySnapshotBuildCount.Add(1)
 	return snapshot, nil
@@ -565,6 +577,9 @@ func openCollectionDenseArtifact(
 				originals := make(map[uint64][]byte, len(keys))
 				for position, key := range keys {
 					originals[key] = reader.rows[position]
+				}
+				if kind == core.QuantizationFP16 && useMmap {
+					return core.OpenScalarQuantizedHNSWIndexWithDeferredFP16Codes(ctx, path, reformer, originals, useMmap)
 				}
 				return core.OpenScalarQuantizedHNSWIndexWithEncodedVectors(ctx, path, kind, reformer, originals, useMmap)
 			}

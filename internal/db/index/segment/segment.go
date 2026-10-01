@@ -31,6 +31,7 @@ import (
 
 	mmap "github.com/blevesearch/mmap-go"
 	"github.com/gorse-io/xvec/internal/ailego/hash"
+	ioutil "github.com/gorse-io/xvec/internal/ailego/io"
 )
 
 const (
@@ -384,6 +385,17 @@ func (s *ImmutableSegment) ID() uint64 {
 		return 0
 	}
 	return s.metadata.ID
+}
+
+// DiscardMappedPages releases residency after read-only runtime validation.
+// Payload views remain valid; later vector refinement/projection faults them
+// back in. Close is excluded while the advice accesses the mapping.
+func (s *ImmutableSegment) DiscardMappedPages() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.closed && s.mapped != nil {
+		ioutil.DiscardReadOnlyMappedPages(s.mapped, 0, len(s.mapped))
+	}
 }
 
 // Metadata returns a deep copy.
