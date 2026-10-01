@@ -990,6 +990,17 @@ func (c *CollectionStore) Manifest() common.Manifest {
 // including the rare case where a post-commit directory sync reports an
 // error. Callers must update their in-memory schema whenever committed is true.
 func (c *CollectionStore) PublishSchema(ctx context.Context, schema json.RawMessage) (committed bool, err error) {
+	return c.publishSchema(ctx, schema, nil, false)
+}
+
+// PublishSchemaWithIndexSnapshots atomically updates the schema and the
+// compatible index artifacts retained by its caller. An empty list clears
+// artifact metadata; callers must bind retained snapshots to the new schema.
+func (c *CollectionStore) PublishSchemaWithIndexSnapshots(ctx context.Context, schema json.RawMessage, snapshots []common.SegmentIndexSnapshotMetadata) (committed bool, err error) {
+	return c.publishSchema(ctx, schema, common.CloneSegmentIndexSnapshots(snapshots), true)
+}
+
+func (c *CollectionStore) publishSchema(ctx context.Context, schema json.RawMessage, snapshots []common.SegmentIndexSnapshotMetadata, replaceIndexes bool) (committed bool, err error) {
 	if c == nil {
 		return false, errors.New("db: nil collection")
 	}
@@ -1008,11 +1019,14 @@ func (c *CollectionStore) PublishSchema(ctx context.Context, schema json.RawMess
 		return false, err
 	}
 	current := c.versions.Current()
-	if bytes.Equal(current.Schema, schema) {
+	if bytes.Equal(current.Schema, schema) && (!replaceIndexes || reflect.DeepEqual(current.SegmentIndexSnapshots, snapshots)) {
 		return false, nil
 	}
 	next := current.Clone()
 	next.Schema = slices.Clone(schema)
+	if replaceIndexes {
+		next.SegmentIndexSnapshots = snapshots
+	}
 	_, publishErr := c.versions.Publish(ctx, next)
 	committed = c.versions.Current().Generation != current.Generation
 	return committed, publishErr

@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestHNSWRuntimeSharesFlatAndDefersExact(t *testing.T) {
+func TestHNSWRuntimeSharesFlatAndScansOriginals(t *testing.T) {
 	ctx := context.Background()
 	for _, quantize := range []QuantizeType{QuantizeTypeUndefined, QuantizeTypeFP16, QuantizeTypeInt8, QuantizeTypeInt4} {
 		t.Run(fmt.Sprint(quantize), func(t *testing.T) {
@@ -57,11 +57,16 @@ func TestHNSWRuntimeSharesFlatAndDefersExact(t *testing.T) {
 
 			var artifacts map[string]string
 			for _, reopen := range []bool{false, true} {
-				indexes, err := buildCollectionRuntimeIndexes(ctx, schema, documents, 2, 0, false, artifacts)
+				var indexes *collectionRuntimeIndexes
+				if artifacts == nil {
+					indexes, err = buildIndexedCollectionRuntimeForTest(t, ctx, schema, documents)
+				} else {
+					indexes, err = buildCollectionRuntimeIndexes(ctx, schema, documents, 2, 0, false, artifacts)
+				}
 				require.NoError(t, err)
-				lazy, ok := indexes.denseExact[field.Name].(*lazyCollectionDenseFlatIndex)
+				lazy, ok := indexes.denseExact[field.Name].(*collectionOriginalDenseIndex)
 				require.True(t, ok)
-				require.Nil(t, lazy.index, "exact storage must not be built for ANN queries")
+				require.Len(t, lazy.candidates, lazy.Len(), "original vectors remain borrowed after search")
 				require.Equal(t, 48, lazy.Len())
 				flat := indexes.denseFlat[field.Name]
 				if quantize == QuantizeTypeUndefined {
@@ -74,15 +79,15 @@ func TestHNSWRuntimeSharesFlatAndDefersExact(t *testing.T) {
 					gotGroups, err := flat.(core.DenseGroupSearcher).SearchGroups(ctx, query, groups)
 					require.NoError(t, err)
 					require.Equal(t, wantGroups, gotGroups)
-					require.Nil(t, lazy.index, "quantized linear and grouped searches should not allocate exact storage")
+					require.Len(t, lazy.candidates, lazy.Len(), "original vectors remain borrowed after search")
 				}
-				// Concurrent first use must publish one complete exact fallback, and a
-				// canceled attempt must not prevent a later successful initialization.
+				// Concurrent scans share immutable originals; cancellation does not
+				// change the storage seen by later scans.
 				canceled, cancel := context.WithCancel(ctx)
 				cancel()
 				_, err = lazy.SearchWithOptions(canceled, query, options)
 				require.ErrorIs(t, err, context.Canceled)
-				require.Nil(t, lazy.index)
+				require.Len(t, lazy.candidates, lazy.Len(), "original vectors remain borrowed after search")
 				results := make([][]core.Result, 8)
 				errs := make([]error, 8)
 				var wg sync.WaitGroup
@@ -94,7 +99,7 @@ func TestHNSWRuntimeSharesFlatAndDefersExact(t *testing.T) {
 					require.NoError(t, errs[j])
 					require.Equal(t, wantExact, results[j])
 				}
-				require.NotNil(t, lazy.index)
+				require.Len(t, lazy.candidates, lazy.Len(), "original vectors remain borrowed after search")
 				if !reopen {
 					path := filepath.Join(t.TempDir(), "hnsw")
 					require.NoError(t, indexes.denseNative[field.Name].(interface {
@@ -169,7 +174,7 @@ func testImmutableDocumentsSharedAcrossQuerySnapshots(t *testing.T, params Index
 	require.Equal(t, VectorFP32{100, 0, 0, 0}, results[0].Fields["embedding"])
 }
 
-func TestQuantizedFlatRuntimeDefersExact(t *testing.T) {
+func TestQuantizedFlatRuntimeScansOriginals(t *testing.T) {
 	ctx := context.Background()
 	for _, quantize := range []QuantizeType{QuantizeTypeFP16, QuantizeTypeInt8, QuantizeTypeInt4} {
 		t.Run(fmt.Sprint(quantize), func(t *testing.T) {
@@ -185,9 +190,9 @@ func TestQuantizedFlatRuntimeDefersExact(t *testing.T) {
 			indexes, err := buildCollectionRuntimeIndexes(ctx, schema, documents, 2, 0, false, nil)
 			require.NoError(t, err)
 			defer func() { require.NoError(t, indexes.Close()) }()
-			lazy, ok := indexes.denseExact[field.Name].(*lazyCollectionDenseFlatIndex)
+			lazy, ok := indexes.denseExact[field.Name].(*collectionOriginalDenseIndex)
 			require.True(t, ok)
-			require.Nil(t, lazy.index)
+			require.Len(t, lazy.candidates, lazy.Len(), "original vectors remain borrowed after search")
 			query := []float32{.75, .25, -.5, .125}
 			flat := indexes.denseFlat[field.Name]
 			require.Same(t, flat, indexes.denseNative[field.Name])
@@ -196,7 +201,7 @@ func TestQuantizedFlatRuntimeDefersExact(t *testing.T) {
 			groups := core.GroupByOptions{GroupCount: 4, TopKPerGroup: 2, Resolve: func(key uint64) (string, bool) { return fmt.Sprint(key % 4), true }}
 			_, err = flat.(core.DenseGroupSearcher).SearchGroups(ctx, query, groups)
 			require.NoError(t, err)
-			require.Nil(t, lazy.index, "quantized searches must not materialize exact FP32 storage")
+			require.Len(t, lazy.candidates, lazy.Len(), "original vectors remain borrowed after search")
 			exact, err := buildDenseFlatIndex(ctx, field, core.MetricL2, documents)
 			require.NoError(t, err)
 			want, err := exact.(core.DenseGroupSearcher).SearchGroups(ctx, query, groups)
@@ -204,7 +209,7 @@ func TestQuantizedFlatRuntimeDefersExact(t *testing.T) {
 			got, err := lazy.SearchGroups(ctx, query, groups)
 			require.NoError(t, err)
 			require.Equal(t, want, got)
-			require.NotNil(t, lazy.index, "grouped refinement must still support exact scoring")
+			require.Len(t, lazy.candidates, lazy.Len(), "original vectors remain borrowed after search")
 		})
 	}
 }

@@ -96,13 +96,16 @@ type CollectionStats struct {
 // Collection is one open native Go collection. Its methods are safe for
 // concurrent use; mutations are serialized so queries see complete versions.
 type Collection struct {
-	mu      sync.RWMutex
-	store   *db.CollectionStore
-	path    string
-	schema  CollectionSchema
-	options CollectionOptions
-	runtime *runtimeResources
-	closed  bool
+	// Maintenance changes schemas or physical segments; writes and queries can
+	// continue while Optimize builds immutable ANN artifacts.
+	maintenanceMu sync.Mutex
+	mu            sync.RWMutex
+	store         *db.CollectionStore
+	path          string
+	schema        CollectionSchema
+	options       CollectionOptions
+	runtime       *runtimeResources
+	closed        bool
 	// activeIterators is guarded by mu. Maintenance operations that can
 	// invalidate iterator snapshots are rejected until it reaches zero.
 	activeIterators int
@@ -127,6 +130,8 @@ type collectionRuntimeKey struct {
 }
 
 type collectionRuntimeIndexes struct {
+	// writerFlat marks fields whose configured ANN index has not been built.
+	writerFlat   map[string]bool
 	key          collectionRuntimeKey
 	denseFlat    map[string]collectionDenseIndex
 	denseNative  map[string]collectionDenseIndex
@@ -135,18 +140,10 @@ type collectionRuntimeIndexes struct {
 	sparseNative map[string]core.SparseQuerySearcher
 	sparseExact  map[string]*core.SparseFlatIndex
 	fts          map[string]*collectionFTSRuntime
-	scalarMu     sync.Mutex
 	scalar       sqlengine.IndexSet
-	lazyScalar   map[string]collectionLazyScalarIndex
 
 	closeMu          sync.Mutex
 	closedDenseIndex map[string]struct{}
-}
-
-type collectionLazyScalarIndex struct {
-	path       string
-	definition sqlengine.Field
-	rowCount   uint64
 }
 
 type collectionSegmentDocuments struct {
@@ -274,7 +271,7 @@ func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQueryS
 	if err != nil {
 		return nil, err
 	}
-	runtimes, err := c.segmentRuntimeIndexesLocked(ctx, segments)
+	runtimes, err := c.cachedSegmentRuntimeIndexesLocked(ctx, segments)
 	if err != nil {
 		return nil, err
 	}
@@ -452,8 +449,8 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 	}
 	c.indexMu.RUnlock()
 
-	// A missing or stale generation is built once under the write lock. Other
-	// cold queries wait for that publication and then reuse the same runtimes.
+	// Only opening, writing and maintenance call this initializer. Queries
+	// collect existing runtimes without constructing or opening indexes.
 	c.indexMu.Lock()
 	defer c.indexMu.Unlock()
 	previous := c.segmentIndexes
@@ -480,9 +477,15 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 			continue
 		}
 		artifacts := c.segmentIndexArtifactPaths(segment.metadata, key)
-		indexes, err := buildCollectionRuntimeIndexes(
+		var appendTo *collectionRuntimeIndexes
+		if cached := previous[segment.metadata.ID]; cached != nil &&
+			cached.key.schemaHash == key.schemaHash && cached.key.count < key.count &&
+			cached.key.maxDocID == segment.documents[cached.key.count-1].DocID {
+			appendTo = cached.indexes
+		}
+		indexes, err := buildCollectionIndexes(
 			ctx, c.schema, segment.documents, c.queryWorkers(), c.options.MaxBufferSize,
-			c.options.EnableMmap, artifacts,
+			c.options.EnableMmap, artifacts, false, appendTo,
 		)
 		if err != nil {
 			return fail(fmt.Errorf("open indexes for segment %d: %w", segment.metadata.ID, err))
@@ -577,9 +580,6 @@ func openCollectionDenseArtifact(
 				originals := make(map[uint64][]byte, len(keys))
 				for position, key := range keys {
 					originals[key] = reader.rows[position]
-				}
-				if kind == core.QuantizationFP16 && useMmap {
-					return core.OpenScalarQuantizedHNSWIndexWithDeferredFP16Codes(ctx, path, reformer, originals, useMmap)
 				}
 				return core.OpenScalarQuantizedHNSWIndexWithEncodedVectors(ctx, path, kind, reformer, originals, useMmap)
 			}
@@ -695,7 +695,14 @@ func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSe
 			return nil
 		}
 		documents := make([]Document, len(snapshot.Documents))
-		for position, item := range snapshot.Documents {
+		prefix := 0
+		if runtime := cached[snapshot.Metadata.ID]; runtime != nil &&
+			runtime.key.schemaHash == schemaKey.schemaHash && len(runtime.documents) <= len(documents) &&
+			len(runtime.documents) > 0 && snapshot.Documents[len(runtime.documents)-1].DocID == runtime.key.maxDocID {
+			prefix = copy(documents, runtime.documents)
+		}
+		for position := prefix; position < len(snapshot.Documents); position++ {
+			item := snapshot.Documents[position]
 			fields := borrowedFields
 			if snapshot.Mutable {
 				fields = nil
@@ -718,7 +725,7 @@ func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSe
 	return segments, nil
 }
 
-func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context, workers int) error {
+func (c *Collection) persistAvailableSegmentIndexesLocked(ctx context.Context, workers int) error {
 	c.invalidateQuerySnapshotLocked()
 	needsArtifacts, err := collectionSchemaNeedsSegmentIndexArtifacts(c.schema, c.path)
 	if err != nil {
@@ -730,6 +737,9 @@ func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context, wor
 			if _, err := c.store.PublishSegmentIndexSnapshots(ctx, nil); err != nil {
 				return err
 			}
+		}
+		if err := c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx)); err != nil {
+			return err
 		}
 		return c.store.PruneObsoleteArtifacts(ctx)
 	}
@@ -771,7 +781,7 @@ func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context, wor
 			indexes = cached.indexes
 		} else {
 			var buildErr error
-			indexes, buildErr = buildCollectionArtifactIndexes(ctx, c.schema, segment.documents, workers, c.options.MaxBufferSize)
+			indexes, buildErr = buildCollectionRuntimeIndexes(ctx, c.schema, segment.documents, workers, c.options.MaxBufferSize, c.options.EnableMmap, c.segmentIndexArtifactPaths(segment.metadata, key))
 			if buildErr != nil {
 				cleanup()
 				return fmt.Errorf("build indexes for segment %d: %w", segment.metadata.ID, buildErr)
@@ -799,7 +809,7 @@ func (c *Collection) refreshSegmentIndexArtifactsLocked(ctx context.Context, wor
 		})
 	}
 	if len(next) == 0 && len(manifest.SegmentIndexSnapshots) == 0 {
-		return nil
+		return c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx))
 	}
 	committed, publishErr := c.store.PublishSegmentIndexSnapshots(ctx, next)
 	if !committed {
@@ -913,6 +923,9 @@ func (c *Collection) writeSegmentRuntimeArtifacts(ctx context.Context, segmentID
 			if spec.indexType == IndexTypeFlat {
 				continue
 			}
+			if indexes.writerFlat[field.Name] {
+				continue
+			}
 			kind := collectionVectorArtifactKind(spec.indexType)
 			if field.DataType.IsDenseVector() {
 				saver, ok := indexes.denseNative[field.Name].(interface {
@@ -976,7 +989,7 @@ func buildCollectionRuntimeIndexes(
 	useMmap bool,
 	artifacts map[string]string,
 ) (*collectionRuntimeIndexes, error) {
-	return buildCollectionIndexes(ctx, schema, documents, workers, maxBufferSize, useMmap, artifacts, false)
+	return buildCollectionIndexes(ctx, schema, documents, workers, maxBufferSize, useMmap, artifacts, false, nil)
 }
 
 // buildCollectionArtifactIndexes constructs only indexes that have a durable
@@ -989,7 +1002,7 @@ func buildCollectionArtifactIndexes(
 	workers int,
 	maxBufferSize uint32,
 ) (*collectionRuntimeIndexes, error) {
-	return buildCollectionIndexes(ctx, schema, documents, workers, maxBufferSize, false, nil, true)
+	return buildCollectionIndexes(ctx, schema, documents, workers, maxBufferSize, false, nil, true, nil)
 }
 
 func buildCollectionIndexes(
@@ -1001,14 +1014,15 @@ func buildCollectionIndexes(
 	useMmap bool,
 	artifacts map[string]string,
 	artifactOnly bool,
+	appendTo *collectionRuntimeIndexes,
 ) (*collectionRuntimeIndexes, error) {
 	indexes := &collectionRuntimeIndexes{
-		denseFlat: make(map[string]collectionDenseIndex), denseNative: make(map[string]collectionDenseIndex),
+		writerFlat: make(map[string]bool),
+		denseFlat:  make(map[string]collectionDenseIndex), denseNative: make(map[string]collectionDenseIndex),
 		denseExact: make(map[string]collectionDenseIndex),
 		sparseFlat: make(map[string]core.SparseQuerySearcher), sparseNative: make(map[string]core.SparseQuerySearcher),
 		sparseExact: make(map[string]*core.SparseFlatIndex),
 		fts:         make(map[string]*collectionFTSRuntime), scalar: make(sqlengine.IndexSet),
-		lazyScalar: make(map[string]collectionLazyScalarIndex),
 	}
 	fail := func(err error) (*collectionRuntimeIndexes, error) {
 		_ = indexes.Close()
@@ -1042,24 +1056,31 @@ func buildCollectionIndexes(
 				}
 				continue
 			}
+			artifact := artifacts[collectionIndexArtifactKey(field.Name, collectionVectorArtifactKind(spec.indexType))]
+			if (spec.indexType != IndexTypeFlat && artifact == "") || (spec.indexType == IndexTypeFlat && spec.quantize == QuantizeTypeUndefined) {
+				if err := indexes.appendWriterFlat(ctx, field, spec, documents, appendTo); err != nil {
+					return fail(err)
+				}
+				continue
+			}
 			if field.DataType.IsDenseVector() {
 				var exact collectionDenseIndex
-				useLazyExact := spec.indexType == IndexTypeHNSW ||
+				useOriginalView := spec.indexType == IndexTypeHNSW ||
 					(spec.indexType == IndexTypeFlat && spec.quantize != QuantizeTypeUndefined) ||
 					(spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined)
-				if field.DataType == DataTypeVectorFP32 && useLazyExact {
+				if field.DataType == DataTypeVectorFP32 && useOriginalView {
 					reader, keys, readerErr := collectionEncodedDenseReader(ctx, field, documents)
 					if readerErr != nil {
 						return fail(readerErr)
 					}
 					if reader != nil {
-						exact = &lazyCollectionDenseFlatIndex{dimension: int(field.Dimension), metric: spec.metric, reader: reader, keys: keys}
+						exact = &collectionOriginalDenseIndex{dimension: int(field.Dimension), metric: spec.metric, reader: reader, keys: keys}
 					} else {
 						candidates, candidateErr := collectionDenseBorrowedCandidates(ctx, field, documents)
 						if candidateErr != nil {
 							return fail(candidateErr)
 						}
-						exact = newLazyCollectionDenseFlatIndex(int(field.Dimension), spec.metric, candidates)
+						exact = newCollectionOriginalDenseIndex(int(field.Dimension), spec.metric, candidates)
 					}
 				} else {
 					exact, err = buildDenseFlatIndex(ctx, field, spec.metric, documents)
@@ -1083,18 +1104,9 @@ func buildCollectionIndexes(
 					indexes.denseNative[field.Name] = flat
 					continue
 				}
-				var native collectionDenseIndex
-				artifact := artifacts[collectionIndexArtifactKey(field.Name, collectionVectorArtifactKind(spec.indexType))]
-				if artifact != "" {
-					native, err = openCollectionDenseArtifact(ctx, artifact, schema.Name, field, documents, spec, workers, maxBufferSize, useMmap)
-					if err != nil {
-						return fail(err)
-					}
-				} else {
-					native, err = buildCollectionDenseNative(ctx, schema.Name, field, documents, spec, workers, maxBufferSize)
-					if err != nil {
-						return fail(err)
-					}
+				native, err := openCollectionDenseArtifact(ctx, artifact, schema.Name, field, documents, spec, workers, maxBufferSize, useMmap)
+				if err != nil {
+					return fail(err)
 				}
 				indexes.denseNative[field.Name] = native
 				if flat == nil {
@@ -1120,13 +1132,7 @@ func buildCollectionIndexes(
 				indexes.sparseNative[field.Name] = flat
 				continue
 			}
-			var native core.SparseQuerySearcher
-			artifact := artifacts[collectionIndexArtifactKey(field.Name, collectionVectorArtifactKind(spec.indexType))]
-			if artifact != "" {
-				native, err = core.OpenSparseHNSWIndex(ctx, artifact)
-			} else {
-				native, err = buildCollectionSparseIndex(ctx, field, documents, spec, false, workers)
-			}
+			native, err := core.OpenSparseHNSWIndex(ctx, artifact)
 			if err != nil {
 				return fail(err)
 			}
@@ -1161,9 +1167,14 @@ func buildCollectionIndexes(
 			Indexed: true, RangeOptimized: rangeOptimized, ExtendedWildcard: extendedWildcard,
 		}
 		if artifact := artifacts[collectionIndexArtifactKey(field.Name, collectionInvertArtifactKind)]; artifact != "" {
-			indexes.lazyScalar[field.Name] = collectionLazyScalarIndex{
-				path: artifact, definition: definition, rowCount: uint64(len(documents)),
+			index, err := sqlengine.OpenInvertedIndex(ctx, artifact)
+			if err != nil {
+				return fail(fmt.Errorf("open INVERT artifact for field %q: %w", field.Name, err))
 			}
+			if index.Field() != definition || index.RowCount() != uint64(len(documents)) {
+				return fail(fmt.Errorf("INVERT artifact for field %q does not match the collection snapshot", field.Name))
+			}
+			indexes.scalar[field.Name] = index
 			continue
 		}
 		index, err := sqlengine.NewInvertedIndex(definition)
@@ -1216,28 +1227,13 @@ func buildCollectionDenseNative(
 }
 
 func (i *collectionRuntimeIndexes) scalarIndex(ctx context.Context, name string) (*sqlengine.InvertedIndex, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if i == nil {
 		return nil, nil
 	}
-	i.scalarMu.Lock()
-	defer i.scalarMu.Unlock()
-	if index := i.scalar[name]; index != nil {
-		return index, nil
-	}
-	artifact, found := i.lazyScalar[name]
-	if !found {
-		return nil, nil
-	}
-	index, err := sqlengine.OpenInvertedIndex(ctx, artifact.path)
-	if err != nil {
-		return nil, fmt.Errorf("open INVERT artifact for field %q: %w", name, err)
-	}
-	if index.Field() != artifact.definition || index.RowCount() != artifact.rowCount {
-		return nil, fmt.Errorf("INVERT artifact for field %q does not match the collection snapshot", name)
-	}
-	i.scalar[name] = index
-	delete(i.lazyScalar, name)
-	return index, nil
+	return i.scalar[name], nil
 }
 
 func (i *collectionRuntimeIndexes) scalarIndexesForFields(ctx context.Context, fields []sqlengine.Field) (sqlengine.IndexSet, error) {
@@ -1377,10 +1373,12 @@ func Open(ctx context.Context, path string, options CollectionOptions) (*Collect
 		return nil, &Error{Code: ErrorCodeInternal, Op: "open collection", Path: absolute, Message: "schema and manifest segment capacities differ"}
 	}
 	options.EnableMmap = manifest.EnableMmap
-	return &Collection{
-		store: store, path: absolute, schema: schema, options: options,
-		runtime: resources,
-	}, nil
+	collection := &Collection{store: store, path: absolute, schema: schema, options: options, runtime: resources}
+	if err := collection.prepareSegmentRuntimesLocked(ctx); err != nil {
+		_ = collection.Close()
+		return nil, wrapCollectionError("open collection", absolute, err)
+	}
+	return collection, nil
 }
 
 // Path returns the absolute collection directory.
@@ -1430,6 +1428,7 @@ func (c *Collection) Stats() CollectionStats {
 		stats.DeletedDocuments = storage.DeletedDocumentCount
 		stats.StorageMemoryBytes = storage.MemoryUsageBytes
 	}
+	var live map[uint64]string
 	for _, field := range c.schema.Fields {
 		index := field.EffectiveIndex()
 		if indexParamsNil(index) {
@@ -1438,6 +1437,23 @@ func (c *Collection) Stats() CollectionStats {
 		completeness := float32(0)
 		if collectionVectorFieldSupported(field) || field.IndexType() == IndexTypeFTS {
 			completeness = 1
+			if field.DataType.IsVector() && field.IndexType() != IndexTypeFlat && stats.DocumentCount != 0 {
+				if live == nil {
+					live, _ = c.store.LiveDocumentPrimaryKeys(context.Background())
+				}
+				var indexed uint64
+				for _, segment := range c.segmentIndexes {
+					if segment.indexes.writerFlat[field.Name] {
+						continue
+					}
+					for _, document := range segment.documents {
+						if _, found := live[document.DocID]; found {
+							indexed++
+						}
+					}
+				}
+				completeness = float32(indexed) / float32(stats.DocumentCount)
+			}
 		}
 		stats.IndexCompleteness[field.Name] = completeness
 	}
@@ -1445,6 +1461,7 @@ func (c *Collection) Stats() CollectionStats {
 }
 
 // Flush atomically publishes the current write segment and rotates its WAL.
+// It persists available scalar/FTS indexes without constructing ANN indexes.
 func (c *Collection) Flush(ctx context.Context) error {
 	if c == nil {
 		return invalidArgument("flush collection", "collection is nil")
@@ -1452,6 +1469,8 @@ func (c *Collection) Flush(ctx context.Context) error {
 	if ctx == nil {
 		return invalidArgument("flush collection", "context is nil")
 	}
+	c.maintenanceMu.Lock()
+	defer c.maintenanceMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked("flush collection"); err != nil {
@@ -1461,7 +1480,10 @@ func (c *Collection) Flush(ctx context.Context) error {
 	if err := c.store.Flush(ctx); err != nil {
 		return wrapCollectionError("flush collection", c.path, err)
 	}
-	return wrapCollectionError("flush collection", c.path, c.refreshSegmentIndexArtifactsLocked(ctx, c.queryWorkers()))
+	if err := c.persistAvailableSegmentIndexesLocked(ctx, c.queryWorkers()); err != nil {
+		return wrapCollectionError("flush collection", c.path, err)
+	}
+	return wrapCollectionError("flush collection", c.path, c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx)))
 }
 
 // Close releases files and the cross-process collection lock. It is
@@ -1471,6 +1493,8 @@ func (c *Collection) Close() error {
 	if c == nil {
 		return nil
 	}
+	c.maintenanceMu.Lock()
+	defer c.maintenanceMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
@@ -1507,6 +1531,8 @@ func (c *Collection) Destroy(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return wrapCollectionError("destroy collection", c.Path(), err)
 	}
+	c.maintenanceMu.Lock()
+	defer c.maintenanceMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed || c.store == nil {
@@ -1591,6 +1617,8 @@ func (c *Collection) AddColumn(ctx context.Context, field FieldSchema, expressio
 		return wrapCollectionError(op, c.Path(), err)
 	}
 	defer releaseRuntime()
+	c.maintenanceMu.Lock()
+	defer c.maintenanceMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {
@@ -1674,6 +1702,8 @@ func (c *Collection) AlterColumn(ctx context.Context, column, rename string, fie
 		return wrapCollectionError(op, c.Path(), err)
 	}
 	defer releaseRuntime()
+	c.maintenanceMu.Lock()
+	defer c.maintenanceMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {
@@ -2015,36 +2045,32 @@ type collectionDenseIndex interface {
 	core.DenseQuerySearcher
 }
 
-type lazyCollectionDenseFlatIndex struct {
+type collectionOriginalDenseIndex struct {
 	dimension  int
 	metric     core.Metric
 	candidates []core.Candidate
 	reader     core.DenseVectorReader
 	keys       []uint64
-	mu         sync.Mutex
-	index      *core.DenseFlatIndex
 }
 
-func newLazyCollectionDenseFlatIndex(dimension int, metric core.Metric, candidates []core.Candidate) *lazyCollectionDenseFlatIndex {
-	return &lazyCollectionDenseFlatIndex{dimension: dimension, metric: metric, candidates: candidates}
+func newCollectionOriginalDenseIndex(dimension int, metric core.Metric, candidates []core.Candidate) *collectionOriginalDenseIndex {
+	keys := make([]uint64, len(candidates))
+	for position, candidate := range candidates {
+		keys[position] = candidate.Key
+	}
+	return &collectionOriginalDenseIndex{dimension: dimension, metric: metric, candidates: candidates, keys: keys}
 }
 
-func (i *lazyCollectionDenseFlatIndex) Dimension() int      { return i.dimension }
-func (i *lazyCollectionDenseFlatIndex) Metric() core.Metric { return i.metric }
-func (i *lazyCollectionDenseFlatIndex) Len() int {
+func (i *collectionOriginalDenseIndex) Dimension() int      { return i.dimension }
+func (i *collectionOriginalDenseIndex) Metric() core.Metric { return i.metric }
+func (i *collectionOriginalDenseIndex) Len() int {
 	if i.reader != nil {
 		return len(i.keys)
 	}
 	return len(i.candidates)
 }
 
-func (i *lazyCollectionDenseFlatIndex) Vector(key uint64) ([]float32, bool) {
-	i.mu.Lock()
-	index := i.index
-	i.mu.Unlock()
-	if index != nil {
-		return index.Vector(key)
-	}
+func (i *collectionOriginalDenseIndex) Vector(key uint64) ([]float32, bool) {
 	if i.reader != nil {
 		for position, candidateKey := range i.keys {
 			if candidateKey == key {
@@ -2065,77 +2091,31 @@ func (i *lazyCollectionDenseFlatIndex) Vector(key uint64) ([]float32, bool) {
 	return nil, false
 }
 
-func (i *lazyCollectionDenseFlatIndex) SearchWithOptions(
+func (i *collectionOriginalDenseIndex) SearchWithOptions(
 	ctx context.Context,
 	query []float32,
 	options core.SearchOptions,
 ) ([]core.Result, error) {
-	index, err := i.ensure(ctx)
-	if err != nil {
-		return nil, err
+	if len(query) != i.dimension {
+		return nil, core.ErrInvalidDimension
 	}
-	return index.SearchWithOptions(ctx, query, options)
+	return core.SearchDenseReader(ctx, i.metric, query, i.keys, i.vectorReader(), options)
 }
 
-func (i *lazyCollectionDenseFlatIndex) SearchGroups(
+func (i *collectionOriginalDenseIndex) SearchGroups(
 	ctx context.Context,
 	query []float32,
 	options core.GroupByOptions,
 ) ([]core.GroupResult, error) {
-	index, err := i.ensure(ctx)
-	if err != nil {
-		return nil, err
+	if len(query) != i.dimension {
+		return nil, core.ErrInvalidDimension
 	}
-	return index.SearchGroups(ctx, query, options)
-}
-
-func (i *lazyCollectionDenseFlatIndex) ensure(ctx context.Context) (*core.DenseFlatIndex, error) {
-	if ctx == nil {
-		return nil, errors.New("nil exact Flat build context")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if i.index != nil {
-		return i.index, nil
-	}
-	var index *core.DenseFlatIndex
-	var err error
-	if i.reader != nil {
-		index, err = core.NewDenseFlatIndex(i.dimension, i.metric)
-		if err == nil {
-			err = index.Reserve(len(i.keys))
-		}
-		if err != nil {
-			return nil, err
-		}
-		vector := make([]float32, i.dimension)
-		for position, key := range i.keys {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if err := i.reader.ReadVector(position, vector); err != nil {
-				return nil, err
-			}
-			if err := index.Add(ctx, key, vector); err != nil {
-				return nil, err
-			}
-		}
-	} else {
-		index, err = core.NewDenseFlatIndexFromValidatedCandidates(ctx, i.dimension, i.metric, i.candidates)
-	}
-	if err != nil {
-		return nil, err
-	}
-	i.index = index
-	return index, nil
+	return core.SearchDenseReaderGroups(ctx, i.metric, query, i.keys, i.vectorReader(), options)
 }
 
 var (
-	_ collectionDenseIndex    = (*lazyCollectionDenseFlatIndex)(nil)
-	_ core.DenseGroupSearcher = (*lazyCollectionDenseFlatIndex)(nil)
+	_ collectionDenseIndex    = (*collectionOriginalDenseIndex)(nil)
+	_ core.DenseGroupSearcher = (*collectionOriginalDenseIndex)(nil)
 )
 
 type collectionHNSWIndex interface {
@@ -2902,11 +2882,9 @@ func validateCollectionVectorRepresentations(ctx context.Context, schema Collect
 	return nil
 }
 
-// CreateIndex validates and backfills a currently implemented index, then
-// atomically publishes the new schema in a manifest generation. At this stage
-// Vector, INVERT, and FTS indexes are snapshot-local runtime indexes, so backfill
-// validates the complete live snapshot and publication persists their
-// parameters.
+// CreateIndex seals pending writes and builds persistent indexes for existing
+// segments. Subsequent writes remain searchable through Flat until the next
+// Optimize or CreateIndex call.
 func (c *Collection) CreateIndex(ctx context.Context, column string, index IndexParams, options CreateIndexOptions) error {
 	const op = "create index"
 	if c == nil {
@@ -2923,8 +2901,15 @@ func (c *Collection) CreateIndex(ctx context.Context, column string, index Index
 		return wrapCollectionError(op, c.Path(), err)
 	}
 	defer releaseRuntime()
+	c.maintenanceMu.Lock()
+	defer c.maintenanceMu.Unlock()
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			c.mu.Unlock()
+		}
+	}()
 	if err := c.requireOpenLocked(op); err != nil {
 		return err
 	}
@@ -2968,7 +2953,17 @@ func (c *Collection) CreateIndex(ctx context.Context, column string, index Index
 		return err
 	}
 	if equalIndexParams(oldField.Index, normalized) {
-		return nil
+		if err := c.store.Flush(ctx); err != nil {
+			return wrapCollectionError(op, c.path, err)
+		}
+		if err := c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx)); err != nil {
+			return wrapCollectionError(op, c.path, err)
+		}
+		c.invalidateQuerySnapshotLocked()
+		workers := c.optimizeWorkers(options.Concurrency)
+		c.mu.Unlock()
+		locked = false
+		return wrapCollectionError(op, c.path, c.buildAndPublishNativeIndexes(ctx, workers, buildCollectionArtifactIndexes, column))
 	}
 	if !oldField.DataType.IsVector() && !indexParamsNil(oldField.Index) && oldField.Index.IndexType() != normalized.IndexType() {
 		return notSupported(op, c.path, fmt.Sprintf(
@@ -2978,7 +2973,16 @@ func (c *Collection) CreateIndex(ctx context.Context, column string, index Index
 	if err := c.validateIndexBackfillLocked(ctx, nextSchema.Fields[fieldIndex], options.Concurrency); err != nil {
 		return wrapCollectionError(op, c.path, err)
 	}
-	return c.publishSchemaLocked(ctx, op, nextSchema)
+	if err := c.store.Flush(ctx); err != nil {
+		return wrapCollectionError(op, c.path, err)
+	}
+	if err := c.publishSchemaLocked(ctx, op, nextSchema); err != nil {
+		return err
+	}
+	workers := c.optimizeWorkers(options.Concurrency)
+	c.mu.Unlock()
+	locked = false
+	return wrapCollectionError(op, c.path, c.buildAndPublishNativeIndexes(ctx, workers, buildCollectionArtifactIndexes, column))
 }
 
 // DropIndex atomically clears a scalar index or restores a vector field to the
@@ -2999,6 +3003,8 @@ func (c *Collection) DropIndex(ctx context.Context, column string) error {
 		return wrapCollectionError(op, c.Path(), err)
 	}
 	defer releaseRuntime()
+	c.maintenanceMu.Lock()
+	defer c.maintenanceMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {
@@ -3053,10 +3059,17 @@ func (c *Collection) publishSchemaLocked(ctx context.Context, op string, nextSch
 	if err != nil {
 		return wrapCollectionError(op, c.path, err)
 	}
-	committed, publishErr := c.store.PublishSchema(ctx, encoded)
+	snapshots, err := c.rebindUnchangedIndexArtifacts(nextSchema, encoded)
+	if err != nil {
+		return wrapCollectionError(op, c.path, err)
+	}
+	committed, publishErr := c.store.PublishSchemaWithIndexSnapshots(ctx, encoded, snapshots)
 	if committed {
 		c.schema = nextSchema
 		c.invalidateQuerySnapshotLocked()
+		if err := c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx)); err != nil {
+			return wrapCollectionError(op, c.path, err)
+		}
 	}
 	if publishErr != nil {
 		return wrapCollectionError(op, c.path, publishErr)
@@ -3110,6 +3123,9 @@ func (c *Collection) rewriteCollectionDocumentsLocked(
 	if committed {
 		c.schema = nextSchema
 		c.invalidateQuerySnapshotLocked()
+		if err := c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx)); err != nil {
+			return wrapCollectionError(op, c.path, err)
+		}
 	}
 	if rewriteErr != nil {
 		return wrapCollectionError(op, c.path, rewriteErr)
@@ -3192,31 +3208,15 @@ func (c *Collection) validateIndexBackfillLocked(ctx context.Context, field Fiel
 		_, err := buildCollectionFTSRuntime(ctx, field, documents, nil)
 		return err
 	case IndexTypeFlat, IndexTypeHNSW, IndexTypeHNSWRaBitQ, IndexTypeIVFRaBitQ, IndexTypeIVF, IndexTypeDiskANN, IndexTypeVamana:
-		spec, err := resolveCollectionVectorIndex(field, "create index", c.path)
-		if err != nil {
+		// Reject representation errors before schema publication. Full ANN
+		// construction happens once, outside the collection lock.
+		if _, err := resolveCollectionVectorIndex(field, "create index", c.path); err != nil {
 			return err
 		}
-		if field.DataType.IsDenseVector() {
-			switch spec.indexType {
-			case IndexTypeFlat:
-				_, err = buildCollectionDenseFlat(ctx, c.schema.Name, field, documents, spec)
-			case IndexTypeHNSW:
-				_, err = buildCollectionDenseHNSW(ctx, c.schema.Name, field, documents, spec, workers)
-			case IndexTypeHNSWRaBitQ:
-				_, err = buildCollectionDenseHNSWRaBitQ(ctx, field, documents, spec, workers)
-			case IndexTypeIVFRaBitQ:
-				_, err = buildCollectionDenseIVFRaBitQ(ctx, field, documents, spec, workers)
-			case IndexTypeIVF:
-				_, err = buildCollectionDenseIVF(ctx, c.schema.Name, field, documents, spec, workers)
-			case IndexTypeDiskANN:
-				_, err = buildCollectionDenseDiskANN(ctx, c.schema.Name, field, documents, spec, workers, c.options.MaxBufferSize)
-			case IndexTypeVamana:
-				_, err = buildCollectionDenseVamana(ctx, c.schema.Name, field, documents, spec, workers)
-			}
-			return err
-		}
-		_, err = buildCollectionSparseIndex(ctx, field, documents, spec, false, workers)
-		return err
+		validationSchema := NewCollectionSchema(c.schema.Name, field)
+		return parallel.ParallelFor(ctx, len(documents), workers, func(ctx context.Context, position int) error {
+			return validateCollectionVectorRepresentations(ctx, validationSchema, documents[position])
+		})
 	default:
 		return fmt.Errorf("unsupported index type %s", field.Index.IndexType())
 	}
@@ -3242,6 +3242,8 @@ func (c *Collection) DropColumn(ctx context.Context, column string) error {
 		return wrapCollectionError(op, c.Path(), err)
 	}
 	defer releaseRuntime()
+	c.maintenanceMu.Lock()
+	defer c.maintenanceMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {
@@ -4608,8 +4610,15 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 		return wrapCollectionError(op, c.Path(), err)
 	}
 	defer releaseRuntime()
+	c.maintenanceMu.Lock()
+	defer c.maintenanceMu.Unlock()
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			c.mu.Unlock()
+		}
+	}()
 	if err := c.requireOpenLocked(op); err != nil {
 		return err
 	}
@@ -4631,10 +4640,12 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 		// Publication is the durability boundary. A process can stop after the
 		// new manifest becomes current but before obsolete files are removed;
 		// a later no-op optimization must finish that safe cleanup.
-		if err := c.refreshSegmentIndexArtifactsLocked(ctx, workers); err != nil {
+		if err := c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx)); err != nil {
 			return wrapCollectionError(op, c.path, err)
 		}
-		return wrapCollectionError(op, c.path, c.store.PruneObsoleteArtifacts(ctx))
+		c.mu.Unlock()
+		locked = false
+		return wrapCollectionError(op, c.path, c.buildAndPublishNativeIndexes(ctx, workers, buildCollectionArtifactIndexes))
 	}
 	for _, field := range c.schema.Fields {
 		if err := optimizableField(field, c.path); err != nil {
@@ -4651,10 +4662,12 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 			return wrapCollectionError(op, c.path, err)
 		}
 		runtime.GC()
-		if err := c.refreshSegmentIndexArtifactsLocked(ctx, workers); err != nil {
+		if err := c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx)); err != nil {
 			return wrapCollectionError(op, c.path, err)
 		}
-		return wrapCollectionError(op, c.path, c.store.PruneObsoleteArtifacts(ctx))
+		c.mu.Unlock()
+		locked = false
+		return wrapCollectionError(op, c.path, c.buildAndPublishNativeIndexes(ctx, workers, buildCollectionArtifactIndexes))
 	}
 	documents, err := c.liveDocumentsLocked(ctx)
 	if err != nil {
@@ -4669,10 +4682,9 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 	// uses, and the old segment payloads are unreachable, so collect at this
 	// phase boundary before large index builds raise the heap goal.
 	runtime.GC()
-	if err := c.refreshSegmentIndexArtifactsLocked(ctx, workers); err != nil {
-		return wrapCollectionError(op, c.path, err)
-	}
-	return wrapCollectionError(op, c.path, c.store.PruneObsoleteArtifacts(ctx))
+	c.mu.Unlock()
+	locked = false
+	return wrapCollectionError(op, c.path, c.buildAndPublishNativeIndexes(ctx, workers, buildCollectionArtifactIndexes))
 }
 
 func optimizableField(field FieldSchema, path string) error {
@@ -5069,6 +5081,12 @@ func (c *Collection) searchVectorSnapshotResolved(
 	params collectionQueryConfig,
 	indexes *collectionRuntimeIndexes,
 ) ([]core.Result, error) {
+	if indexes.writerFlat[field.Name] {
+		params.options.UseRefiner = false
+	}
+	vectorIndex = indexes.searchVectorSpec(field.Name, vectorIndex)
+	candidateFilter.predicate = boundCollectionFilter(documents, candidateFilter.predicate)
+
 	if candidateFilter.useBruteForce(c.runtimeConfig().BruteForceByKeysRatio) {
 		params.options.Linear = true
 	}
@@ -5230,9 +5248,6 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	if err != nil {
 		return nil, err
 	}
-	if params.options.UseRefiner && vectorIndex.indexType == IndexTypeIVFRaBitQ {
-		return nil, notSupported(op, c.path, "IVF-RaBitQ group-by does not support refinement")
-	}
 	filterPlan, err := buildFilterPlan(query.Filter, c.schema)
 	if err != nil {
 		return nil, invalidArgument(op, "invalid filter: %v", err)
@@ -5262,14 +5277,7 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 			return nil, err
 		}
 	}
-	if !params.options.Linear && vectorIndex.indexType != IndexTypeFlat {
-		if params.options.UseRefiner && (vectorIndex.indexType == IndexTypeHNSW || vectorIndex.indexType == IndexTypeHNSWRaBitQ) {
-			return nil, notSupported(op, c.path, fmt.Sprintf("%s group-by with a refiner requires Linear", vectorIndex.indexType))
-		}
-		if vectorIndex.indexType != IndexTypeHNSW && vectorIndex.indexType != IndexTypeHNSWRaBitQ && vectorIndex.indexType != IndexTypeIVFRaBitQ {
-			return nil, notSupported(op, c.path, fmt.Sprintf("group-by is not supported for %s graph traversal", vectorIndex.indexType))
-		}
-	}
+
 	segmentByID := make(map[uint64]collectionSegmentDocuments, len(segments))
 	for _, segment := range segments {
 		segmentByID[segment.metadata.ID] = segment
@@ -5320,8 +5328,25 @@ func (c *Collection) searchGroupSegment(
 	vectorIndex collectionVectorIndex,
 	params collectionQueryConfig,
 ) ([]core.GroupResult, error) {
+	if indexes.writerFlat[field.Name] {
+		params.options.UseRefiner = false
+	}
+	vectorIndex = indexes.searchVectorSpec(field.Name, vectorIndex)
+	candidateFilter.predicate = boundCollectionFilter(documents, candidateFilter.predicate)
+
 	if candidateFilter.useBruteForce(c.runtimeConfig().BruteForceByKeysRatio) {
 		params.options.Linear = true
+	}
+	if params.options.UseRefiner && vectorIndex.indexType == IndexTypeIVFRaBitQ {
+		return nil, notSupported(op, c.path, "IVF-RaBitQ group-by does not support refinement")
+	}
+	if !params.options.Linear && vectorIndex.indexType != IndexTypeFlat {
+		if params.options.UseRefiner && (vectorIndex.indexType == IndexTypeHNSW || vectorIndex.indexType == IndexTypeHNSWRaBitQ) {
+			return nil, notSupported(op, c.path, fmt.Sprintf("%s group-by with a refiner requires Linear", vectorIndex.indexType))
+		}
+		if vectorIndex.indexType != IndexTypeHNSW && vectorIndex.indexType != IndexTypeHNSWRaBitQ && vectorIndex.indexType != IndexTypeIVFRaBitQ {
+			return nil, notSupported(op, c.path, fmt.Sprintf("group-by is not supported for %s graph traversal", vectorIndex.indexType))
+		}
 	}
 	groupValues := make(map[uint64]string, len(documents))
 	for _, document := range documents {
@@ -5432,7 +5457,7 @@ func (c *Collection) searchGroupSegment(
 			}
 			if index == nil {
 				err = fmt.Errorf("sparse runtime index is missing")
-			} else if !params.options.Linear {
+			} else if !params.options.Linear && vectorIndex.indexType != IndexTypeFlat {
 				hnsw, compatible := index.(*core.SparseHNSWIndex)
 				if !compatible {
 					err = fmt.Errorf("sparse HNSW builder returned an incompatible group searcher")
@@ -6001,16 +6026,29 @@ func (c *Collection) prepareWriteDocumentLocked(ctx context.Context, operator Op
 }
 
 func (c *Collection) callStoreWriteLocked(ctx context.Context, operator Operator, inputs []db.WriteInput) ([]db.WriteResult, error) {
+	var results []db.WriteResult
+	var err error
 	switch operator {
 	case OperatorInsert:
-		return c.store.Insert(ctx, inputs)
+		results, err = c.store.Insert(ctx, inputs)
 	case OperatorUpsert:
-		return c.store.Upsert(ctx, inputs)
+		results, err = c.store.Upsert(ctx, inputs)
 	case OperatorUpdate:
-		return c.store.Update(ctx, inputs)
+		results, err = c.store.Update(ctx, inputs)
 	default:
 		return nil, errors.New("xvec: unsupported write operator")
 	}
+	// WAL commits cannot be undone by cancellation of runtime initialization.
+	prepareErr := c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx))
+	if prepareErr != nil {
+		for position := range results {
+			if results[position].Err == nil {
+				results[position].Err = prepareErr
+			}
+		}
+		return results, errors.Join(err, prepareErr)
+	}
+	return results, err
 }
 
 // Delete removes current versions through the WAL. WALSyncEvery controls when
