@@ -268,11 +268,11 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
 	if len(initial) > candidateCount {
 		initial = initial[:candidateCount]
 	}
-	prefetch := func(neighbors []int) {
-		prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
+	prefetch := func(neighbors hnswNeighborList) {
+		prefetchQuantizedHNSWNeighborList(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
 	}
 	return expandHNSWGroups(
-		ctx, i.vectors.metric, i.vectors.keys, i.base.neighbors, initial, options.GroupByOptions,
+		ctx, i.vectors.metric, i.vectors.keys, i.base.neighborList, initial, options.GroupByOptions,
 		scoreAt, func(score float32) float32 { return score }, groupNodeBetter(i.vectors.metric, i.vectors.keys), prefetch, visited,
 	)
 }
@@ -398,7 +398,9 @@ func (i *ScalarQuantizedHNSWIndex) searchLayer(
 		if results.Len() >= limit && hasWorst && hnswNodeBetter(metric, worst, current) {
 			break
 		}
-		for _, neighbor := range i.base.neighbors[current.position][level] {
+		neighbors := i.base.neighborList(current.position, level)
+		for j := 0; j < neighbors.Len(); j++ {
+			neighbor := neighbors.At(j)
 			if visited.seen(neighbor) {
 				continue
 			}
@@ -472,13 +474,14 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 		if accepted.Len() >= capacity && hasWorst && metric.Better(worst.score, current.score) {
 			break
 		}
-		neighbors := i.base.neighbors[current.position][0]
+		neighbors := i.base.neighborList(current.position, 0)
 		if batch {
 			visited.batchPositions = visited.batchPositions[:0]
 			visited.batchCodes = visited.batchCodes[:0]
 			visited.batchCodeDots = visited.batchCodeDots[:0]
 			visited.batchScores = visited.batchScores[:0]
-			for _, neighbor := range neighbors {
+			for j := 0; j < neighbors.Len(); j++ {
+				neighbor := neighbors.At(j)
 				if visited.seen(neighbor) {
 					continue
 				}
@@ -496,11 +499,12 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 			} else {
 				integerCodeDots(query.kind, query.codes, visited.batchCodes, visited.batchCodeDots)
 			}
-			neighbors = visited.batchPositions
+			neighbors = hnswNeighborList{positions: visited.batchPositions}
 		} else {
-			prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
+			prefetchQuantizedHNSWNeighborList(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
 		}
-		for j, neighbor := range neighbors {
+		for j := 0; j < neighbors.Len(); j++ {
+			neighbor := neighbors.At(j)
 			var score float32
 			var err error
 			if batch && query.kind == QuantizationFP16 {

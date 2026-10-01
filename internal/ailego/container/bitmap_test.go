@@ -278,3 +278,73 @@ func TestBitmapAppendWords(t *testing.T) {
 	bitmap.logicalWords = maxInt()
 	require.Panics(t, func() { bitmap.AppendWords([]uint64{0}) })
 }
+
+func TestBitmapInlinePromotionAndSetOperations(t *testing.T) {
+	// Exercise inline/inline, inline/Roaring and Roaring/Roaring combinations,
+	// including IDs that share low bits but belong to different 32-bit domains.
+	domain := []uint64{0, 65, (1 << 32) + 65, 1 << 40, (1 << 40) + 65}
+	for leftMask := 0; leftMask < 1<<len(domain); leftMask++ {
+		for rightMask := 0; rightMask < 1<<len(domain); rightMask++ {
+			left, right := NewBitmap(0), NewBitmap(0)
+			for n := len(domain) - 1; n >= 0; n-- {
+				if leftMask&(1<<n) != 0 {
+					require.True(t, left.Set(domain[n]))
+					require.False(t, left.Set(domain[n]))
+				}
+				if rightMask&(1<<n) != 0 {
+					right.Set(domain[n])
+				}
+			}
+			for _, operation := range []struct {
+				apply func(*Bitmap)
+				mask  int
+			}{
+				{func(b *Bitmap) { b.Or(right) }, leftMask | rightMask},
+				{func(b *Bitmap) { b.And(right) }, leftMask & rightMask},
+				{func(b *Bitmap) { b.AndNot(right) }, leftMask &^ rightMask},
+				{func(b *Bitmap) { b.OrFrozen(right.Freeze()) }, leftMask | rightMask},
+			} {
+				got := left.Clone()
+				operation.apply(got)
+				var actual, expected []uint64
+				got.Range(func(v uint64) bool { actual = append(actual, v); return true })
+				for n, v := range domain {
+					present := operation.mask&(1<<n) != 0
+					require.Equal(t, present, got.Contains(v))
+					if present {
+						expected = append(expected, v)
+					}
+				}
+				require.Equal(t, expected, actual)
+				require.Equal(t, uint64(len(expected)), got.Count())
+			}
+			frozen := left.Freeze()
+			before := frozen.Count()
+			for _, v := range domain {
+				left.Clear(v)
+			}
+			require.Zero(t, left.Count())
+			require.Equal(t, before, frozen.Count())
+		}
+	}
+}
+
+func TestBitmapSmallPostingDoesNotAllocateContainers(t *testing.T) {
+	var inline Bitmap
+	require.Zero(t, testing.AllocsPerRun(100, func() {
+		inline.Set(1 << 40)
+		inline.Set(3)
+		inline.Contains(3)
+		inline.Range(func(bit uint64) bool { inline.Clear(bit); return true })
+	}))
+	b := NewBitmap(1000)
+	b.Set(65)
+	b.Set(1)
+	require.Nil(t, b.contents.large)
+	frozen := b.Freeze()
+	b.Set(130)
+	require.NotNil(t, b.contents.large)
+	require.Equal(t, uint64(2), frozen.Count())
+	require.False(t, frozen.Contains(130))
+	require.Equal(t, uint64(3), b.Count())
+}

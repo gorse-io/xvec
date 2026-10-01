@@ -71,14 +71,15 @@ func (i *ScalarQuantizedHNSWIndex) searchBaseQuantized(
 			continue
 		}
 		visited.markExpanded(int(current))
-		neighbors := i.base.neighbors[int(current)][0]
-		prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
+		neighbors := i.base.neighborList(int(current), 0)
+		prefetchQuantizedHNSWNeighborList(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
 		visited.batchIDs = visited.batchIDs[:0]
 		visited.batchTies = visited.batchTies[:0]
 		visited.batchCodes = visited.batchCodes[:0]
 		visited.batchCodeDots = visited.batchCodeDots[:0]
 		visited.batchScores = visited.batchScores[:0]
-		for _, neighbor := range neighbors {
+		for j := 0; j < neighbors.Len(); j++ {
+			neighbor := neighbors.At(j)
 			if visited.seen(neighbor) {
 				continue
 			}

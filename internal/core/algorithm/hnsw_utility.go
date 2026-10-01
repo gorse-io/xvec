@@ -22,7 +22,7 @@ import (
 // The Go runtime has no portable non-faulting prefetch intrinsic. These
 // helpers synchronously warm the bounded cache-line prefix requested by the
 // hint and never change candidate ordering or admission.
-func prefetchDenseHNSWNeighbors(vectors []float32, dimension int, neighbors []int, offset, lines uint32) {
+func prefetchDenseHNSWNeighbors[T ~int | ~uint32](vectors []float32, dimension int, neighbors []T, offset, lines uint32) {
 	count := prefetchNeighborCount(len(neighbors), offset)
 	if count == 0 || dimension <= 0 {
 		return
@@ -30,7 +30,7 @@ func prefetchDenseHNSWNeighbors(vectors []float32, dimension int, neighbors []in
 	lineCount := normalizedPrefetchLines(lines, dimension*4)
 	var touched uint32
 	for _, position := range neighbors[:count] {
-		start := position * dimension
+		start := int(position) * dimension
 		for line := 0; line < lineCount; line++ {
 			element := line * 16
 			if element >= dimension {
@@ -42,7 +42,7 @@ func prefetchDenseHNSWNeighbors(vectors []float32, dimension int, neighbors []in
 	runtime.KeepAlive(touched)
 }
 
-func prefetchDenseHNSWNeighborsFP16(vectors []uint16, dimension int, neighbors []int, offset, lines uint32) {
+func prefetchDenseHNSWNeighborsFP16[T ~int | ~uint32](vectors []uint16, dimension int, neighbors []T, offset, lines uint32) {
 	count := prefetchNeighborCount(len(neighbors), offset)
 	if count == 0 || dimension <= 0 {
 		return
@@ -50,7 +50,7 @@ func prefetchDenseHNSWNeighborsFP16(vectors []uint16, dimension int, neighbors [
 	lineCount := normalizedPrefetchLines(lines, dimension*2)
 	var touched uint16
 	for _, position := range neighbors[:count] {
-		start := position * dimension
+		start := int(position) * dimension
 		for line := 0; line < lineCount; line++ {
 			element := line * 32
 			if element >= dimension {

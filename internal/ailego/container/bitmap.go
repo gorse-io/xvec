@@ -21,74 +21,202 @@ import (
 	"github.com/RoaringBitmap/roaring/v2/roaring64"
 )
 
-// Bitmap is a growable, concurrent-safe compressed bitmap.
-type Bitmap struct {
-	mu           sync.RWMutex
-	bitmap       roaring64.Bitmap
-	logicalWords int
+// bitmapContents keeps up to two ordered IDs inline. Higher cardinalities use
+// Roaring; empty and singleton postings never allocate its container hierarchy.
+// Contents are protected by Bitmap.mu or owned by an immutable snapshot.
+type bitmapContents struct {
+	large *roaring64.Bitmap
+	small [2]uint64
+	size  uint8
 }
 
-// FrozenBitmap is an immutable snapshot. Readers need neither locks nor
-// iterator snapshots. It never shares mutable storage with its source.
-type FrozenBitmap struct {
-	bitmap       roaring64.Bitmap
-	logicalWords int
+func (c *bitmapContents) contains(bit uint64) bool {
+	if c.large != nil {
+		return c.large.Contains(bit)
+	}
+	for _, v := range c.small[:c.size] {
+		if v == bit {
+			return true
+		}
+	}
+	return false
 }
-
-// Freeze copies b once for immutable publication.
-func (b *Bitmap) Freeze() *FrozenBitmap {
-	bitmap, logicalWords := b.snapshot()
-	return &FrozenBitmap{bitmap: *bitmap, logicalWords: logicalWords}
+func (c *bitmapContents) count() uint64 {
+	if c.large != nil {
+		return c.large.GetCardinality()
+	}
+	return uint64(c.size)
 }
-
-// Contains reports whether bit is set in the immutable snapshot.
-func (b *FrozenBitmap) Contains(bit uint64) bool {
-	bitmapWordIndex(bit)
-	return b.bitmap.Contains(bit)
+func (c *bitmapContents) within(bitCount uint64) bool {
+	if c.large != nil {
+		return c.large.IsEmpty() || (bitCount > 0 && c.large.Maximum() < bitCount)
+	}
+	return c.size == 0 || c.small[c.size-1] < bitCount
 }
-
-// Count returns the snapshot's number of set bits.
-func (b *FrozenBitmap) Count() uint64 { return b.bitmap.GetCardinality() }
-
-// Within reports whether all set bits are below bitCount, without enumerating.
-func (b *FrozenBitmap) Within(bitCount uint64) bool {
-	return b.bitmap.IsEmpty() || (bitCount > 0 && b.bitmap.Maximum() < bitCount)
+func (c *bitmapContents) promote() {
+	if c.large == nil {
+		c.large = roaring64.NewBitmap()
+		c.large.AddMany(c.small[:c.size])
+		c.small = [2]uint64{}
+		c.size = 0
+	}
 }
-
-// Range visits immutable set bits in ascending order, stopping on false.
-func (b *FrozenBitmap) Range(yield func(uint64) bool) {
-	if yield == nil {
+func (c *bitmapContents) add(bit uint64) bool {
+	if c.large != nil {
+		return c.large.CheckedAdd(bit)
+	}
+	if c.contains(bit) {
+		return false
+	}
+	if c.size == uint8(len(c.small)) {
+		c.promote()
+		return c.large.CheckedAdd(bit)
+	}
+	pos := int(c.size)
+	for pos > 0 && c.small[pos-1] > bit {
+		c.small[pos] = c.small[pos-1]
+		pos--
+	}
+	c.small[pos] = bit
+	c.size++
+	return true
+}
+func (c *bitmapContents) remove(bit uint64) bool {
+	if c.large != nil {
+		return c.large.CheckedRemove(bit)
+	}
+	for pos, v := range c.small[:c.size] {
+		if v == bit {
+			copy(c.small[pos:], c.small[pos+1:c.size])
+			c.size--
+			c.small[c.size] = 0
+			return true
+		}
+	}
+	return false
+}
+func (c *bitmapContents) clone() bitmapContents {
+	result := *c
+	if c.large != nil {
+		result.large = c.large.Clone()
+	}
+	return result
+}
+func (c *bitmapContents) rangeBits(yield func(uint64) bool) {
+	if c.large == nil {
+		for _, v := range c.small[:c.size] {
+			if !yield(v) {
+				return
+			}
+		}
 		return
 	}
-	iterator := b.bitmap.Iterator()
+	iterator := c.large.Iterator()
 	for iterator.HasNext() {
 		if !yield(iterator.Next()) {
 			return
 		}
 	}
 }
+func (c *bitmapContents) or(other *bitmapContents) {
+	if other.large == nil {
+		for _, v := range other.small[:other.size] {
+			c.add(v)
+		}
+		return
+	}
+	if other.large.IsEmpty() {
+		return
+	}
+	c.promote()
+	c.large.Or(other.large)
+}
+func (c *bitmapContents) and(other *bitmapContents) {
+	if c.large != nil && other.large != nil {
+		c.large.And(other.large)
+		return
+	}
+	var result bitmapContents
+	if c.large == nil {
+		for _, v := range c.small[:c.size] {
+			if other.contains(v) {
+				result.add(v)
+			}
+		}
+	} else {
+		for _, v := range other.small[:other.size] {
+			if c.contains(v) {
+				result.add(v)
+			}
+		}
+	}
+	*c = result
+}
+func (c *bitmapContents) andNot(other *bitmapContents) {
+	if c.large != nil && other.large != nil {
+		c.large.AndNot(other.large)
+		return
+	}
+	if other.large == nil {
+		for _, v := range other.small[:other.size] {
+			c.remove(v)
+		}
+		return
+	}
+	var result bitmapContents
+	for _, v := range c.small[:c.size] {
+		if !other.contains(v) {
+			result.add(v)
+		}
+	}
+	*c = result
+}
 
-// OrFrozen merges a published snapshot without cloning the source. Roaring's
-// union copies containers that are inserted into the mutable destination.
+// Bitmap is a growable, concurrent-safe compressed bitmap.
+type Bitmap struct {
+	mu           sync.RWMutex
+	contents     bitmapContents
+	logicalWords int
+}
+
+// FrozenBitmap is an immutable snapshot with independently owned storage.
+type FrozenBitmap struct {
+	contents     bitmapContents
+	logicalWords int
+}
+
+// Freeze copies b once for immutable publication.
+func (b *Bitmap) Freeze() *FrozenBitmap {
+	contents, logicalWords := b.snapshot()
+	return &FrozenBitmap{contents: contents, logicalWords: logicalWords}
+}
+func (b *FrozenBitmap) Contains(bit uint64) bool {
+	bitmapWordIndex(bit)
+	return b.contents.contains(bit)
+}
+func (b *FrozenBitmap) Count() uint64               { return b.contents.count() }
+func (b *FrozenBitmap) Within(bitCount uint64) bool { return b.contents.within(bitCount) }
+func (b *FrozenBitmap) Range(yield func(uint64) bool) {
+	if yield != nil {
+		b.contents.rangeBits(yield)
+	}
+}
+
+// OrFrozen merges a snapshot without cloning its immutable source. Roaring's
+// union copies containers inserted into the mutable destination.
 func (b *Bitmap) OrFrozen(other *FrozenBitmap) {
 	if other == nil {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.bitmap.Or(&other.bitmap)
+	b.contents.or(&other.contents)
 	b.logicalWords = max(b.logicalWords, other.logicalWords)
 }
+func NewBitmap(bitCount uint64) *Bitmap { return &Bitmap{logicalWords: wordsForBits(bitCount)} }
 
-// NewBitmap returns a bitmap with a logical capacity for bitCount bits. All
-// bits are initially clear. Storage remains sparse until bits are set.
-func NewBitmap(bitCount uint64) *Bitmap {
-	return &Bitmap{logicalWords: wordsForBits(bitCount)}
-}
-
-// AppendWords appends dense words in little bit order to the bitmap's logical
-// capacity. Clear words retain their capacity without allocating dense storage.
-// The input is copied into the compressed representation and is not retained.
+// AppendWords appends dense words without retaining the input or allocating
+// storage for trailing clear words.
 func (b *Bitmap) AppendWords(words []uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -98,150 +226,110 @@ func (b *Bitmap) AppendWords(words []uint64) {
 	for offset, word := range words {
 		base := uint64(b.logicalWords+offset) * 64
 		for word != 0 {
-			b.bitmap.Add(base + uint64(bits.TrailingZeros64(word)))
+			b.contents.add(base + uint64(bits.TrailingZeros64(word)))
 			word &= word - 1
 		}
 	}
 	b.logicalWords += len(words)
 }
-
-// Set sets bit and reports whether its value changed.
 func (b *Bitmap) Set(bit uint64) bool {
 	word := bitmapWordIndex(bit)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.logicalWords = max(b.logicalWords, word+1)
-	return b.bitmap.CheckedAdd(bit)
+	return b.contents.add(bit)
 }
-
-// Clear clears bit and reports whether its value changed.
 func (b *Bitmap) Clear(bit uint64) bool {
 	bitmapWordIndex(bit)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.bitmap.CheckedRemove(bit)
+	return b.contents.remove(bit)
 }
-
-// Contains reports whether bit is set.
 func (b *Bitmap) Contains(bit uint64) bool {
 	bitmapWordIndex(bit)
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.bitmap.Contains(bit)
+	return b.contents.contains(bit)
 }
+func (b *Bitmap) Count() uint64 { b.mu.RLock(); defer b.mu.RUnlock(); return b.contents.count() }
 
-// Count returns the number of set bits.
-func (b *Bitmap) Count() uint64 {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.bitmap.GetCardinality()
-}
-
-// Snapshot returns a dense copy of the bitmap words in little bit order.
-// Its memory use is proportional to the highest bit ever set or NewBitmap's
-// logical capacity; sparse callers should prefer Clone or Range.
+// Snapshot returns a dense copy including the bitmap's logical clear capacity.
+// Sparse callers should prefer Clone or Range.
 func (b *Bitmap) Snapshot() []uint64 {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.snapshotWords(b.logicalWords)
 }
-
-// SnapshotWithin returns a dense snapshot bounded to bitCount bits. It reports
-// false without allocating the dense snapshot when a set bit is outside the
-// requested domain.
 func (b *Bitmap) SnapshotWithin(bitCount uint64) ([]uint64, bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	if !b.bitmap.IsEmpty() && (bitCount == 0 || b.bitmap.Maximum() >= bitCount) {
+	if !b.contents.within(bitCount) {
 		return nil, false
 	}
 	return b.snapshotWords(min(b.logicalWords, wordsForBits(bitCount))), true
 }
-
 func (b *Bitmap) snapshotWords(wordCount int) []uint64 {
 	if wordCount == 0 {
 		return nil
 	}
 	words := make([]uint64, wordCount)
-	iterator := b.bitmap.Iterator()
-	for iterator.HasNext() {
-		bit := iterator.Next()
-		words[bitmapWordIndex(bit)] |= uint64(1) << (bit & 63)
-	}
+	b.contents.rangeBits(func(bit uint64) bool { words[bitmapWordIndex(bit)] |= uint64(1) << (bit & 63); return true })
 	return words
 }
-
-// Clone returns an independent copy of b.
 func (b *Bitmap) Clone() *Bitmap {
-	bitmap, logicalWords := b.snapshot()
-	return &Bitmap{bitmap: *bitmap, logicalWords: logicalWords}
+	contents, logicalWords := b.snapshot()
+	return &Bitmap{contents: contents, logicalWords: logicalWords}
 }
-
-// Or sets every bit present in other.
 func (b *Bitmap) Or(other *Bitmap) {
 	if other == nil || b == other {
 		return
 	}
-	bitmap, logicalWords := other.snapshot()
+	contents, logicalWords := other.snapshot()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.bitmap.Or(bitmap)
+	b.contents.or(&contents)
 	b.logicalWords = max(b.logicalWords, logicalWords)
 }
-
-// And retains only bits also present in other.
 func (b *Bitmap) And(other *Bitmap) {
-	if other == nil {
-		b.mu.Lock()
-		b.bitmap.Clear()
-		b.mu.Unlock()
-		return
-	}
 	if b == other {
 		return
 	}
-	bitmap, _ := other.snapshot()
+	var contents bitmapContents
+	if other != nil {
+		contents, _ = other.snapshot()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.bitmap.And(bitmap)
+	b.contents.and(&contents)
 }
-
-// AndNot clears every bit present in other.
 func (b *Bitmap) AndNot(other *Bitmap) {
 	if other == nil {
 		return
 	}
 	if b == other {
 		b.mu.Lock()
-		b.bitmap.Clear()
+		b.contents = bitmapContents{}
 		b.mu.Unlock()
 		return
 	}
-	bitmap, _ := other.snapshot()
+	contents, _ := other.snapshot()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.bitmap.AndNot(bitmap)
+	b.contents.andNot(&contents)
 }
 
-// Range calls yield for set bits in ascending order and stops when yield
-// returns false. The callback runs against a snapshot and may mutate b.
-func (b *Bitmap) Range(yield func(bit uint64) bool) {
+// Range visits an independent snapshot; callbacks may mutate b.
+func (b *Bitmap) Range(yield func(uint64) bool) {
 	if yield == nil {
 		return
 	}
-	bitmap, _ := b.snapshot()
-	iterator := bitmap.Iterator()
-	for iterator.HasNext() {
-		if !yield(iterator.Next()) {
-			return
-		}
-	}
+	contents, _ := b.snapshot()
+	contents.rangeBits(yield)
 }
-
-func (b *Bitmap) snapshot() (*roaring64.Bitmap, int) {
+func (b *Bitmap) snapshot() (bitmapContents, int) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.bitmap.Clone(), b.logicalWords
+	return b.contents.clone(), b.logicalWords
 }
 
 func wordsForBits(bitCount uint64) int {
@@ -254,7 +342,6 @@ func wordsForBits(bitCount uint64) int {
 	}
 	return int(wordCount)
 }
-
 func bitmapWordIndex(bit uint64) int {
 	word := bit >> 6
 	if word >= uint64(maxInt()) {
@@ -262,5 +349,4 @@ func bitmapWordIndex(bit uint64) int {
 	}
 	return int(word)
 }
-
 func maxInt() int { return int(^uint(0) >> 1) }

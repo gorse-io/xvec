@@ -59,13 +59,13 @@ func expandHNSWGroups(
 	ctx context.Context,
 	metric Metric,
 	keys []uint64,
-	neighbors [][][]int,
+	neighbors func(int, int) hnswNeighborList,
 	initial []hnswScoredNode,
 	options GroupByOptions,
 	scoreAt func(position int) (float32, error),
 	publicScore func(score float32) float32,
 	nodeBetter func(left, right hnswScoredNode) bool,
-	prefetch func(neighbors []int),
+	prefetch func(neighbors hnswNeighborList),
 	visited *hnswVisited,
 ) ([]GroupResult, error) {
 	accumulator := newGroupAccumulator(metric, options.TopKPerGroup)
@@ -107,11 +107,12 @@ func expandHNSWGroups(
 			return nil, err
 		}
 		current, _ := frontier.Pop()
-		adjacent := neighbors[current.position][0]
+		adjacent := neighbors(current.position, 0)
 		if prefetch != nil {
 			prefetch(adjacent)
 		}
-		for _, neighbor := range adjacent {
+		for j := 0; j < adjacent.Len(); j++ {
+			neighbor := adjacent.At(j)
 			if visited.seen(neighbor) {
 				continue
 			}

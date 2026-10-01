@@ -723,8 +723,7 @@ func assertHNSWGraphInvariants(t testing.TB, index *HNSWIndex) {
 	t.Helper()
 	require.Len(t, index.keys, len(index.levels),
 		"inconsistent HNSW top-level storage")
-	require.Len(t, index.keys, len(index.neighbors),
-		"inconsistent HNSW top-level storage")
+	require.True(t, index.validNeighborStorage(len(index.keys)), "inconsistent HNSW adjacency storage")
 	require.Len(t, index.positions, len(index.keys),
 		"inconsistent HNSW top-level storage")
 
@@ -739,17 +738,19 @@ func assertHNSWGraphInvariants(t testing.TB, index *HNSWIndex) {
 		maxLevel = max(maxLevel, level)
 		require.True(t, level >= 0)
 		require.True(t, level <= MaxHNSWLevel)
-		require.Len(t, index.neighbors[position], level+1)
+		require.Equal(t, level+1, index.neighborLevelCount(position))
 
-		for currentLevel, neighbors := range index.neighbors[position] {
+		for currentLevel := 0; currentLevel <= level; currentLevel++ {
+			neighbors := index.neighborList(position, currentLevel)
 			limit := index.options.M
 			if currentLevel == 0 {
 				limit *= 2
 			}
-			require.True(t, len(neighbors) <= limit)
+			require.True(t, neighbors.Len() <= limit)
 
-			seen := make(map[int]struct{}, len(neighbors))
-			for _, neighbor := range neighbors {
+			seen := make(map[int]struct{}, neighbors.Len())
+			for j := 0; j < neighbors.Len(); j++ {
+				neighbor := neighbors.At(j)
 				require.True(t, neighbor >= 0)
 				require.True(t, neighbor < len(index.keys))
 				require.NotEqual(t, position, neighbor)
