@@ -121,9 +121,14 @@ two-pass construction, contiguous-memory mode, ID maps, and refinement are
 disabled. INT4/INT8 enable rotation, verified through the native parameter getter.
 The Vamana-specific CSV columns record these settings and participate in grouping.
 
-These runs use xvec commit `6a8b120d4284bf16853b2b4ad18465c599e72d82` (merged
-PR #91), zvec-go `v0.7.0+rotate`, and the unchanged native zvec library built from
-`8321c1314a559fd5f909e92498f43e5194bf9b99`. They use Go 1.27.1 with
+The xvec rows were rerun on 2026-09-28 using commit
+`5d9b8f5ff98f13ba0a1d5ee65f9d53dd57456997` plus the Vamana shared-vector memory patch
+`586bbd53868e` (the suffix in `backend_version` identifies this uncommitted patch).
+The zvec rows retain the previous measurements using zvec-go `v0.7.0+rotate`
+and the native library built from `8321c1314a559fd5f909e92498f43e5194bf9b99`.
+[Raw reports and provenance](benchmark-runs/vamana-borrowed-20260928/) retain
+commands, binary/dataset/source checksums, process resource measurements, and
+the previous CSV. All rows use Go 1.27.1 with
 `CGO_ENABLED=0`, `GOMAXPROCS=8`, `GOMEMLIMIT=24GiB`, and CPU affinity 0–7
 on e2-standard-8. Each run uses a fresh collection, all 100,000 vectors,
 1,000 serial queries, K=100, batch size 100, optimize concurrency 8,

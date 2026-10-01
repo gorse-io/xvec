@@ -182,7 +182,7 @@ test('Vamana includes all four precisions and stays separate from other indexes'
   for (const record of records) {
     assert.equal(record.inserted_count, 100000);
     assert.equal(record.serial_queries, 1000);
-    assert.equal(record.backend_version, record.backend === 'xvec' ? '6a8b120d4284bf16853b2b4ad18465c599e72d82' : 'v0.7.0+rotate');
+    assert.equal(record.backend_version, record.backend === 'xvec' ? '5d9b8f5ff98f13ba0a1d5ee65f9d53dd57456997+vamana-borrowed.586bbd53868e' : 'v0.7.0+rotate');
   }
 });
 

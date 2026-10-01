@@ -1,0 +1,343 @@
+diff --git a/collection.go b/collection.go
+index d62eb29..e74a040 100644
+--- a/collection.go
++++ b/collection.go
+@@ -2529,7 +2529,7 @@ func buildCollectionDenseVamana(
+ 	spec collectionVectorIndex,
+ 	workers int,
+ ) (collectionVamanaIndex, error) {
+-	candidates, err := collectionDenseCandidates(ctx, field, documents)
++	count, err := collectionDenseCandidateCount(ctx, field, documents)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -2551,17 +2551,27 @@ func buildCollectionDenseVamana(
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	for _, candidate := range candidates {
+-		if err := builder.Add(ctx, candidate.Key, candidate.Vector); err != nil {
++	if err := builder.Reserve(count); err != nil {
++		return nil, err
++	}
++	for _, document := range documents {
++		if err := ctx.Err(); err != nil {
++			return nil, err
++		}
++		value, found := document.Fields[field.Name]
++		if !found || value == nil {
++			continue
++		}
++		vector, err := denseValueToFloat32Borrowed(value)
++		if err != nil {
++			return nil, fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, err)
++		}
++		if err := builder.Add(ctx, document.DocID, vector); err != nil {
+ 			return nil, err
+ 		}
+-	}
+-	base, err := builder.BuildInterleavedWithWorkers(ctx, workers)
+-	if err != nil {
+-		return nil, err
+ 	}
+ 	if spec.quantize == QuantizeTypeUndefined {
+-		return base, nil
++		return builder.BuildInterleavedWithWorkers(ctx, workers)
+ 	}
+ 	kind, err := toCoreQuantization(spec.quantize)
+ 	if err != nil {
+@@ -2571,7 +2581,7 @@ func buildCollectionDenseVamana(
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	return core.NewScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
++	return builder.BuildScalarQuantizedInterleavedWithWorkers(ctx, workers, kind, reformer)
+ }
+ 
+ func buildCollectionDenseDiskANN(
+diff --git a/internal/core/algorithm/vamana_algorithm.go b/internal/core/algorithm/vamana_algorithm.go
+index 84cba77..b9e65de 100644
+--- a/internal/core/algorithm/vamana_algorithm.go
++++ b/internal/core/algorithm/vamana_algorithm.go
+@@ -22,6 +22,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"math"
++	"os"
+ 	"slices"
+ 	"sync"
+ 
+@@ -148,6 +149,46 @@ func newBorrowedVamanaBuilder(
+ 	return builder, nil
+ }
+ 
++// Reserve preallocates storage for at least count total vectors. It does not
++// change the builder length or the ownership guarantees of Add.
++func (b *VamanaBuilder) Reserve(count int) error {
++	if b == nil {
++		return errors.New("core: nil Vamana builder")
++	}
++	if count < 0 || uint64(count) >= math.MaxUint32 || (count > 0 && count > maxPlatformInt()/b.dimension) {
++		return ErrVamanaCapacity
++	}
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	if b.built {
++		return ErrBuilderClosed
++	}
++	vectorCapacity := cap(b.vectors)
++	if b.fp16 {
++		vectorCapacity = cap(b.vectorsFP16)
++	}
++	if count <= cap(b.keys) && count*b.dimension <= vectorCapacity {
++		return nil
++	}
++	reservedKeys := make([]uint64, len(b.keys), max(count, len(b.keys)))
++	copy(reservedKeys, b.keys)
++	var reservedVectors []float32
++	var reservedVectorsFP16 []uint16
++	if b.fp16 {
++		reservedVectorsFP16 = make([]uint16, len(b.vectorsFP16), max(count*b.dimension, len(b.vectorsFP16)))
++		copy(reservedVectorsFP16, b.vectorsFP16)
++	} else {
++		reservedVectors = make([]float32, len(b.vectors), max(count*b.dimension, len(b.vectors)))
++		copy(reservedVectors, b.vectors)
++	}
++	reservedPositions := make(map[uint64]int, max(count, len(b.positions)))
++	for key, position := range b.positions {
++		reservedPositions[key] = position
++	}
++	b.keys, b.vectors, b.vectorsFP16, b.positions = reservedKeys, reservedVectors, reservedVectorsFP16, reservedPositions
++	return nil
++}
++
+ // Add validates and clones one unique vector while the builder is open.
+ func (b *VamanaBuilder) Add(ctx context.Context, key uint64, vector []float32) error {
+ 	if b == nil {
+@@ -1179,19 +1220,26 @@ func validateVamanaIndex(ctx context.Context, index *VamanaIndex) error {
+ 	if (count == 0 && index.entryPoint != -1) || (count > 0 && (index.entryPoint < 0 || index.entryPoint >= count)) {
+ 		return errors.New("core: invalid Vamana entry point")
+ 	}
+-	seenKeys := make(map[uint64]struct{}, count)
++	// The key-to-position bijection also detects duplicate keys.
++	seenNeighbors := make(map[int]struct{}, index.options.MaxDegree)
++	var vectorScratch []float32
++	if index.fp16 {
++		vectorScratch = make([]float32, index.dimension)
++	}
+ 	for position, key := range index.keys {
+ 		if position&255 == 0 {
+ 			if err := ctx.Err(); err != nil {
+ 				return err
+ 			}
+ 		}
+-		if _, found := seenKeys[key]; found || index.positions[key] != position {
++		if mapped, found := index.positions[key]; !found || mapped != position {
+ 			return errors.New("core: invalid Vamana key map")
+ 		}
+-		seenKeys[key] = struct{}{}
+ 		if index.fp16 {
+-			if err := validateTrainingVector(float32VectorFromFP16(index.vectorFP16At(position)), index.dimension); err != nil {
++			for offset, value := range index.vectorFP16At(position) {
++				vectorScratch[offset] = utility.Float16BitsToFloat32(value)
++			}
++			if err := validateTrainingVector(vectorScratch, index.dimension); err != nil {
+ 				return err
+ 			}
+ 		} else if err := validateTrainingVector(index.vectorAt(position), index.dimension); err != nil {
+@@ -1200,7 +1248,7 @@ func validateVamanaIndex(ctx context.Context, index *VamanaIndex) error {
+ 		if len(index.neighbors[position]) > index.options.MaxDegree || len(index.neighbors[position]) != len(index.neighborDistances[position]) {
+ 			return errors.New("core: invalid Vamana degree")
+ 		}
+-		seenNeighbors := make(map[int]struct{}, len(index.neighbors[position]))
++		clear(seenNeighbors)
+ 		for offset, neighbor := range index.neighbors[position] {
+ 			if neighbor < 0 || neighbor >= count || neighbor == position {
+ 				return errors.New("core: invalid Vamana neighbor")
+@@ -1724,17 +1772,24 @@ func (i *VamanaIndex) Save(ctx context.Context, path string) error {
+ 	if i == nil {
+ 		return fmt.Errorf("%w: nil index", ErrInvalidVamanaFile)
+ 	}
++	// Add publishes a new generation without mutating existing storage. Holding
++	// the read lock keeps this generation stable while it is streamed to disk.
+ 	i.mu.RLock()
+-	snapshot, err := cloneVamanaIndex(ctx, i)
+-	i.mu.RUnlock()
+-	if err != nil {
+-		return err
+-	}
+-	encoded, err := encodeVamanaIndex(ctx, snapshot)
+-	if err != nil {
++	defer i.mu.RUnlock()
++	if err := ioutil.WriteFileAtomicFunc(ctx, path, 0o600, func(file *os.File) error {
++		if _, err := file.Write(make([]byte, vamanaHeaderSize)); err != nil {
++			return err
++		}
++		header, err := writeVamanaPayload(ctx, i, func(data []byte) error {
++			_, err := file.Write(data)
++			return err
++		})
++		if err != nil {
++			return err
++		}
++		_, err = file.WriteAt(header, 0)
+ 		return err
+-	}
+-	if err := ioutil.WriteFileAtomic(ctx, path, encoded, 0o600); err != nil {
++	}); err != nil {
+ 		return fmt.Errorf("core: save Vamana file: %w", err)
+ 	}
+ 	return nil
+@@ -1763,6 +1818,21 @@ func OpenVamanaIndex(ctx context.Context, path string) (*VamanaIndex, error) {
+ }
+ 
+ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error) {
++	encoded := make([]byte, vamanaHeaderSize)
++	header, err := writeVamanaPayload(ctx, index, func(data []byte) error {
++		encoded = append(encoded, data...)
++		return nil
++	})
++	if err != nil {
++		return nil, err
++	}
++	copy(encoded, header)
++	return encoded, nil
++}
++
++// writeVamanaPayload bounds serialization scratch space independently of vector
++// count. The returned header contains the checksum of the streamed payload.
++func writeVamanaPayload(ctx context.Context, index *VamanaIndex, write func([]byte) error) ([]byte, error) {
+ 	if ctx == nil {
+ 		return nil, errors.New("core: nil Vamana encode context")
+ 	}
+@@ -1786,7 +1856,21 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	payload := make([]byte, 0, payloadSize)
++	payload := make([]byte, 0, 64<<10)
++	var checksum uint32
++	written := 0
++	flush := func() error {
++		if err := ctx.Err(); err != nil {
++			return err
++		}
++		if err := write(payload); err != nil {
++			return err
++		}
++		checksum = hashutil.UpdateCRC32C(checksum, payload)
++		written += len(payload)
++		payload = payload[:0]
++		return nil
++	}
+ 	for position, key := range index.keys {
+ 		if position&1023 == 0 {
+ 			if err := ctx.Err(); err != nil {
+@@ -1794,6 +1878,11 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error)
+ 			}
+ 		}
+ 		payload = binary.LittleEndian.AppendUint64(payload, key)
++		if len(payload) >= (64<<10)-8 {
++			if err := flush(); err != nil {
++				return nil, err
++			}
++		}
+ 	}
+ 	if index.fp16 {
+ 		for position, value := range index.vectorsFP16 {
+@@ -1803,6 +1892,11 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error)
+ 				}
+ 			}
+ 			payload = binary.LittleEndian.AppendUint16(payload, value)
++			if len(payload) >= (64<<10)-8 {
++				if err := flush(); err != nil {
++					return nil, err
++				}
++			}
+ 		}
+ 	} else {
+ 		for position, value := range index.vectors {
+@@ -1812,6 +1906,11 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error)
+ 				}
+ 			}
+ 			payload = binary.LittleEndian.AppendUint32(payload, math.Float32bits(value))
++			if len(payload) >= (64<<10)-8 {
++				if err := flush(); err != nil {
++					return nil, err
++				}
++			}
+ 		}
+ 	}
+ 	for position, adjacent := range index.neighbors {
+@@ -1821,11 +1920,24 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error)
+ 			}
+ 		}
+ 		payload = binary.LittleEndian.AppendUint32(payload, uint32(len(adjacent)))
++		if len(payload) >= (64<<10)-8 {
++			if err := flush(); err != nil {
++				return nil, err
++			}
++		}
+ 		for _, neighbor := range adjacent {
+ 			payload = binary.LittleEndian.AppendUint32(payload, uint32(neighbor))
++			if len(payload) >= (64<<10)-8 {
++				if err := flush(); err != nil {
++					return nil, err
++				}
++			}
+ 		}
+ 	}
+-	if len(payload) != payloadSize {
++	if err := flush(); err != nil {
++		return nil, err
++	}
++	if written != payloadSize {
+ 		return nil, fmt.Errorf("%w: internal payload length", ErrInvalidVamanaFile)
+ 	}
+ 	header := make([]byte, vamanaHeaderSize)
+@@ -1853,9 +1965,9 @@ func encodeVamanaIndex(ctx context.Context, index *VamanaIndex) ([]byte, error)
+ 		entry = uint64(index.entryPoint)
+ 	}
+ 	binary.LittleEndian.PutUint64(header[72:80], entry)
+-	binary.LittleEndian.PutUint32(header[80:84], hashutil.CRC32C(payload))
++	binary.LittleEndian.PutUint32(header[80:84], checksum)
+ 	binary.LittleEndian.PutUint32(header[124:128], hashutil.CRC32C(header[:124]))
+-	return append(header, payload...), nil
++	return header, nil
+ }
+ 
+ func decodeVamanaIndex(ctx context.Context, encoded []byte) (*VamanaIndex, error) {
+diff --git a/internal/core/algorithm/vamana_quantized_searcher.go b/internal/core/algorithm/vamana_quantized_searcher.go
+index 6cbba85..1af85db 100644
+--- a/internal/core/algorithm/vamana_quantized_searcher.go
++++ b/internal/core/algorithm/vamana_quantized_searcher.go
+@@ -47,6 +47,20 @@ func NewScalarQuantizedVamanaIndex(
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	return newOwnedScalarQuantizedVamanaIndex(ctx, snapshot, kind, reformer)
++}
++
++// BuildScalarQuantizedInterleavedWithWorkers transfers the completed graph to
++// an immutable quantized index without cloning its vectors and adjacency.
++func (b *VamanaBuilder) BuildScalarQuantizedInterleavedWithWorkers(ctx context.Context, workers int, kind Quantization, reformer DenseReformer) (*ScalarQuantizedVamanaIndex, error) {
++	base, err := b.BuildInterleavedWithWorkers(ctx, workers)
++	if err != nil {
++		return nil, err
++	}
++	return newOwnedScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
++}
++
++func newOwnedScalarQuantizedVamanaIndex(ctx context.Context, snapshot *VamanaIndex, kind Quantization, reformer DenseReformer) (*ScalarQuantizedVamanaIndex, error) {
+ 	vectors, err := newOwnedScalarQuantizedVectors(
+ 		ctx, snapshot.dimension, snapshot.options.Metric, kind, reformer, snapshot.keys, snapshot.vectors,
+ 	)
+@@ -72,7 +86,7 @@ func OpenScalarQuantizedVamanaIndex(ctx context.Context, path string, kind Quant
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	return NewScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
++	return newOwnedScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
+ }
+ 
+ func (i *ScalarQuantizedVamanaIndex) Dimension() int {

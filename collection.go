@@ -601,9 +601,22 @@ func openCollectionDenseArtifact(
 		return core.OpenScalarQuantizedIVFIndex(ctx, path, kind, reformer)
 	case IndexTypeVamana:
 		if spec.quantize == QuantizeTypeUndefined {
-			return core.OpenVamanaIndex(ctx, path)
+			return core.OpenVamanaIndexWithMmap(ctx, path, useMmap)
 		}
-		return core.OpenScalarQuantizedVamanaIndex(ctx, path, kind, reformer)
+		if field.DataType == DataTypeVectorFP32 {
+			reader, keys, err := collectionEncodedDenseReader(ctx, field, documents)
+			if err != nil {
+				return nil, err
+			}
+			if reader != nil {
+				originals := make(map[uint64][]byte, len(keys))
+				for position, key := range keys {
+					originals[key] = reader.rows[position]
+				}
+				return core.OpenScalarQuantizedVamanaIndexWithEncodedVectors(ctx, path, kind, reformer, originals, useMmap)
+			}
+		}
+		return core.OpenScalarQuantizedVamanaIndexWithMmap(ctx, path, kind, reformer, useMmap)
 	case IndexTypeDiskANN:
 		if spec.quantize == QuantizeTypeUndefined {
 			candidateCount, candidateErr := collectionDenseCandidateCount(ctx, field, documents)
@@ -681,7 +694,7 @@ func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSe
 			if err != nil {
 				return nil, err
 			}
-			if spec.indexType == IndexTypeHNSW || (spec.indexType == IndexTypeFlat && spec.quantize != QuantizeTypeUndefined) {
+			if spec.indexType == IndexTypeHNSW || spec.indexType == IndexTypeVamana || (spec.indexType == IndexTypeFlat && spec.quantize != QuantizeTypeUndefined) {
 				borrowedFields[field.Name] = struct{}{}
 			}
 		}
@@ -1044,7 +1057,7 @@ func buildCollectionIndexes(
 			}
 			if field.DataType.IsDenseVector() {
 				var exact collectionDenseIndex
-				useLazyExact := spec.indexType == IndexTypeHNSW ||
+				useLazyExact := spec.indexType == IndexTypeHNSW || spec.indexType == IndexTypeVamana ||
 					(spec.indexType == IndexTypeFlat && spec.quantize != QuantizeTypeUndefined) ||
 					(spec.indexType == IndexTypeDiskANN && spec.quantize == QuantizeTypeUndefined)
 				if field.DataType == DataTypeVectorFP32 && useLazyExact {
@@ -1071,8 +1084,8 @@ func buildCollectionIndexes(
 				var flat collectionDenseIndex
 				if spec.quantize == QuantizeTypeUndefined || spec.indexType == IndexTypeHNSWRaBitQ || spec.indexType == IndexTypeIVFRaBitQ {
 					flat = exact
-				} else if spec.indexType != IndexTypeHNSW {
-					// Quantized HNSW supplies a shared Flat view after opening the graph.
+				} else if spec.indexType != IndexTypeHNSW && spec.indexType != IndexTypeVamana {
+					// Quantized graphs supply a shared Flat view after opening.
 					flat, err = buildCollectionDenseFlat(ctx, schema.Name, field, documents, spec)
 					if err != nil {
 						return fail(err)
@@ -1098,9 +1111,11 @@ func buildCollectionIndexes(
 				}
 				indexes.denseNative[field.Name] = native
 				if flat == nil {
-					quantized, ok := native.(*core.ScalarQuantizedHNSWIndex)
+					quantized, ok := native.(interface {
+						FlatIndex() *core.ScalarQuantizedFlatIndex
+					})
 					if !ok {
-						return fail(fmt.Errorf("quantized HNSW field %q has an incompatible native index", field.Name))
+						return fail(fmt.Errorf("quantized graph field %q has an incompatible native index", field.Name))
 					}
 					indexes.denseFlat[field.Name] = quantized.FlatIndex()
 				}
@@ -2554,7 +2569,7 @@ func buildCollectionDenseVamana(
 	spec collectionVectorIndex,
 	workers int,
 ) (collectionVamanaIndex, error) {
-	candidates, err := collectionDenseCandidates(ctx, field, documents)
+	count, err := collectionDenseCandidateCount(ctx, field, documents)
 	if err != nil {
 		return nil, err
 	}
@@ -2567,6 +2582,24 @@ func buildCollectionDenseVamana(
 		options.MaxOcclusionSize = core.DefaultVamanaMaxOcclusionSize
 	}
 	options.SaturateGraph = spec.vamana.SaturateGraph
+	if field.DataType == DataTypeVectorFP32 {
+		candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
+		if err != nil {
+			return nil, err
+		}
+		if spec.quantize == QuantizeTypeUndefined {
+			return core.BuildVamanaWithBorrowedVectors(ctx, int(field.Dimension), options, candidates, workers)
+		}
+		kind, err := toCoreQuantization(spec.quantize)
+		if err != nil {
+			return nil, err
+		}
+		reformer, err := collectionReformer(schemaName, field, spec)
+		if err != nil {
+			return nil, err
+		}
+		return core.BuildScalarQuantizedVamanaWithBorrowedVectors(ctx, int(field.Dimension), options, candidates, workers, kind, reformer)
+	}
 	var builder *core.VamanaBuilder
 	if field.DataType == DataTypeVectorFP16 && spec.quantize == QuantizeTypeUndefined {
 		builder, err = core.NewVamanaBuilderFP16(int(field.Dimension), options)
@@ -2576,17 +2609,27 @@ func buildCollectionDenseVamana(
 	if err != nil {
 		return nil, err
 	}
-	for _, candidate := range candidates {
-		if err := builder.Add(ctx, candidate.Key, candidate.Vector); err != nil {
+	if err := builder.Reserve(count); err != nil {
+		return nil, err
+	}
+	for _, document := range documents {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		value, found := document.Fields[field.Name]
+		if !found || value == nil {
+			continue
+		}
+		vector, err := denseValueToFloat32Borrowed(value)
+		if err != nil {
+			return nil, fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, err)
+		}
+		if err := builder.Add(ctx, document.DocID, vector); err != nil {
 			return nil, err
 		}
 	}
-	base, err := builder.BuildInterleavedWithWorkers(ctx, workers)
-	if err != nil {
-		return nil, err
-	}
 	if spec.quantize == QuantizeTypeUndefined {
-		return base, nil
+		return builder.BuildInterleavedWithWorkers(ctx, workers)
 	}
 	kind, err := toCoreQuantization(spec.quantize)
 	if err != nil {
@@ -2596,7 +2639,7 @@ func buildCollectionDenseVamana(
 	if err != nil {
 		return nil, err
 	}
-	return core.NewScalarQuantizedVamanaIndex(ctx, base, kind, reformer)
+	return builder.BuildScalarQuantizedInterleavedWithWorkers(ctx, workers, kind, reformer)
 }
 
 func buildCollectionDenseDiskANN(
