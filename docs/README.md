@@ -20,20 +20,63 @@ covered, with three repetitions per backend at 20% and 50%. The CSV records
 the excluded fraction (`filter_rate`), matching fraction/percentage, query-source
 and collection-build revisions, latencies, recall and process resources.
 
-In both filter CSVs, the six xvec runs at 20% and 50% matching now use the
-specialized, reusable dual heaps at `43ab0e9`. Other rows retain the preceding
-paired rerun's source and timestamp; zvec was not rerun for this heap comparison.
-A separate controlled comparison ran both xvec revisions three times at each
-high rate on the same persisted graphs. Median QPS changed by -2.02% / -3.93%
-for integer filtering and -1.26% / +0.74% for label filtering at 20% / 50%,
-respectively, with identical aggregate recall. These runs do not demonstrate
-a consistent QPS improvement. Raw reports remain local under the ignored
-`benchmark-runs` directory.
+Both filter CSVs were fully refreshed on 2026-10-01: 26 observations each,
+with current xvec source `454ba56` and the unchanged official native zvec
+v0.7.0. All nine matching rates were rerun in fresh processes, with three
+repetitions per backend at 20% and 50%. Historical collection-build metrics,
+build sources and build timestamps are preserved; no collection was rebuilt.
 
-The existing INT8 filtered-search microbenchmark (2,000 vectors, 128 dimensions,
-an always-true filter) reduces query allocations from 19 to 6 and allocated
-bytes from 11,448 to 5,108. Its median query time changes from 39.520 to
-33.166 microseconds; these figures describe that separate microbenchmark.
+The same run also measures the preceding xvec source `b65371a` three times
+at 20% and 50% for each filter, and once at 0.1% and 10%. There are 68 timed
+runs in total. Each process uses 100 warmup queries, eight workers for 30
+seconds, a three-second cooldown and all 1,000 serial recall queries. CPU
+affinity, GOMAXPROCS=8 and GOMEMLIMIT=24GiB match the prior runs. No profiler,
+forced GC or filesystem-cache flush is used in these timed measurements.
+
+When mmap is enabled, reopened FP16 HNSW indexes reconstruct their codes in
+one anonymous mapped arena instead of retaining one Go heap allocation per
+vector. The codes still occupy physical memory; this is not a persisted,
+file-backed FP16 index or a zero-copy artifact load. HNSW and its shared Flat
+view use the same arena. Close waits for active searches, releases it and
+rejects subsequent searches. Non-mmap indexes use a contiguous Go arena.
+Inverted-index loading scans posting chunks sequentially and decodes directly
+into compressed bitmaps, preserving the existing persisted format.
+
+| Filter | Matching | Before RSS (MiB) | After RSS (MiB) | RSS change | zvec RSS (MiB) | Before QPS | After QPS | QPS change | Recall@100 (%) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Int | 20% | 988.84 | 828.27 | -16.24% | 287.56 | 402.50 | 430.02 | +6.84% | 99.884 |
+| Int | 50% | 999.96 | 842.45 | -15.75% | 286.18 | 772.14 | 773.03 | +0.11% | 99.806 |
+| Label | 20% | 1000.39 | 838.77 | -16.16% | 395.22 | 468.64 | 461.31 | -1.57% | 99.901 |
+| Label | 50% | 1006.93 | 844.63 | -16.12% | 397.44 | 876.17 | 857.73 | -2.11% | 99.833 |
+
+The RSS and QPS shown above are separate three-run medians for each high-match
+case. Peak process RSS includes opening, warmup and both query phases; it is
+not pure index memory. The repeat spread is wide in some cases; these
+measurements do not establish a consistent throughput gain. In the single-run
+0.1% comparisons, integer and label QPS decrease 9.10% and 7.08%, respectively.
+Every timed run retains its preceding aggregate recall. Datasets, native
+library, binaries and all xvec collection files retain their hashes. Native
+zvec read-only Close updates footer/chunk timestamps and the footer CRC in
+four vector-index files. An isolated open/close reproduces these writes;
+restoring only those fields in memory reproduces each original full-file
+SHA-256, verifying that native graph/vector data remain unchanged.
+
+Separate phase diagnostics use forced GC and heap profiles, and are excluded
+from the CSV and QPS comparison. In the integer 50% case, cumulative Go
+allocations through warmup fall from 3,151.2 to 1,164.4 MiB; this is cumulative
+allocation, not peak RSS. Post-GC live Go heap at warmup falls by approximately
+146.5 MiB in both the integer and label 50% cases, as FP16 codes move outside
+the Go heap. The contiguous arenas also remove approximately 100,000 heap
+objects. These diagnostics do not imply an equal reduction in physical index
+memory. Raw reports, profiles, scripts and binaries stay local under ignored
+`benchmark-runs`.
+
+The earlier dual-heap comparison used `a0d0d15` and `43ab0e9`. Its high-match
+FP16 runs did not demonstrate a consistent QPS improvement. The existing INT8
+filtered-search microbenchmark (2,000 vectors, 128 dimensions, an always-true
+filter) reduced query allocations from 19 to 6 and allocated bytes from 11,448
+to 5,108; median time changed from 39.520 to 33.166 microseconds. Those figures
+describe that separate microbenchmark.
 
 `benchmark-flat.csv` contains a separate Flat comparison of xvec and zvec for
 INT4, INT8, FP16, and unquantized FP32 on `Performance768D100K`. It uses the
