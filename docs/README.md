@@ -5,78 +5,83 @@ An English, static Astro + TypeScript site for the HNSW, Flat, DiskANN, and Vama
 service is needed. The CSV files and `logo.png` stay in this directory and are imported
 through Astro/Vite to generate the homepage at build time.
 
-The [FP16 HNSW label-filter results](benchmark-hnsw-label-filter.csv) contain
-26 xvec/zvec measurements on Cohere 100K at nine matching-label rates,
-using the corresponding published filtered ground truth. Each backend has
-three repetitions at 20% and 50%, and one measurement at each other rate.
-The CSV preserves individual runs, query-source revisions, timestamps, recall,
-latencies and process resources. Collection-build metrics retain their original
-source and build timestamp; no index was rebuilt for these query measurements.
+The [FP16 HNSW integer-filter results](benchmark-hnsw-int-filter.csv) and
+[FP16 HNSW label-filter results](benchmark-hnsw-label-filter.csv) each contain
+26 fresh xvec/zvec observations on Cohere 100K at nine matching rates. Both
+CSVs were fully refreshed on 2026-10-01, with current xvec source
+`0500e1c` and the unchanged official native zvec v0.7.0.
+There are three repetitions per backend at 20% and 50%, and one measurement
+at each other rate. Original collection-build sources, timestamps and metrics
+are preserved; no collection was rebuilt or optimized. Integer truth is local
+exhaustive float64 cosine over original FP32 vectors; label truth is the
+published filtered neighbors. Query sources and individual runs remain in the CSVs.
 
-The [FP16 HNSW integer-filter results](benchmark-hnsw-int-filter.csv) contain
-26 xvec/zvec measurements for `NewIntFilterPerformanceCase` on Cohere
-100K with locally generated exact ground truth. All nine matching rates are
-covered, with three repetitions per backend at 20% and 50%. The CSV records
-the excluded fraction (`filter_rate`), matching fraction/percentage, query-source
-and collection-build revisions, latencies, recall and process resources.
+The latest controlled comparison uses clean xvec source
+`454ba56` before and `0500e1c` after
+compacting the immutable HNSW graph and small bitmap postings. Its 68 successful
+measurements comprise 52 current xvec/zvec runs plus 16 before-source xvec
+controls: three repetitions at 20%/50%, and one at 0.1%/10%, for each filter.
+Processes run sequentially with stage/rate order varying across cases.
 
-Both filter CSVs were fully refreshed on 2026-10-01: 26 observations each,
-with current xvec source `454ba56` and the unchanged official native zvec
-v0.7.0. All nine matching rates were rerun in fresh processes, with three
-repetitions per backend at 20% and 50%. Historical collection-build metrics,
-build sources and build timestamps are preserved; no collection was rebuilt.
+Reopened scalar-quantized HNSW graphs with borrowed encoded originals now
+store neighbors in one uint32 arena, with contiguous node/level offset tables.
+This avoids expanding persisted 32-bit IDs into 64-bit ints and allocating
+separate neighbor lists per node. Mutable builders retain their existing layout;
+cloning an immutable graph for streaming expands it into independent mutable
+storage. Neighbor order, disk format, scoring, filtering and radius/tie rules
+are preserved. Save roundtrips retain identical artifact bytes.
 
-The same run also measures the preceding xvec source `b65371a` three times
-at 20% and 50% for each filter, and once at 0.1% and 10%. There are 68 timed
-runs in total. Each process uses 100 warmup queries, eight workers for 30
-seconds, a three-second cooldown and all 1,000 serial recall queries. CPU
-affinity, GOMAXPROCS=8 and GOMEMLIMIT=24GiB match the prior runs. No profiler,
-forced GC or filesystem-cache flush is used in these timed measurements.
-
-When mmap is enabled, reopened FP16 HNSW indexes reconstruct their codes in
-one anonymous mapped arena instead of retaining one Go heap allocation per
-vector. The codes still occupy physical memory; this is not a persisted,
-file-backed FP16 index or a zero-copy artifact load. HNSW and its shared Flat
-view use the same arena. Close waits for active searches, releases it and
-rejects subsequent searches. Non-mmap indexes use a contiguous Go arena.
-Inverted-index loading scans posting chunks sequentially and decodes directly
-into compressed bitmaps, preserving the existing persisted format.
+Mutable and frozen bitmaps keep up to two ordered uint64 IDs inline. Larger
+sets use Roaring. Empty/singleton postings avoid Roaring's container hierarchy;
+clones and frozen snapshots retain independent ownership and the same logical
+clear capacity. Promotion and all set operations preserve full uint64 ID semantics.
 
 | Filter | Matching | Before RSS (MiB) | After RSS (MiB) | RSS change | zvec RSS (MiB) | Before QPS | After QPS | QPS change | Recall@100 (%) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Int | 20% | 988.84 | 828.27 | -16.24% | 287.56 | 402.50 | 430.02 | +6.84% | 99.884 |
-| Int | 50% | 999.96 | 842.45 | -15.75% | 286.18 | 772.14 | 773.03 | +0.11% | 99.806 |
-| Label | 20% | 1000.39 | 838.77 | -16.16% | 395.22 | 468.64 | 461.31 | -1.57% | 99.901 |
-| Label | 50% | 1006.93 | 844.63 | -16.12% | 397.44 | 876.17 | 857.73 | -2.11% | 99.833 |
+| Int | 20% | 829.50 | 742.97 | -10.43% | 291.04 | 396.87 | 413.83 | +4.27% | 99.884 |
+| Int | 50% | 841.39 | 746.36 | -11.29% | 287.02 | 733.05 | 745.85 | +1.75% | 99.806 |
+| Label | 20% | 840.77 | 807.80 | -3.92% | 395.51 | 437.20 | 447.92 | +2.45% | 99.901 |
+| Label | 50% | 845.83 | 811.23 | -4.09% | 398.25 | 847.17 | 845.73 | -0.17% | 99.833 |
 
-The RSS and QPS shown above are separate three-run medians for each high-match
-case. Peak process RSS includes opening, warmup and both query phases; it is
-not pure index memory. The repeat spread is wide in some cases; these
-measurements do not establish a consistent throughput gain. In the single-run
-0.1% comparisons, integer and label QPS decrease 9.10% and 7.08%, respectively.
-Every timed run retains its preceding aggregate recall. Datasets, native
-library, binaries and all xvec collection files retain their hashes. Native
-zvec read-only Close updates footer/chunk timestamps and the footer CRC in
-four vector-index files. An isolated open/close reproduces these writes;
-restoring only those fields in memory reproduces each original full-file
-SHA-256, verifying that native graph/vector data remain unchanged.
+RSS and QPS above are separate three-run medians. Peak process RSS includes
+opening, warmup, concurrent queries and serial recall; it is not pure index
+memory or steady-state RSS. High-match integer RSS falls 10.43%–11.29%, and
+label RSS falls 3.92%–4.09%. High-match QPS median changes range from -0.17%
+to +4.27%, with visible repeat spread; these measurements do not establish a
+consistent throughput gain. Single-run results at other rates should be
+interpreted with their sampling limitation.
 
-Separate phase diagnostics use forced GC and heap profiles, and are excluded
-from the CSV and QPS comparison. In the integer 50% case, cumulative Go
-allocations through warmup fall from 3,151.2 to 1,164.4 MiB; this is cumulative
-allocation, not peak RSS. Post-GC live Go heap at warmup falls by approximately
-146.5 MiB in both the integer and label 50% cases, as FP16 codes move outside
-the Go heap. The contiguous arenas also remove approximately 100,000 heap
-objects. These diagnostics do not imply an equal reduction in physical index
-memory. Raw reports, profiles, scripts and binaries stay local under ignored
+Each fresh process uses FP16 cosine HNSW, M=50, EFConstruction=500,
+EFSearch=300, K=100, mmap, ID-only results and no rotation/refinement. There
+are 100 warmup queries, eight workers for 30 seconds, a three-second cooldown
+and all 1,000 serial recall queries. Runtime settings remain e2-standard-8 /
+AMD EPYC 7B12, affinity 0–7, Go 1.27.1, CGO_ENABLED=0, GOMAXPROCS=8 and
+GOMEMLIMIT=24GiB. No profiler, forced GC, filesystem-cache flush or concurrent
+test/build workload is used in timed runs. Native zvec is official v0.7.0,
+not a build of the newer local reference checkout.
+
+Every timed run retains its preceding aggregate recall. All xvec collection
+files, datasets, binaries and the native library retain their full-file hashes.
+Native read-only Close updates timestamps and a footer CRC in four vector-index
+files. Content hashes exclude exactly those previously verified footer CRC,
+footer timestamp and chunk timestamp fields; all remaining native bytes retain
+their hashes. Original files are not edited for verification.
+
+Separate forced-GC phase diagnostics are excluded from CSV/QPS results.
+At 50% matching, post-GC live Go heap after warmup falls 156.56 → 120.39 MiB
+for integer filtering and 170.03 → 155.21 MiB for label filtering. Integer heap
+objects fall from approximately 1.60 million to 0.70 million, and label objects
+from 1.31 million to 1.11 million. These figures are not process RSS reductions.
+
+The preceding `454ba56` memory optimization scanned posting
+chunks sequentially and replaced individual FP16 code buffers with contiguous
+arenas. With mmap enabled, codes are still reconstructed in one anonymous
+mapped arena and occupy physical memory; this is not persisted file-backed FP16
+loading. HNSW and its Flat view share the arena. Close waits for active searches,
+releases it and rejects later searches. The earlier controlled comparison from
+`b65371a` to `454ba56` reduced high-match peak RSS approximately 16%. Raw reports,
+profiles, scripts, before controls and binaries stay local under ignored
 `benchmark-runs`.
-
-The earlier dual-heap comparison used `a0d0d15` and `43ab0e9`. Its high-match
-FP16 runs did not demonstrate a consistent QPS improvement. The existing INT8
-filtered-search microbenchmark (2,000 vectors, 128 dimensions, an always-true
-filter) reduced query allocations from 19 to 6 and allocated bytes from 11,448
-to 5,108; median time changed from 39.520 to 33.166 microseconds. Those figures
-describe that separate microbenchmark.
 
 `benchmark-flat.csv` contains a separate Flat comparison of xvec and zvec for
 INT4, INT8, FP16, and unquantized FP32 on `Performance768D100K`. It uses the
