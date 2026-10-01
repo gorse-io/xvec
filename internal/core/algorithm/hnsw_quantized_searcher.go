@@ -63,17 +63,7 @@ func NewScalarQuantizedHNSWIndex(
 // The graph is private and immutable: codes, persistence and refinement share
 // its original vectors instead of retaining a second FP32 copy.
 func newOwnedScalarQuantizedHNSWIndex(ctx context.Context, base *HNSWIndex, kind Quantization, reformer DenseReformer) (*ScalarQuantizedHNSWIndex, error) {
-	var reader DenseVectorReader
-	if base.encodedVectors != nil {
-		reader = encodedHNSWVectorReader(base.encodedVectors)
-	}
-	vectors, err := newScalarQuantizedVectorStorageWithReader(
-		ctx, base.dimension, base.options.Metric, kind, reformer, base.keys, base.vectors, base.vectorRows, reader,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return newScalarQuantizedHNSWWithStorage(ctx, base, vectors)
+	return newOwnedScalarQuantizedHNSWIndexWithMmap(ctx, base, kind, reformer, false)
 }
 
 // Save persists the immutable HNSW topology and original vectors. Scalar codes
@@ -100,7 +90,8 @@ func OpenScalarQuantizedHNSWIndex(ctx context.Context, path string, kind Quantiz
 // vectors instead of decoding another FP32 copy. Callers must keep candidate
 // vectors immutable for the index lifetime. Keys and slice headers are copied;
 // artifact values are fully verified against the supplied vectors. With
-// useMmap, a temporary read-only mapping avoids an encoded-file heap buffer.
+// useMmap, a temporary read-only mapping avoids an encoded-file heap buffer,
+// and FP16 codes use anonymous mapped memory. Call Close to release the codes.
 func OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx context.Context, path string, kind Quantization, reformer DenseReformer, candidates []Candidate, useMmap bool) (*ScalarQuantizedHNSWIndex, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil scalar-quantized HNSW context")
@@ -119,7 +110,7 @@ func OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx context.Context, path s
 	if err != nil {
 		return nil, err
 	}
-	return newOwnedScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+	return newOwnedScalarQuantizedHNSWIndexWithMmap(ctx, base, kind, reformer, useMmap)
 }
 
 // The mapping is temporary: topology is decoded, and originals come from the
@@ -226,6 +217,11 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
 	if i == nil || i.base == nil || i.vectors == nil {
 		return nil, errors.New("core: nil scalar-quantized HNSW index")
 	}
+	if err := i.vectors.lockCodes(); err != nil {
+		return nil, err
+	}
+	defer i.vectors.codeMu.RUnlock()
+
 	if ctx == nil {
 		return nil, errors.New("core: nil scalar-quantized HNSW group-by context")
 	}
@@ -290,6 +286,11 @@ func (i *ScalarQuantizedHNSWIndex) search(
 	if i == nil || i.base == nil || i.vectors == nil {
 		return nil, errors.New("core: nil scalar-quantized HNSW index")
 	}
+	if err := i.vectors.lockCodes(); err != nil {
+		return nil, err
+	}
+	defer i.vectors.codeMu.RUnlock()
+
 	if ctx == nil {
 		return nil, errors.New("core: nil scalar-quantized HNSW search context")
 	}

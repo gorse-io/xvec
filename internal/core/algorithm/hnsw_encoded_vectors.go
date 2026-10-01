@@ -26,7 +26,8 @@ import (
 // persisted artifact, then builds scalar codes using reusable decoding buffers.
 // The caller must keep the original bytes immutable and alive for the index's
 // lifetime. The map itself is not retained. No reference to the temporary
-// artifact mapping is retained.
+// artifact mapping is retained. With useMmap, FP16 codes use anonymous mapped
+// memory; the caller must call Close when the index and its Flat view are idle.
 func OpenScalarQuantizedHNSWIndexWithEncodedVectors(ctx context.Context, path string, kind Quantization, reformer DenseReformer, originals map[uint64][]byte, useMmap bool) (*ScalarQuantizedHNSWIndex, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil encoded HNSW context")
@@ -41,7 +42,7 @@ func OpenScalarQuantizedHNSWIndexWithEncodedVectors(ctx context.Context, path st
 	if err != nil {
 		return nil, err
 	}
-	return newOwnedScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+	return newOwnedScalarQuantizedHNSWIndexWithMmap(ctx, base, kind, reformer, useMmap)
 }
 
 // OpenHNSWIndexWithEncodedOriginals verifies the artifact against encoded

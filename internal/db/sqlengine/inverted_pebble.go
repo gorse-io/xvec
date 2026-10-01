@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/bits"
 	"os"
 	"unicode/utf8"
 
@@ -187,6 +186,15 @@ func OpenInvertedIndex(ctx context.Context, path string) (*InvertedIndex, error)
 	if err != nil {
 		return nil, invertedCorruption("open term iterator", err)
 	}
+	// Walk postings once instead of reopening an iterator for each term, which
+	// repeatedly decompresses the same SST blocks for high-cardinality fields.
+	postings, err := store.NewPrefixIterator([]byte{'p'})
+	if err != nil {
+		_ = terms.Close()
+		return nil, invertedCorruption("open posting iterator", err)
+	}
+	defer func() { _ = postings.Close() }()
+	postingValid := postings.First()
 	ordinal := uint32(0)
 	var previous scalarKey
 	havePrevious := false
@@ -214,7 +222,7 @@ func OpenInvertedIndex(ctx context.Context, path string) (*InvertedIndex, error)
 				return nil, invertedCorruption("terms are not strictly ordered", compareErr)
 			}
 		}
-		posting, postingErr := readInvertedBitmap(ctx, store, invertedPostingPrefix(ordinal))
+		posting, postingErr := readInvertedBitmapChunks(ctx, postings, invertedPostingPrefix(ordinal), &postingValid)
 		if postingErr != nil {
 			_ = terms.Close()
 			return nil, postingErr
@@ -232,13 +240,20 @@ func OpenInvertedIndex(ctx context.Context, path string) (*InvertedIndex, error)
 		return nil, invertedCorruption("iterate terms", err)
 	}
 
+	if err := errors.Join(postings.Error(), postings.Close()); err != nil {
+		return nil, invertedCorruption("iterate postings", err)
+	}
+	if postingValid {
+		return nil, invertedCorruption("postings have no corresponding term", nil)
+	}
+
 	lengths, err := store.NewPrefixIterator([]byte{'l'})
 	if err != nil {
 		return nil, invertedCorruption("open array-length iterator", err)
 	}
 	var previousLength uint32
 	for valid := lengths.First(); valid; {
-		key := append([]byte(nil), lengths.Key()...)
+		key := lengths.Key()
 		if len(key) != 9 || key[0] != 'l' {
 			_ = lengths.Close()
 			return nil, invertedCorruption("invalid array-length key", nil)
@@ -248,7 +263,10 @@ func OpenInvertedIndex(ctx context.Context, path string) (*InvertedIndex, error)
 			_ = lengths.Close()
 			return nil, invertedCorruption("array lengths are not ordered", nil)
 		}
-		posting, postingErr := readInvertedBitmap(ctx, store, key[:5])
+		// Positioning invalidates Key, so keep the prefix for the whole read.
+		var prefix [5]byte
+		copy(prefix[:], key[:5])
+		posting, postingErr := readInvertedBitmapChunks(ctx, lengths, prefix[:], &valid)
 		if postingErr != nil {
 			_ = lengths.Close()
 			return nil, postingErr
@@ -260,10 +278,7 @@ func OpenInvertedIndex(ctx context.Context, path string) (*InvertedIndex, error)
 		index.arrayLength[length] = posting
 		index.lengths = append(index.lengths, length)
 		previousLength = length
-		// readInvertedBitmap used a separate iterator, so advance this iterator
-		// beyond every chunk belonging to the length just consumed.
-		for valid = lengths.Next(); valid && bytes.HasPrefix(lengths.Key(), key[:5]); valid = lengths.Next() {
-		}
+
 	}
 	if err := errors.Join(lengths.Error(), lengths.Close()); err != nil {
 		return nil, invertedCorruption("iterate array lengths", err)
@@ -362,32 +377,49 @@ func readInvertedBitmap(ctx context.Context, store *common.Store, prefix []byte)
 	if err != nil {
 		return nil, invertedCorruption("open bitmap iterator", err)
 	}
-	words := make([]uint64, 0)
+	valid := iterator.First()
+	bitmap, readErr := readInvertedBitmapChunks(ctx, iterator, prefix, &valid)
+	closeErr := errors.Join(iterator.Error(), iterator.Close())
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, invertedCorruption("iterate bitmap chunks", closeErr)
+	}
+	return bitmap, nil
+}
+
+// readInvertedBitmapChunks consumes one bitmap from an already positioned
+// iterator, leaving it at the first key of the next bitmap (or exhausted).
+func readInvertedBitmapChunks(ctx context.Context, iterator *common.Iterator, prefix []byte, valid *bool) (*container.Bitmap, error) {
+	bitmap := container.NewBitmap(0)
+	var words [invertedPebbleChunkBytes / 8]uint64
 	chunk := uint32(0)
-	for valid := iterator.First(); valid; valid = iterator.Next() {
+	for *valid && bytes.HasPrefix(iterator.Key(), prefix) {
 		if err := ctx.Err(); err != nil {
-			_ = iterator.Close()
 			return nil, err
 		}
 		key, value := iterator.Key(), iterator.Value()
-		if len(key) != len(prefix)+4 || !bytes.Equal(key[:len(prefix)], prefix) ||
+		if len(key) != len(prefix)+4 ||
 			binary.BigEndian.Uint32(key[len(prefix):]) != chunk || len(value)%8 != 0 || len(value) > invertedPebbleChunkBytes ||
 			(len(value) == 0 && chunk != 0) {
-			_ = iterator.Close()
 			return nil, invertedCorruption("invalid bitmap chunk", nil)
 		}
-		for offset := 0; offset < len(value); offset += 8 {
-			words = append(words, binary.LittleEndian.Uint64(value[offset:]))
+		wordCount := len(value) / 8
+		for offset := range wordCount {
+			words[offset] = binary.LittleEndian.Uint64(value[offset*8:])
 		}
+		bitmap.AppendWords(words[:wordCount])
 		chunk++
+		*valid = iterator.Next()
 	}
-	if err := errors.Join(iterator.Error(), iterator.Close()); err != nil {
+	if err := iterator.Error(); err != nil {
 		return nil, invertedCorruption("iterate bitmap chunks", err)
 	}
 	if chunk == 0 {
 		return nil, invertedCorruption("missing bitmap chunks", nil)
 	}
-	return bitmapFromPersistedWords(words), nil
+	return bitmap, nil
 }
 
 func encodeInvertedScalarKey(key scalarKey) []byte {
@@ -467,18 +499,6 @@ func validPersistedScalarKey(key scalarKey) bool {
 		return !math.IsNaN(value) && !math.IsInf(value, 0)
 	}
 	return true
-}
-
-func bitmapFromPersistedWords(words []uint64) *container.Bitmap {
-	bitmap := container.NewBitmap(uint64(len(words)) * 64)
-	for wordIndex, word := range words {
-		for word != 0 {
-			bit := bits.TrailingZeros64(word)
-			bitmap.Set(uint64(wordIndex*64 + bit))
-			word &= word - 1
-		}
-	}
-	return bitmap
 }
 
 func bitmapSubset(left, right *container.Bitmap) bool {

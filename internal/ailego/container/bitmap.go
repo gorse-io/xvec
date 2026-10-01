@@ -15,6 +15,7 @@
 package container
 
 import (
+	"math/bits"
 	"sync"
 
 	"github.com/RoaringBitmap/roaring/v2/roaring64"
@@ -83,6 +84,25 @@ func (b *Bitmap) OrFrozen(other *FrozenBitmap) {
 // bits are initially clear. Storage remains sparse until bits are set.
 func NewBitmap(bitCount uint64) *Bitmap {
 	return &Bitmap{logicalWords: wordsForBits(bitCount)}
+}
+
+// AppendWords appends dense words in little bit order to the bitmap's logical
+// capacity. Clear words retain their capacity without allocating dense storage.
+// The input is copied into the compressed representation and is not retained.
+func (b *Bitmap) AppendWords(words []uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(words) > maxInt()-b.logicalWords || uint64(b.logicalWords)+uint64(len(words)) > (^uint64(0)>>6)+1 {
+		panic("ailego: bitmap exceeds addressable memory")
+	}
+	for offset, word := range words {
+		base := uint64(b.logicalWords+offset) * 64
+		for word != 0 {
+			b.bitmap.Add(base + uint64(bits.TrailingZeros64(word)))
+			word &= word - 1
+		}
+	}
+	b.logicalWords += len(words)
 }
 
 // Set sets bit and reports whether its value changed.

@@ -63,6 +63,7 @@ func TestHNSWEncodedOriginals(t *testing.T) {
 				for _, useMmap := range []bool{false, true} {
 					index, err := OpenScalarQuantizedHNSWIndexWithEncodedVectors(ctx, path, kind, reformer, originals, useMmap)
 					require.NoError(t, err)
+					t.Cleanup(func() { require.NoError(t, index.Close()) })
 					require.Empty(t, index.base.vectors)
 					require.Nil(t, index.base.vectorRows)
 					require.Nil(t, index.vectors.originals)

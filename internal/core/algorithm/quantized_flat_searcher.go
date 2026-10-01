@@ -19,6 +19,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
+
+	mmap "github.com/blevesearch/mmap-go"
 
 	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/math"
@@ -141,6 +144,11 @@ func (i *ScalarQuantizedFlatIndex) Search(ctx context.Context, query []float32, 
 		if i == nil || i.vectors == nil {
 			return nil, errors.New("core: nil scalar-quantized Flat index")
 		}
+		if err := i.vectors.lockCodes(); err != nil {
+			return nil, err
+		}
+		defer i.vectors.codeMu.RUnlock()
+
 		if ctx == nil {
 			return nil, errors.New("core: nil scalar-quantized Flat search context")
 		}
@@ -169,6 +177,11 @@ func (i *ScalarQuantizedFlatIndex) searchWithOptions(ctx context.Context, query 
 	if i == nil || i.vectors == nil {
 		return nil, errors.New("core: nil scalar-quantized Flat index")
 	}
+	if err := i.vectors.lockCodes(); err != nil {
+		return nil, err
+	}
+	defer i.vectors.codeMu.RUnlock()
+
 	if ctx == nil {
 		return nil, errors.New("core: nil scalar-quantized search context")
 	}
@@ -242,6 +255,11 @@ func (i *ScalarQuantizedFlatIndex) SearchGroups(
 	if i == nil || i.vectors == nil {
 		return nil, errors.New("core: nil scalar-quantized Flat index")
 	}
+	if err := i.vectors.lockCodes(); err != nil {
+		return nil, err
+	}
+	defer i.vectors.codeMu.RUnlock()
+
 	if ctx == nil {
 		return nil, errors.New("core: nil scalar-quantized Flat group-by context")
 	}
@@ -280,6 +298,9 @@ func (i *ScalarQuantizedFlatIndex) SearchGroups(
 }
 
 type scalarQuantizedVectors struct {
+	codeMu       sync.RWMutex
+	mappedCodes  mmap.MMap
+	closed       bool
 	dimension    int
 	metric       Metric
 	kind         Quantization
@@ -312,6 +333,10 @@ func newScalarQuantizedVectorStorage(ctx context.Context, dimension int, metric 
 }
 
 func newScalarQuantizedVectorStorageWithReader(ctx context.Context, dimension int, metric Metric, kind Quantization, reformer DenseReformer, keys []uint64, originals []float32, rows [][]float32, reader DenseVectorReader) (*scalarQuantizedVectors, error) {
+	return newScalarQuantizedVectorStorageWithCodes(ctx, dimension, metric, kind, reformer, keys, originals, rows, reader, nil)
+}
+
+func newScalarQuantizedVectorStorageWithCodes(ctx context.Context, dimension int, metric Metric, kind Quantization, reformer DenseReformer, keys []uint64, originals []float32, rows [][]float32, reader DenseVectorReader, fp16Codes []byte) (*scalarQuantizedVectors, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil scalar-quantized index context")
 	}
@@ -346,6 +371,18 @@ func newScalarQuantizedVectorStorageWithReader(ctx context.Context, dimension in
 		reader:       reader,
 		positions:    make(map[uint64]int, len(keys)),
 		codes:        make([]QuantizedVector, len(keys)),
+	}
+	// Keep FP16 codes in one arena rather than one heap object per vector.
+	// Each row has a bounded capacity, so appending cannot overwrite another.
+	if kind == QuantizationFP16 {
+		if len(keys) > maxPlatformInt()/(dimension*2) {
+			return nil, fmt.Errorf("%w: scalar codes exceed platform capacity", ErrInvalidQuantizedVector)
+		}
+		if fp16Codes == nil {
+			fp16Codes = make([]byte, len(keys)*dimension*2)
+		} else if len(fp16Codes) != len(keys)*dimension*2 {
+			return nil, fmt.Errorf("%w: inconsistent FP16 code storage", ErrInvalidQuantizedVector)
+		}
 	}
 	var decoded, transformedBuffer []float32
 	if reader != nil {
@@ -393,7 +430,16 @@ func newScalarQuantizedVectorStorageWithReader(ctx context.Context, dimension in
 				return nil, fmt.Errorf("%w: transformed vector %d has %d, want %d", ErrInvalidDimension, position, len(transformed), dimension)
 			}
 		}
-		code, err := QuantizeVector(kind, transformed)
+		var code QuantizedVector
+		var err error
+		if kind == QuantizationFP16 {
+			if err = mathutil.ValidateDense(transformed, dimension); err == nil {
+				start, end := position*dimension*2, (position+1)*dimension*2
+				code, err = quantizeFP16Into(transformed, fp16Codes[start:end:end])
+			}
+		} else {
+			code, err = QuantizeVector(kind, transformed)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("core: quantize vector %d: %w", position, err)
 		}

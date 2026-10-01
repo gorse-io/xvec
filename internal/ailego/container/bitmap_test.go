@@ -261,3 +261,20 @@ func TestFrozenBitmapOwnershipAndConcurrentUnion(t *testing.T) {
 	wg.Wait()
 	require.Equal(t, uint64(4), frozen.Count())
 }
+
+func TestBitmapAppendWords(t *testing.T) {
+	bitmap := NewBitmap(65)
+	bitmap.Set(1)
+	words := []uint64{1, 0, uint64(1) << 63, 0}
+	bitmap.AppendWords(words[:2])
+	bitmap.AppendWords(nil)
+	bitmap.AppendWords(words[2:])
+	words[0] = 0
+	require.Equal(t, []uint64{2, 0, 1, 0, uint64(1) << 63, 0}, bitmap.Snapshot())
+	require.Equal(t, uint64(3), bitmap.Count())
+	require.True(t, bitmap.Contains(319))
+	require.Equal(t, bitmap.Snapshot(), bitmap.Clone().Snapshot())
+
+	bitmap.logicalWords = maxInt()
+	require.Panics(t, func() { bitmap.AppendWords([]uint64{0}) })
+}
