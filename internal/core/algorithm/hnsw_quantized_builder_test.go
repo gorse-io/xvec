@@ -196,7 +196,13 @@ func TestScalarHNSWBuildRecallAndPersistence(t *testing.T) {
 						// score. Compare with exact quantized ranking, including key ties.
 						exactTop, err := flat.Search(ctx, query, 1)
 						require.NoError(t, err)
-						require.Equal(t, exactTop, refined)
+						require.Len(t, refined, len(exactTop))
+						for n := range exactTop {
+							require.Equal(t, exactTop[n].Key, refined[n].Key)
+							// Flat and HNSW use different scalar/batch kernels;
+							// their cosine scores may differ by float32 rounding.
+							require.InDelta(t, exactTop[n].Score, refined[n].Score, 1e-5)
+						}
 						if kind == QuantizationInt8 {
 							require.Equal(t, candidates[q*43].Key, refined[0].Key)
 						}

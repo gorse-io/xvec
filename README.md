@@ -152,6 +152,22 @@ disables automatic record-count-based synchronization. `Query` also accepts
 with no target. `MultiQuery` fuses dense, sparse, primary-key-vector, and FTS
 branches over one snapshot.
 
+Writes maintain a searchable Flat index. Queries reuse prepared segment indexes
+and never build ANN indexes: segments without HNSW, IVF, RaBitQ, Vamana, or
+DiskANN artifacts are searched through Flat using the configured metric.
+`Flush` persists pending data and available scalar/full-text indexes without
+building ANN indexes. Call `Optimize` to compact data and build configured ANN
+indexes, or `CreateIndex` to build one field's index on existing segments (even
+when its parameters already match the schema). New writes continue through
+Flat until the next maintenance operation. `Open` loads existing indexes and
+prepares Flat fallbacks before returning. `IndexCompleteness` reports the
+fraction of live documents covered by the configured ANN index.
+
+The ANN build phase of `Optimize` allows queries and writes to continue using
+existing indexes; sealing, compaction, and publication take the collection
+lock. Exact/refined searches scan original vectors without constructing a
+second index.
+
 ### Choosing an index
 
 | Index | Best for |

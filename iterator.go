@@ -60,6 +60,10 @@ func (c *Collection) CreateIterator(ctx context.Context, options IteratorOptions
 		return nil, wrapCollectionError(op, c.Path(), err)
 	}
 
+	if !c.maintenanceMu.TryLock() {
+		return nil, &Error{Code: ErrorCodeFailedPrecondition, Op: op, Path: c.path, Message: "collection maintenance is running"}
+	}
+	defer c.maintenanceMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.requireOpenLocked(op); err != nil {
@@ -72,6 +76,11 @@ func (c *Collection) CreateIterator(ctx context.Context, options IteratorOptions
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
+	if err := c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx)); err != nil {
+		_ = snapshot.Close()
+		return nil, wrapCollectionError(op, c.path, err)
+	}
+	c.invalidateQuerySnapshotLocked()
 	c.activeIterators++
 	projection := options.Projection
 	projection.OutputFields = slices.Clone(options.Projection.OutputFields)

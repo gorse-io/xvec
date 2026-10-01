@@ -115,16 +115,12 @@ func testReadOnlyQuantizedEncodedVectors(t *testing.T, indexType IndexType) {
 				}
 				snapshot := reader.querySnapshot.Load()
 				require.IsType(t, encodedVectorFP32{}, snapshot.documents[0].Fields["embedding"])
-				exact := snapshot.runtimes[0].indexes.denseExact["embedding"].(*lazyCollectionDenseFlatIndex)
-				require.Nil(t, exact.index, "ordinary refinement must read originals without building a second exact index")
+				exact := snapshot.runtimes[0].indexes.denseExact["embedding"].(*collectionOriginalDenseIndex)
 				require.Empty(t, exact.candidates)
 				require.NotNil(t, exact.reader)
 				groups, err := reader.GroupByQuery(ctx, groupQuery)
 				require.NoError(t, err)
 				require.Equal(t, wantGroups, groups)
-				if indexType == IndexTypeFlat {
-					require.NotNil(t, exact.index)
-				}
 			})
 		}
 	}

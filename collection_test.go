@@ -559,7 +559,7 @@ func TestCollectionPersistsAndReopensSnapshotIndexes(t *testing.T) {
 		{PrimaryKey: "c", Fields: map[string]any{"text": "blue berry", "rating": int32(3), "embedding": VectorFP32{0, 1}, "sparse": SparseVectorFP32{Indices: []uint32{2}, Values: []float32{1}}}},
 	})
 	require.NoError(t, err)
-	require.NoError(t, collection.Flush(ctx))
+	require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
 
 	manifest := collection.store.Manifest()
 	require.Len(t, manifest.SegmentIndexSnapshots, 1)
@@ -592,13 +592,11 @@ func TestCollectionPersistsAndReopensSnapshotIndexes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "b"}, documentKeys(ftsResults))
 	runtimeIndexes := collection.segmentIndexes[manifest.PersistedSegments[0].ID].indexes
-	require.Empty(t, runtimeIndexes.scalar, "unfiltered FTS query eagerly loaded the persisted INVERT index")
-	require.Contains(t, runtimeIndexes.lazyScalar, "rating")
+	require.Contains(t, runtimeIndexes.scalar, "rating", "Open prepares persisted indexes before queries")
 	vectorResults, err := collection.Query(ctx, VectorQuery{Field: "embedding", DenseVector: VectorFP32{1, 0}, TopK: 2, Filter: "rating >= 2"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"b", "c"}, documentKeys(vectorResults))
 	require.Contains(t, runtimeIndexes.scalar, "rating")
-	require.NotContains(t, runtimeIndexes.lazyScalar, "rating")
 	filterResults, err := collection.Query(ctx, VectorQuery{Filter: "rating >= 2", TopK: 10})
 	require.NoError(t, err)
 	require.Equal(t, []string{"b", "c"}, documentKeys(filterResults))
@@ -616,10 +614,8 @@ func TestCollectionPersistsAndReopensSnapshotIndexes(t *testing.T) {
 	require.NotEmpty(t, invertPath)
 	require.NoError(t, os.WriteFile(filepath.Join(invertPath, "ZVEC-INDEX"), []byte("corrupt"), 0o600))
 	collection, err = Open(ctx, path, NewCollectionOptions())
-	require.NoError(t, err)
-	defer func() { require.NoError(t, collection.Close()) }()
-	_, err = collection.Query(ctx, VectorQuery{Filter: "rating >= 2", TopK: 10})
 	require.ErrorIs(t, err, sqlengine.ErrCorruptInvertedIndex)
+	require.Nil(t, collection)
 }
 
 func TestCollectionRebuildsMissingOptionalSegmentIndexSnapshots(t *testing.T) {
@@ -693,7 +689,7 @@ func TestCollectionSegmentNativeIndexesAreIncremental(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, collection.Flush(ctx))
 	firstSnapshot := collection.store.Manifest().SegmentIndexSnapshots[0]
-	require.Len(t, firstSnapshot.Artifacts, 3)
+	require.Len(t, firstSnapshot.Artifacts, 2)
 
 	_, err = collection.Insert(ctx, []Document{{
 		PrimaryKey: "b", Fields: map[string]any{
@@ -765,6 +761,7 @@ func TestCollectionScalarQuantizedDiskANNDirectSchema(t *testing.T) {
 				require.NoError(t, err)
 			}
 
+			require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
 			results, err := collection.Query(ctx, VectorQuery{
 				Field: "embedding", DenseVector: VectorFP32{.9, .02, -.04, .1}, TopK: 3,
 			})
@@ -820,7 +817,7 @@ func TestBuildCollectionArtifactIndexesOmitsQueryOnlyDenseIndexes(t *testing.T) 
 	require.NotNil(t, indexes.denseNative["embedding"])
 }
 
-func TestBuildCollectionRuntimeIndexesDefersDiskANNFlat(t *testing.T) {
+func TestBuildCollectionRuntimeIndexesScansDiskANNOriginals(t *testing.T) {
 	ctx := context.Background()
 	params := NewDiskANNIndexParams(MetricTypeL2)
 	params.MaxDegree, params.ListSize, params.PQChunks = 4, 8, 2
@@ -832,18 +829,18 @@ func TestBuildCollectionRuntimeIndexesDefersDiskANNFlat(t *testing.T) {
 		documents[index].DocID = uint64(index + 1)
 	}
 
-	indexes, err := buildCollectionRuntimeIndexes(ctx, schema, documents, 2, 0, false, nil)
+	indexes, err := buildIndexedCollectionRuntimeForTest(t, ctx, schema, documents)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, indexes.Close()) }()
 
-	lazy, ok := indexes.denseFlat["embedding"].(*lazyCollectionDenseFlatIndex)
+	lazy, ok := indexes.denseFlat["embedding"].(*collectionOriginalDenseIndex)
 	require.True(t, ok)
-	require.Nil(t, lazy.index)
+	require.Len(t, lazy.candidates, lazy.Len(), "original vectors remain borrowed after search")
 	require.Same(t, indexes.denseExact["embedding"], lazy)
 	results, err := lazy.SearchWithOptions(ctx, documents[7].Fields["embedding"].(VectorFP32), core.SearchOptions{TopK: 3})
 	require.NoError(t, err)
 	require.Len(t, results, 3)
-	require.NotNil(t, lazy.index)
+	require.Len(t, lazy.candidates, lazy.Len(), "original vectors remain borrowed after search")
 }
 
 func TestCollectionReplaysPublicDocumentPayloadWithoutFlush(t *testing.T) {
@@ -1492,6 +1489,7 @@ func TestCollectionDenseHNSWQueryControlsAndRecall(t *testing.T) {
 		Field: "embedding", DenseVector: queryVector, TopK: 20,
 		Filter: "rating >= 1", Params: queryParams,
 	}
+	require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
 	approximate, err := collection.Query(ctx, query)
 	require.NoError(t, err)
 
@@ -1542,6 +1540,7 @@ func TestCollectionHNSWRaBitQQueryOptimizeAndReopen(t *testing.T) {
 	queryParams := NewHNSWRaBitQQueryParams()
 	queryParams.EF = 300
 	query := VectorQuery{Field: "embedding", DenseVector: queryVector, TopK: 15, Params: queryParams}
+	require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
 	approximate, err := collection.Query(ctx, query)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, documentRecall(approximate, exact), .85)
@@ -1721,7 +1720,7 @@ func TestCollectionIVFRaBitQQueryCreateIndexOptimizeAndReopen(t *testing.T) {
 	require.True(t, collection.Stats().IndexCompleteness["embedding"] == 1)
 }
 
-func TestCollectionIVFRaBitQGroupByRejectsRefiner(t *testing.T) {
+func TestCollectionIVFRaBitQGroupByRefinerRequiresFlatFallback(t *testing.T) {
 	ctx := context.Background()
 	schema := NewCollectionSchema("ivf_rabitq_group_refiner",
 		FieldSchema{Name: "embedding", DataType: DataTypeVectorFP32, Dimension: 64, Index: NewIVFRaBitQIndexParams(MetricTypeL2)},
@@ -1737,13 +1736,16 @@ func TestCollectionIVFRaBitQGroupByRejectsRefiner(t *testing.T) {
 		GroupByField: "group", GroupCount: 2, TopKPerGroup: 1,
 	}
 	_, err = collection.GroupByQuery(ctx, query)
-	require.ErrorIs(t, err, ErrNotSupported)
+	require.NoError(t, err)
 	for index, group := range []string{"a", "b"} {
 		vector := make(VectorFP32, 64)
 		vector[0] = float32(index)
 		_, err = collection.Insert(ctx, []Document{{PrimaryKey: group, Fields: map[string]any{"embedding": vector, "group": group}}})
 		require.NoError(t, err)
 	}
+	_, err = collection.GroupByQuery(ctx, query)
+	require.NoError(t, err, "unoptimized Flat supports grouping with original scores")
+	require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
 	_, err = collection.GroupByQuery(ctx, query)
 	require.ErrorIs(t, err, ErrNotSupported)
 }
@@ -1981,6 +1983,7 @@ func TestCollectionDiskANNDirectFP16SchemaDefaults(t *testing.T) {
 		require.NoError(t, err)
 	}
 
+	require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
 	results, err := collection.Query(ctx, VectorQuery{
 		Field:       "embedding",
 		DenseVector: VectorFP16{Float16FromFloat32(0.9), Float16FromFloat32(0)},
@@ -2285,6 +2288,7 @@ func TestCollectionSparseHNSWFP16Controls(t *testing.T) {
 		Field: "sparse", SparseVector: documents[117].Fields["sparse"].(SparseVectorFP32),
 		TopK: 20, Filter: "rating >= 1", Params: queryParams,
 	}
+	require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
 	got, err := collection.Query(ctx, query)
 	require.NoError(t, err)
 
@@ -2487,7 +2491,7 @@ func TestCollectionANNValidationAndBackfillRollback(t *testing.T) {
 	{
 		persisted := soarField.Index.(IVFIndexParams)
 		require.True(t, persisted.UseSOAR)
-		require.Equal(t, generation+1, collection.store.Manifest().Generation)
+		require.Greater(t, collection.store.Manifest().Generation, generation)
 	}
 
 	hnswParams := NewHNSWQueryParams()
@@ -2596,6 +2600,7 @@ func TestCollectionGroupByPreservesUnsupportedANNBoundary(t *testing.T) {
 				Params: testCase.params(false),
 			}
 			{
+				require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
 				_, err := collection.GroupByQuery(ctx, query)
 				require.ErrorIs(t, err, ErrNotSupported)
 			}
@@ -4724,6 +4729,7 @@ func TestCollectionDenseQuantizedLinearGroupByAndRefinement(t *testing.T) {
 			}
 
 			groupQuery.Params = testCase.params(false)
+			require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
 			firstStageGroups, err := collection.GroupByQuery(ctx, groupQuery)
 			require.NoError(t, err)
 
@@ -4813,6 +4819,7 @@ func TestCollectionSparseFP16LinearGroupByAndRefinement(t *testing.T) {
 		Field: "sparse", SparseVector: queryVector, Filter: filter, Params: params,
 		GroupByField: "group", GroupCount: 4, TopKPerGroup: 2,
 	}
+	require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
 	firstStageGroups, err := collection.GroupByQuery(ctx, groupQuery)
 	require.NoError(t, err)
 
@@ -4932,6 +4939,7 @@ func TestCollectionNativeDenseHNSWGroupBy(t *testing.T) {
 				GroupByField: "group", GroupCount: 3, TopKPerGroup: 1,
 			}
 			query.Params = testCase.params(false)
+			require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
 			native, err := collection.GroupByQuery(ctx, query)
 			require.NoError(t, err)
 
@@ -4994,6 +5002,7 @@ func TestCollectionNativeSparseHNSWGroupBy(t *testing.T) {
 	params := NewHNSWQueryParams()
 	params.EF = 4
 	query.Params = params
+	require.NoError(t, collection.Optimize(ctx, OptimizeOptions{}))
 	native, err := collection.GroupByQuery(ctx, query)
 	require.NoError(t, err)
 
