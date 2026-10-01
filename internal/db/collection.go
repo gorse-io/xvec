@@ -495,6 +495,20 @@ func (c *CollectionStore) VisitSegmentSnapshots(ctx context.Context, visit func(
 	return nil
 }
 
+// DiscardReadOnlyMappedPages lets a verified read-only query snapshot start
+// without retaining the original vector pages touched by integrity checks.
+// This is residency advice only; document and encoded-vector views stay valid.
+func (c *CollectionStore) DiscardReadOnlyMappedPages() {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.closed || !c.readOnly {
+		return
+	}
+	for _, segment := range c.manager.ImmutableSegments() {
+		segment.DiscardMappedPages()
+	}
+}
+
 // DocumentCount returns the number of live primary keys in memory.
 func (c *CollectionStore) DocumentCount() uint64 {
 	return c.Stats().DocumentCount

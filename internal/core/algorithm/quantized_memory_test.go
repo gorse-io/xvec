@@ -136,6 +136,7 @@ func TestQuantizedHNSWBorrowedOriginals(t *testing.T) {
 			require.Nil(t, reopened.vectors.originals)
 			mapped, err := OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx, path, kind, nil, candidates, true)
 			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, mapped.Close()) })
 			for _, source := range []*ScalarQuantizedHNSWIndex{owned, reopened, mapped} {
 				got, err := source.Search(ctx, query, 20)
 				require.NoError(t, err)

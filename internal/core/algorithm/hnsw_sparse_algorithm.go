@@ -602,11 +602,13 @@ func (i *SparseHNSWIndex) SearchSparseHNSWGroups(
 	scoreAt := func(position int) (float32, error) {
 		return sparseHNSWScore(query, i.sparseVectorAt(position))
 	}
-	prefetch := func(neighbors []int) {
-		prefetchSparseHNSWNeighbors(i.offsets, i.indices, i.values, neighbors, options.PrefetchOffset, options.PrefetchLines)
+	prefetch := func(neighbors hnswNeighborList) {
+		prefetchSparseHNSWNeighbors(i.offsets, i.indices, i.values, neighbors.positions, options.PrefetchOffset, options.PrefetchLines)
 	}
 	return expandHNSWGroups(
-		ctx, MetricIP, i.keys, i.neighbors, initial, options.GroupByOptions,
+		ctx, MetricIP, i.keys, func(position, level int) hnswNeighborList {
+			return hnswNeighborList{positions: i.neighbors[position][level]}
+		}, initial, options.GroupByOptions,
 		scoreAt, func(score float32) float32 { return score }, groupNodeBetter(MetricIP, i.keys), prefetch, visited,
 	)
 }

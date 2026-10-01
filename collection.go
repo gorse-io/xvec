@@ -156,11 +156,12 @@ type collectionSegmentDocuments struct {
 }
 
 type collectionSegmentRuntime struct {
-	documents []Document // Immutable decoded records shared across query snapshots.
-	segmentID uint64
-	key       collectionRuntimeKey
-	indexes   *collectionRuntimeIndexes
-	refs      atomic.Int64
+	documents        []Document     // Immutable decoded records shared across query snapshots.
+	documentOrdinals map[uint64]int // Segment-local positions shared with filter bitmaps.
+	segmentID        uint64
+	key              collectionRuntimeKey
+	indexes          *collectionRuntimeIndexes
+	refs             atomic.Int64
 }
 
 type collectionQuerySnapshot struct {
@@ -291,6 +292,18 @@ func (c *Collection) querySnapshotLocked(ctx context.Context) (*collectionQueryS
 		segments: segments, runtimes: runtimes, liveFilter: liveFilter, ftsScorers: ftsScorers,
 	}
 	snapshot.retainRuntimes()
+	if c.options.ReadOnly && c.options.EnableMmap {
+		for _, field := range schema.Fields {
+			if field.DataType != DataTypeVectorFP32 || field.IndexType() != IndexTypeHNSW {
+				continue
+			}
+			spec, err := resolveCollectionVectorIndex(field, "release validated originals", c.path)
+			if err == nil && spec.quantize == QuantizeTypeFP16 {
+				c.store.DiscardReadOnlyMappedPages()
+				break
+			}
+		}
+	}
 	c.querySnapshot.Store(snapshot)
 	c.querySnapshotBuildCount.Add(1)
 	return snapshot, nil
@@ -477,6 +490,7 @@ func (c *Collection) segmentRuntimeIndexesLocked(
 		indexes.key = key
 		runtime := &collectionSegmentRuntime{
 			segmentID: segment.metadata.ID, key: key, indexes: indexes, documents: segment.documents,
+			documentOrdinals: indexDocumentOrdinals(segment.documents),
 		}
 		runtime.refs.Store(1)
 		created = append(created, runtime)
@@ -563,6 +577,9 @@ func openCollectionDenseArtifact(
 				originals := make(map[uint64][]byte, len(keys))
 				for position, key := range keys {
 					originals[key] = reader.rows[position]
+				}
+				if kind == core.QuantizationFP16 && useMmap {
+					return core.OpenScalarQuantizedHNSWIndexWithDeferredFP16Codes(ctx, path, reformer, originals, useMmap)
 				}
 				return core.OpenScalarQuantizedHNSWIndexWithEncodedVectors(ctx, path, kind, reformer, originals, useMmap)
 			}
@@ -2160,11 +2177,19 @@ func searchCollectionDense(
 	filter core.CandidateFilter,
 	spec collectionVectorIndex,
 	config collectionQueryConfig,
+	candidateKeys ...[]uint64,
 ) ([]core.Result, error) {
 	final := core.SearchOptions{TopK: topK, Radius: config.options.Radius, Filter: filter}
 	if (config.options.Linear && spec.indexType != IndexTypeHNSWRaBitQ && spec.indexType != IndexTypeIVFRaBitQ) || spec.indexType == IndexTypeFlat {
 		return executeCollectionDenseSearch(ctx, index, query, final, config.options.UseRefiner, config.scaleFactor,
 			func(options core.SearchOptions) ([]core.Result, error) {
+				if len(candidateKeys) != 0 {
+					if keyed, ok := index.(interface {
+						SearchKeysWithOptions(context.Context, []float32, []uint64, core.SearchOptions) ([]core.Result, error)
+					}); ok {
+						return keyed.SearchKeysWithOptions(ctx, query, candidateKeys[0], options)
+					}
+				}
 				return index.SearchWithOptions(ctx, query, options)
 			})
 	}
@@ -3430,6 +3455,7 @@ func filterValueKind(dataType DataType) (kind sqlengine.ValueKind, array, suppor
 type evaluatedFilter struct {
 	predicate core.CandidateFilter
 	ordinals  []uint32
+	bitmap    *container.FrozenBitmap
 	matched   uint64
 	total     uint64
 	present   bool
@@ -3452,10 +3478,20 @@ func evaluateFilterDocuments(
 	invertToForwardRatio float32,
 	cached ...sqlengine.IndexSet,
 ) (evaluatedFilter, error) {
+	return evaluateFilterDocumentsByOrdinal(ctx, plan, documents, invertToForwardRatio, nil, cached...)
+}
+
+func evaluateFilterDocumentsByOrdinal(
+	ctx context.Context,
+	plan *sqlengine.Plan,
+	documents []Document,
+	invertToForwardRatio float32,
+	documentOrdinals map[uint64]int,
+	cached ...sqlengine.IndexSet,
+) (evaluatedFilter, error) {
 	if plan == nil {
 		return evaluatedFilter{total: uint64(len(documents))}, nil
 	}
-	matched := make(map[uint64]struct{}, len(documents))
 	if plan.AlwaysFalse() {
 		return evaluatedFilter{
 			predicate: func(uint64) bool { return false }, total: uint64(len(documents)), present: true,
@@ -3508,7 +3544,7 @@ func evaluateFilterDocuments(
 			}
 		}
 	}
-	candidates, candidatesUsed, _, err := plan.Candidates(indexes, uint64(len(documents)))
+	candidates, candidatesUsed, exact, err := plan.Candidates(indexes, uint64(len(documents)))
 	if err != nil {
 		return evaluatedFilter{}, err
 	}
@@ -3516,35 +3552,78 @@ func evaluateFilterDocuments(
 		float64(candidates.Count())/float64(len(documents)) >= float64(invertToForwardRatio) {
 		candidatesUsed = false
 	}
-	ordinals := make([]uint32, 0, min(len(documents), 64))
-	for index := range documents {
+	if candidatesUsed && exact && documentOrdinals != nil {
+		// Graph queries only need membership and cardinality. Defer enumeration
+		// until a key scan or visibility/global-ordinal merge actually needs it.
+		bitmap := candidates.Freeze()
+		if !bitmap.Within(uint64(len(documents))) {
+			return evaluatedFilter{}, fmt.Errorf("filter candidate ordinal is out of range")
+		}
 		if err := ctx.Err(); err != nil {
 			return evaluatedFilter{}, err
 		}
-		if candidatesUsed && !candidates.Contains(uint64(index)) {
-			continue
+		return evaluatedFilter{
+			predicate: func(key uint64) bool {
+				ordinal, found := documentOrdinals[key]
+				return found && bitmap.Contains(uint64(ordinal))
+			},
+			bitmap: bitmap, matched: bitmap.Count(), total: uint64(len(documents)), present: true, usedIndex: true,
+		}, nil
+	}
+	capacity := min(len(documents), 64)
+	if candidatesUsed {
+		capacity = int(candidates.Count())
+	}
+	matched := make(map[uint64]struct{}, capacity)
+	ordinals := make([]uint32, 0, capacity)
+	// Reuse resolver scratch across candidates. Exact inverted results already
+	// implement SQL null/array/logical semantics and need no forward evaluation.
+	cache := make(map[string]sqlengine.Value, fieldCount)
+	visit := func(ordinal uint64) bool {
+		if err = ctx.Err(); err != nil {
+			return false
 		}
-		document := &documents[index]
-		cache := make(map[string]sqlengine.Value, fieldCount)
-		match, err := plan.Match(func(field sqlengine.Field) (sqlengine.Value, error) {
-			if value, found := cache[field.Name]; found {
+		if ordinal >= uint64(len(documents)) {
+			err = fmt.Errorf("filter candidate ordinal %d is out of range", ordinal)
+			return false
+		}
+		document := &documents[ordinal]
+		match := candidatesUsed && exact
+		if !match {
+			clear(cache)
+			match, err = plan.Match(func(field sqlengine.Field) (sqlengine.Value, error) {
+				if value, found := cache[field.Name]; found {
+					return value, nil
+				}
+				raw, found := document.Fields[field.Name]
+				value, valueErr := toFilterValue(field, raw, found)
+				if valueErr != nil {
+					return sqlengine.Value{}, fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, valueErr)
+				}
+				cache[field.Name] = value
 				return value, nil
+			})
+			if err != nil {
+				return false
 			}
-			raw, found := document.Fields[field.Name]
-			value, valueErr := toFilterValue(field, raw, found)
-			if valueErr != nil {
-				return sqlengine.Value{}, fmt.Errorf("document %d field %q: %w", document.DocID, field.Name, valueErr)
-			}
-			cache[field.Name] = value
-			return value, nil
-		})
-		if err != nil {
-			return evaluatedFilter{}, err
 		}
 		if match {
 			matched[document.DocID] = struct{}{}
-			ordinals = append(ordinals, uint32(index))
+			ordinals = append(ordinals, uint32(ordinal))
 		}
+		return true
+	}
+	if candidatesUsed {
+		candidates.Range(visit)
+	} else {
+		for ordinal := range documents {
+			if !visit(uint64(ordinal)) {
+				break
+			}
+		}
+	}
+	if err != nil {
+		return evaluatedFilter{}, err
 	}
 	return evaluatedFilter{
 		predicate: func(key uint64) bool {
@@ -3959,7 +4038,7 @@ func (c *Collection) MultiQuery(ctx context.Context, query MultiQuery) ([]Docume
 	runtimeConfig := c.runtimeConfig()
 	filters := snapshot.liveFilter
 	if filterPlan != nil {
-		filters, err = evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
+		filters, err = evaluateSnapshotFilters(ctx, filterPlan, snapshot, runtimeConfig.InvertToForwardScanRatio)
 		if err != nil {
 			return nil, wrapFilterEvaluationError(op, c.path, err)
 		}
@@ -4714,7 +4793,7 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	runtimeConfig := c.runtimeConfig()
 	filters := snapshot.liveFilter
 	if filterPlan != nil {
-		filters, err = evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
+		filters, err = evaluateSnapshotFilters(ctx, filterPlan, snapshot, runtimeConfig.InvertToForwardScanRatio)
 		if err != nil {
 			return nil, wrapFilterEvaluationError(op, c.path, err)
 		}
@@ -4955,9 +5034,15 @@ func (c *Collection) searchFTSSegments(
 		runtime := *base
 		runtime.scorer = scorer
 		filtered := runtime.withFilter(local.predicate)
+		bruteForce := local.useBruteForce(runtimeConfig.FTSBruteForceByKeysRatio)
+		if bruteForce {
+			if err := local.materializeOrdinals(ctx); err != nil {
+				return err
+			}
+		}
 		results, err := searchCollectionFTS(
 			ctx, filtered, clause, queryParams, topK, local.ordinals,
-			local.useBruteForce(runtimeConfig.FTSBruteForceByKeysRatio),
+			bruteForce,
 		)
 		if err != nil {
 			return err
@@ -5002,7 +5087,18 @@ func (c *Collection) searchVectorSnapshotResolved(
 		if index == nil {
 			return nil, &Error{Code: ErrorCodeInternal, Op: op, Path: c.path, Message: fmt.Sprintf("runtime index for field %q is missing", field.Name)}
 		}
-		results, err := searchCollectionDense(ctx, index, queryVector, topK, candidateFilter.predicate, vectorIndex, params)
+		var candidateKeys [][]uint64
+		if candidateFilter.present && (params.options.Linear || vectorIndex.indexType == IndexTypeFlat) {
+			if err := candidateFilter.materializeOrdinals(ctx); err != nil {
+				return nil, err
+			}
+			keys := make([]uint64, len(candidateFilter.ordinals))
+			for position, ordinal := range candidateFilter.ordinals {
+				keys[position] = documents[ordinal].DocID
+			}
+			candidateKeys = [][]uint64{keys}
+		}
+		results, err := searchCollectionDense(ctx, index, queryVector, topK, candidateFilter.predicate, vectorIndex, params, candidateKeys...)
 		if err != nil {
 			return nil, wrapCollectionError(op, c.path, err)
 		}
@@ -5151,7 +5247,7 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	defer releaseSnapshot()
 	documents, segments, runtimes := snapshot.documents, snapshot.segments, snapshot.runtimes
 	runtimeConfig := c.runtimeConfig()
-	filters, err := evaluateSegmentFilters(ctx, filterPlan, documents, segments, runtimes, runtimeConfig.InvertToForwardScanRatio)
+	filters, err := evaluateSnapshotFilters(ctx, filterPlan, snapshot, runtimeConfig.InvertToForwardScanRatio)
 	if err != nil {
 		return nil, wrapFilterEvaluationError(op, c.path, err)
 	}

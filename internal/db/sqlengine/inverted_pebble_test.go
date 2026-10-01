@@ -69,6 +69,12 @@ func TestInvertedIndexPebbleUsesMultipleOrderedPostingKeys(t *testing.T) {
 		}
 	}
 	require.Greater(t, postingKeys, len(index.ordered), "postings were stored as one value per term")
+	reopened, err := OpenInvertedIndex(context.Background(), path)
+	require.NoError(t, err)
+	require.Equal(t, index.rows.Snapshot(), reopened.rows.Snapshot())
+	for key, posting := range index.postings {
+		require.Equal(t, posting.Snapshot(), reopened.postings[key].Snapshot())
+	}
 }
 
 func TestInvertedPebbleScalarKeyCodec(t *testing.T) {
@@ -134,6 +140,21 @@ func TestInvertedIndexPebbleRejectsInvalidInputsAndCorruption(t *testing.T) {
 		"invalid term": func(store *common.Store) error {
 			return store.Set([]byte{'t', 0, 0, 0, 0}, []byte{byte(ValueInt64)})
 		},
+		"missing posting": func(store *common.Store) error {
+			return store.Delete([]byte{'p', 0, 0, 0, 0, 0, 0, 0, 0})
+		},
+		"posting starts at chunk one": func(store *common.Store) error {
+			if err := store.Delete([]byte{'p', 0, 0, 0, 0, 0, 0, 0, 0}); err != nil {
+				return err
+			}
+			return store.Set([]byte{'p', 0, 0, 0, 0, 0, 0, 0, 1}, make([]byte, 8))
+		},
+		"orphan posting": func(store *common.Store) error {
+			return store.Set([]byte{'p', 0, 0, 0, 2, 0, 0, 0, 0}, make([]byte, 8))
+		},
+		"invalid posting bytes": func(store *common.Store) error {
+			return store.Set([]byte{'p', 0, 0, 0, 0, 0, 0, 0, 0}, []byte{1})
+		},
 		"invalid length key": func(store *common.Store) error {
 			key := make([]byte, 9)
 			key[0] = 'l'
@@ -152,5 +173,34 @@ func TestInvertedIndexPebbleRejectsInvalidInputsAndCorruption(t *testing.T) {
 			_, err = OpenInvertedIndex(context.Background(), path)
 			require.ErrorIs(t, err, ErrCorruptInvertedIndex)
 		})
+	}
+}
+
+func TestInvertedIndexPebbleSparseArrayChunks(t *testing.T) {
+	field := Field{Name: "tags", Kind: ValueString, Array: true, Nullable: true, Filterable: true, Indexed: true}
+	index, err := NewInvertedIndex(field)
+	require.NoError(t, err)
+	rows := []uint64{0, 32767, 32768, 65536, 100000}
+	for n, row := range rows {
+		value := mustArray(t, ValueString, StringValue("common"))
+		if n%2 == 0 {
+			value = mustArray(t, ValueString, StringValue("common"), StringValue("even"))
+		}
+		require.NoError(t, index.Add(row, value))
+	}
+	// Retain trailing clear words as well as sparse high row IDs.
+	index.rows.Set(120000)
+	index.rows.Clear(120000)
+	require.NoError(t, index.Seal())
+	path := filepath.Join(t.TempDir(), "sparse.pebble")
+	require.NoError(t, index.Save(context.Background(), path))
+	reopened, err := OpenInvertedIndex(context.Background(), path)
+	require.NoError(t, err)
+	require.Equal(t, index.rows.Snapshot(), reopened.rows.Snapshot())
+	for key, posting := range index.postings {
+		require.Equal(t, posting.Snapshot(), reopened.postings[key].Snapshot())
+	}
+	for length, posting := range index.arrayLength {
+		require.Equal(t, posting.Snapshot(), reopened.arrayLength[length].Snapshot())
 	}
 }

@@ -100,6 +100,7 @@ type benchConfig struct {
 	FTSDefaultOperator   string
 	PayloadProfile       string
 	FilterRate           float64
+	LocalIntGroundTruth  bool
 	LabelPercentage      float64
 	K                    int
 	BatchSize            int
@@ -168,6 +169,7 @@ func parseConfig(args []string, stderr io.Writer) (benchConfig, error) {
 	flags.StringVar(&config.FTSDefaultOperator, "fts-default-operator", "or", "FTS match default operator: or or and")
 	flags.StringVar(&config.PayloadProfile, "payload-profile", "ids_only", "search result payload: ids_only or text")
 	flags.Float64Var(&config.FilterRate, "filter-rate", 0, "integer filter threshold as a fraction of dataset size")
+	flags.BoolVar(&config.LocalIntGroundTruth, "local-int-ground-truth", false, "use locally generated integer-filter ground truth; requires --skip-download")
 	flags.Float64Var(&config.LabelPercentage, "label-percentage", 0, "fraction of vectors matching the selected label")
 	flags.IntVar(&config.K, "k", 100, "number of nearest neighbors")
 	flags.IntVar(&config.BatchSize, "batch-size", 100, "documents per insert batch")
@@ -276,11 +278,14 @@ func (c benchConfig) validate() error {
 	if c.LoadLimit < 0 || c.QueryLimit < 0 {
 		return errors.New("load-limit and query-limit cannot be negative")
 	}
+	if c.LocalIntGroundTruth && (!c.isIntFilterCase() || !c.SkipDownload) {
+		return errors.New("local-int-ground-truth requires NewIntFilterPerformanceCase and --skip-download")
+	}
 	if c.isIntFilterCase() {
 		if c.FilterRate <= 0 || c.FilterRate >= 1 {
 			return errors.New("filter-rate must be between 0 and 1")
 		}
-		if !supportedFilterRate(c.FilterRate, c.DatasetWithSizeType) {
+		if !c.LocalIntGroundTruth && !supportedFilterRate(c.FilterRate, c.DatasetWithSizeType) {
 			return fmt.Errorf("filter-rate %g is not published for %q", c.FilterRate, c.DatasetWithSizeType)
 		}
 	}

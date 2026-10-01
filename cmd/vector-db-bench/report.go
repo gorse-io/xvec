@@ -61,6 +61,7 @@ type reportConfig struct {
 	FTSDefaultOperator  string   `json:"fts_default_operator,omitempty"`
 	PayloadProfile      string   `json:"payload_profile"`
 	FilterRate          float64  `json:"filter_rate,omitempty"`
+	LocalIntGroundTruth bool     `json:"local_int_ground_truth,omitempty"`
 	LabelPercentage     float64  `json:"label_percentage,omitempty"`
 	FilterExpression    string   `json:"filter_expression,omitempty"`
 }
@@ -161,7 +162,8 @@ func newBenchmarkReport(config benchConfig) benchmarkReport {
 			NumConcurrency: config.concurrency, OptimizeConcurrency: config.OptimizeConcurrency,
 			MaxDocsPerSegment: config.MaxDocsPerSegment, EnableMmap: config.EnableMmap,
 			PayloadProfile: config.PayloadProfile, FilterRate: config.FilterRate,
-			LabelPercentage: config.LabelPercentage, FilterExpression: config.filterExpression(),
+			LocalIntGroundTruth: config.LocalIntGroundTruth,
+			LabelPercentage:     config.LabelPercentage, FilterExpression: config.filterExpression(),
 		},
 		System: systemInfo{
 			GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Go: runtime.Version(),

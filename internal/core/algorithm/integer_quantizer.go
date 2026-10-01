@@ -255,7 +255,11 @@ func QuantizedDistanceToFloat(metric Metric, candidate QuantizedVector, query []
 }
 
 func quantizeFP16(vector []float32) (QuantizedVector, error) {
-	codes := make([]byte, len(vector)*2)
+	return quantizeFP16Into(vector, make([]byte, len(vector)*2))
+}
+
+// quantizeFP16Into encodes a validated vector into an exclusively owned slice.
+func quantizeFP16Into(vector []float32, codes []byte) (QuantizedVector, error) {
 	for index, value := range vector {
 		bits := utility.Float32ToFloat16Bits(value)
 		decoded := utility.Float16BitsToFloat32(bits)

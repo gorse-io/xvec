@@ -351,6 +351,7 @@ type HNSWIndex struct {
 	positions        map[uint64]int
 	levels           []int
 	neighbors        [][][]int
+	compactNeighbors *hnswCompactNeighbors
 	entryPoint       int
 	maxLevel         int
 	levelRNGState    uint64
@@ -467,9 +468,10 @@ func (i *HNSWIndex) Neighbors(key uint64, level int) ([]uint64, error) {
 	if level < 0 || level > i.levels[position] {
 		return nil, fmt.Errorf("%w: key %d has maximum level %d, got %d", ErrInvalidHNSWLevel, key, i.levels[position], level)
 	}
-	positions := i.neighbors[position][level]
-	result := make([]uint64, len(positions))
-	for offset, neighbor := range positions {
+	positions := i.neighborList(position, level)
+	result := make([]uint64, positions.Len())
+	for offset := 0; offset < positions.Len(); offset++ {
+		neighbor := positions.At(offset)
 		result[offset] = i.keys[neighbor]
 	}
 	return result, nil
@@ -565,7 +567,9 @@ func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, queryF
 		if results.Len() >= limit && hasWorst && hnswNodeBetter(i.options.Metric, worst, current) {
 			break
 		}
-		for _, neighbor := range i.neighbors[current.position][level] {
+		neighbors := i.neighborList(current.position, level)
+		for j := 0; j < neighbors.Len(); j++ {
+			neighbor := neighbors.At(j)
 			if visited.seen(neighbor) {
 				continue
 			}
@@ -959,11 +963,11 @@ func (i *HNSWIndex) SearchHNSWGroups(
 	scoreAt := func(position int) (float32, error) {
 		return i.queryDistanceAt(query, queryFP16, queryMagnitude, position)
 	}
-	prefetch := func(neighbors []int) {
-		i.prefetchNeighbors(neighbors, options.PrefetchOffset, options.PrefetchLines)
+	prefetch := func(neighbors hnswNeighborList) {
+		i.prefetchNeighborList(neighbors, options.PrefetchOffset, options.PrefetchLines)
 	}
 	return expandHNSWGroups(
-		ctx, i.options.Metric, i.keys, i.neighbors, initial, options.GroupByOptions,
+		ctx, i.options.Metric, i.keys, i.neighborList, initial, options.GroupByOptions,
 		scoreAt, func(score float32) float32 { return score }, groupNodeBetter(i.options.Metric, i.keys), prefetch, visited,
 	)
 }
@@ -1110,13 +1114,14 @@ func (i *HNSWIndex) searchHNSWBase(ctx context.Context, query []float32, queryFP
 		if accepted.Len() >= capacity && hasWorst && i.options.Metric.Better(worst.score, current.score) {
 			break
 		}
-		neighbors := i.neighbors[current.position][0]
-		i.prefetchNeighbors(neighbors, options.PrefetchOffset, options.PrefetchLines)
+		neighbors := i.neighborList(current.position, 0)
+		i.prefetchNeighborList(neighbors, options.PrefetchOffset, options.PrefetchLines)
 		visited.batchPositions = visited.batchPositions[:0]
 		visited.batchVectors = visited.batchVectors[:0]
 		visited.batchMagnitudes = visited.batchMagnitudes[:0]
 		visited.batchScores = visited.batchScores[:0]
-		for _, neighbor := range neighbors {
+		for j := 0; j < neighbors.Len(); j++ {
+			neighbor := neighbors.At(j)
 			if visited.seen(neighbor) {
 				continue
 			}
@@ -1222,14 +1227,15 @@ func (i *HNSWIndex) searchHNSWBaseBlockHeap(ctx context.Context, query []float32
 			continue
 		}
 		visited.markExpanded(int(current))
-		neighbors := i.neighbors[int(current)][0]
-		i.prefetchNeighbors(neighbors, options.PrefetchOffset, options.PrefetchLines)
+		neighbors := i.neighborList(int(current), 0)
+		i.prefetchNeighborList(neighbors, options.PrefetchOffset, options.PrefetchLines)
 		visited.batchIDs = visited.batchIDs[:0]
 		visited.batchTies = visited.batchTies[:0]
 		visited.batchVectors = visited.batchVectors[:0]
 		visited.batchMagnitudes = visited.batchMagnitudes[:0]
 		visited.batchScores = visited.batchScores[:0]
-		for _, neighbor := range neighbors {
+		for j := 0; j < neighbors.Len(); j++ {
+			neighbor := neighbors.At(j)
 			if visited.seen(neighbor) {
 				continue
 			}
@@ -1408,6 +1414,7 @@ func (i *HNSWIndex) Add(ctx context.Context, key uint64, vector []float32) error
 	i.positions = working.positions
 	i.levels = working.levels
 	i.neighbors = working.neighbors
+	i.compactNeighbors = nil
 	i.entryPoint = working.entryPoint
 	i.maxLevel = working.maxLevel
 	i.levelRNGState = working.levelRNGState
@@ -1439,7 +1446,7 @@ func cloneHNSWIndex(ctx context.Context, source *HNSWIndex) (*HNSWIndex, error) 
 		vectorMagnitudes: slices.Clone(source.vectorMagnitudes),
 		positions:        make(map[uint64]int, len(source.positions)),
 		levels:           slices.Clone(source.levels),
-		neighbors:        make([][][]int, len(source.neighbors)),
+		neighbors:        make([][][]int, len(source.keys)),
 		entryPoint:       source.entryPoint,
 		maxLevel:         source.maxLevel,
 		levelRNGState:    source.levelRNGState,
@@ -1458,15 +1465,21 @@ func cloneHNSWIndex(ctx context.Context, source *HNSWIndex) (*HNSWIndex, error) 
 	for key, position := range source.positions {
 		clone.positions[key] = position
 	}
-	for position, levels := range source.neighbors {
+	for position := range source.keys {
 		if position&127 == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 		}
-		clone.neighbors[position] = make([][]int, len(levels))
-		for level, neighbors := range levels {
-			clone.neighbors[position][level] = slices.Clone(neighbors)
+		clone.neighbors[position] = make([][]int, source.neighborLevelCount(position))
+		for level := range clone.neighbors[position] {
+			neighbors := source.neighborList(position, level)
+			if neighbors.Len() != 0 {
+				clone.neighbors[position][level] = make([]int, neighbors.Len())
+			}
+			for j := 0; j < neighbors.Len(); j++ {
+				clone.neighbors[position][level][j] = neighbors.At(j)
+			}
 		}
 	}
 	return clone, nil
@@ -1562,9 +1575,11 @@ func writeHNSWIndex(ctx context.Context, file *os.File, index *HNSWIndex, payloa
 				node = binary.LittleEndian.AppendUint32(node, math.Float32bits(value))
 			}
 		}
-		for _, neighbors := range index.neighbors[position] {
-			node = binary.LittleEndian.AppendUint32(node, uint32(len(neighbors)))
-			for _, neighbor := range neighbors {
+		for level := 0; level < index.neighborLevelCount(position); level++ {
+			neighbors := index.neighborList(position, level)
+			node = binary.LittleEndian.AppendUint32(node, uint32(neighbors.Len()))
+			for j := 0; j < neighbors.Len(); j++ {
+				neighbor := neighbors.At(j)
 				node = binary.LittleEndian.AppendUint32(node, uint32(neighbor))
 			}
 		}
@@ -1683,9 +1698,11 @@ func encodeHNSWIndex(ctx context.Context, index *HNSWIndex) ([]byte, error) {
 				payload = binary.LittleEndian.AppendUint32(payload, math.Float32bits(value))
 			}
 		}
-		for _, neighbors := range index.neighbors[position] {
-			payload = binary.LittleEndian.AppendUint32(payload, uint32(len(neighbors)))
-			for _, neighbor := range neighbors {
+		for level := 0; level < index.neighborLevelCount(position); level++ {
+			neighbors := index.neighborList(position, level)
+			payload = binary.LittleEndian.AppendUint32(payload, uint32(neighbors.Len()))
+			for j := 0; j < neighbors.Len(); j++ {
+				neighbor := neighbors.At(j)
 				payload = binary.LittleEndian.AppendUint32(payload, uint32(neighbor))
 			}
 		}
@@ -1709,6 +1726,12 @@ func decodeHNSWIndexWithVectors(ctx context.Context, encoded []byte, borrowed ma
 }
 
 func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed map[uint64][]float32, encodedOriginals map[uint64][]byte, materialize bool) (*HNSWIndex, error) {
+	return decodeHNSWIndexWithStorageAndDiscard(ctx, encoded, borrowed, encodedOriginals, materialize, nil)
+}
+
+// discard releases only file-backed pages of the temporary artifact mapping.
+// All retained originals belong to the caller; decoded neighbors own their IDs.
+func decodeHNSWIndexWithStorageAndDiscard(ctx context.Context, encoded []byte, borrowed map[uint64][]float32, encodedOriginals map[uint64][]byte, materialize bool, discard func(int, int)) (*HNSWIndex, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil HNSW decode context")
 	}
@@ -1742,7 +1765,19 @@ func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed ma
 		return nil, fmt.Errorf("%w: inconsistent file length", ErrInvalidHNSWFile)
 	}
 	payload := encoded[hnswHeaderSize:]
-	if got, want := hashutil.CRC32C(payload), binary.LittleEndian.Uint32(header[84:88]); got != want {
+	var payloadCRC uint32
+	for start := 0; start < len(payload); {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		end := start + min(4<<20, len(payload)-start)
+		payloadCRC = hashutil.UpdateCRC32C(payloadCRC, payload[start:end])
+		if discard != nil {
+			discard(hnswHeaderSize+start, hnswHeaderSize+end)
+		}
+		start = end
+	}
+	if got, want := payloadCRC, binary.LittleEndian.Uint32(header[84:88]); got != want {
 		return nil, fmt.Errorf("%w: payload got %08x, want %08x", ErrHNSWChecksumMismatch, got, want)
 	}
 
@@ -1814,6 +1849,10 @@ func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed ma
 		vectors = make([]float32, count*dimension)
 	}
 
+	var mutableNeighbors [][][]int
+	if encodedOriginals == nil || materialize {
+		mutableNeighbors = make([][][]int, count)
+	}
 	index := &HNSWIndex{
 		dimension:      dimension,
 		options:        options,
@@ -1827,12 +1866,20 @@ func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed ma
 		fp16:           fp16,
 		positions:      make(map[uint64]int, count),
 		levels:         make([]int, count),
-		neighbors:      make([][][]int, count),
+		neighbors:      mutableNeighbors,
 		entryPoint:     entryPoint,
 		maxLevel:       maxLevel,
 		levelRNGState:  binary.LittleEndian.Uint64(header[76:84]),
 	}
-	offset := 0
+	if encodedOriginals != nil && !materialize {
+		graph, err := newHNSWCompactNeighbors(ctx, payload, count, dimension*hnswVectorWidth(fp16), options.M, discard)
+		if err != nil {
+			return nil, err
+		}
+		index.compactNeighbors = graph
+		index.neighbors = nil
+	}
+	offset, released := 0, 0
 	for position := 0; position < count; position++ {
 		if position&255 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -1872,7 +1919,11 @@ func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed ma
 				index.encodedVectors[position] = original[:len(original):len(original)]
 			}
 		}
-		index.neighbors[position] = make([][]int, int(level)+1)
+		if index.compactNeighbors == nil {
+			index.neighbors[position] = make([][]int, int(level)+1)
+		} else {
+			index.compactNeighbors.nodes[position] = len(index.compactNeighbors.offsets)
+		}
 		start := position * dimension
 		for component := 0; component < dimension; component++ {
 			if fp16 {
@@ -1911,20 +1962,42 @@ func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed ma
 				return nil, fmt.Errorf("%w: truncated neighbor positions", ErrInvalidHNSWFile)
 			}
 			var neighbors []int
-			if degree != 0 {
-				neighbors = make([]int, degree)
+			if index.compactNeighbors == nil {
+				if degree != 0 {
+					neighbors = make([]int, degree)
+				}
+			} else {
+				index.compactNeighbors.offsets = append(index.compactNeighbors.offsets, len(index.compactNeighbors.ids))
 			}
-			for neighborIndex := range neighbors {
+			for neighborIndex := 0; neighborIndex < degree; neighborIndex++ {
 				neighbor64 := uint64(binary.LittleEndian.Uint32(payload[offset : offset+4]))
 				offset += 4
 				if neighbor64 >= count64 || neighbor64 == uint64(position) {
 					return nil, fmt.Errorf("%w: invalid neighbor reference", ErrInvalidHNSWFile)
 				}
 				neighbor := int(neighbor64)
-				neighbors[neighborIndex] = neighbor
+				if index.compactNeighbors == nil {
+					neighbors[neighborIndex] = neighbor
+				} else {
+					index.compactNeighbors.ids = append(index.compactNeighbors.ids, uint32(neighbor))
+				}
 			}
-			index.neighbors[position][currentLevel] = neighbors
+			if index.compactNeighbors == nil {
+				index.neighbors[position][currentLevel] = neighbors
+			}
 		}
+		if discard != nil && offset-released >= 4<<20 {
+			discard(hnswHeaderSize+released, hnswHeaderSize+offset)
+			released = offset
+		}
+	}
+	if discard != nil {
+		discard(hnswHeaderSize+released, hnswHeaderSize+offset)
+	}
+	if index.compactNeighbors != nil {
+		graph := index.compactNeighbors
+		graph.nodes[count] = len(graph.offsets)
+		graph.offsets = append(graph.offsets, len(graph.ids))
 	}
 	if offset != len(payload) {
 		return nil, fmt.Errorf("%w: trailing payload data", ErrInvalidHNSWFile)
@@ -1994,7 +2067,7 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 	}
 	if uint64(count) > math.MaxUint32 || count > maxPlatformInt()/index.dimension ||
 		!validVectorStorage || len(index.positions) != count ||
-		len(index.levels) != count || len(index.neighbors) != count {
+		len(index.levels) != count || !index.validNeighborStorage(count) {
 		return fmt.Errorf("%w: inconsistent graph storage", ErrInvalidHNSWFile)
 	}
 	if (index.options.Metric == MetricCosine && len(index.vectorMagnitudes) != count) ||
@@ -2023,7 +2096,7 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 			return fmt.Errorf("%w: inconsistent key map", ErrInvalidHNSWFile)
 		}
 		level := index.levels[position]
-		if level < 0 || level > MaxHNSWLevel || len(index.neighbors[position]) != level+1 {
+		if level < 0 || level > MaxHNSWLevel || index.neighborLevelCount(position) != level+1 {
 			return fmt.Errorf("%w: invalid node level storage", ErrInvalidHNSWFile)
 		}
 		derivedMaxLevel = max(derivedMaxLevel, level)
@@ -2047,12 +2120,13 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 				}
 			}
 		}
-		for currentLevel, neighbors := range index.neighbors[position] {
+		for currentLevel := 0; currentLevel < index.neighborLevelCount(position); currentLevel++ {
+			neighbors := index.neighborList(position, currentLevel)
 			degreeLimit := index.options.M
 			if currentLevel == 0 {
 				degreeLimit *= 2
 			}
-			if len(neighbors) > degreeLimit {
+			if neighbors.Len() > degreeLimit {
 				return fmt.Errorf("%w: node degree exceeds limit", ErrInvalidHNSWFile)
 			}
 			seenGeneration++
@@ -2060,7 +2134,8 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 				clear(seenNeighbors)
 				seenGeneration = 1
 			}
-			for _, neighbor := range neighbors {
+			for j := 0; j < neighbors.Len(); j++ {
+				neighbor := neighbors.At(j)
 				if neighbor < 0 || neighbor >= count || neighbor == position || index.levels[neighbor] < currentLevel {
 					return fmt.Errorf("%w: invalid neighbor reference", ErrInvalidHNSWFile)
 				}
@@ -2086,8 +2161,9 @@ func checkedHNSWPayloadSize(index *HNSWIndex) (int, error) {
 	for position, level := range index.levels {
 		// The minimum already includes one level-count field for every node.
 		total += uint64(level) * hnswLevelFixedBytes
-		for _, neighbors := range index.neighbors[position] {
-			total += uint64(len(neighbors)) * 4
+		for level := 0; level < index.neighborLevelCount(position); level++ {
+			neighbors := index.neighborList(position, level)
+			total += uint64(neighbors.Len()) * 4
 			if total > uint64(maxPlatformInt()-hnswHeaderSize) {
 				return 0, fmt.Errorf("%w: payload exceeds platform capacity", ErrInvalidHNSWFile)
 			}

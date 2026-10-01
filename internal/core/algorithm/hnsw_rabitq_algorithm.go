@@ -472,7 +472,7 @@ func (i *HNSWRaBitQIndex) SearchHNSWRaBitQGroups(
 		return left.score < right.score
 	}
 	return expandHNSWGroups(
-		ctx, i.options.Metric, i.base.keys, i.base.neighbors, initial, options.GroupByOptions,
+		ctx, i.options.Metric, i.base.keys, i.base.neighborList, initial, options.GroupByOptions,
 		scoreAt, i.publicRaBitQScore, better, nil, visited,
 	)
 }

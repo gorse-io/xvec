@@ -222,3 +222,129 @@ func TestBitmapConcurrentAccess(t *testing.T) {
 	wg.Wait()
 	require.True(t, bitmap.Count() == 1000)
 }
+
+func TestFrozenBitmapOwnershipAndConcurrentUnion(t *testing.T) {
+	source := NewBitmap(1 << 20)
+	for _, bit := range []uint64{1, 64, 65537, 1 << 40} {
+		source.Set(bit)
+	}
+	frozen := source.Freeze()
+	source.And(nil)
+	source.Set(2)
+	require.Equal(t, uint64(4), frozen.Count())
+	require.False(t, frozen.Within(1<<40))
+	require.True(t, frozen.Within((1<<40)+1))
+	require.True(t, NewBitmap(0).Freeze().Within(0))
+	frozen.Range(nil)
+	var first []uint64
+	frozen.Range(func(bit uint64) bool { first = append(first, bit); return false })
+	require.Equal(t, []uint64{1}, first)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				target := NewBitmap(0)
+				target.OrFrozen(nil)
+				target.OrFrozen(frozen)
+				target.Clear(64)
+				target.Set(2)
+				target.OrFrozen(frozen)
+				if target.Count() != 5 || !frozen.Contains(64) || frozen.Contains(2) {
+					t.Error("frozen bitmap shares mutable state")
+				}
+				target.And(nil)
+			}
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, uint64(4), frozen.Count())
+}
+
+func TestBitmapAppendWords(t *testing.T) {
+	bitmap := NewBitmap(65)
+	bitmap.Set(1)
+	words := []uint64{1, 0, uint64(1) << 63, 0}
+	bitmap.AppendWords(words[:2])
+	bitmap.AppendWords(nil)
+	bitmap.AppendWords(words[2:])
+	words[0] = 0
+	require.Equal(t, []uint64{2, 0, 1, 0, uint64(1) << 63, 0}, bitmap.Snapshot())
+	require.Equal(t, uint64(3), bitmap.Count())
+	require.True(t, bitmap.Contains(319))
+	require.Equal(t, bitmap.Snapshot(), bitmap.Clone().Snapshot())
+
+	bitmap.logicalWords = maxInt()
+	require.Panics(t, func() { bitmap.AppendWords([]uint64{0}) })
+}
+
+func TestBitmapInlinePromotionAndSetOperations(t *testing.T) {
+	// Exercise inline/inline, inline/Roaring and Roaring/Roaring combinations,
+	// including IDs that share low bits but belong to different 32-bit domains.
+	domain := []uint64{0, 65, (1 << 32) + 65, 1 << 40, (1 << 40) + 65}
+	for leftMask := 0; leftMask < 1<<len(domain); leftMask++ {
+		for rightMask := 0; rightMask < 1<<len(domain); rightMask++ {
+			left, right := NewBitmap(0), NewBitmap(0)
+			for n := len(domain) - 1; n >= 0; n-- {
+				if leftMask&(1<<n) != 0 {
+					require.True(t, left.Set(domain[n]))
+					require.False(t, left.Set(domain[n]))
+				}
+				if rightMask&(1<<n) != 0 {
+					right.Set(domain[n])
+				}
+			}
+			for _, operation := range []struct {
+				apply func(*Bitmap)
+				mask  int
+			}{
+				{func(b *Bitmap) { b.Or(right) }, leftMask | rightMask},
+				{func(b *Bitmap) { b.And(right) }, leftMask & rightMask},
+				{func(b *Bitmap) { b.AndNot(right) }, leftMask &^ rightMask},
+				{func(b *Bitmap) { b.OrFrozen(right.Freeze()) }, leftMask | rightMask},
+			} {
+				got := left.Clone()
+				operation.apply(got)
+				var actual, expected []uint64
+				got.Range(func(v uint64) bool { actual = append(actual, v); return true })
+				for n, v := range domain {
+					present := operation.mask&(1<<n) != 0
+					require.Equal(t, present, got.Contains(v))
+					if present {
+						expected = append(expected, v)
+					}
+				}
+				require.Equal(t, expected, actual)
+				require.Equal(t, uint64(len(expected)), got.Count())
+			}
+			frozen := left.Freeze()
+			before := frozen.Count()
+			for _, v := range domain {
+				left.Clear(v)
+			}
+			require.Zero(t, left.Count())
+			require.Equal(t, before, frozen.Count())
+		}
+	}
+}
+
+func TestBitmapSmallPostingDoesNotAllocateContainers(t *testing.T) {
+	var inline Bitmap
+	require.Zero(t, testing.AllocsPerRun(100, func() {
+		inline.Set(1 << 40)
+		inline.Set(3)
+		inline.Contains(3)
+		inline.Range(func(bit uint64) bool { inline.Clear(bit); return true })
+	}))
+	b := NewBitmap(1000)
+	b.Set(65)
+	b.Set(1)
+	require.Nil(t, b.contents.large)
+	frozen := b.Freeze()
+	b.Set(130)
+	require.NotNil(t, b.contents.large)
+	require.Equal(t, uint64(2), frozen.Count())
+	require.False(t, frozen.Contains(130))
+	require.Equal(t, uint64(3), b.Count())
+}

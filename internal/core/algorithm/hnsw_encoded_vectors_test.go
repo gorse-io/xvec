@@ -63,12 +63,23 @@ func TestHNSWEncodedOriginals(t *testing.T) {
 				for _, useMmap := range []bool{false, true} {
 					index, err := OpenScalarQuantizedHNSWIndexWithEncodedVectors(ctx, path, kind, reformer, originals, useMmap)
 					require.NoError(t, err)
+					t.Cleanup(func() { require.NoError(t, index.Close()) })
 					require.Empty(t, index.base.vectors)
 					require.Nil(t, index.base.vectorRows)
 					require.Nil(t, index.vectors.originals)
 					require.NotNil(t, index.vectors.reader)
 					require.Equal(t, original.vectors.codes, index.vectors.codes)
-					require.Equal(t, original.base.neighbors, index.base.neighbors)
+					require.Nil(t, index.base.neighbors)
+					require.NotNil(t, index.base.compactNeighbors)
+					for position, key := range original.base.keys {
+						for level := 0; level <= original.base.levels[position]; level++ {
+							want, err := original.base.Neighbors(key, level)
+							require.NoError(t, err)
+							got, err := index.base.Neighbors(key, level)
+							require.NoError(t, err)
+							require.Equal(t, want, got)
+						}
+					}
 					assertHNSWGraphInvariants(t, index.base)
 					key := candidates[3].Key
 					got, ok := index.Vector(key)
@@ -102,6 +113,8 @@ func TestHNSWEncodedOriginals(t *testing.T) {
 					cloned, err := cloneHNSWIndex(ctx, index.base)
 					require.NoError(t, err)
 					require.Nil(t, cloned.encodedVectors)
+					require.Nil(t, cloned.compactNeighbors)
+					require.Equal(t, original.base.neighbors, cloned.neighbors)
 					require.Equal(t, candidates[3].Vector, cloned.vectorAt(3))
 				}
 				originals[candidates[0].Key][0] ^= 1

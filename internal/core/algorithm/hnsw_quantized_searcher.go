@@ -18,12 +18,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 
 	mmap "github.com/blevesearch/mmap-go"
 	"slices"
 
-	"github.com/gorse-io/xvec/internal/ailego/container"
+	ioutil "github.com/gorse-io/xvec/internal/ailego/io"
+	mathbatch "github.com/gorse-io/xvec/internal/ailego/math_batch"
 )
 
 // ScalarQuantizedHNSWIndex owns a stable HNSW topology, original vectors for
@@ -31,8 +33,10 @@ import (
 // It is immutable; stream additions belong to the unquantized source index and
 // require constructing a new quantized snapshot.
 type ScalarQuantizedHNSWIndex struct {
-	base    *HNSWIndex
-	vectors *scalarQuantizedVectors
+	base           *HNSWIndex
+	vectors        *scalarQuantizedVectors
+	fp16Magnitudes []float32
+	deferredMmap   bool
 }
 
 // NewScalarQuantizedHNSWIndex snapshots base and quantizes every vector after
@@ -61,17 +65,7 @@ func NewScalarQuantizedHNSWIndex(
 // The graph is private and immutable: codes, persistence and refinement share
 // its original vectors instead of retaining a second FP32 copy.
 func newOwnedScalarQuantizedHNSWIndex(ctx context.Context, base *HNSWIndex, kind Quantization, reformer DenseReformer) (*ScalarQuantizedHNSWIndex, error) {
-	var reader DenseVectorReader
-	if base.encodedVectors != nil {
-		reader = encodedHNSWVectorReader(base.encodedVectors)
-	}
-	vectors, err := newScalarQuantizedVectorStorageWithReader(
-		ctx, base.dimension, base.options.Metric, kind, reformer, base.keys, base.vectors, base.vectorRows, reader,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &ScalarQuantizedHNSWIndex{base: base, vectors: vectors}, nil
+	return newOwnedScalarQuantizedHNSWIndexWithMmap(ctx, base, kind, reformer, false)
 }
 
 // Save persists the immutable HNSW topology and original vectors. Scalar codes
@@ -98,7 +92,8 @@ func OpenScalarQuantizedHNSWIndex(ctx context.Context, path string, kind Quantiz
 // vectors instead of decoding another FP32 copy. Callers must keep candidate
 // vectors immutable for the index lifetime. Keys and slice headers are copied;
 // artifact values are fully verified against the supplied vectors. With
-// useMmap, a temporary read-only mapping avoids an encoded-file heap buffer.
+// useMmap, a temporary read-only mapping avoids an encoded-file heap buffer,
+// and FP16 codes use anonymous mapped memory. Call Close to release the codes.
 func OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx context.Context, path string, kind Quantization, reformer DenseReformer, candidates []Candidate, useMmap bool) (*ScalarQuantizedHNSWIndex, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil scalar-quantized HNSW context")
@@ -117,7 +112,7 @@ func OpenScalarQuantizedHNSWIndexWithBorrowedVectors(ctx context.Context, path s
 	if err != nil {
 		return nil, err
 	}
-	return newOwnedScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+	return newOwnedScalarQuantizedHNSWIndexWithMmap(ctx, base, kind, reformer, useMmap)
 }
 
 // The mapping is temporary: topology is decoded, and originals come from the
@@ -145,7 +140,9 @@ func openHNSWIndexWithStorage(ctx context.Context, path string, borrowed map[uin
 		return nil, err
 	}
 	defer func() { err = errors.Join(err, encoded.Unmap()) }()
-	return decodeHNSWIndexWithStorage(ctx, encoded, borrowed, encodedOriginals, materialize)
+	return decodeHNSWIndexWithStorageAndDiscard(ctx, encoded, borrowed, encodedOriginals, materialize, func(start, end int) {
+		ioutil.DiscardReadOnlyMappedPages(encoded, start, end)
+	})
 }
 
 // FlatIndex returns an immutable linear-search view sharing the graph's codes
@@ -224,6 +221,14 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
 	if i == nil || i.base == nil || i.vectors == nil {
 		return nil, errors.New("core: nil scalar-quantized HNSW index")
 	}
+	if err := i.ensureCodes(ctx); err != nil {
+		return nil, err
+	}
+	if err := i.vectors.lockCodes(); err != nil {
+		return nil, err
+	}
+	defer i.vectors.codeMu.RUnlock()
+
 	if ctx == nil {
 		return nil, errors.New("core: nil scalar-quantized HNSW group-by context")
 	}
@@ -244,9 +249,7 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
 	if err != nil {
 		return nil, err
 	}
-	scoreAt := func(position int) (float32, error) {
-		return i.vectors.distanceToCode(position, queryCode)
-	}
+	scoreAt := i.scoreAtCode(queryCode)
 	visited := acquireHNSWVisited(len(i.vectors.keys))
 	defer releaseHNSWVisited(visited)
 	entry := i.base.entryPoint
@@ -272,11 +275,11 @@ func (i *ScalarQuantizedHNSWIndex) SearchHNSWGroups(
 	if len(initial) > candidateCount {
 		initial = initial[:candidateCount]
 	}
-	prefetch := func(neighbors []int) {
-		prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
+	prefetch := func(neighbors hnswNeighborList) {
+		prefetchQuantizedHNSWNeighborList(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
 	}
 	return expandHNSWGroups(
-		ctx, i.vectors.metric, i.vectors.keys, i.base.neighbors, initial, options.GroupByOptions,
+		ctx, i.vectors.metric, i.vectors.keys, i.base.neighborList, initial, options.GroupByOptions,
 		scoreAt, func(score float32) float32 { return score }, groupNodeBetter(i.vectors.metric, i.vectors.keys), prefetch, visited,
 	)
 }
@@ -290,6 +293,14 @@ func (i *ScalarQuantizedHNSWIndex) search(
 	if i == nil || i.base == nil || i.vectors == nil {
 		return nil, errors.New("core: nil scalar-quantized HNSW index")
 	}
+	if err := i.ensureCodes(ctx); err != nil {
+		return nil, err
+	}
+	if err := i.vectors.lockCodes(); err != nil {
+		return nil, err
+	}
+	defer i.vectors.codeMu.RUnlock()
+
 	if ctx == nil {
 		return nil, errors.New("core: nil scalar-quantized HNSW search context")
 	}
@@ -326,9 +337,7 @@ func (i *ScalarQuantizedHNSWIndex) search(
 		return i.vectors.searchWithCode(ctx, queryCode, options.SearchOptions, positions)
 	}
 
-	scoreAt := func(position int) (float32, error) {
-		return i.vectors.distanceToCode(position, queryCode)
-	}
+	scoreAt := i.scoreAtCode(queryCode)
 	visited := acquireHNSWVisited(len(i.vectors.keys))
 	defer releaseHNSWVisited(visited)
 	entry := i.base.entryPoint
@@ -373,10 +382,9 @@ func (i *ScalarQuantizedHNSWIndex) searchLayer(
 		return []hnswScoredNode{}, nil
 	}
 	metric := i.vectors.metric
-	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, left, right) }
-	worse := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, right, left) }
-	candidates := container.NewHeap(better)
-	results := container.NewHeap(worse)
+	candidates, results := &visited.frontierHeap, &visited.acceptedHeap
+	candidates.reset(limit, metric, nil, false)
+	results.reset(limit, metric, nil, true)
 	visited.reset(len(i.vectors.keys))
 	for _, entry := range entries {
 		if entry < 0 || entry >= len(i.vectors.keys) || i.base.levels[entry] < level || visited.seen(entry) {
@@ -400,7 +408,9 @@ func (i *ScalarQuantizedHNSWIndex) searchLayer(
 		if results.Len() >= limit && hasWorst && hnswNodeBetter(metric, worst, current) {
 			break
 		}
-		for _, neighbor := range i.base.neighbors[current.position][level] {
+		neighbors := i.base.neighborList(current.position, level)
+		for j := 0; j < neighbors.Len(); j++ {
+			neighbor := neighbors.At(j)
 			if visited.seen(neighbor) {
 				continue
 			}
@@ -420,17 +430,7 @@ func (i *ScalarQuantizedHNSWIndex) searchLayer(
 			}
 		}
 	}
-	result := results.Values()
-	slices.SortFunc(result, func(left, right hnswScoredNode) int {
-		if hnswNodeBetter(metric, left, right) {
-			return -1
-		}
-		if hnswNodeBetter(metric, right, left) {
-			return 1
-		}
-		return 0
-	})
-	return result, nil
+	return results.results(), nil
 }
 
 func (i *ScalarQuantizedHNSWIndex) searchBase(
@@ -442,14 +442,21 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 	visited *hnswVisited,
 ) ([]hnswScoredNode, error) {
 	metric := i.vectors.metric
-	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(metric, left, right) }
-	worse := func(left, right hnswScoredNode) bool { return i.resultNodeBetter(right, left) }
-	frontier := container.NewHeap(better)
-	accepted := container.NewHeap(worse)
+	reserve := min(capacity, len(i.vectors.keys))
+	frontier, accepted := &visited.frontierHeap, &visited.acceptedHeap
+	frontier.reset(reserve, metric, nil, false)
+	accepted.reset(reserve, metric, i.vectors.keys, true)
 	visited.reset(len(i.vectors.keys))
 	// Batch scoring is independent of the result queue: large EF, filters, and
 	// radius searches still use the same dual-heap admission and stopping rules.
 	batch := query != nil && (query.kind == QuantizationInt4 || query.kind == QuantizationInt8 || query.kind == QuantizationFP16)
+	cachedCosine := batch && query.kind == QuantizationFP16 && i.fp16Magnitudes != nil
+	scoreMetric := metric
+	var queryMagnitude float32
+	if cachedCosine {
+		scoreMetric = MetricIP
+		queryMagnitude = fp16CodeMagnitude(query.codes)
+	}
 	if batch {
 		degree := min(i.base.maxDegree(0), max(0, len(i.vectors.keys)-1), initialDistanceBatchCapacity)
 		visited.batchPositions = slices.Grow(visited.batchPositions[:0], degree)
@@ -477,14 +484,14 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 		if accepted.Len() >= capacity && hasWorst && metric.Better(worst.score, current.score) {
 			break
 		}
-		neighbors := i.base.neighbors[current.position][0]
-		prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
+		neighbors := i.base.neighborList(current.position, 0)
 		if batch {
 			visited.batchPositions = visited.batchPositions[:0]
 			visited.batchCodes = visited.batchCodes[:0]
 			visited.batchCodeDots = visited.batchCodeDots[:0]
 			visited.batchScores = visited.batchScores[:0]
-			for _, neighbor := range neighbors {
+			for j := 0; j < neighbors.Len(); j++ {
+				neighbor := neighbors.At(j)
 				if visited.seen(neighbor) {
 					continue
 				}
@@ -494,18 +501,27 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 				visited.batchCodeDots = append(visited.batchCodeDots, 0)
 				visited.batchScores = append(visited.batchScores, 0)
 			}
+			// Like zvec's filtered dual-heap traversal, prefetch only the
+			// unvisited neighbors that will actually be scored in this batch.
+			prefetchQuantizedHNSWNeighbors(i.vectors.codes, visited.batchPositions, options.PrefetchOffset, options.PrefetchLines)
 			if query.kind == QuantizationFP16 {
-				fp16CodeDistances(metric, query.codes, visited.batchCodes, visited.batchScores)
+				fp16CodeDistances(scoreMetric, query.codes, visited.batchCodes, visited.batchScores)
 			} else {
 				integerCodeDots(query.kind, query.codes, visited.batchCodes, visited.batchCodeDots)
 			}
-			neighbors = visited.batchPositions
+			neighbors = hnswNeighborList{positions: visited.batchPositions}
+		} else {
+			prefetchQuantizedHNSWNeighborList(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
 		}
-		for j, neighbor := range neighbors {
+		for j := 0; j < neighbors.Len(); j++ {
+			neighbor := neighbors.At(j)
 			var score float32
 			var err error
 			if batch && query.kind == QuantizationFP16 {
 				score = visited.batchScores[j]
+				if cachedCosine {
+					score = cosineDistanceFromDot(score, queryMagnitude, i.fp16Magnitudes[neighbor])
+				}
 			} else if batch {
 				score, err = quantizedDistanceFromDot(metric, i.vectors.codes[neighbor], *query, float64(visited.batchCodeDots[j]))
 			} else {
@@ -523,25 +539,18 @@ func (i *ScalarQuantizedHNSWIndex) searchBase(
 			if accepted.Len() < capacity || !hasWorst || !metric.Better(worst.score, node.score) {
 				frontier.Push(node)
 				if i.acceptResult(node, options.SearchOptions) {
-					accepted.Push(node)
-					if accepted.Len() > capacity {
-						_, _ = accepted.Pop()
+					if accepted.Len() < capacity {
+						accepted.Push(node)
+					} else if i.resultNodeBetter(node, worst) {
+						// Replace the worst result with one sift-down, preserving
+						// score/key ties and the independent traversal frontier.
+						accepted.Replace(node)
 					}
 				}
 			}
 		}
 	}
-	result := accepted.Values()
-	slices.SortFunc(result, func(left, right hnswScoredNode) int {
-		if i.resultNodeBetter(left, right) {
-			return -1
-		}
-		if i.resultNodeBetter(right, left) {
-			return 1
-		}
-		return 0
-	})
-	return result, nil
+	return accepted.results(), nil
 }
 
 func (i *ScalarQuantizedHNSWIndex) resultNodeBetter(left, right hnswScoredNode) bool {
@@ -562,3 +571,35 @@ var (
 	_ DenseSearcher      = (*ScalarQuantizedHNSWIndex)(nil)
 	_ DenseQuerySearcher = (*ScalarQuantizedHNSWIndex)(nil)
 )
+
+// Cache norms of the encoded FP16 values, rather than the original FP32 values.
+// The cache is derived on build/open and does not change the persisted format.
+func newScalarQuantizedHNSWWithStorage(ctx context.Context, base *HNSWIndex, vectors *scalarQuantizedVectors) (*ScalarQuantizedHNSWIndex, error) {
+	index := &ScalarQuantizedHNSWIndex{base: base, vectors: vectors}
+	if vectors.kind == QuantizationFP16 && vectors.metric == MetricCosine && mathbatch.FP16CosineCacheCompatible() {
+		index.fp16Magnitudes = make([]float32, len(vectors.codes))
+		for position, code := range vectors.codes {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			index.fp16Magnitudes[position] = fp16CodeMagnitude(code.codes)
+		}
+	}
+	return index, nil
+}
+
+func fp16CodeMagnitude(code []byte) float32 {
+	squared := fp16CodeDistance(MetricIP, code, code)
+	return float32(math.Sqrt(float64(max(float32(0), squared))))
+}
+
+func (i *ScalarQuantizedHNSWIndex) scoreAtCode(query QuantizedVector) func(int) (float32, error) {
+	if i.fp16Magnitudes != nil {
+		magnitude := fp16CodeMagnitude(query.codes)
+		return func(position int) (float32, error) {
+			dot := fp16CodeDistance(MetricIP, i.vectors.codes[position].codes, query.codes)
+			return cosineDistanceFromDot(dot, i.fp16Magnitudes[position], magnitude), nil
+		}
+	}
+	return func(position int) (float32, error) { return i.vectors.distanceToCode(position, query) }
+}

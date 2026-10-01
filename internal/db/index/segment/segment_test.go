@@ -467,3 +467,35 @@ func TestImmutableSegmentMmapFailureCleanup(t *testing.T) {
 		require.NoError(t, os.Remove(path))
 	}
 }
+
+func TestImmutableMappedPayloadSurvivesResidencyDiscard(t *testing.T) {
+	ctx := context.Background()
+	writing, err := NewWriteSegment(1, 10, 1)
+	require.NoError(t, err)
+	payload := bytes.Repeat([]byte("immutable bytes"), 8192)
+	_, err = writing.Append(ctx, "one", payload)
+	require.NoError(t, err)
+	segment, err := writing.SnapshotWithMmap(ctx, t.TempDir(), "data.seg", true)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, segment.Close()) })
+	borrowed := segment.docs[0].Payload
+	var wg sync.WaitGroup
+	for n := range 8 {
+		wg.Go(func() {
+			for repeat := range 8 {
+				if (repeat+n)%2 == 0 {
+					segment.DiscardMappedPages()
+				}
+				if !bytes.Equal(borrowed, payload) {
+					t.Error("borrowed payload changed after residency advice")
+				}
+			}
+		})
+	}
+	wg.Wait()
+	got, found := segment.Document(10)
+	require.True(t, found)
+	require.Equal(t, payload, got.Payload)
+	require.NoError(t, segment.Close())
+	segment.DiscardMappedPages() // Must not advise an unmapped region after Close.
+}

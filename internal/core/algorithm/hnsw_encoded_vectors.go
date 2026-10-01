@@ -26,8 +26,21 @@ import (
 // persisted artifact, then builds scalar codes using reusable decoding buffers.
 // The caller must keep the original bytes immutable and alive for the index's
 // lifetime. The map itself is not retained. No reference to the temporary
-// artifact mapping is retained.
+// artifact mapping is retained. With useMmap, FP16 codes use anonymous mapped
+// memory; the caller must call Close when the index and its Flat view are idle.
 func OpenScalarQuantizedHNSWIndexWithEncodedVectors(ctx context.Context, path string, kind Quantization, reformer DenseReformer, originals map[uint64][]byte, useMmap bool) (*ScalarQuantizedHNSWIndex, error) {
+	return openScalarQuantizedHNSWEncoded(ctx, path, kind, reformer, originals, useMmap, false)
+}
+
+// OpenScalarQuantizedHNSWIndexWithDeferredFP16Codes fully verifies the artifact
+// and originals, but keeps only one FP16 row during validation. Its Flat view
+// encodes filtered candidates into query-local scratch. The first HNSW search
+// materializes the shared code arena; canceled initialization can be retried.
+func OpenScalarQuantizedHNSWIndexWithDeferredFP16Codes(ctx context.Context, path string, reformer DenseReformer, originals map[uint64][]byte, useMmap bool) (*ScalarQuantizedHNSWIndex, error) {
+	return openScalarQuantizedHNSWEncoded(ctx, path, QuantizationFP16, reformer, originals, useMmap, true)
+}
+
+func openScalarQuantizedHNSWEncoded(ctx context.Context, path string, kind Quantization, reformer DenseReformer, originals map[uint64][]byte, useMmap, deferred bool) (*ScalarQuantizedHNSWIndex, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil encoded HNSW context")
 	}
@@ -41,7 +54,14 @@ func OpenScalarQuantizedHNSWIndexWithEncodedVectors(ctx context.Context, path st
 	if err != nil {
 		return nil, err
 	}
-	return newOwnedScalarQuantizedHNSWIndex(ctx, base, kind, reformer)
+	if deferred {
+		vectors, err := newScalarQuantizedVectorStorageWithCodesMode(ctx, base.dimension, base.options.Metric, kind, reformer, base.keys, nil, nil, encodedHNSWVectorReader(base.encodedVectors), nil, true)
+		if err != nil {
+			return nil, err
+		}
+		return &ScalarQuantizedHNSWIndex{base: base, vectors: vectors, deferredMmap: useMmap}, nil
+	}
+	return newOwnedScalarQuantizedHNSWIndexWithMmap(ctx, base, kind, reformer, useMmap)
 }
 
 // OpenHNSWIndexWithEncodedOriginals verifies the artifact against encoded

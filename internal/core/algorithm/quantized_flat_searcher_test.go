@@ -394,3 +394,29 @@ func (r truncatingReformer) Transform(vector []float32) ([]float32, error) {
 func (r truncatingReformer) Revert(vector []float32) ([]float32, error) {
 	return slices.Clone(vector), nil
 }
+
+func TestScalarQuantizedFP16CodeArena(t *testing.T) {
+	candidates := []Candidate{
+		{Key: 1, Vector: []float32{1.5, -2, 0}},
+		{Key: 2, Vector: []float32{3, 0.125, -4}},
+		{Key: 3, Vector: []float32{0, 0, 0}},
+	}
+	index, err := NewScalarQuantizedFlatIndex(context.Background(), 3, MetricL2, QuantizationFP16, nil, candidates)
+	require.NoError(t, err)
+	for position, candidate := range candidates {
+		want, err := QuantizeVector(QuantizationFP16, candidate.Vector)
+		require.NoError(t, err)
+		got := index.vectors.codes[position]
+		require.Equal(t, want.codes, got.codes)
+		require.Equal(t, len(got.codes), cap(got.codes))
+	}
+	// Appending to a row must not corrupt the next vector in the shared arena.
+	second := slices.Clone(index.vectors.codes[1].codes)
+	grown := append(index.vectors.codes[0].codes, byte(0xff))
+	grown[0] = 0
+	require.Equal(t, second, index.vectors.codes[1].codes)
+
+	candidates[0].Vector[0] = 70000
+	_, err = NewScalarQuantizedFlatIndex(context.Background(), 3, MetricL2, QuantizationFP16, nil, candidates)
+	require.ErrorIs(t, err, ErrQuantizationOverflow)
+}

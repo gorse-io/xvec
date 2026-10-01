@@ -137,7 +137,7 @@ func (b *HNSWBuilder) buildScalarQuantizedWithWorkers(
 	}
 	// The graph was just built and is exclusively owned; no snapshot or
 	// second quantization is needed before publishing the immutable index.
-	return &ScalarQuantizedHNSWIndex{base: base, vectors: vectors}, nil
+	return newScalarQuantizedHNSWWithStorage(ctx, base, vectors)
 }
 
 func integerCodeDotInt64(left, right QuantizedVector) int64 {
@@ -174,7 +174,7 @@ func fp16BuildScorers(ctx context.Context, vectors *scalarQuantizedVectors) (hns
 		score: func(left, right int) (float32, error) {
 			if metric == MetricCosine {
 				dot := fp16CodeDistance(MetricIP, vectors.codes[left].codes, vectors.codes[right].codes)
-				return buildCosineFromDot(dot, magnitudes[left], magnitudes[right]), nil
+				return cosineDistanceFromDot(dot, magnitudes[left], magnitudes[right]), nil
 			}
 			return fp16CodeDistance(metric, vectors.codes[left].codes, vectors.codes[right].codes), nil
 		},
@@ -193,7 +193,7 @@ func fp16BuildScorers(ctx context.Context, vectors *scalarQuantizedVectors) (hns
 			fp16CodeDistances(scoreMetric, vectors.codes[query].codes, scratch.batchCodes, scratch.batchScores)
 			if metric == MetricCosine {
 				for j, position := range positions {
-					scratch.batchScores[j] = buildCosineFromDot(scratch.batchScores[j], magnitudes[query], magnitudes[position])
+					scratch.batchScores[j] = cosineDistanceFromDot(scratch.batchScores[j], magnitudes[query], magnitudes[position])
 				}
 			}
 			return nil
@@ -201,7 +201,7 @@ func fp16BuildScorers(ctx context.Context, vectors *scalarQuantizedVectors) (hns
 	}, nil
 }
 
-func buildCosineFromDot(dot, leftMagnitude, rightMagnitude float32) float32 {
+func cosineDistanceFromDot(dot, leftMagnitude, rightMagnitude float32) float32 {
 	if leftMagnitude == 0 && rightMagnitude == 0 {
 		return 0
 	}

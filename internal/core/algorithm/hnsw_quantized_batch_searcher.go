@@ -36,8 +36,15 @@ func (i *ScalarQuantizedHNSWIndex) searchBaseQuantized(
 	visited.batchCodeDots = slices.Grow(visited.batchCodeDots[:0], degree)
 	visited.batchScores = slices.Grow(visited.batchScores[:0], degree)
 	metric := i.vectors.metric
+	scoreMetric := metric
+	var queryMagnitude float32
+	if i.fp16Magnitudes != nil {
+		scoreMetric = MetricIP
+		queryMagnitude = fp16CodeMagnitude(query.codes)
+	}
 
-	score, err := i.vectors.distanceToCode(entry, query)
+	scoreAt := i.scoreAtCode(query)
+	score, err := scoreAt(entry)
 	if err != nil {
 		return nil, err
 	}
@@ -64,14 +71,15 @@ func (i *ScalarQuantizedHNSWIndex) searchBaseQuantized(
 			continue
 		}
 		visited.markExpanded(int(current))
-		neighbors := i.base.neighbors[int(current)][0]
-		prefetchQuantizedHNSWNeighbors(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
+		neighbors := i.base.neighborList(int(current), 0)
+		prefetchQuantizedHNSWNeighborList(i.vectors.codes, neighbors, options.PrefetchOffset, options.PrefetchLines)
 		visited.batchIDs = visited.batchIDs[:0]
 		visited.batchTies = visited.batchTies[:0]
 		visited.batchCodes = visited.batchCodes[:0]
 		visited.batchCodeDots = visited.batchCodeDots[:0]
 		visited.batchScores = visited.batchScores[:0]
-		for _, neighbor := range neighbors {
+		for j := 0; j < neighbors.Len(); j++ {
+			neighbor := neighbors.At(j)
 			if visited.seen(neighbor) {
 				continue
 			}
@@ -83,8 +91,11 @@ func (i *ScalarQuantizedHNSWIndex) searchBaseQuantized(
 			visited.batchScores = append(visited.batchScores, 0)
 		}
 		if query.kind == QuantizationFP16 {
-			fp16CodeDistances(metric, query.codes, visited.batchCodes, visited.batchScores)
+			fp16CodeDistances(scoreMetric, query.codes, visited.batchCodes, visited.batchScores)
 			for j := range visited.batchScores {
+				if i.fp16Magnitudes != nil {
+					visited.batchScores[j] = cosineDistanceFromDot(visited.batchScores[j], queryMagnitude, i.fp16Magnitudes[visited.batchIDs[j]])
+				}
 				visited.batchScores[j] = blockHeapDistance(metric, visited.batchScores[j])
 			}
 		} else {

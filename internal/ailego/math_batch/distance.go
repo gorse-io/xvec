@@ -273,6 +273,14 @@ func CosineDistances4FP16(query, first, second, third, fourth []uint16, output [
 	fp16Kernels.cosine(query, first, second, third, fourth, output)
 }
 
+var fp16CosineCacheCompatible = true
+
+// FP16CosineCacheCompatible reports whether batch and single-pair kernels use
+// the same floating-point reduction order. When false, reusing single-pair
+// magnitudes in batch cosine can change scores, so callers must retain the
+// uncached cosine kernels to preserve their existing ranking and tie behavior.
+func FP16CosineCacheCompatible() bool { return fp16CosineCacheCompatible }
+
 func fp16CosineScalar4(query, first, second, third, fourth []uint16, output []float32) {
 	output[0] = mathutil.CosineDistanceFP16(query, first)
 	output[1] = mathutil.CosineDistanceFP16(query, second)

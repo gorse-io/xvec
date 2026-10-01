@@ -32,6 +32,8 @@ func (v *hnswVisited) resetBatch() {
 	v.batchCodes = v.batchCodes[:0]
 	v.batchCodeDots = v.batchCodeDots[:0]
 	v.blockHeap.release(maxPooledDistanceBatchCapacity)
+	v.frontierHeap.release()
+	v.acceptedHeap.release()
 	if cap(v.batchPositions) > maxPooledDistanceBatchCapacity || cap(v.batchIDs) > maxPooledDistanceBatchCapacity || cap(v.batchTies) > maxPooledDistanceBatchCapacity || cap(v.overflow) > maxPooledDistanceBatchCapacity || cap(v.batchVectors) > maxPooledDistanceBatchCapacity || cap(v.batchMagnitudes) > maxPooledDistanceBatchCapacity || cap(v.batchScores) > maxPooledDistanceBatchCapacity || cap(v.batchCodes) > maxPooledDistanceBatchCapacity || cap(v.batchCodeDots) > maxPooledDistanceBatchCapacity {
 		v.batchPositions = nil
 		v.batchIDs = nil
@@ -64,6 +66,8 @@ type hnswVisited struct {
 	batchCodes      [][]byte
 	batchCodeDots   []int64
 	blockHeap       BlockHeap
+	frontierHeap    hnswSearchHeap
+	acceptedHeap    hnswSearchHeap
 }
 
 func (v *hnswVisited) reset(size int) {

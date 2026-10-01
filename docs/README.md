@@ -5,6 +5,93 @@ An English, static Astro + TypeScript site for the HNSW, Flat, DiskANN, and Vama
 service is needed. The CSV files and `logo.png` stay in this directory and are imported
 through Astro/Vite to generate the homepage at build time.
 
+The [FP16 HNSW integer-filter results](benchmark-hnsw-int-filter.csv) and
+[FP16 HNSW label-filter results](benchmark-hnsw-label-filter.csv) each contain
+26 fresh xvec/zvec observations on Cohere 100K at nine matching rates. Both
+CSVs were refreshed on 2026-10-01 with clean xvec source `34cfd77` and the
+unchanged official native zvec v0.7.0. Each backend has three repetitions at
+20% and 50%, and one at each other rate. Original collection-build sources,
+timestamps and metrics remain unchanged; no collection was rebuilt or optimized.
+Integer truth is exhaustive float64 cosine over original FP32 vectors; label
+truth is the published filtered neighbors. Query sources and runs remain in the CSVs.
+
+The latest controlled comparison uses clean xvec `61e41ed` before and
+`34cfd77` after the deferred FP16/residency optimization. Its 68 successful
+formal measurements comprise 52 fresh xvec/zvec runs and 16 before-source xvec
+controls: three repetitions at 20%/50%, and one at 0.1%/1%, per filter.
+Processes run sequentially with stage/rate order varying across cases.
+
+Read-only, mmap-enabled FP32 collections with FP16 HNSW now fully validate
+the persisted graph, originals and quantization at open using one reusable
+code row. Filtered Flat scans encode only scored candidates and retain at most
+16 MiB of code bytes per field in a 16-shard FIFO cache; cache metadata and
+query scratch are additional. On a cache miss, encoding uses query-local
+buffers. Concurrent readers share immutable entries; eviction never overwrites
+a row held by another reader. The graph topology is still loaded and validated
+up front. The first HNSW traversal materializes the original shared FP16 arena
+and cosine norms, discards the sparse cache, and keeps the arena until Close.
+A mixed workload therefore retains the dense arena after its first graph query.
+
+On Linux, completed pages of the temporary read-only HNSW artifact mapping
+are advised away during checksum, structural sizing and decode passes. Once
+the initial read-only FP16 query snapshot is fully validated, segment mapping
+pages touched by validation are also advised away. Borrowed slices keep the
+same immutable file contents and fault pages back in for encoding, refinement
+or projection. This changes residency, not validation coverage, the disk format
+or the filesystem cache. Other platforms retain their existing page residency
+behavior. The query driver does not issue extra cache flushes or memory advice.
+
+| Filter | Matching | Before RSS (MiB) | After RSS (MiB) | RSS change | Before QPS | After QPS | QPS change | zvec RSS (MiB) | zvec QPS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Int | 0.1% | 866.21 | 436.83 | -49.57% | 36559.67 | 31710.84 | -13.26% | 132.73 | 10092.41 |
+| Int | 1% | 807.50 | 443.39 | -45.09% | 9278.54 | 8603.53 | -7.27% | 170.66 | 6745.95 |
+| Int | 20% | 745.26 | 739.12 | -0.82% | 474.13 | 485.73 | +2.45% | 288.46 | 620.72 |
+| Int | 50% | 745.60 | 744.57 | -0.14% | 901.11 | 906.51 | +0.60% | 289.79 | 1131.14 |
+| Label | 0.1% | 797.50 | 443.27 | -44.42% | 43682.82 | 42057.63 | -3.72% | 129.30 | 10285.45 |
+| Label | 1% | 892.50 | 529.61 | -40.66% | 11001.26 | 9794.60 | -10.97% | 288.11 | 7823.87 |
+| Label | 20% | 808.86 | 809.13 | +0.03% | 504.08 | 512.86 | +1.74% | 395.96 | 652.96 |
+| Label | 50% | 812.67 | 812.05 | -0.08% | 962.31 | 977.67 | +1.60% | 398.22 | 1177.22 |
+
+At 20%/50%, RSS and QPS are separate three-run medians; other rows above
+are single measurements. Peak process RSS includes open, validation, warmup,
+concurrent queries and serial recall. It is not pure index memory or steady-state
+RSS. Sparse cache hits reduce encoding work for these fixed-filter benchmarks;
+changing candidate sets or exceeding the cache capacity can increase cache
+misses and lower QPS. Same-parameter comparisons do not equate backend recall.
+
+Each fresh process uses FP16 cosine HNSW, M=50, EFConstruction=500,
+EFSearch=300, K=100, mmap, ID-only results and no rotation/refinement. There
+are 100 warmup queries, eight workers for 30 seconds, a three-second cooldown
+and all 1,000 serial recall queries. Runtime settings remain e2-standard-8 /
+AMD EPYC 7B12, affinity 0–7, Go 1.27.1, CGO_ENABLED=0, GOMAXPROCS=8 and
+GOMEMLIMIT=24GiB. No profiler, forced GC, filesystem-cache flush or concurrent
+test/build workload is used in formal timed runs. Short pilots are excluded.
+Native zvec is official v0.7.0, not a build of the newer local reference checkout.
+
+Every timed run retains its preceding aggregate recall. All xvec collection
+files, datasets, binaries and the native library retain full-file hashes. Native
+read-only Close updates timestamps and a footer CRC in four vector-index files.
+Content hashes exclude exactly those previously verified footer CRC, footer
+timestamp and chunk timestamp fields; all remaining native bytes retain hashes.
+Original files are not edited for verification.
+
+Earlier optimizations retain compact uint32 HNSW neighbor arenas and inline
+up-to-two-ID bitmap postings. Mutable graph builders retain their layout, and
+mutable clones expand compact storage into independent owned lists. Save
+roundtrips preserve identical artifact bytes. Anonymous dense FP16 arenas are
+still reconstructed at first graph traversal; this is not persisted file-backed
+FP16 loading. HNSW and Flat share the arena after publication. Close waits for
+active searches, releases mappings/cache and rejects later searches. Raw reports,
+short pilots, scripts, controls and binaries stay local under ignored
+`benchmark-runs`; they are not uploaded.
+
+The preceding compact-graph/inline-bitmap comparison (`454ba56` → `0500e1c`)
+reduced high-match integer peak RSS by 10.43%–11.29% and label RSS by
+3.92%–4.09%. Separate forced-GC diagnostics from that earlier comparison
+are excluded from the current CSV/QPS results: at 50%, post-GC live Go heap
+after warmup fell 156.56 → 120.39 MiB for integer and 170.03 → 155.21 MiB
+for label filtering. These live-heap figures are not current process RSS.
+
 `benchmark-flat.csv` contains a separate Flat comparison of xvec and zvec for
 INT4, INT8, FP16, and unquantized FP32 on `Performance768D100K`. It uses the
 same runtime settings and metric units as the HNSW CSV, omitting the inapplicable

@@ -33,6 +33,9 @@ func init() {
 		fp16Kernels.mips = fp16MIPSAVX4
 	}
 	if cpuid.CPU.Supports(cpuid.AVX, cpuid.F16C, cpuid.AVX512F, cpuid.AVX512DQ) {
+		// Batch AVX-512 reduces its sixteen lanes sequentially; the
+		// single-pair kernel uses a tree reduction. Keep their own norms.
+		fp16CosineCacheCompatible = false
 		fp16Kernels.l2 = fp16L2AVX512_4
 		fp16Kernels.dot = fp16DotAVX512_4
 		fp16Kernels.cosine = fp16CosineAVX512_4
