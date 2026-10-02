@@ -26,7 +26,6 @@ func TestFP16DocumentArenaDecodingAndOwnership(t *testing.T) {
 			encoded[i] = 0
 		}
 	}
-	arenas = nil
 	for n, row := range rows {
 		require.Equal(t, Float16(n), row[0])
 	}
