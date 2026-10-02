@@ -79,6 +79,8 @@ type CollectionStore struct {
 	engine       *WriteEngine
 	wal          *walstore.WAL
 	idMapWorking string
+	// IDs reserved by background compaction must not be reused by Flush.
+	reservedNextSegmentID uint64
 }
 
 // SegmentSnapshot is an owned, stable view used by the collection index layer.
@@ -552,25 +554,17 @@ func (c *CollectionStore) OptimizationNeeded(ctx context.Context) (bool, error) 
 	if c.closed {
 		return false, ErrCollectionClosed
 	}
-	if writing := c.manager.Writing(); writing != nil && len(writing.Documents()) != 0 {
+	if writing := c.manager.Writing(); writing != nil && writing.Metadata().DocCount != 0 {
 		return true, nil
 	}
 	if c.manager.Deletes().Count() != 0 {
 		return true, nil
 	}
-	documents, err := c.manager.LiveDocuments(ctx)
-	if err != nil {
-		return false, err
-	}
-	expected := rewriteDocumentRuns(documents, c.versions.Current().SegmentMaxDocuments)
 	actual := c.manager.ImmutableMetadata()
-	if len(expected) != len(actual) {
-		return true, nil
-	}
-	for index := range expected {
-		run := expected[index]
-		metadata := actual[index]
-		if metadata.MinDocID != run[0].DocID || metadata.MaxDocID != run[len(run)-1].DocID || metadata.DocCount != uint64(len(run)) {
+	maximum := c.versions.Current().SegmentMaxDocuments
+	for index := 1; index < len(actual); index++ {
+		previous, next := actual[index-1], actual[index]
+		if previous.DocCount < maximum && previous.MaxDocID != math.MaxUint64 && previous.MaxDocID+1 == next.MinDocID {
 			return true, nil
 		}
 	}
@@ -800,7 +794,8 @@ func ownedDirectoryEntries(directory string) ([]os.DirEntry, error) {
 
 // Flush atomically turns the non-empty write segment into an immutable segment,
 // checkpoints IDMap/deletion state, publishes a new manifest, and rotates the
-// outer WAL and disposable IDMap working copy.
+// outer WAL and disposable IDMap working copy. Delete-only WALs also checkpoint
+// and rotate, without adding an empty immutable segment.
 func (c *CollectionStore) Flush(ctx context.Context) error {
 	if c == nil {
 		return errors.New("db: nil collection")
@@ -821,18 +816,19 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 	}
 	writing := c.manager.Writing()
 	writingMetadata := writing.Metadata()
-	if writingMetadata.DocCount == 0 {
+	if writingMetadata.DocCount == 0 && !c.wal.HasRecords() {
 		return nil
 	}
 	current := c.versions.Current()
+	current.NextSegmentID = max(current.NextSegmentID, c.reservedNextSegmentID)
 	if current.NextSegmentID == math.MaxUint64 {
 		return errors.New("db: segment ID space is exhausted")
 	}
-	lastDocID := writingMetadata.MaxDocID
-	if lastDocID == math.MaxUint64 {
-		return errors.New("db: document ID space is exhausted")
+	nextDocID, err := c.rewriteNextDocumentID()
+	if err != nil {
+		return err
 	}
-	nextWriting, err := segmentstore.NewWriteSegment(current.NextSegmentID, lastDocID+1, current.SegmentMaxDocuments)
+	nextWriting, err := segmentstore.NewWriteSegment(current.NextSegmentID, nextDocID, current.SegmentMaxDocuments)
 	if err != nil {
 		return err
 	}
@@ -847,10 +843,13 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	immutable, err := writing.SnapshotWithMmap(ctx, c.dir, segmentRelative, current.EnableMmap)
-	if err != nil {
-		_ = removeCollectionArtifact(collectionPath(c.dir, segmentRelative))
-		return fmt.Errorf("db: snapshot writing segment: %w", err)
+	var immutable *segmentstore.ImmutableSegment
+	if writingMetadata.DocCount != 0 {
+		immutable, err = writing.SnapshotWithMmap(ctx, c.dir, segmentRelative, current.EnableMmap)
+		if err != nil {
+			_ = removeCollectionArtifact(collectionPath(c.dir, segmentRelative))
+			return fmt.Errorf("db: snapshot writing segment: %w", err)
+		}
 	}
 	immutableOwned := true
 	defer func() {
@@ -858,7 +857,10 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 			_ = immutable.Close()
 		}
 	}()
-	created := []string{collectionPath(c.dir, segmentRelative)}
+	created := make([]string, 0, 5)
+	if immutable != nil {
+		created = append(created, collectionPath(c.dir, segmentRelative))
+	}
 	var nextPrimary *common.PrimaryKeyMap
 	var nextWorking string
 	cleanup := func() {
@@ -931,9 +933,11 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 	}
 
 	nextManifest := current.Clone()
-	nextManifest.PersistedSegments = append(nextManifest.PersistedSegments, immutable.Metadata())
+	if immutable != nil {
+		nextManifest.PersistedSegments = append(nextManifest.PersistedSegments, immutable.Metadata())
+	}
 	nextManifest.WritingSegment = &common.SegmentMetadata{ID: current.NextSegmentID, Files: []string{walRelative}}
-	nextManifest.WritingSegmentStartDocID = lastDocID + 1
+	nextManifest.WritingSegmentStartDocID = nextDocID
 	nextManifest.IDMap = idMapRelative
 	nextManifest.DeleteSnapshotGeneration = snapshotGeneration
 	nextManifest.NextSegmentID++
@@ -944,12 +948,19 @@ func (c *CollectionStore) Flush(ctx context.Context) error {
 		cleanup()
 		return publishErr
 	}
-	if err := c.manager.RotateWriting(writing.ID(), immutable, nextWriting); err != nil {
+	var rotateErr error
+	if immutable != nil {
+		rotateErr = c.manager.RotateWriting(writing.ID(), immutable, nextWriting)
+	} else {
+		c.manager.ClearWriting()
+		rotateErr = c.manager.SetWriting(nextWriting)
+	}
+	if rotateErr != nil {
 		_ = nextWAL.Close()
 		cleanupErr := nextPrimary.Close()
 		nextPrimary = nil
 		_ = removeIDMapDirectory(nextWorking)
-		c.poisoned = fmt.Errorf("db: reopen required after committed generation %d failed to rotate: %w", published.Generation, err)
+		c.poisoned = fmt.Errorf("db: reopen required after committed generation %d failed to rotate: %w", published.Generation, rotateErr)
 		return errors.Join(publishErr, c.poisoned, cleanupErr)
 	}
 	immutableOwned = false
@@ -1060,28 +1071,35 @@ func (c *CollectionStore) PublishSegmentIndexSnapshots(ctx context.Context, snap
 	if err := next.Validate(); err != nil {
 		return false, err
 	}
-	for _, snapshot := range snapshots {
-		for _, artifact := range snapshot.Artifacts {
-			path := collectionPath(c.dir, artifact.File)
-			info, statErr := os.Lstat(path)
-			if statErr != nil {
-				return false, fmt.Errorf("db: inspect segment index artifact %q: %w", artifact.File, statErr)
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				return false, fmt.Errorf("db: segment index artifact %q is a symlink", artifact.File)
-			}
-			pebbleDirectory := artifact.Kind == "fts" || artifact.Kind == "invert"
-			if pebbleDirectory && !info.IsDir() {
-				return false, fmt.Errorf("db: segment index artifact %q is not a Pebble directory", artifact.File)
-			}
-			if !pebbleDirectory && !info.Mode().IsRegular() {
-				return false, fmt.Errorf("db: segment index artifact %q is not a regular file", artifact.File)
-			}
-		}
+	if err := validateSegmentIndexFiles(c.dir, snapshots); err != nil {
+		return false, err
 	}
 	_, publishErr := c.versions.Publish(ctx, next)
 	committed = c.versions.Current().Generation != current.Generation
 	return committed, publishErr
+}
+
+func validateSegmentIndexFiles(dir string, snapshots []common.SegmentIndexSnapshotMetadata) error {
+	for _, snapshot := range snapshots {
+		for _, artifact := range snapshot.Artifacts {
+			path := collectionPath(dir, artifact.File)
+			info, statErr := os.Lstat(path)
+			if statErr != nil {
+				return fmt.Errorf("db: inspect segment index artifact %q: %w", artifact.File, statErr)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("db: segment index artifact %q is a symlink", artifact.File)
+			}
+			pebbleDirectory := artifact.Kind == "fts" || artifact.Kind == "invert"
+			if pebbleDirectory && !info.IsDir() {
+				return fmt.Errorf("db: segment index artifact %q is not a Pebble directory", artifact.File)
+			}
+			if !pebbleDirectory && !info.Mode().IsRegular() {
+				return fmt.Errorf("db: segment index artifact %q is not a regular file", artifact.File)
+			}
+		}
+	}
+	return nil
 }
 
 // RewriteDocuments atomically replaces every live document payload together
@@ -1148,6 +1166,7 @@ func (c *CollectionStore) RewriteDocuments(ctx context.Context, schema json.RawM
 	}
 	current := c.versions.Current()
 	runs := rewriteDocumentRuns(documents, current.SegmentMaxDocuments)
+	current.NextSegmentID = max(current.NextSegmentID, c.reservedNextSegmentID)
 	if uint64(len(runs)) > math.MaxUint64-current.NextSegmentID {
 		return false, errors.New("db: segment ID space is exhausted")
 	}

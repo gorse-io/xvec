@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/gorse-io/xvec/internal/db"
 	"github.com/gorse-io/xvec/internal/db/index/common"
 )
 
@@ -183,6 +184,114 @@ func (c *Collection) buildAndPublishNativeIndexes(ctx context.Context, workers i
 	c.indexMu.Unlock()
 	if publishErr != nil {
 		return publishErr
+	}
+	return c.store.PruneObsoleteArtifacts(ctx)
+}
+
+// The caller holds maintenanceMu. Prepare every replacement runtime and its
+// artifacts before taking mu, including Flat/scalar/FTS state and ANN opening.
+func (c *Collection) buildAndPublishCompaction(ctx context.Context, workers int, compaction *db.Compaction) error {
+	owner := &Collection{path: c.path, schema: c.schema.Clone(), options: c.options}
+	prepared := make(map[uint64]*collectionSegmentRuntime)
+	snapshots := make([]common.SegmentIndexSnapshotMetadata, 0)
+	created := make([]string, 0)
+	committed := false
+	defer func() {
+		if !committed {
+			for _, runtime := range prepared {
+				_ = c.releaseSegmentRuntime(runtime)
+			}
+			for _, path := range created {
+				_ = os.RemoveAll(path)
+			}
+		}
+	}()
+	err := compaction.VisitOutputs(func(snapshot db.SegmentSnapshot) error {
+		documents := make([]Document, len(snapshot.Documents))
+		for index, record := range snapshot.Documents {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			document, err := decodeStoredDocument(record)
+			if err != nil {
+				return err
+			}
+			if err := document.Validate(owner.schema); err != nil {
+				return err
+			}
+			documents[index] = document
+		}
+		key, err := collectionRuntimeKeyFor(owner.schema, documents)
+		if err != nil {
+			return err
+		}
+		indexes, err := buildCollectionArtifactIndexes(ctx, owner.schema, documents, workers, owner.options.MaxBufferSize)
+		if err != nil {
+			return err
+		}
+		artifacts, paths, writeErr := owner.writeSegmentRuntimeArtifacts(ctx, snapshot.Metadata.ID, indexes)
+		created = append(created, paths...)
+		if err := errors.Join(writeErr, indexes.Close()); err != nil {
+			return err
+		}
+		pathsByField := make(map[string]string, len(artifacts))
+		for _, artifact := range artifacts {
+			pathsByField[collectionIndexArtifactKey(artifact.Field, artifact.Kind)] = filepath.Join(owner.path, filepath.FromSlash(artifact.File))
+		}
+		opened, err := buildCollectionRuntimeIndexes(ctx, owner.schema, documents, workers, owner.options.MaxBufferSize, owner.options.EnableMmap, pathsByField)
+		if err != nil {
+			return err
+		}
+		opened.key = key
+		runtime := &collectionSegmentRuntime{segmentID: snapshot.Metadata.ID, key: key, indexes: opened,
+			documents: documents, documentOrdinals: indexDocumentOrdinals(documents)}
+		runtime.refs.Store(1)
+		prepared[runtime.segmentID] = runtime
+		if len(artifacts) != 0 {
+			snapshots = append(snapshots, common.SegmentIndexSnapshotMetadata{
+				SegmentID: runtime.segmentID, SchemaSHA256: hex.EncodeToString(key.schemaHash[:]),
+				DocumentCount: uint64(key.count), MinDocumentID: snapshot.Metadata.MinDocID,
+				MaxDocumentID: snapshot.Metadata.MaxDocID, Artifacts: artifacts,
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Phase 3: merge against the current storage state and publish prepared
+	// runtimes. Existing query leases retain their previous immutable indexes.
+	c.mu.Lock()
+	committed, err = compaction.Commit(ctx, snapshots)
+	if !committed {
+		c.mu.Unlock()
+		return err
+	}
+	c.invalidateQuerySnapshotLocked()
+	manifest := c.store.Manifest()
+	retained := make(map[uint64]bool, len(manifest.PersistedSegments)+1)
+	for _, segment := range manifest.PersistedSegments {
+		retained[segment.ID] = true
+	}
+	if manifest.WritingSegment != nil {
+		retained[manifest.WritingSegment.ID] = true
+	}
+	c.indexMu.Lock()
+	for id, runtime := range c.segmentIndexes {
+		if !retained[id] {
+			delete(c.segmentIndexes, id)
+			_ = c.releaseSegmentRuntime(runtime)
+		}
+	}
+	for id, runtime := range prepared {
+		c.segmentIndexes[id] = runtime
+		c.indexBuildCount++
+	}
+	c.indexMu.Unlock()
+	c.mu.Unlock()
+	if err != nil {
+		return err
 	}
 	return c.store.PruneObsoleteArtifacts(ctx)
 }
