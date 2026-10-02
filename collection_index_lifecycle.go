@@ -28,6 +28,9 @@ import (
 // prepareSegmentRuntimesLocked is called at open/write/maintenance boundaries.
 // Native indexes are only opened here; missing ANN artifacts use writer Flat.
 func (c *Collection) prepareSegmentRuntimesLocked(ctx context.Context) error {
+	if appended, err := c.appendOwnedMutableRuntimeLocked(ctx); appended || err != nil {
+		return err
+	}
 	segments, err := c.segmentDocumentsLocked(ctx)
 	if err != nil {
 		return err
@@ -95,7 +98,7 @@ func (i *collectionRuntimeIndexes) appendWriterFlat(ctx context.Context, field F
 		if index == nil {
 			var err error
 			if field.DataType == DataTypeVectorFP16 {
-				index, err = core.NewDenseFlatIndexFP16(int(field.Dimension), spec.metric)
+				index, err = core.NewDenseFlatIndexFP16FromBorrowedRows(ctx, int(field.Dimension), spec.metric, nil, nil)
 			} else {
 				index, err = core.NewDenseFlatIndex(int(field.Dimension), spec.metric)
 			}
@@ -108,12 +111,18 @@ func (i *collectionRuntimeIndexes) appendWriterFlat(ctx context.Context, field F
 			if !found || raw == nil {
 				continue
 			}
-			vector, err := denseValueToFloat32Borrowed(raw)
-			if err != nil {
-				return err
+			var addErr error
+			if vector, ok := raw.(VectorFP16); ok {
+				addErr = index.AddBorrowedFP16(ctx, document.DocID, nativeFP16Bits(vector))
+			} else {
+				vector, err := denseValueToFloat32Borrowed(raw)
+				if err != nil {
+					return err
+				}
+				addErr = index.Add(ctx, document.DocID, vector)
 			}
-			if err := index.Add(ctx, document.DocID, vector); err != nil && !errors.Is(err, core.ErrDuplicateKey) {
-				return err
+			if addErr != nil && !errors.Is(addErr, core.ErrDuplicateKey) {
+				return addErr
 			}
 		}
 		i.denseExact[field.Name], i.denseFlat[field.Name], i.denseNative[field.Name] = index, index, index

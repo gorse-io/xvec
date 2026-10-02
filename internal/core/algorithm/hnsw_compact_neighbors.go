@@ -114,6 +114,10 @@ func (i *HNSWIndex) prefetchNeighborList(neighbors hnswNeighborList, offset, lin
 		return
 	}
 	if i.fp16 {
+		if i.vectorRowsFP16 != nil {
+			prefetchDenseHNSWFP16Rows(i.vectorRowsFP16, neighbors.ids, offset, lines)
+			return
+		}
 		prefetchDenseHNSWNeighborsFP16(i.vectorsFP16, i.dimension, neighbors.ids, offset, lines)
 		return
 	}

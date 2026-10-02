@@ -17,6 +17,7 @@ package xvec
 import (
 	"slices"
 	"sort"
+	"unsafe"
 
 	"github.com/gorse-io/xvec/internal/ailego/utility"
 )
@@ -208,4 +209,10 @@ func sparseOrder(indices []uint32) []int {
 	}
 	sort.Slice(order, func(i, j int) bool { return indices[order[i]] < indices[order[j]] })
 	return order
+}
+
+// nativeFP16Bits borrows the identically laid-out uint16 representation. Core
+// AddFP16 methods synchronously copy it and never retain caller-owned storage.
+func nativeFP16Bits(vector VectorFP16) []uint16 {
+	return unsafe.Slice((*uint16)(unsafe.Pointer(unsafe.SliceData(vector))), len(vector))
 }

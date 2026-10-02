@@ -141,3 +141,24 @@ func prefetchDenseHNSWRows(vectors [][]float32, offset, lines uint32) {
 	}
 	runtime.KeepAlive(touched)
 }
+
+func prefetchDenseHNSWFP16Rows[T ~int | ~uint32](rows [][]uint16, neighbors []T, offset, lines uint32) {
+	count := prefetchNeighborCount(len(neighbors), offset)
+	if count == 0 {
+		return
+	}
+	dimension := len(rows[int(neighbors[0])])
+	lineCount := normalizedPrefetchLines(lines, dimension*2)
+	var touched uint16
+	for _, position := range neighbors[:count] {
+		row := rows[int(position)]
+		for line := 0; line < lineCount; line++ {
+			element := line * 32
+			if element >= len(row) {
+				break
+			}
+			touched ^= row[element]
+		}
+	}
+	runtime.KeepAlive(touched)
+}

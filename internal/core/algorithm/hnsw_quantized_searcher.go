@@ -123,12 +123,29 @@ func openHNSWIndexWithBorrowedVectors(ctx context.Context, path string, borrowed
 }
 
 func openHNSWIndexWithStorage(ctx context.Context, path string, borrowed map[uint64][]float32, encodedOriginals map[uint64][]byte, useMmap, materialize bool) (index *HNSWIndex, err error) {
+	return openHNSWIndexWithFP16Storage(ctx, path, borrowed, encodedOriginals, nil, useMmap, materialize)
+}
+
+// OpenHNSWIndexWithBorrowedFP16 verifies an artifact against immutable native
+// FP16 rows and shares those rows. The map is not retained. Temporary mappings
+// are released before return; graph topology is stored compactly in owned memory.
+func OpenHNSWIndexWithBorrowedFP16(ctx context.Context, path string, rows map[uint64][]uint16, useMmap bool) (*HNSWIndex, error) {
+	if ctx == nil {
+		return nil, errors.New("core: nil FP16 HNSW context")
+	}
+	if rows == nil {
+		return nil, errors.New("core: nil FP16 HNSW originals")
+	}
+	return openHNSWIndexWithFP16Storage(ctx, path, nil, nil, rows, useMmap, false)
+}
+
+func openHNSWIndexWithFP16Storage(ctx context.Context, path string, borrowed map[uint64][]float32, encodedOriginals map[uint64][]byte, borrowedFP16 map[uint64][]uint16, useMmap, materialize bool) (index *HNSWIndex, err error) {
 	if !useMmap {
 		encoded, err := readHNSWFile(ctx, path)
 		if err != nil {
 			return nil, err
 		}
-		return decodeHNSWIndexWithStorage(ctx, encoded, borrowed, encodedOriginals, materialize)
+		return decodeHNSWIndexWithFP16Storage(ctx, encoded, borrowed, encodedOriginals, borrowedFP16, materialize, nil)
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -140,7 +157,7 @@ func openHNSWIndexWithStorage(ctx context.Context, path string, borrowed map[uin
 		return nil, err
 	}
 	defer func() { err = errors.Join(err, encoded.Unmap()) }()
-	return decodeHNSWIndexWithStorageAndDiscard(ctx, encoded, borrowed, encodedOriginals, materialize, func(start, end int) {
+	return decodeHNSWIndexWithFP16Storage(ctx, encoded, borrowed, encodedOriginals, borrowedFP16, materialize, func(start, end int) {
 		ioutil.DiscardReadOnlyMappedPages(encoded, start, end)
 	})
 }
