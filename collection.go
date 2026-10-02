@@ -565,6 +565,15 @@ func openCollectionDenseArtifact(
 	}
 	switch spec.indexType {
 	case IndexTypeHNSW:
+		if field.DataType == DataTypeVectorFP16 && spec.quantize == QuantizeTypeUndefined {
+			rows := make(map[uint64][]uint16, len(documents))
+			for _, doc := range documents {
+				if value, ok := doc.Fields[field.Name].(VectorFP16); ok {
+					rows[doc.DocID] = nativeFP16Bits(value)
+				}
+			}
+			return core.OpenHNSWIndexWithBorrowedFP16(ctx, path, rows, useMmap)
+		}
 		if spec.quantize == QuantizeTypeUndefined {
 			reader, keys, err := collectionEncodedDenseReader(ctx, field, documents)
 			if err != nil {
@@ -713,13 +722,14 @@ func (c *Collection) segmentDocumentsSelectedLocked(ctx context.Context, selectS
 			len(runtime.documents) > 0 && snapshot.Documents[len(runtime.documents)-1].DocID == runtime.key.maxDocID {
 			prefix = copy(documents, runtime.documents)
 		}
+		arenas := newFP16DocumentArenas(c.schema, len(documents)-prefix)
 		for position := prefix; position < len(snapshot.Documents); position++ {
 			item := snapshot.Documents[position]
 			fields := borrowedFields
 			if snapshot.Mutable {
 				fields = nil
 			}
-			document, decodeErr := decodeStoredDocumentWithBorrowedVectors(item, fields)
+			document, decodeErr := decodeStoredDocumentWithVectorArenas(item, fields, arenas)
 			if decodeErr != nil {
 				return decodeErr
 			}
@@ -2355,7 +2365,7 @@ func buildCollectionDenseHNSW(
 	if field.DataType == DataTypeVectorFP16 && spec.quantize == QuantizeTypeUndefined {
 		options := core.DefaultHNSWBuildOptions(spec.metric)
 		options.M, options.EFConstruction = spec.hnsw.M, spec.hnsw.EFConstruction
-		builder, err := core.NewHNSWBuilderFP16(int(field.Dimension), options)
+		builder, err := core.NewHNSWBuilderWithBorrowedFP16(int(field.Dimension), options)
 		if err != nil {
 			return nil, err
 		}
@@ -2375,7 +2385,7 @@ func buildCollectionDenseHNSW(
 			if !ok {
 				return nil, fmt.Errorf("field %q has non-FP16 vector %T", field.Name, value)
 			}
-			if err := builder.AddFP16(ctx, document.DocID, nativeFP16Bits(vector)); err != nil {
+			if err := builder.AddBorrowedFP16(ctx, document.DocID, nativeFP16Bits(vector)); err != nil {
 				return nil, err
 			}
 		}
@@ -6354,7 +6364,11 @@ func decodeStoredDocument(stored segment.StoredDocument) (Document, error) {
 }
 
 func decodeStoredDocumentWithBorrowedVectors(stored segment.StoredDocument, borrowedFields map[string]struct{}) (Document, error) {
-	fields, err := unmarshalDocumentPayloadWithBorrowedVectors(stored.Payload, borrowedFields)
+	return decodeStoredDocumentWithVectorArenas(stored, borrowedFields, nil)
+}
+
+func decodeStoredDocumentWithVectorArenas(stored segment.StoredDocument, borrowedFields map[string]struct{}, arenas map[string]*fp16DocumentArena) (Document, error) {
+	fields, err := unmarshalDocumentPayloadWithVectorArenas(stored.Payload, borrowedFields, arenas)
 	if err != nil {
 		return Document{}, fmt.Errorf("decode document %d: %w", stored.DocID, err)
 	}

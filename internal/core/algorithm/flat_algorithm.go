@@ -411,6 +411,16 @@ func (i *DenseFlatIndex) Add(ctx context.Context, key uint64, vector []float32) 
 
 // AddFP16 validates and clones native binary16 bits without float32 staging.
 func (i *DenseFlatIndex) AddFP16(ctx context.Context, key uint64, vector []uint16) error {
+	return i.addFP16(ctx, key, vector, false)
+}
+
+// AddBorrowedFP16 retains an immutable collection-owned row in a row-backed
+// index. The owner must keep it unchanged for the lifetime of the index.
+func (i *DenseFlatIndex) AddBorrowedFP16(ctx context.Context, key uint64, vector []uint16) error {
+	return i.addFP16(ctx, key, vector, true)
+}
+
+func (i *DenseFlatIndex) addFP16(ctx context.Context, key uint64, vector []uint16, borrow bool) error {
 	if i == nil {
 		return errors.New("core: nil dense Flat index")
 	}
@@ -438,12 +448,19 @@ func (i *DenseFlatIndex) AddFP16(ctx context.Context, key uint64, vector []uint1
 	if _, exists := i.positions[key]; exists {
 		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
 	}
-	if len(i.vectorsFP16) > maxPlatformInt()-i.dimension {
+	if borrow && i.fp16Rows == nil {
+		return errors.New("core: borrowed FP16 input requires a row-backed Flat index")
+	}
+	if len(i.keys) >= maxPlatformInt()/i.dimension {
 		return ErrDenseCapacity
 	}
 	i.positions[key] = len(i.keys)
 	i.keys = append(i.keys, key)
-	i.appendFP16(vector)
+	if borrow {
+		i.fp16Rows = append(i.fp16Rows, vector[:i.dimension:i.dimension])
+	} else {
+		i.appendFP16(vector)
+	}
 	if i.metric == MetricCosine {
 		i.magnitudes = append(i.magnitudes, magnitude)
 	}

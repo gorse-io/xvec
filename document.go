@@ -518,6 +518,10 @@ func unmarshalDocumentPayload(encoded []byte) (map[string]any, error) {
 // borrowedFields is used only for read-only query snapshots whose encoded
 // payloads remain valid until the collection has drained all query leases.
 func unmarshalDocumentPayloadWithBorrowedVectors(encoded []byte, borrowedFields map[string]struct{}) (map[string]any, error) {
+	return unmarshalDocumentPayloadWithVectorArenas(encoded, borrowedFields, nil)
+}
+
+func unmarshalDocumentPayloadWithVectorArenas(encoded []byte, borrowedFields map[string]struct{}, arenas map[string]*fp16DocumentArena) (map[string]any, error) {
 	if len(encoded) < documentHeaderSize {
 		return nil, fmt.Errorf("%w: shorter than header", errDocumentPayloadCorrupt)
 	}
@@ -578,6 +582,8 @@ func unmarshalDocumentPayloadWithBorrowedVectors(encoded []byte, borrowedFields 
 				err = vector.validate()
 			}
 			value = vector
+		} else if arena := arenas[name]; dataType == DataTypeVectorFP16 && arena != nil {
+			value, err = arena.decode(count, data)
 		} else {
 			value, err = decodeDocumentValue(dataType, count, data)
 		}

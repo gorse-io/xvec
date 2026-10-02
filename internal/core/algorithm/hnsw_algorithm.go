@@ -85,16 +85,17 @@ func (o HNSWBuildOptions) Validate() error {
 
 // HNSWBuilder collects dense originals and constructs one deterministic graph.
 type HNSWBuilder struct {
-	mu          sync.Mutex
-	dimension   int
-	options     HNSWBuildOptions
-	keys        []uint64
-	vectors     []float32
-	vectorRows  [][]float32
-	vectorsFP16 []uint16
-	fp16        bool
-	positions   map[uint64]int
-	built       bool
+	mu             sync.Mutex
+	dimension      int
+	options        HNSWBuildOptions
+	keys           []uint64
+	vectors        []float32
+	vectorRows     [][]float32
+	vectorsFP16    []uint16
+	vectorRowsFP16 [][]uint16
+	fp16           bool
+	positions      map[uint64]int
+	built          bool
 }
 
 // NewHNSWBuilder constructs an empty one-shot dense HNSW builder.
@@ -106,6 +107,16 @@ func NewHNSWBuilder(dimension int, options HNSWBuildOptions) (*HNSWBuilder, erro
 // in IEEE 754 binary16 form.
 func NewHNSWBuilderFP16(dimension int, options HNSWBuildOptions) (*HNSWBuilder, error) {
 	return newHNSWBuilder(dimension, options, true)
+}
+
+// NewHNSWBuilderWithBorrowedFP16 shares immutable collection-owned rows.
+// The owner must keep rows alive and unchanged for the resulting index lifetime.
+func NewHNSWBuilderWithBorrowedFP16(dimension int, options HNSWBuildOptions) (*HNSWBuilder, error) {
+	b, err := NewHNSWBuilderFP16(dimension, options)
+	if err == nil {
+		b.vectorRowsFP16 = make([][]uint16, 0)
+	}
+	return b, err
 }
 
 func newHNSWBuilder(dimension int, options HNSWBuildOptions, fp16 bool) (*HNSWBuilder, error) {
@@ -140,6 +151,9 @@ func (b *HNSWBuilder) Reserve(count int) error {
 	vectorCapacity := cap(b.vectors)
 	if b.fp16 {
 		vectorCapacity = cap(b.vectorsFP16)
+		if b.vectorRowsFP16 != nil {
+			vectorCapacity = cap(b.vectorRowsFP16) * b.dimension
+		}
 	}
 	if count <= cap(b.keys) && count*b.dimension <= vectorCapacity {
 		return nil
@@ -148,12 +162,17 @@ func (b *HNSWBuilder) Reserve(count int) error {
 	copy(reservedKeys, b.keys)
 	var reservedVectors []float32
 	var reservedVectorsFP16 []uint16
-	if b.fp16 {
+	if b.fp16 && b.vectorRowsFP16 == nil {
 		reservedVectorsFP16 = make([]uint16, len(b.vectorsFP16), max(count*b.dimension, len(b.vectorsFP16)))
 		copy(reservedVectorsFP16, b.vectorsFP16)
-	} else {
+	} else if !b.fp16 {
 		reservedVectors = make([]float32, len(b.vectors), max(count*b.dimension, len(b.vectors)))
 		copy(reservedVectors, b.vectors)
+	}
+	if b.vectorRowsFP16 != nil {
+		rows := make([][]uint16, len(b.vectorRowsFP16), max(count, len(b.vectorRowsFP16)))
+		copy(rows, b.vectorRowsFP16)
+		b.vectorRowsFP16 = rows
 	}
 	reservedPositions := make(map[uint64]int, max(count, len(b.positions)))
 	for key, position := range b.positions {
@@ -203,7 +222,11 @@ func (b *HNSWBuilder) Add(ctx context.Context, key uint64, vector []float32) err
 			delete(b.positions, key)
 			return fmt.Errorf("core: encode HNSW FP16 vector: %w", err)
 		}
-		b.vectorsFP16 = append(b.vectorsFP16, encoded...)
+		if b.vectorRowsFP16 != nil {
+			b.vectorRowsFP16 = append(b.vectorRowsFP16, encoded)
+		} else {
+			b.vectorsFP16 = append(b.vectorsFP16, encoded...)
+		}
 	} else {
 		b.vectors = append(b.vectors, vector...)
 	}
@@ -212,6 +235,15 @@ func (b *HNSWBuilder) Add(ctx context.Context, key uint64, vector []float32) err
 
 // AddFP16 validates and clones native binary16 bits without a float32 round trip.
 func (b *HNSWBuilder) AddFP16(ctx context.Context, key uint64, vector []uint16) error {
+	return b.addFP16(ctx, key, vector, false)
+}
+
+// AddBorrowedFP16 retains an immutable row in a borrowing builder.
+func (b *HNSWBuilder) AddBorrowedFP16(ctx context.Context, key uint64, vector []uint16) error {
+	return b.addFP16(ctx, key, vector, true)
+}
+
+func (b *HNSWBuilder) addFP16(ctx context.Context, key uint64, vector []uint16, borrow bool) error {
 	if b == nil {
 		return errors.New("core: nil HNSW builder")
 	}
@@ -238,12 +270,22 @@ func (b *HNSWBuilder) AddFP16(ctx context.Context, key uint64, vector []uint16) 
 	if _, exists := b.positions[key]; exists {
 		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
 	}
-	if len(b.vectorsFP16) > maxPlatformInt()-b.dimension {
+	if borrow && b.vectorRowsFP16 == nil {
+		return errors.New("core: borrowed FP16 input requires a borrowing builder")
+	}
+	if len(b.keys) >= maxPlatformInt()/b.dimension {
 		return ErrHNSWCapacity
 	}
 	b.positions[key] = len(b.keys)
 	b.keys = append(b.keys, key)
-	b.vectorsFP16 = append(b.vectorsFP16, vector...)
+	if b.vectorRowsFP16 != nil {
+		if !borrow {
+			vector = slices.Clone(vector)
+		}
+		b.vectorRowsFP16 = append(b.vectorRowsFP16, vector[:b.dimension:b.dimension])
+	} else {
+		b.vectorsFP16 = append(b.vectorsFP16, vector...)
+	}
 	return nil
 }
 
@@ -303,20 +345,21 @@ func (b *HNSWBuilder) buildWithDistance(
 	}
 
 	index := &HNSWIndex{
-		dimension:    b.dimension,
-		options:      b.options,
-		distance:     distance,
-		distanceFP16: distanceFP16,
-		keys:         b.keys,
-		vectors:      b.vectors,
-		vectorRows:   b.vectorRows,
-		vectorsFP16:  b.vectorsFP16,
-		fp16:         b.fp16,
-		positions:    b.positions,
-		entryPoint:   -1,
-		maxLevel:     -1,
-		levels:       make([]int, len(b.keys)),
-		neighbors:    make([][][]int, len(b.keys)),
+		dimension:      b.dimension,
+		options:        b.options,
+		distance:       distance,
+		distanceFP16:   distanceFP16,
+		keys:           b.keys,
+		vectors:        b.vectors,
+		vectorRows:     b.vectorRows,
+		vectorsFP16:    b.vectorsFP16,
+		vectorRowsFP16: b.vectorRowsFP16,
+		fp16:           b.fp16,
+		positions:      b.positions,
+		entryPoint:     -1,
+		maxLevel:       -1,
+		levels:         make([]int, len(b.keys)),
+		neighbors:      make([][][]int, len(b.keys)),
 	}
 	random := splitMix64{state: b.options.Seed}
 	for position := range index.keys {
@@ -364,6 +407,7 @@ func (b *HNSWBuilder) buildWithDistance(
 	b.vectors = nil
 	b.vectorRows = nil
 	b.vectorsFP16 = nil
+	b.vectorRowsFP16 = nil
 	b.positions = nil
 	return index, nil
 }
@@ -383,6 +427,7 @@ type HNSWIndex struct {
 	vectorRows       [][]float32 // Only used by private, immutable quantized graphs.
 	encodedVectors   [][]byte    // Validated little-endian originals borrowed by immutable quantized graphs.
 	vectorsFP16      []uint16
+	vectorRowsFP16   [][]uint16
 	fp16             bool
 	vectorMagnitudes []float32
 	positions        map[uint64]int
@@ -443,10 +488,9 @@ func (i *HNSWIndex) Vector(key uint64) ([]float32, bool) {
 	if !found {
 		return nil, false
 	}
-	start := position * i.dimension
 	if i.fp16 {
 		vector := make([]float32, i.dimension)
-		for component, bits := range i.vectorsFP16[start : start+i.dimension] {
+		for component, bits := range i.vectorFP16At(position) {
 			vector[component] = utility.Float16BitsToFloat32(bits)
 		}
 		return vector, true
@@ -767,6 +811,9 @@ func (i *HNSWIndex) vectorAt(position int) []float32 {
 }
 
 func (i *HNSWIndex) vectorFP16At(position int) []uint16 {
+	if i.vectorRowsFP16 != nil {
+		return i.vectorRowsFP16[position]
+	}
 	start := position * i.dimension
 	return i.vectorsFP16[start : start+i.dimension]
 }
@@ -1102,7 +1149,7 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 		if i.fp16 {
 			flat := DenseFlatIndex{
 				dimension: i.dimension, metric: i.options.Metric, fp16: true,
-				keys: i.keys, vectorsFP16: i.vectorsFP16, magnitudes: i.vectorMagnitudes,
+				keys: i.keys, vectorsFP16: i.vectorsFP16, fp16Rows: i.vectorRowsFP16, magnitudes: i.vectorMagnitudes,
 			}
 			return flat.searchFP16(ctx, queryFP16, options.SearchOptions)
 		}
@@ -1367,6 +1414,10 @@ func (i *HNSWIndex) searchHNSWBaseBlockHeap(ctx context.Context, query []float32
 
 func (i *HNSWIndex) prefetchNeighbors(neighbors []int, offset, lines uint32) {
 	if i.fp16 {
+		if i.vectorRowsFP16 != nil {
+			prefetchDenseHNSWFP16Rows(i.vectorRowsFP16, neighbors, offset, lines)
+			return
+		}
 		prefetchDenseHNSWNeighborsFP16(i.vectorsFP16, i.dimension, neighbors, offset, lines)
 		return
 	}
@@ -1486,6 +1537,7 @@ func (i *HNSWIndex) Add(ctx context.Context, key uint64, vector []float32) error
 	i.vectorRows = nil
 	i.encodedVectors = nil
 	i.vectorsFP16 = working.vectorsFP16
+	i.vectorRowsFP16 = nil
 	i.vectorMagnitudes = working.vectorMagnitudes
 	i.positions = working.positions
 	i.levels = working.levels
@@ -1526,6 +1578,12 @@ func cloneHNSWIndex(ctx context.Context, source *HNSWIndex) (*HNSWIndex, error) 
 		entryPoint:       source.entryPoint,
 		maxLevel:         source.maxLevel,
 		levelRNGState:    source.levelRNGState,
+	}
+	if source.vectorRowsFP16 != nil {
+		clone.vectorsFP16 = make([]uint16, len(source.keys)*source.dimension)
+		for position := range source.keys {
+			copy(clone.vectorsFP16[position*source.dimension:], source.vectorFP16At(position))
+		}
 	}
 	if source.vectorRows != nil || source.encodedVectors != nil {
 		clone.vectors = make([]float32, len(source.keys)*source.dimension)
@@ -1639,9 +1697,8 @@ func writeHNSWIndex(ctx context.Context, file *os.File, index *HNSWIndex, payloa
 		node = node[:0]
 		node = binary.LittleEndian.AppendUint64(node, key)
 		node = binary.LittleEndian.AppendUint32(node, uint32(index.levels[position]))
-		start := position * index.dimension
 		if index.fp16 {
-			for _, value := range index.vectorsFP16[start : start+index.dimension] {
+			for _, value := range index.vectorFP16At(position) {
 				node = binary.LittleEndian.AppendUint16(node, value)
 			}
 		} else if index.encodedVectors != nil {
@@ -1762,9 +1819,8 @@ func encodeHNSWIndex(ctx context.Context, index *HNSWIndex) ([]byte, error) {
 		}
 		payload = binary.LittleEndian.AppendUint64(payload, key)
 		payload = binary.LittleEndian.AppendUint32(payload, uint32(index.levels[position]))
-		start := position * index.dimension
 		if index.fp16 {
-			for _, value := range index.vectorsFP16[start : start+index.dimension] {
+			for _, value := range index.vectorFP16At(position) {
 				payload = binary.LittleEndian.AppendUint16(payload, value)
 			}
 		} else if index.encodedVectors != nil {
@@ -1808,6 +1864,10 @@ func decodeHNSWIndexWithStorage(ctx context.Context, encoded []byte, borrowed ma
 // discard releases only file-backed pages of the temporary artifact mapping.
 // All retained originals belong to the caller; decoded neighbors own their IDs.
 func decodeHNSWIndexWithStorageAndDiscard(ctx context.Context, encoded []byte, borrowed map[uint64][]float32, encodedOriginals map[uint64][]byte, materialize bool, discard func(int, int)) (*HNSWIndex, error) {
+	return decodeHNSWIndexWithFP16Storage(ctx, encoded, borrowed, encodedOriginals, nil, materialize, discard)
+}
+
+func decodeHNSWIndexWithFP16Storage(ctx context.Context, encoded []byte, borrowed map[uint64][]float32, encodedOriginals map[uint64][]byte, borrowedFP16 map[uint64][]uint16, materialize bool, discard func(int, int)) (*HNSWIndex, error) {
 	if ctx == nil {
 		return nil, errors.New("core: nil HNSW decode context")
 	}
@@ -1915,8 +1975,13 @@ func decodeHNSWIndexWithStorageAndDiscard(ctx context.Context, encoded []byte, b
 	if encodedOriginals != nil && (fp16 || borrowed != nil || len(encodedOriginals) != count) {
 		return nil, fmt.Errorf("%w: incompatible encoded vector storage", ErrInvalidHNSWFile)
 	}
-	if fp16 {
+	if borrowedFP16 != nil && (!fp16 || len(borrowedFP16) != count) {
+		return nil, fmt.Errorf("%w: incompatible external FP16 storage", ErrInvalidHNSWFile)
+	}
+	if fp16 && borrowedFP16 == nil {
 		vectorsFP16 = make([]uint16, count*dimension)
+	} else if fp16 {
+		// Scoring rows are supplied by the immutable collection.
 	} else if encodedOriginals != nil && !materialize {
 		encodedVectors = make([][]byte, count)
 	} else if borrowed != nil {
@@ -1926,7 +1991,7 @@ func decodeHNSWIndexWithStorageAndDiscard(ctx context.Context, encoded []byte, b
 	}
 
 	var mutableNeighbors [][][]int
-	if encodedOriginals == nil || materialize {
+	if (encodedOriginals == nil || materialize) && borrowedFP16 == nil {
 		mutableNeighbors = make([][][]int, count)
 	}
 	index := &HNSWIndex{
@@ -1947,7 +2012,10 @@ func decodeHNSWIndexWithStorageAndDiscard(ctx context.Context, encoded []byte, b
 		maxLevel:       maxLevel,
 		levelRNGState:  binary.LittleEndian.Uint64(header[76:84]),
 	}
-	if encodedOriginals != nil && !materialize {
+	if borrowedFP16 != nil {
+		index.vectorRowsFP16 = make([][]uint16, count)
+	}
+	if (encodedOriginals != nil && !materialize) || borrowedFP16 != nil {
 		graph, err := newHNSWCompactNeighbors(ctx, payload, count, dimension*hnswVectorWidth(fp16), options.M, discard)
 		if err != nil {
 			return nil, err
@@ -1973,6 +2041,13 @@ func decodeHNSWIndexWithStorageAndDiscard(ctx context.Context, encoded []byte, b
 		}
 		index.keys[position] = key
 		index.positions[key] = position
+		if borrowedFP16 != nil {
+			row, found := borrowedFP16[key]
+			if !found || len(row) != dimension {
+				return nil, fmt.Errorf("%w: missing or invalid FP16 vector %d", ErrInvalidHNSWFile, key)
+			}
+			index.vectorRowsFP16[position] = row[:dimension:dimension]
+		}
 		if borrowed != nil {
 			vector, found := borrowed[key]
 			if !found || len(vector) != dimension {
@@ -2003,7 +2078,14 @@ func decodeHNSWIndexWithStorageAndDiscard(ctx context.Context, encoded []byte, b
 		start := position * dimension
 		for component := 0; component < dimension; component++ {
 			if fp16 {
-				index.vectorsFP16[start+component] = binary.LittleEndian.Uint16(payload[offset : offset+2])
+				bits := binary.LittleEndian.Uint16(payload[offset : offset+2])
+				if borrowedFP16 != nil {
+					if index.vectorRowsFP16[position][component] != bits {
+						return nil, fmt.Errorf("%w: external FP16 vector %d differs from artifact", ErrInvalidHNSWFile, key)
+					}
+				} else {
+					index.vectorsFP16[start+component] = bits
+				}
 				offset += 2
 			} else {
 				value := math.Float32frombits(binary.LittleEndian.Uint32(payload[offset : offset+4]))
@@ -2140,6 +2222,12 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 	}
 	if index.fp16 {
 		validVectorStorage = len(index.vectors) == 0 && len(index.vectorsFP16) == count*index.dimension
+		if index.vectorRowsFP16 != nil {
+			validVectorStorage = len(index.vectors) == 0 && len(index.vectorsFP16) == 0 && len(index.vectorRowsFP16) == count
+			for _, row := range index.vectorRowsFP16 {
+				validVectorStorage = validVectorStorage && len(row) == index.dimension
+			}
+		}
 	}
 	if uint64(count) > math.MaxUint32 || count > maxPlatformInt()/index.dimension ||
 		!validVectorStorage || len(index.positions) != count ||
@@ -2176,9 +2264,8 @@ func validateHNSWIndex(ctx context.Context, index *HNSWIndex) error {
 			return fmt.Errorf("%w: invalid node level storage", ErrInvalidHNSWFile)
 		}
 		derivedMaxLevel = max(derivedMaxLevel, level)
-		start := position * index.dimension
 		if index.fp16 {
-			for _, bits := range index.vectorsFP16[start : start+index.dimension] {
+			for _, bits := range index.vectorFP16At(position) {
 				if !finiteFloat32(utility.Float16BitsToFloat32(bits)) {
 					return fmt.Errorf("%w: non-finite vector", ErrInvalidHNSWFile)
 				}

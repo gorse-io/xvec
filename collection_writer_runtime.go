@@ -53,11 +53,12 @@ func (c *Collection) appendOwnedMutableRuntimeLocked(ctx context.Context) (bool,
 		}
 		// Validate the complete suffix before mutating any shared Flat index.
 		suffix := make([]Document, len(snapshot.Documents)-start)
+		arenas := newFP16DocumentArenas(c.schema, len(suffix))
 		for index, stored := range snapshot.Documents[start:] {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			document, err := decodeStoredDocumentWithBorrowedVectors(stored, nil)
+			document, err := decodeStoredDocumentWithVectorArenas(stored, nil, arenas)
 			if err != nil {
 				return err
 			}

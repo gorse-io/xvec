@@ -98,7 +98,7 @@ func (i *collectionRuntimeIndexes) appendWriterFlat(ctx context.Context, field F
 		if index == nil {
 			var err error
 			if field.DataType == DataTypeVectorFP16 {
-				index, err = core.NewChunkedDenseFlatIndexFP16(int(field.Dimension), spec.metric)
+				index, err = core.NewDenseFlatIndexFP16FromBorrowedRows(ctx, int(field.Dimension), spec.metric, nil, nil)
 			} else {
 				index, err = core.NewDenseFlatIndex(int(field.Dimension), spec.metric)
 			}
@@ -113,7 +113,7 @@ func (i *collectionRuntimeIndexes) appendWriterFlat(ctx context.Context, field F
 			}
 			var addErr error
 			if vector, ok := raw.(VectorFP16); ok {
-				addErr = index.AddFP16(ctx, document.DocID, nativeFP16Bits(vector))
+				addErr = index.AddBorrowedFP16(ctx, document.DocID, nativeFP16Bits(vector))
 			} else {
 				vector, err := denseValueToFloat32Borrowed(raw)
 				if err != nil {
