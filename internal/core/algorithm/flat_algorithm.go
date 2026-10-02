@@ -319,6 +319,69 @@ func (i *DenseFlatIndex) Add(ctx context.Context, key uint64, vector []float32) 
 	return nil
 }
 
+// AddFP16 validates and clones native binary16 bits without float32 staging.
+func (i *DenseFlatIndex) AddFP16(ctx context.Context, key uint64, vector []uint16) error {
+	if i == nil {
+		return errors.New("core: nil dense Flat index")
+	}
+	if ctx == nil {
+		return errors.New("core: nil dense Flat add context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !i.fp16 {
+		return errors.New("core: AddFP16 requires a native FP16 Flat index")
+	}
+	if err := validateDenseVectorFP16(vector, i.dimension); err != nil {
+		return err
+	}
+	var magnitude float32
+	if i.metric == MetricCosine {
+		magnitude = mathutil.L2MagnitudeFP16(vector)
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, exists := i.positions[key]; exists {
+		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
+	}
+	if len(i.vectorsFP16) > maxPlatformInt()-i.dimension {
+		return ErrDenseCapacity
+	}
+	i.positions[key] = len(i.keys)
+	i.keys = append(i.keys, key)
+	if len(i.vectorsFP16)+i.dimension > cap(i.vectorsFP16) {
+		// Native writer rows are large: double capacity rather than repeatedly
+		// copying the entire column with Go's smaller large-slice growth factor.
+		capacity := cap(i.vectorsFP16)
+		capacity += min(capacity, maxPlatformInt()-capacity)
+		capacity = max(capacity, len(i.vectorsFP16)+i.dimension)
+		grown := make([]uint16, len(i.vectorsFP16), capacity)
+		copy(grown, i.vectorsFP16)
+		i.vectorsFP16 = grown
+	}
+	i.vectorsFP16 = append(i.vectorsFP16, vector...)
+	if i.metric == MetricCosine {
+		i.magnitudes = append(i.magnitudes, magnitude)
+	}
+	return nil
+}
+
+func validateDenseVectorFP16(vector []uint16, dimension int) error {
+	if len(vector) != dimension {
+		return fmt.Errorf("%w: got %d, want %d", ErrInvalidDimension, len(vector), dimension)
+	}
+	for _, bits := range vector {
+		if bits&0x7c00 == 0x7c00 {
+			return mathutil.ErrNonFiniteVector
+		}
+	}
+	return nil
+}
+
 // Vector returns a cloned vector by key.
 func (i *DenseFlatIndex) Vector(key uint64) ([]float32, bool) {
 	if i == nil {

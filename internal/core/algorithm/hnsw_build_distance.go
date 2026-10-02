@@ -37,13 +37,21 @@ func (i *HNSWIndex) computeBuildDistances(query int, positions []int, scratch *h
 		case MetricMIPSL2:
 			batch = mathbatch.MIPSL2SquaredDistances4FP16
 		}
-		// Cosine retains cached magnitudes and its single-pair reduction order.
+		// Cosine batches dot products while retaining the single-pair norm cache.
+		cachedCosine := i.options.Metric == MetricCosine && len(i.vectorMagnitudes) == len(i.keys)
 		j := 0
-		if batch != nil {
+		if batch != nil || cachedCosine {
 			q := i.vectorFP16At(query)
 			for ; j+4 <= count; j += 4 {
-				batch(q, i.vectorFP16At(positions[j]), i.vectorFP16At(positions[j+1]),
-					i.vectorFP16At(positions[j+2]), i.vectorFP16At(positions[j+3]), scratch.batchScores[j:])
+				if cachedCosine {
+					mathbatch.CosineDistances4WithMagnitudesFP16(q, i.vectorFP16At(positions[j]), i.vectorFP16At(positions[j+1]),
+						i.vectorFP16At(positions[j+2]), i.vectorFP16At(positions[j+3]), i.vectorMagnitudes[query],
+						i.vectorMagnitudes[positions[j]], i.vectorMagnitudes[positions[j+1]],
+						i.vectorMagnitudes[positions[j+2]], i.vectorMagnitudes[positions[j+3]], scratch.batchScores[j:])
+				} else {
+					batch(q, i.vectorFP16At(positions[j]), i.vectorFP16At(positions[j+1]),
+						i.vectorFP16At(positions[j+2]), i.vectorFP16At(positions[j+3]), scratch.batchScores[j:])
+				}
 			}
 		}
 		for ; j < count; j++ {

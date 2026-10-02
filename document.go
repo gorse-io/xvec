@@ -151,7 +151,7 @@ func validateDocumentAgainstSchema(document Document, schema CollectionSchema, p
 	return nil
 }
 
-// validateDocumentValue checks common immutable/scalar and FP32 ingestion
+// validateDocumentValue checks common immutable/scalar and native float ingestion
 // values without cloning them. Less common composite representations retain
 // cloneDocumentValue's canonicalization and validation behavior.
 func validateDocumentValue(value any) (DataType, error) {
@@ -185,6 +185,8 @@ func validateDocumentValue(value any) (DataType, error) {
 		return DataTypeDouble, nil
 	case encodedVectorFP32:
 		return DataTypeVectorFP32, value.validate()
+	case VectorFP16:
+		return DataTypeVectorFP16, validateFiniteFloat16s(value)
 	case VectorFP32:
 		if err := validateFiniteFloat32s(value); err != nil {
 			return 0, err
@@ -359,10 +361,8 @@ func cloneDocumentValue(value any) (any, DataType, error) {
 	case VectorBinary64:
 		return slices.Clone(value), DataTypeVectorBinary64, nil
 	case VectorFP16:
-		for _, element := range value {
-			if !finiteDocumentFloat(float64(element.Float32())) {
-				return nil, 0, invalidArgument("clone value", "FP16 vector contains a non-finite value")
-			}
+		if err := validateFiniteFloat16s(value); err != nil {
+			return nil, 0, err
 		}
 		return slices.Clone(value), DataTypeVectorFP16, nil
 	case encodedVectorFP32:
@@ -485,12 +485,23 @@ func marshalDocumentPayload(fields map[string]any) ([]byte, error) {
 	return encoded, nil
 }
 
-// documentValueForEncoding avoids an intermediate vector clone for the most
-// common ingestion representation. encodeDocumentValue synchronously copies
-// FP32 values into the schema payload, so retaining a second private vector is
-// unnecessary. Representations that need canonicalization keep the existing
-// clone path.
+// Binary16's all-ones exponent denotes infinity or NaN; checking it avoids
+// expanding every native value to float32 just to validate finiteness.
+func validateFiniteFloat16s(vector VectorFP16) error {
+	for _, value := range vector {
+		if uint16(value)&0x7c00 == 0x7c00 {
+			return invalidArgument("clone value", "FP16 vector contains a non-finite value")
+		}
+	}
+	return nil
+}
+
+// Encoding copies native float vectors into the payload, so validation need
+// not also clone them. Composite values retain their canonicalization path.
 func documentValueForEncoding(value any) (any, DataType, error) {
+	if vector, ok := value.(VectorFP16); ok {
+		return vector, DataTypeVectorFP16, validateFiniteFloat16s(vector)
+	}
 	if vector, ok := value.(VectorFP32); ok {
 		if err := validateFiniteFloat32s(vector); err != nil {
 			return nil, 0, err
@@ -778,17 +789,18 @@ func decodeDocumentValue(dataType DataType, count uint32, data []byte) (any, err
 		values, err := decodeFixed64(count, data)
 		return VectorBinary64(values), err
 	case DataTypeVectorFP16:
-		values, err := decodeFixed16(count, data)
-		result := map16(values, func(value uint16) Float16 { return Float16(value) })
-		if err == nil {
-			for _, value := range result {
-				if !finiteDocumentFloat(float64(value.Float32())) {
-					err = errors.New("non-finite FP16 vector")
-					break
-				}
-			}
+		if uint64(count)*2 != uint64(len(data)) {
+			return nil, errors.New("FP16 vector length mismatch")
 		}
-		return VectorFP16(result), err
+		result := make(VectorFP16, int(count))
+		for index := range result {
+			bits := binary.LittleEndian.Uint16(data[index*2:])
+			if bits&0x7c00 == 0x7c00 {
+				return nil, errors.New("non-finite FP16 vector")
+			}
+			result[index] = Float16(bits)
+		}
+		return result, nil
 	case DataTypeVectorFP32:
 		if uint64(count)*4 != uint64(len(data)) {
 			return nil, errors.New("FP32 vector length mismatch")

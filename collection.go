@@ -2352,6 +2352,35 @@ func buildCollectionDenseHNSW(
 	spec collectionVectorIndex,
 	workers int,
 ) (collectionHNSWIndex, error) {
+	if field.DataType == DataTypeVectorFP16 && spec.quantize == QuantizeTypeUndefined {
+		options := core.DefaultHNSWBuildOptions(spec.metric)
+		options.M, options.EFConstruction = spec.hnsw.M, spec.hnsw.EFConstruction
+		builder, err := core.NewHNSWBuilderFP16(int(field.Dimension), options)
+		if err != nil {
+			return nil, err
+		}
+		count, err := collectionDenseCandidateCount(ctx, field, documents)
+		if err != nil {
+			return nil, err
+		}
+		if err := builder.Reserve(count); err != nil {
+			return nil, err
+		}
+		for _, document := range documents {
+			value, found := document.Fields[field.Name]
+			if !found || value == nil {
+				continue
+			}
+			vector, ok := value.(VectorFP16)
+			if !ok {
+				return nil, fmt.Errorf("field %q has non-FP16 vector %T", field.Name, value)
+			}
+			if err := builder.AddFP16(ctx, document.DocID, nativeFP16Bits(vector)); err != nil {
+				return nil, err
+			}
+		}
+		return builder.BuildWithWorkers(ctx, workers)
+	}
 	candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
 	if err != nil {
 		return nil, err
@@ -2370,12 +2399,7 @@ func buildCollectionDenseHNSW(
 		}
 		return core.BuildScalarQuantizedHNSWWithBorrowedVectors(ctx, int(field.Dimension), options, kind, reformer, candidates, workers)
 	}
-	var builder *core.HNSWBuilder
-	if field.DataType == DataTypeVectorFP16 && spec.quantize == QuantizeTypeUndefined {
-		builder, err = core.NewHNSWBuilderFP16(int(field.Dimension), options)
-	} else {
-		builder, err = core.NewHNSWBuilder(int(field.Dimension), options)
-	}
+	builder, err := core.NewHNSWBuilder(int(field.Dimension), options)
 	if err != nil {
 		return nil, err
 	}
@@ -5584,12 +5608,36 @@ func (c *Collection) liveDocumentsFromSelectedSegmentsLocked(ctx context.Context
 }
 
 func buildDenseFlatIndex(ctx context.Context, field FieldSchema, metric core.Metric, documents []Document) (collectionDenseIndex, error) {
+	if field.DataType == DataTypeVectorFP16 {
+		index, err := core.NewDenseFlatIndexFP16(int(field.Dimension), metric)
+		if err != nil {
+			return nil, err
+		}
+		count, err := collectionDenseCandidateCount(ctx, field, documents)
+		if err != nil {
+			return nil, err
+		}
+		if err := index.Reserve(count); err != nil {
+			return nil, err
+		}
+		for _, document := range documents {
+			value, found := document.Fields[field.Name]
+			if !found || value == nil {
+				continue
+			}
+			vector, ok := value.(VectorFP16)
+			if !ok {
+				return nil, fmt.Errorf("field %q has non-FP16 vector %T", field.Name, value)
+			}
+			if err := index.AddFP16(ctx, document.DocID, nativeFP16Bits(vector)); err != nil {
+				return nil, err
+			}
+		}
+		return index, nil
+	}
 	candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
 	if err != nil {
 		return nil, err
-	}
-	if field.DataType == DataTypeVectorFP16 {
-		return core.NewDenseFlatIndexFP16FromValidatedCandidates(ctx, int(field.Dimension), metric, candidates)
 	}
 	return core.NewDenseFlatIndexFromValidatedCandidates(ctx, int(field.Dimension), metric, candidates)
 }

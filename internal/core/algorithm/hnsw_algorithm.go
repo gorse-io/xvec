@@ -210,6 +210,43 @@ func (b *HNSWBuilder) Add(ctx context.Context, key uint64, vector []float32) err
 	return nil
 }
 
+// AddFP16 validates and clones native binary16 bits without a float32 round trip.
+func (b *HNSWBuilder) AddFP16(ctx context.Context, key uint64, vector []uint16) error {
+	if b == nil {
+		return errors.New("core: nil HNSW builder")
+	}
+	if ctx == nil {
+		return errors.New("core: nil HNSW add context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !b.fp16 {
+		return errors.New("core: AddFP16 requires a native FP16 HNSW builder")
+	}
+	if err := validateDenseVectorFP16(vector, b.dimension); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if b.built {
+		return ErrBuilderClosed
+	}
+	if _, exists := b.positions[key]; exists {
+		return fmt.Errorf("%w: %d", ErrDuplicateKey, key)
+	}
+	if len(b.vectorsFP16) > maxPlatformInt()-b.dimension {
+		return ErrHNSWCapacity
+	}
+	b.positions[key] = len(b.keys)
+	b.keys = append(b.keys, key)
+	b.vectorsFP16 = append(b.vectorsFP16, vector...)
+	return nil
+}
+
 // Build assigns deterministic levels, inserts nodes in input order on one
 // worker, and transfers builder-owned original storage to the resulting graph.
 func (b *HNSWBuilder) Build(ctx context.Context) (*HNSWIndex, error) {
@@ -569,7 +606,7 @@ func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, queryF
 			break
 		}
 		neighbors := i.neighborList(current.position, level)
-		if buildQuery >= 0 && i.fp16 && i.options.Metric != MetricCosine {
+		if buildQuery >= 0 && i.fp16 {
 			// Pin unvisited positions once, score in SIMD batches, and retain the
 			// original neighbor order when updating the candidate/result heaps.
 			visited.batchPositions = visited.batchPositions[:0]

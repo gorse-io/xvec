@@ -265,6 +265,20 @@ func fp16DotScalar4(query, first, second, third, fourth []uint16, output []float
 	output[3] = mathutil.InnerProductFP16(query, fourth)
 }
 
+// CosineDistances4WithMagnitudesFP16 shares query loads and conversions across
+// four native FP16 candidates while reusing their cached magnitudes.
+func CosineDistances4WithMagnitudesFP16(
+	query, first, second, third, fourth []uint16,
+	queryMagnitude, firstMagnitude, secondMagnitude, thirdMagnitude, fourthMagnitude float32,
+	output []float32,
+) {
+	InnerProducts4FP16(query, first, second, third, fourth, output)
+	output[0] = cosineDistanceFromProduct(output[0], queryMagnitude, firstMagnitude)
+	output[1] = cosineDistanceFromProduct(output[1], queryMagnitude, secondMagnitude)
+	output[2] = cosineDistanceFromProduct(output[2], queryMagnitude, thirdMagnitude)
+	output[3] = cosineDistanceFromProduct(output[3], queryMagnitude, fourthMagnitude)
+}
+
 // CosineDistances4FP16 computes cosine distances from one query to four
 // binary16 candidates, sharing query loads and conversions when supported.
 // Inputs are unchecked: candidates must have the query dimension and output
