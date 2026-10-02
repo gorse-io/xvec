@@ -5885,6 +5885,7 @@ func (c *Collection) writeDocuments(ctx context.Context, operator Operator, docu
 	}
 	results := make([]WriteResult, len(documents))
 	batchError := &BatchWriteError{}
+	wrote := false
 	for index, document := range documents {
 		results[index].PrimaryKey = document.PrimaryKey
 		if err := ctx.Err(); err != nil {
@@ -5918,8 +5919,15 @@ func (c *Collection) writeDocuments(ctx context.Context, operator Operator, docu
 			batchError.add(wrapped)
 			continue
 		}
-		c.invalidateQuerySnapshotLocked()
-		dbResults, batchErr := c.callStoreWriteLocked(ctx, operator, []db.WriteInput{{
+		if !wrote {
+			c.invalidateQuerySnapshotLocked()
+			wrote = true
+		}
+		// Commit in input order so duplicate keys merge against the preceding
+		// successful version. Query runtimes are published once after the batch,
+		// while mu still excludes readers, rather than rescanning the segment
+		// and rebuilding scalar indexes after every individual WAL append.
+		dbResults, batchErr := c.writeStoreLocked(ctx, operator, []db.WriteInput{{
 			PrimaryKey: prepared.PrimaryKey, Payload: payload,
 		}})
 		var itemErr error
@@ -5934,6 +5942,19 @@ func (c *Collection) writeDocuments(ctx context.Context, operator Operator, docu
 			wrapped := wrapCollectionError(op, c.path, itemErr)
 			results[index].Err = wrapped
 			batchError.add(wrapped)
+		}
+	}
+	if wrote {
+		// Cancellation cannot undo WAL commits. Prepare their query runtimes
+		// before releasing mu even when a suffix of the batch was canceled.
+		if err := c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx)); err != nil {
+			for index := range results {
+				if results[index].Err == nil {
+					wrapped := wrapCollectionError(op, c.path, err)
+					results[index].Err = wrapped
+					batchError.add(wrapped)
+				}
+			}
 		}
 	}
 	if batchError.Failed != 0 {
@@ -6070,6 +6091,23 @@ func (c *Collection) prepareWriteDocumentLocked(ctx context.Context, operator Op
 }
 
 func (c *Collection) callStoreWriteLocked(ctx context.Context, operator Operator, inputs []db.WriteInput) ([]db.WriteResult, error) {
+	results, err := c.writeStoreLocked(ctx, operator, inputs)
+	// WAL commits cannot be undone by cancellation of runtime initialization.
+	prepareErr := c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx))
+	if prepareErr != nil {
+		for position := range results {
+			if results[position].Err == nil {
+				results[position].Err = prepareErr
+			}
+		}
+		return results, errors.Join(err, prepareErr)
+	}
+	return results, err
+}
+
+// writeStoreLocked commits documents without publishing query runtimes. Callers
+// must prepare runtimes before releasing mu, including after a partial failure.
+func (c *Collection) writeStoreLocked(ctx context.Context, operator Operator, inputs []db.WriteInput) ([]db.WriteResult, error) {
 	var results []db.WriteResult
 	var err error
 	switch operator {
@@ -6081,16 +6119,6 @@ func (c *Collection) callStoreWriteLocked(ctx context.Context, operator Operator
 		results, err = c.store.Update(ctx, inputs)
 	default:
 		return nil, errors.New("xvec: unsupported write operator")
-	}
-	// WAL commits cannot be undone by cancellation of runtime initialization.
-	prepareErr := c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx))
-	if prepareErr != nil {
-		for position := range results {
-			if results[position].Err == nil {
-				results[position].Err = prepareErr
-			}
-		}
-		return results, errors.Join(err, prepareErr)
 	}
 	return results, err
 }
