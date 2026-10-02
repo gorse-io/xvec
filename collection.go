@@ -60,9 +60,12 @@ const (
 // when creating a collection; MaxBufferSize bounds native DiskANN node-cache
 // bytes. A zero MaxBufferSize selects DefaultMaxBufferSize.
 type CollectionOptions struct {
-	ReadOnly      bool
-	EnableMmap    bool
-	MaxBufferSize uint32
+	// SkipUnindexedSegments excludes unbuilt ANN segments from vector searches.
+	// It is a non-persisted handle option; explicit Flat fields remain searchable.
+	SkipUnindexedSegments bool
+	ReadOnly              bool
+	EnableMmap            bool
+	MaxBufferSize         uint32
 	// WALSyncEvery synchronizes the WAL after this many successful records.
 	// Zero disables automatic record-count-based synchronization; Flush and
 	// Close still synchronize pending WAL records.
@@ -115,6 +118,7 @@ type Collection struct {
 	indexBuildCount uint64
 
 	querySnapshotMu         sync.Mutex
+	vectorQuerySnapshots    map[string]*collectionQuerySnapshot
 	querySnapshot           atomic.Pointer[collectionQuerySnapshot]
 	querySnapshotBuildCount atomic.Uint64
 	queryLeases             sync.WaitGroup
@@ -362,6 +366,10 @@ func buildCollectionFTSSnapshotScorers(
 }
 
 func (c *Collection) invalidateQuerySnapshotLocked() {
+	for field, snapshot := range c.vectorQuerySnapshots {
+		_ = c.releaseSnapshotRuntimes(snapshot)
+		delete(c.vectorQuerySnapshots, field)
+	}
 	if snapshot := c.querySnapshot.Swap(nil); snapshot != nil {
 		_ = c.releaseSnapshotRuntimes(snapshot)
 	}
@@ -659,6 +667,10 @@ func openCollectionFTSRuntime(ctx context.Context, path string, field FieldSchem
 }
 
 func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSegmentDocuments, error) {
+	return c.segmentDocumentsSelectedLocked(ctx, nil)
+}
+
+func (c *Collection) segmentDocumentsSelectedLocked(ctx context.Context, selectSegment func(common.SegmentMetadata, bool) bool) ([]collectionSegmentDocuments, error) {
 	// Snapshot the cache before visiting storage; do not invert the index/store
 	// lock order. Immutable segment records survive deletes in the live-key map.
 	schemaKey, err := collectionRuntimeKeyFor(c.schema, nil)
@@ -687,7 +699,7 @@ func (c *Collection) segmentDocumentsLocked(ctx context.Context) ([]collectionSe
 		}
 	}
 	segments := make([]collectionSegmentDocuments, 0)
-	err = c.store.VisitSegmentSnapshots(ctx, func(snapshot db.SegmentSnapshot) error {
+	err = c.store.VisitSelectedSegmentSnapshots(ctx, selectSegment, func(snapshot db.SegmentSnapshot) error {
 		if runtime := cached[snapshot.Metadata.ID]; !snapshot.Mutable && runtime != nil &&
 			runtime.key.schemaHash == schemaKey.schemaHash && runtime.key.count == len(snapshot.Documents) &&
 			runtime.key.maxDocID == snapshot.Metadata.MaxDocID && len(runtime.documents) == len(snapshot.Documents) {
@@ -4797,7 +4809,25 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 	if err != nil {
 		return nil, invalidArgument(op, "invalid filter: %v", err)
 	}
-	snapshot, releaseSnapshot, err := c.acquireQuerySnapshotLocked(ctx)
+	target, err := singleQueryTargetKind(query)
+	if err != nil {
+		return nil, invalidArgument(op, "%v", err)
+	}
+	vectorField := ""
+	if target == singleQueryTargetDense || target == singleQueryTargetSparse || target == singleQueryTargetPrimaryKey {
+		vectorField = query.Field
+		field, found := c.schema.Field(vectorField)
+		if !found || !field.DataType.IsVector() {
+			return nil, invalidArgument(op, "vector field %q does not exist", vectorField)
+		}
+		if target == singleQueryTargetPrimaryKey && c.options.SkipUnindexedSegments {
+			query.DenseVector, query.SparseVector, err = c.resolveQueryVectorByKeyLocked(ctx, field, query.PrimaryKey, op)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	snapshot, releaseSnapshot, err := c.acquireVectorQuerySnapshotLocked(ctx, vectorField)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
@@ -4816,10 +4846,6 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 		}
 	}
 	candidateFilter := filters.global
-	target, err := singleQueryTargetKind(query)
-	if err != nil {
-		return nil, invalidArgument(op, "%v", err)
-	}
 	var results []core.Result
 	switch target {
 	case singleQueryTargetFilter:
@@ -4842,11 +4868,14 @@ func (c *Collection) Query(ctx context.Context, query VectorQuery) ([]Document, 
 			return nil, invalidArgument(op, "vector field %q does not exist", query.Field)
 		}
 		dense, sparse := query.DenseVector, query.SparseVector
-		if target == singleQueryTargetPrimaryKey {
+		if target == singleQueryTargetPrimaryKey && !c.options.SkipUnindexedSegments {
 			dense, sparse, err = resolveSnapshotQueryVector(documents, field, query.PrimaryKey, op)
 			if err != nil {
 				return nil, err
 			}
+		}
+		if err := validateCollectionQueryVector(op, field, dense, sparse); err != nil {
+			return nil, err
 		}
 		results, err = c.searchVectorSegments(
 			ctx, op, field, dense, sparse, query.TopK, query.Params, segments, runtimes, filters,
@@ -5257,7 +5286,13 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 	if err != nil {
 		return nil, invalidArgument(op, "invalid filter: %v", err)
 	}
-	snapshot, releaseSnapshot, err := c.acquireQuerySnapshotLocked(ctx)
+	if hasPrimaryKey && c.options.SkipUnindexedSegments {
+		query.DenseVector, query.SparseVector, err = c.resolveQueryVectorByKeyLocked(ctx, field, query.PrimaryKey, op)
+		if err != nil {
+			return nil, err
+		}
+	}
+	snapshot, releaseSnapshot, err := c.acquireVectorQuerySnapshotLocked(ctx, query.Field)
 	if err != nil {
 		return nil, wrapCollectionError(op, c.path, err)
 	}
@@ -5276,13 +5311,21 @@ func (c *Collection) GroupByQuery(ctx context.Context, query GroupByVectorQuery)
 		params.options.Linear = true
 	}
 	dense, sparse := query.DenseVector, query.SparseVector
-	if hasPrimaryKey {
+	if hasPrimaryKey && !c.options.SkipUnindexedSegments {
 		dense, sparse, err = resolveSnapshotQueryVector(documents, field, query.PrimaryKey, op)
 		if err != nil {
 			return nil, err
 		}
 	}
 
+	if err := validateCollectionQueryVector(op, field, dense, sparse); err != nil {
+		return nil, err
+	}
+	if c.options.SkipUnindexedSegments && len(runtimes) == 0 {
+		if err := validateCollectionGroupQueryConfig(op, c.path, vectorIndex, params); err != nil {
+			return nil, err
+		}
+	}
 	segmentByID := make(map[uint64]collectionSegmentDocuments, len(segments))
 	for _, segment := range segments {
 		segmentByID[segment.metadata.ID] = segment
@@ -5342,16 +5385,8 @@ func (c *Collection) searchGroupSegment(
 	if candidateFilter.useBruteForce(c.runtimeConfig().BruteForceByKeysRatio) {
 		params.options.Linear = true
 	}
-	if params.options.UseRefiner && vectorIndex.indexType == IndexTypeIVFRaBitQ {
-		return nil, notSupported(op, c.path, "IVF-RaBitQ group-by does not support refinement")
-	}
-	if !params.options.Linear && vectorIndex.indexType != IndexTypeFlat {
-		if params.options.UseRefiner && (vectorIndex.indexType == IndexTypeHNSW || vectorIndex.indexType == IndexTypeHNSWRaBitQ) {
-			return nil, notSupported(op, c.path, fmt.Sprintf("%s group-by with a refiner requires Linear", vectorIndex.indexType))
-		}
-		if vectorIndex.indexType != IndexTypeHNSW && vectorIndex.indexType != IndexTypeHNSWRaBitQ && vectorIndex.indexType != IndexTypeIVFRaBitQ {
-			return nil, notSupported(op, c.path, fmt.Sprintf("group-by is not supported for %s graph traversal", vectorIndex.indexType))
-		}
+	if err := validateCollectionGroupQueryConfig(op, c.path, vectorIndex, params); err != nil {
+		return nil, err
 	}
 	groupValues := make(map[uint64]string, len(documents))
 	for _, document := range documents {
@@ -5513,6 +5548,10 @@ func (c *Collection) liveDocumentsFromSegmentsLocked(
 	ctx context.Context,
 	segments []collectionSegmentDocuments,
 ) ([]Document, error) {
+	return c.liveDocumentsFromSelectedSegmentsLocked(ctx, segments, true)
+}
+
+func (c *Collection) liveDocumentsFromSelectedSegmentsLocked(ctx context.Context, segments []collectionSegmentDocuments, requireAll bool) ([]Document, error) {
 	live, err := c.store.LiveDocumentPrimaryKeys(ctx)
 	if err != nil {
 		return nil, err
@@ -5538,7 +5577,7 @@ func (c *Collection) liveDocumentsFromSegmentsLocked(
 			documents = append(documents, document)
 		}
 	}
-	if len(documents) != len(live) {
+	if requireAll && len(documents) != len(live) {
 		return nil, fmt.Errorf("resolved %d of %d live documents from segment snapshots", len(documents), len(live))
 	}
 	return documents, nil

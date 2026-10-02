@@ -460,6 +460,13 @@ func (c *CollectionStore) SegmentSnapshots(ctx context.Context) ([]SegmentSnapsh
 // only until visit returns. For read-only stores, immutable payload byte slices
 // also remain valid until Close; callers retaining them must finish before Close.
 func (c *CollectionStore) VisitSegmentSnapshots(ctx context.Context, visit func(SegmentSnapshot) error) error {
+	return c.VisitSelectedSegmentSnapshots(ctx, nil, visit)
+}
+
+// VisitSelectedSegmentSnapshots selects using metadata before touching payloads.
+// A nil selector visits every segment; mutable identifies WAL-backed storage.
+// Callbacks run under the store read lock and must not call store methods.
+func (c *CollectionStore) VisitSelectedSegmentSnapshots(ctx context.Context, selectSegment func(common.SegmentMetadata, bool) bool, visit func(SegmentSnapshot) error) error {
 	if c == nil {
 		return errors.New("db: nil collection")
 	}
@@ -482,6 +489,9 @@ func (c *CollectionStore) VisitSegmentSnapshots(ctx context.Context, visit func(
 			return err
 		}
 		metadata := segment.Metadata()
+		if selectSegment != nil && !selectSegment(metadata, false) {
+			continue
+		}
 		if err := segment.VisitDocuments(func(documents []segmentstore.StoredDocument) error {
 			return visit(SegmentSnapshot{Metadata: metadata, Documents: documents})
 		}); err != nil {
@@ -490,6 +500,9 @@ func (c *CollectionStore) VisitSegmentSnapshots(ctx context.Context, visit func(
 	}
 	if writing := c.manager.Writing(); writing != nil {
 		metadata := writing.Metadata()
+		if selectSegment != nil && !selectSegment(metadata, true) {
+			return nil
+		}
 		return writing.VisitDocuments(func(documents []segmentstore.StoredDocument) error {
 			return visit(SegmentSnapshot{Metadata: metadata, Documents: documents, Mutable: true})
 		})
