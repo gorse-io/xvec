@@ -4590,11 +4590,15 @@ func invalidRerankerOutput(op, path, format string, args ...any) error {
 	}
 }
 
-// Optimize atomically compacts the current live snapshot into maximally sized
-// contiguous-ID segments, reclaims superseded/deleted versions, rebuilds the
-// implemented vector/INVERT/FTS runtime state, and removes obsolete storage
-// files.
+// Optimize seals the writing segment, compacts a stable snapshot and builds
+// indexes without the collection lock, then atomically publishes replacements.
+// Writes during construction remain in the current WAL-backed segment; their
+// updates and deletes are preserved. Concurrent queries retain their snapshots.
 func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) error {
+	return c.optimize(ctx, options, (*db.Compaction).Prepare)
+}
+
+func (c *Collection) optimize(ctx context.Context, options OptimizeOptions, prepare func(*db.Compaction, context.Context) error) error {
 	const op = "optimize collection"
 	if c == nil {
 		return invalidArgument(op, "collection is nil")
@@ -4652,39 +4656,40 @@ func (c *Collection) Optimize(ctx context.Context, options OptimizeOptions) erro
 			return err
 		}
 	}
-	storage := c.store.Stats()
-	if storage.ImmutableSegmentCount == 0 && storage.MutableDocumentCount != 0 && storage.DeletedDocumentCount == 0 {
-		// A fresh append-only collection is already one canonical contiguous
-		// run. Publish that write segment directly, as zvec does, instead of
-		// decoding, re-encoding, and rewriting every payload before indexing.
-		c.invalidateQuerySnapshotLocked()
-		if err := c.store.Flush(ctx); err != nil {
-			return wrapCollectionError(op, c.path, err)
-		}
-		runtime.GC()
-		if err := c.prepareSegmentRuntimesLocked(context.WithoutCancel(ctx)); err != nil {
-			return wrapCollectionError(op, c.path, err)
-		}
+	// Phase 1: seal and checkpoint the pre-existing WAL, then capture handles
+	// and deletions. Cached writer runtimes also serve the now sealed segments.
+	c.invalidateQuerySnapshotLocked()
+	if err := c.store.Flush(ctx); err != nil {
+		return wrapCollectionError(op, c.path, err)
+	}
+	// A fresh append-only segment can be indexed directly without copying or
+	// rewriting its encoded payloads, as in zvec's single-segment fast path.
+	needed, err = c.store.OptimizationNeeded(ctx)
+	if err != nil {
+		return wrapCollectionError(op, c.path, err)
+	}
+	if !needed {
 		c.mu.Unlock()
 		locked = false
 		return wrapCollectionError(op, c.path, c.buildAndPublishNativeIndexes(ctx, workers, buildCollectionArtifactIndexes))
 	}
-	documents, err := c.liveDocumentsLocked(ctx)
+	compaction, err := c.store.BeginCompaction(ctx)
 	if err != nil {
 		return wrapCollectionError(op, c.path, err)
 	}
-	if err := c.rewriteCollectionDocumentsLocked(ctx, op, c.schema.Clone(), documents, workers, func(*Document) error {
-		return nil
-	}); err != nil {
-		return err
-	}
-	// Rewriting replaces the segment manager. The decoded input has no remaining
-	// uses, and the old segment payloads are unreachable, so collect at this
-	// phase boundary before large index builds raise the heap goal.
-	runtime.GC()
+	defer func() { _ = compaction.Close() }()
 	c.mu.Unlock()
 	locked = false
-	return wrapCollectionError(op, c.path, c.buildAndPublishNativeIndexes(ctx, workers, buildCollectionArtifactIndexes))
+
+	// Phase 2: encoded payload copying, segment I/O, and all index construction
+	// happen while queries and writes continue through the existing runtimes.
+	if err := prepare(compaction, ctx); err != nil {
+		return wrapCollectionError(op, c.path, err)
+	}
+	if !compaction.Changed() {
+		return wrapCollectionError(op, c.path, c.buildAndPublishNativeIndexes(ctx, workers, buildCollectionArtifactIndexes))
+	}
+	return wrapCollectionError(op, c.path, c.buildAndPublishCompaction(ctx, workers, compaction))
 }
 
 func optimizableField(field FieldSchema, path string) error {

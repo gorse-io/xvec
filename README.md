@@ -163,10 +163,14 @@ Flat until the next maintenance operation. `Open` loads existing indexes and
 prepares Flat fallbacks before returning. `IndexCompleteness` reports the
 fraction of live documents covered by the configured ANN index.
 
-The ANN build phase of `Optimize` allows queries and writes to continue using
-existing indexes; sealing, compaction, and publication take the collection
-lock. Exact/refined searches scan original vectors without constructing a
-second index.
+`Optimize` briefly takes the collection lock to seal the writing segment and
+capture a stable snapshot. Data compaction and index construction run outside
+that lock, allowing queries and writes to continue using existing indexes.
+Publication takes the lock again to install the prepared segments and indexes,
+preserving concurrent updates, deletes, and new writes. In-flight queries keep
+their original snapshots; later writes remain searchable through Flat until
+the next maintenance operation. Exact/refined searches scan original vectors
+without constructing a second index.
 
 ### Choosing an index
 
