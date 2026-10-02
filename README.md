@@ -172,6 +172,45 @@ their original snapshots; later writes remain searchable through Flat until
 the next maintenance operation. Exact/refined searches scan original vectors
 without constructing a second index.
 
+### Search only indexed segments
+
+For latency-sensitive vector searches, opt out of scanning unindexed tails:
+
+```go
+options := xvec.NewCollectionOptions()
+options.SkipUnindexedSegments = true
+collection, err := xvec.Open(ctx, "./data/articles", options)
+if err != nil {
+    return err
+}
+defer collection.Close()
+results, err := collection.Query(ctx, xvec.VectorQuery{
+    Field: "embedding",
+    DenseVector: xvec.VectorFP32{1, 0, 0},
+    TopK: 10,
+})
+```
+
+`SkipUnindexedSegments` defaults to `false` and belongs to the open handle; it
+is not persisted. It applies only to vector `Query` and `GroupByQuery` targets
+(dense, sparse, and `PrimaryKey`). For an ANN field, only immutable segments
+with matching committed index metadata for that field are candidates. Mutable
+and unbuilt immutable segments are excluded, even with `Linear` or selective
+filters. Explicit schema Flat fields remain fully searchable. This trades
+freshness/recall for latency and can return fewer than `TopK` results, including
+none. Updates in excluded segments still hide their older indexed versions;
+deletes remain authoritative. A `PrimaryKey` source vector may be fetched from
+an excluded segment without making that segment a candidate.
+
+`Fetch`, filter-only queries, full-text search, `MultiQuery`, statistics, writes,
+and maintenance retain their existing behavior. Queries still never build
+indexes, and corrupt published indexes remain errors rather than being skipped.
+`Flush` alone does not make an unbuilt ANN segment eligible; use `Optimize` or
+`CreateIndex` to publish its configured ANN index. Each reopened handle must
+set the option again. The example above uses an ANN-indexed `embedding` field;
+the Flat field in the initial usage example is intentionally unaffected.
+
+
 ### Choosing an index
 
 | Index | Best for |
