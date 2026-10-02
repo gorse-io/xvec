@@ -14,17 +14,40 @@
 
 package core
 
-import "slices"
+import (
+	"slices"
+
+	"github.com/gorse-io/xvec/internal/ailego/math_batch"
+)
 
 // computeBuildDistances gathers immutable FP32 rows and uses the existing
 // four-candidate kernels with cached cosine magnitudes. Native FP16 builders
-// retain their scoring path; scalar-quantized FP16 builders supply their own
+// share query conversions across four candidates; quantized builders supply their own
 // batch callback via fp16BuildScorers.
 func (i *HNSWIndex) computeBuildDistances(query int, positions []int, scratch *hnswVisited) error {
 	count := len(positions)
 	scratch.batchScores = slices.Grow(scratch.batchScores[:0], count)[:count]
 	if i.fp16 {
-		for j, position := range positions {
+		var batch func(query, first, second, third, fourth []uint16, output []float32)
+		switch i.options.Metric {
+		case MetricL2:
+			batch = mathbatch.SquaredEuclideanDistances4FP16
+		case MetricIP:
+			batch = mathbatch.InnerProducts4FP16
+		case MetricMIPSL2:
+			batch = mathbatch.MIPSL2SquaredDistances4FP16
+		}
+		// Cosine retains cached magnitudes and its single-pair reduction order.
+		j := 0
+		if batch != nil {
+			q := i.vectorFP16At(query)
+			for ; j+4 <= count; j += 4 {
+				batch(q, i.vectorFP16At(positions[j]), i.vectorFP16At(positions[j+1]),
+					i.vectorFP16At(positions[j+2]), i.vectorFP16At(positions[j+3]), scratch.batchScores[j:])
+			}
+		}
+		for ; j < count; j++ {
+			position := positions[j]
 			score, err := i.computeDistanceAt(query, position)
 			if err != nil {
 				return err
