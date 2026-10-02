@@ -496,7 +496,7 @@ func (i *HNSWIndex) insertBuiltNode(ctx context.Context, position int) error {
 	}
 	queryMagnitude := i.magnitudeAt(position)
 	for currentLevel := i.maxLevel; currentLevel > level; currentLevel-- {
-		nearest, err := i.searchHNSWLayer(ctx, query, queryFP16, queryMagnitude, []int{entry}, 1, currentLevel, visited)
+		nearest, err := i.searchHNSWLayer(ctx, query, queryFP16, queryMagnitude, []int{entry}, 1, currentLevel, visited, position)
 		if err != nil {
 			return err
 		}
@@ -505,7 +505,7 @@ func (i *HNSWIndex) insertBuiltNode(ctx context.Context, position int) error {
 		}
 	}
 	for currentLevel := min(level, i.maxLevel); currentLevel >= 0; currentLevel-- {
-		candidates, err := i.searchHNSWLayer(ctx, query, queryFP16, queryMagnitude, []int{entry}, i.options.EFConstruction, currentLevel, visited)
+		candidates, err := i.searchHNSWLayer(ctx, query, queryFP16, queryMagnitude, []int{entry}, i.options.EFConstruction, currentLevel, visited, position)
 		if err != nil {
 			return err
 		}
@@ -515,7 +515,7 @@ func (i *HNSWIndex) insertBuiltNode(ctx context.Context, position int) error {
 		}
 		i.neighbors[position][currentLevel] = selected
 		for _, neighbor := range selected {
-			if err := i.addHNSWReverseEdge(ctx, neighbor, position, currentLevel); err != nil {
+			if err := i.addHNSWReverseEdge(ctx, neighbor, position, currentLevel, visited); err != nil {
 				return err
 			}
 		}
@@ -535,15 +535,16 @@ type hnswScoredNode struct {
 	score    float32
 }
 
-func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, queryFP16 []uint16, queryMagnitude float32, entries []int, ef, level int, visited *hnswVisited) ([]hnswScoredNode, error) {
+func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, queryFP16 []uint16, queryMagnitude float32, entries []int, ef, level int, visited *hnswVisited, buildQuery int) ([]hnswScoredNode, error) {
 	limit := min(ef, len(i.keys))
 	if limit <= 0 {
 		return []hnswScoredNode{}, nil
 	}
-	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(i.options.Metric, left, right) }
-	worse := func(left, right hnswScoredNode) bool { return hnswNodeBetter(i.options.Metric, right, left) }
-	candidates := container.NewHeap(better)
-	results := container.NewHeap(worse)
+	// Reuse insertion-local heaps just as zvec reuses its worker context.
+	// Nil document keys preserve construction's position-based tie ordering.
+	candidates, results := &visited.frontierHeap, &visited.acceptedHeap
+	candidates.reset(limit, i.options.Metric, nil, false)
+	results.reset(limit, i.options.Metric, nil, true)
 	visited.reset(len(i.keys))
 	for _, entry := range entries {
 		if entry < 0 || entry >= len(i.keys) || i.levels[entry] < level || visited.seen(entry) {
@@ -568,6 +569,33 @@ func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, queryF
 			break
 		}
 		neighbors := i.neighborList(current.position, level)
+		if buildQuery >= 0 && i.fp16 && i.options.Metric != MetricCosine {
+			// Pin unvisited positions once, score in SIMD batches, and retain the
+			// original neighbor order when updating the candidate/result heaps.
+			visited.batchPositions = visited.batchPositions[:0]
+			for j := 0; j < neighbors.Len(); j++ {
+				neighbor := neighbors.At(j)
+				if !visited.seen(neighbor) {
+					visited.mark(neighbor)
+					visited.batchPositions = append(visited.batchPositions, neighbor)
+				}
+			}
+			if err := i.computeBuildDistances(buildQuery, visited.batchPositions, visited); err != nil {
+				return nil, err
+			}
+			for j, neighbor := range visited.batchPositions {
+				node := hnswScoredNode{position: neighbor, score: visited.batchScores[j]}
+				worst, hasWorst = results.Peek()
+				if results.Len() < limit || !hasWorst || hnswNodeBetter(i.options.Metric, node, worst) {
+					candidates.Push(node)
+					results.Push(node)
+					if results.Len() > limit {
+						_, _ = results.Pop()
+					}
+				}
+			}
+			continue
+		}
 		for j := 0; j < neighbors.Len(); j++ {
 			neighbor := neighbors.At(j)
 			if visited.seen(neighbor) {
@@ -589,7 +617,7 @@ func (i *HNSWIndex) searchHNSWLayer(ctx context.Context, query []float32, queryF
 			}
 		}
 	}
-	result := results.Values()
+	result := slices.Clone(results.nodes)
 	slices.SortFunc(result, func(left, right hnswScoredNode) int {
 		if hnswNodeBetter(i.options.Metric, left, right) {
 			return -1
@@ -634,7 +662,7 @@ func (i *HNSWIndex) selectHNSWNeighbors(ctx context.Context, owner int, candidat
 	return selected, nil
 }
 
-func (i *HNSWIndex) addHNSWReverseEdge(ctx context.Context, owner, neighbor, level int) error {
+func (i *HNSWIndex) addHNSWReverseEdge(ctx context.Context, owner, neighbor, level int, scratch *hnswVisited) error {
 	current := i.neighbors[owner][level]
 	for _, existing := range current {
 		if existing == neighbor {
@@ -646,12 +674,23 @@ func (i *HNSWIndex) addHNSWReverseEdge(ctx context.Context, owner, neighbor, lev
 		return nil
 	}
 	candidates := make([]hnswScoredNode, 0, len(current)+1)
-	for _, position := range append(slices.Clone(current), neighbor) {
-		score, err := i.computeDistanceAt(owner, position)
-		if err != nil {
+	scratch.batchPositions = append(scratch.batchPositions[:0], current...)
+	scratch.batchPositions = append(scratch.batchPositions, neighbor)
+	if i.fp16 {
+		if err := i.computeBuildDistances(owner, scratch.batchPositions, scratch); err != nil {
 			return err
 		}
-		candidates = append(candidates, hnswScoredNode{position: position, score: score})
+		for j, position := range scratch.batchPositions {
+			candidates = append(candidates, hnswScoredNode{position: position, score: scratch.batchScores[j]})
+		}
+	} else {
+		for _, position := range scratch.batchPositions {
+			score, err := i.computeDistanceAt(owner, position)
+			if err != nil {
+				return err
+			}
+			candidates = append(candidates, hnswScoredNode{position: position, score: score})
+		}
 	}
 	slices.SortFunc(candidates, func(left, right hnswScoredNode) int {
 		if hnswNodeBetter(i.options.Metric, left, right) {
@@ -939,7 +978,7 @@ func (i *HNSWIndex) SearchHNSWGroups(
 	visited := acquireHNSWVisited(len(i.keys))
 	defer releaseHNSWVisited(visited)
 	for level := i.maxLevel; level > 0; level-- {
-		nearest, err := i.searchHNSWLayer(ctx, query, queryFP16, queryMagnitude, []int{entry}, 1, level, visited)
+		nearest, err := i.searchHNSWLayer(ctx, query, queryFP16, queryMagnitude, []int{entry}, 1, level, visited, -1)
 		if err != nil {
 			return nil, fmt.Errorf("core: descend HNSW group-by level %d: %w", level, err)
 		}
@@ -1047,7 +1086,7 @@ func (i *HNSWIndex) searchHNSW(ctx context.Context, query []float32, options HNS
 	visited := acquireHNSWVisited(len(i.keys))
 	defer releaseHNSWVisited(visited)
 	for level := i.maxLevel; level > 0; level-- {
-		nearest, err := i.searchHNSWLayer(ctx, query, queryFP16, queryMagnitude, []int{entry}, 1, level, visited)
+		nearest, err := i.searchHNSWLayer(ctx, query, queryFP16, queryMagnitude, []int{entry}, 1, level, visited, -1)
 		if err != nil {
 			return nil, fmt.Errorf("core: descend HNSW level %d: %w", level, err)
 		}

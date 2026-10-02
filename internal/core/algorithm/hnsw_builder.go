@@ -20,7 +20,6 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gorse-io/xvec/internal/ailego/container"
 	"github.com/gorse-io/xvec/internal/ailego/parallel"
 )
 
@@ -154,10 +153,9 @@ func (g *parallelHNSWGraph) searchLayer(
 	if limit <= 0 {
 		return []hnswScoredNode{}, nil
 	}
-	better := func(left, right hnswScoredNode) bool { return hnswNodeBetter(g.options.Metric, left, right) }
-	worse := func(left, right hnswScoredNode) bool { return hnswNodeBetter(g.options.Metric, right, left) }
-	candidates := container.NewHeapWithCapacity(limit, better)
-	results := container.NewHeapWithCapacity(limit, worse)
+	candidates, results := &visited.frontierHeap, &visited.acceptedHeap
+	candidates.reset(limit, g.options.Metric, nil, false)
+	results.reset(limit, g.options.Metric, nil, true)
 	visited.reset(len(g.levels))
 	for _, entry := range entries {
 		if entry < 0 || entry >= len(g.levels) || g.levels[entry] < level || visited.seen(entry) {
@@ -259,7 +257,7 @@ func (g *parallelHNSWGraph) searchLayer(
 		}
 		g.nodeLocks[current.position].RUnlock()
 	}
-	result := results.Values()
+	result := slices.Clone(results.nodes)
 	slices.SortFunc(result, func(left, right hnswScoredNode) int {
 		if hnswNodeBetter(g.options.Metric, left, right) {
 			return -1
