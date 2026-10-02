@@ -68,7 +68,7 @@ type DenseBuilder interface {
 	Build(ctx context.Context) (DenseIndex, error)
 }
 
-// DenseFlatIndex stores FP32 or binary16 vectors contiguously and scans every
+// DenseFlatIndex stores FP32 or binary16 vectors and scans every
 // vector for exact search. Adds are serialized; any number of searches may run
 // together.
 type DenseFlatIndex struct {
@@ -79,6 +79,8 @@ type DenseFlatIndex struct {
 	keys        []uint64
 	vectors     []float32
 	vectorsFP16 []uint16
+	fp16Chunks  [][]uint16
+	fp16Rows    [][]uint16
 	magnitudes  []float32
 	positions   map[uint64]int
 }
@@ -92,6 +94,90 @@ func NewDenseFlatIndex(dimension int, metric Metric) (*DenseFlatIndex, error) {
 // binary16 vectors and accumulates scores in float32.
 func NewDenseFlatIndexFP16(dimension int, metric Metric) (*DenseFlatIndex, error) {
 	return newDenseFlatIndex(dimension, metric, true)
+}
+
+// NewChunkedDenseFlatIndexFP16 grows a writing segment in bounded blocks.
+// Existing rows never move and unused vector capacity is bounded by one block.
+func NewChunkedDenseFlatIndexFP16(dimension int, metric Metric) (*DenseFlatIndex, error) {
+	if dimension > maxPlatformInt()/denseFP16ChunkRows {
+		return nil, ErrDenseCapacity
+	}
+	index, err := newDenseFlatIndex(dimension, metric, true)
+	if err == nil {
+		index.fp16Chunks = make([][]uint16, 0)
+	}
+	return index, err
+}
+
+// NewDenseFlatIndexFP16FromBorrowedRows shares immutable collection-owned rows.
+// The owner must keep every row alive and unchanged for the index lifetime.
+// Subsequent additions copy their input, and Vector returns an independent copy.
+func NewDenseFlatIndexFP16FromBorrowedRows(ctx context.Context, dimension int, metric Metric, keys []uint64, rows [][]uint16) (*DenseFlatIndex, error) {
+	if ctx == nil {
+		return nil, errors.New("core: nil dense Flat build context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	index, err := newDenseFlatIndex(dimension, metric, true)
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) != len(rows) {
+		return nil, ErrInvalidDimension
+	}
+	index.fp16Rows = make([][]uint16, 0, len(rows))
+	index.keys = make([]uint64, 0, len(keys))
+	for position, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := validateDenseVectorFP16(row, dimension); err != nil {
+			return nil, err
+		}
+		key := keys[position]
+		if _, found := index.positions[key]; found {
+			return nil, ErrDuplicateKey
+		}
+		index.positions[key] = position
+		index.keys = append(index.keys, key)
+		index.fp16Rows = append(index.fp16Rows, row[:dimension:dimension])
+		if metric == MetricCosine {
+			index.magnitudes = append(index.magnitudes, mathutil.L2MagnitudeFP16(row))
+		}
+	}
+	return index, nil
+}
+
+const denseFP16ChunkRows = 256
+
+func (i *DenseFlatIndex) fp16Row(position int) []uint16 {
+	if i.fp16Rows != nil {
+		return i.fp16Rows[position]
+	}
+	if i.fp16Chunks != nil {
+		start := (position % denseFP16ChunkRows) * i.dimension
+		return i.fp16Chunks[position/denseFP16ChunkRows][start : start+i.dimension]
+	}
+	start := position * i.dimension
+	return i.vectorsFP16[start : start+i.dimension]
+}
+
+// Called with the write lock after the key has been appended.
+func (i *DenseFlatIndex) appendFP16(vector []uint16) {
+	if i.fp16Rows != nil {
+		i.fp16Rows = append(i.fp16Rows, slices.Clone(vector))
+		return
+	}
+	if i.fp16Chunks == nil {
+		i.vectorsFP16 = append(i.vectorsFP16, vector...)
+		return
+	}
+	position := len(i.keys) - 1
+	if position%denseFP16ChunkRows == 0 {
+		i.fp16Chunks = append(i.fp16Chunks, make([]uint16, denseFP16ChunkRows*i.dimension))
+	}
+	copy(i.fp16Row(position), vector)
 }
 
 func newDenseFlatIndex(dimension int, metric Metric, fp16 bool) (*DenseFlatIndex, error) {
@@ -198,7 +284,8 @@ func newDenseFlatIndexFromValidatedCandidates(
 }
 
 // Reserve preallocates storage for at least count total vectors without
-// changing the index length.
+// changing the index length. Chunked and borrowed-row indexes reserve metadata;
+// their vector storage remains in existing rows or lazily allocated blocks.
 func (i *DenseFlatIndex) Reserve(count int) error {
 	if i == nil {
 		return errors.New("core: nil dense Flat index")
@@ -211,6 +298,9 @@ func (i *DenseFlatIndex) Reserve(count int) error {
 	vectorCapacity := cap(i.vectors)
 	if i.fp16 {
 		vectorCapacity = cap(i.vectorsFP16)
+		if i.fp16Chunks != nil || i.fp16Rows != nil {
+			vectorCapacity = count * i.dimension
+		}
 	}
 	if count <= cap(i.keys) && count*i.dimension <= vectorCapacity &&
 		(i.metric != MetricCosine || count <= cap(i.magnitudes)) {
@@ -220,10 +310,10 @@ func (i *DenseFlatIndex) Reserve(count int) error {
 	copy(keys, i.keys)
 	var vectors []float32
 	var vectorsFP16 []uint16
-	if i.fp16 {
+	if i.fp16 && i.fp16Chunks == nil && i.fp16Rows == nil {
 		vectorsFP16 = make([]uint16, len(i.vectorsFP16), max(count*i.dimension, len(i.vectorsFP16)))
 		copy(vectorsFP16, i.vectorsFP16)
-	} else {
+	} else if !i.fp16 {
 		vectors = make([]float32, len(i.vectors), max(count*i.dimension, len(i.vectors)))
 		copy(vectors, i.vectors)
 	}
@@ -309,7 +399,7 @@ func (i *DenseFlatIndex) Add(ctx context.Context, key uint64, vector []float32) 
 	i.positions[key] = len(i.keys)
 	i.keys = append(i.keys, key)
 	if i.fp16 {
-		i.vectorsFP16 = append(i.vectorsFP16, vectorFP16...)
+		i.appendFP16(vectorFP16)
 	} else {
 		i.vectors = append(i.vectors, vector...)
 	}
@@ -353,17 +443,7 @@ func (i *DenseFlatIndex) AddFP16(ctx context.Context, key uint64, vector []uint1
 	}
 	i.positions[key] = len(i.keys)
 	i.keys = append(i.keys, key)
-	if len(i.vectorsFP16)+i.dimension > cap(i.vectorsFP16) {
-		// Native writer rows are large: double capacity rather than repeatedly
-		// copying the entire column with Go's smaller large-slice growth factor.
-		capacity := cap(i.vectorsFP16)
-		capacity += min(capacity, maxPlatformInt()-capacity)
-		capacity = max(capacity, len(i.vectorsFP16)+i.dimension)
-		grown := make([]uint16, len(i.vectorsFP16), capacity)
-		copy(grown, i.vectorsFP16)
-		i.vectorsFP16 = grown
-	}
-	i.vectorsFP16 = append(i.vectorsFP16, vector...)
+	i.appendFP16(vector)
 	if i.metric == MetricCosine {
 		i.magnitudes = append(i.magnitudes, magnitude)
 	}
@@ -396,7 +476,7 @@ func (i *DenseFlatIndex) Vector(key uint64) ([]float32, bool) {
 	start := position * i.dimension
 	if i.fp16 {
 		result := make([]float32, i.dimension)
-		for index, value := range i.vectorsFP16[start : start+i.dimension] {
+		for index, value := range i.fp16Row(position) {
 			result[index] = utility.Float16BitsToFloat32(value)
 		}
 		return result, true
@@ -404,8 +484,8 @@ func (i *DenseFlatIndex) Vector(key uint64) ([]float32, bool) {
 	return slices.Clone(i.vectors[start : start+i.dimension]), true
 }
 
-// Search performs an exact top-k scan. It holds a read lock so the contiguous
-// vector storage cannot move while candidate slices are being scored.
+// Search performs an exact top-k scan. It holds a read lock so vector storage
+// cannot change while candidate slices are being scored.
 func (i *DenseFlatIndex) Search(ctx context.Context, query []float32, k int) ([]Result, error) {
 	return i.search(ctx, query, SearchOptions{TopK: k}, false)
 }
@@ -526,8 +606,7 @@ func (i *DenseFlatIndex) searchFP16(ctx context.Context, query []uint16, options
 		if options.Filter != nil && !options.Filter(key) {
 			continue
 		}
-		start := position * i.dimension
-		candidate := i.vectorsFP16[start : start+i.dimension]
+		candidate := i.fp16Row(position)
 		var score float32
 		if i.metric == MetricCosine {
 			score = mathutil.CosineDistanceWithMagnitudesFP16(candidate, query, i.magnitudes[position], queryMagnitude)
@@ -1175,7 +1254,7 @@ func (i *DenseFlatIndex) SearchGroups(ctx context.Context, query []float32, opti
 		start := position * i.dimension
 		var score float32
 		if i.fp16 {
-			score = distanceFP16(i.vectorsFP16[start:start+i.dimension], queryFP16)
+			score = distanceFP16(i.fp16Row(position), queryFP16)
 		} else {
 			score = distance(i.vectors[start:start+i.dimension], query)
 		}

@@ -5609,17 +5609,8 @@ func (c *Collection) liveDocumentsFromSelectedSegmentsLocked(ctx context.Context
 
 func buildDenseFlatIndex(ctx context.Context, field FieldSchema, metric core.Metric, documents []Document) (collectionDenseIndex, error) {
 	if field.DataType == DataTypeVectorFP16 {
-		index, err := core.NewDenseFlatIndexFP16(int(field.Dimension), metric)
-		if err != nil {
-			return nil, err
-		}
-		count, err := collectionDenseCandidateCount(ctx, field, documents)
-		if err != nil {
-			return nil, err
-		}
-		if err := index.Reserve(count); err != nil {
-			return nil, err
-		}
+		keys := make([]uint64, 0, len(documents))
+		rows := make([][]uint16, 0, len(documents))
 		for _, document := range documents {
 			value, found := document.Fields[field.Name]
 			if !found || value == nil {
@@ -5629,11 +5620,10 @@ func buildDenseFlatIndex(ctx context.Context, field FieldSchema, metric core.Met
 			if !ok {
 				return nil, fmt.Errorf("field %q has non-FP16 vector %T", field.Name, value)
 			}
-			if err := index.AddFP16(ctx, document.DocID, nativeFP16Bits(vector)); err != nil {
-				return nil, err
-			}
+			keys = append(keys, document.DocID)
+			rows = append(rows, nativeFP16Bits(vector))
 		}
-		return index, nil
+		return core.NewDenseFlatIndexFP16FromBorrowedRows(ctx, int(field.Dimension), metric, keys, rows)
 	}
 	candidates, err := collectionDenseBorrowedCandidates(ctx, field, documents)
 	if err != nil {

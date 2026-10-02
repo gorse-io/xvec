@@ -98,7 +98,7 @@ func (i *collectionRuntimeIndexes) appendWriterFlat(ctx context.Context, field F
 		if index == nil {
 			var err error
 			if field.DataType == DataTypeVectorFP16 {
-				index, err = core.NewDenseFlatIndexFP16(int(field.Dimension), spec.metric)
+				index, err = core.NewChunkedDenseFlatIndexFP16(int(field.Dimension), spec.metric)
 			} else {
 				index, err = core.NewDenseFlatIndex(int(field.Dimension), spec.metric)
 			}
