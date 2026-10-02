@@ -76,7 +76,7 @@ func TestCollectionWriteBatchDuplicateKeysAndPartialErrors(t *testing.T) {
 			ctx := context.Background()
 			c, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "collection"), testPublicCollectionSchema(), NewCollectionOptions())
 			require.NoError(t, err)
-			defer c.Close()
+			t.Cleanup(func() { require.NoError(t, c.Close()) })
 			_, err = c.Insert(ctx, []Document{testPublicDocument("a", "original", "old", 1, 1, []float32{1, 0})})
 			require.NoError(t, err)
 			before := c.indexBuildCount
@@ -123,7 +123,7 @@ func TestCollectionUpsertBatchCancellationPublishesCommittedPrefix(t *testing.T)
 	ctx := context.Background()
 	c, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "collection"), testPublicCollectionSchema(), NewCollectionOptions())
 	require.NoError(t, err)
-	defer c.Close()
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
 	docs := make([]Document, 128)
 	for i := range docs {
 		docs[i] = testPublicDocument(fmt.Sprint(i), "title", "all", 1, 1, []float32{1, 0})
@@ -158,7 +158,7 @@ func TestCollectionUpsertBatchSegmentCapacityPublishesCommittedPrefix(t *testing
 	schema.MaxDocsPerSegment = MinMaxDocsPerSegment
 	c, err := CreateAndOpen(ctx, filepath.Join(t.TempDir(), "collection"), schema, NewCollectionOptions())
 	require.NoError(t, err)
-	defer c.Close()
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
 	docs := make([]Document, MinMaxDocsPerSegment+1)
 	for i := range docs {
 		docs[i] = Document{PrimaryKey: fmt.Sprint(i), Fields: map[string]any{"vector": VectorFP32{float32(i), 0}, "group": "all"}}
