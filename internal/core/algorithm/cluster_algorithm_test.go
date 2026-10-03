@@ -99,7 +99,7 @@ func TestKMeansDeterministicAcrossWorkers(t *testing.T) {
 			float32(index%7) * .25,
 		}
 	}
-	for _, initializer := range []KMeansInitializer{KMeansInitReservoir, KMeansInitPlusPlus} {
+	for _, initializer := range []KMeansInitializer{KMeansInitReservoir, KMeansInitPlusPlus, KMeansInitKMC2} {
 		options := DefaultKMeansOptions(11, MetricL2)
 		options.Initializer = initializer
 		options.Seed = 0x123456789abcdef0

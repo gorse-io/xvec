@@ -127,3 +127,40 @@ func InitializePlusPlus(
 	}
 	return centroids, nil
 }
+
+// InitializeKMC2 approximates D² sampling using uniformly proposed Markov
+// chains, following zvec's non-assumption-free K-MC2 initializer. Randomness is
+// supplied by the caller so index builds remain reproducible.
+func InitializeKMC2(ctx context.Context, vectors [][]float32, clusters, chainLength int,
+	intn func(int) int, randomFloat64 func() float64,
+	squaredDistance func([]float32, []float32) float32,
+) ([][]float32, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	centroids := [][]float32{slices.Clone(vectors[intn(len(vectors))])}
+	for len(centroids) < clusters {
+		chosen := 0
+		var chosenScore float32
+		for step := 0; step < chainLength; step++ {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			candidate := intn(len(vectors))
+			score := float32(math.Inf(1))
+			for j, centroid := range centroids {
+				if j&63 == 0 {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+				}
+				score = min(score, squaredDistance(vectors[candidate], centroid))
+			}
+			if step == 0 || chosenScore == 0 || float64(chosenScore)*randomFloat64() < float64(score) {
+				chosen, chosenScore = candidate, score
+			}
+		}
+		centroids = append(centroids, slices.Clone(vectors[chosen]))
+	}
+	return centroids, nil
+}

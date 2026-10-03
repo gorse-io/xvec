@@ -126,7 +126,7 @@ func (i *ScalarQuantizedIVFIndex) SearchWithOptions(ctx context.Context, query [
 	}, true)
 }
 
-// SearchIVF selects centroids with the original metric and scores vectors in
+// SearchIVF uses the base index routing mode to select centroids and scores vectors in
 // the selected lists using scalar codes.
 func (i *ScalarQuantizedIVFIndex) SearchIVF(ctx context.Context, query []float32, options IVFSearchOptions) ([]Result, error) {
 	return i.search(ctx, query, options, true)
