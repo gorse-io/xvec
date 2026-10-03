@@ -18,3 +18,12 @@ func inner_product_fp16_neon(lhs, rhs unsafe.Pointer, size int64) (result float3
 
 //go:noescape
 func inner_product_and_squared_norm_fp16_neon(lhs, rhs unsafe.Pointer, size int64, lhs_norm, rhs_norm unsafe.Pointer) (result float32)
+
+//go:noescape
+func squared_euclidean_distance_fp16_asimdhp(lhs, rhs unsafe.Pointer, size int64) (result float32)
+
+//go:noescape
+func inner_product_fp16_asimdhp(lhs, rhs unsafe.Pointer, size int64) (result float32)
+
+//go:noescape
+func inner_product_and_squared_norm_fp16_asimdhp(lhs, rhs unsafe.Pointer, size int64, lhs_norm, rhs_norm unsafe.Pointer) (result float32)

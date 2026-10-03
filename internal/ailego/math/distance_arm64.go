@@ -31,9 +31,9 @@ func init() {
 		kernels.products = dotNormsNEON
 	}
 	if cpu.ARM64.HasFPHP && cpu.ARM64.HasASIMDHP {
-		kernelsFP16.l2 = squaredEuclideanFP16NEON
-		kernelsFP16.dot = innerProductFP16NEON
-		kernelsFP16.products = dotNormsFP16NEON
+		kernelsFP16.l2 = squaredEuclideanFP16ASIMDHP
+		kernelsFP16.dot = innerProductFP16ASIMDHP
+		kernelsFP16.products = dotNormsFP16ASIMDHP
 	}
 }
 
@@ -84,6 +84,30 @@ func dotNormsFP16NEON(left, right []uint16) (dot, leftNorm, rightNorm float32) {
 		unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)),
 		unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm),
 	)
+	return
+}
+
+// ASIMDHP rounds binary16 operations, widening products before FP32 sums.
+// Short vectors must not fall back to the FP32-arithmetic scalar kernels.
+func squaredEuclideanFP16ASIMDHP(left, right []uint16) float32 {
+	if len(left) == 0 {
+		return 0
+	}
+	return squared_euclidean_distance_fp16_asimdhp(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
+}
+
+func innerProductFP16ASIMDHP(left, right []uint16) float32 {
+	if len(left) == 0 {
+		return 0
+	}
+	return inner_product_fp16_asimdhp(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)))
+}
+
+func dotNormsFP16ASIMDHP(left, right []uint16) (dot, leftNorm, rightNorm float32) {
+	if len(left) == 0 {
+		return
+	}
+	dot = inner_product_and_squared_norm_fp16_asimdhp(unsafe.Pointer(&left[0]), unsafe.Pointer(&right[0]), int64(len(left)), unsafe.Pointer(&leftNorm), unsafe.Pointer(&rightNorm))
 	return
 }
 

@@ -388,7 +388,40 @@ func fp16BatchFixture(dimension int) [5][]uint16 {
 	return vectors
 }
 
+// Legacy SIMD kernels perform FP32 arithmetic after converting inputs. Keep
+// their oracle independent of the architecture's single-pair FP16 dispatch.
+func fp32BatchOracle(mode string, query, candidate []uint16) float32 {
+	var l2, dot, qnorm, vnorm float32
+	for i := range query {
+		q, v := utility.Float16BitsToFloat32(query[i]), utility.Float16BitsToFloat32(candidate[i])
+		delta := q - v
+		l2 += delta * delta
+		dot += q * v
+		qnorm += q * q
+		vnorm += v * v
+	}
+	switch mode {
+	case "l2":
+		return l2
+	case "ip":
+		return dot
+	case "cosine":
+		return cosineDistanceFromProduct(dot, float32(math.Sqrt(float64(qnorm))), float32(math.Sqrt(float64(vnorm))))
+	default:
+		if denominator := max(qnorm, vnorm); denominator != 0 {
+			return 2 - 2*dot/denominator
+		}
+		return 0
+	}
+}
+
+var nativeFP16BatchTest func(*testing.T)
+
 func TestFP16Batch4(t *testing.T) {
+	if nativeFP16BatchTest != nil {
+		nativeFP16BatchTest(t)
+		return
+	}
 	testFP16BatchKernels(t, SquaredEuclideanDistances4FP16, InnerProducts4FP16, CosineDistances4FP16, MIPSL2SquaredDistances4FP16)
 }
 
@@ -428,10 +461,13 @@ func testFP16BatchKernels(t *testing.T, l2, dot, cosine, mips fp16Batch4Kernel) 
 				} {
 					var out [5]float32
 					out[4] = 42
-					for _, kernel := range []fp16Batch4Kernel{tc.batch, tc.fallback} {
+					for kernelIndex, kernel := range []fp16Batch4Kernel{tc.batch, tc.fallback} {
 						kernel(v[0], v[1], v[2], v[3], v[4], out[:4])
 						for j := range 4 {
 							want := tc.single(v[0], v[j+1])
+							if kernelIndex == 0 {
+								want = fp32BatchOracle(tc.name, v[0], v[j+1])
+							}
 							require.InDelta(t, want, out[j], 2e-5*max(1, math.Abs(float64(want))), tc.name)
 						}
 						require.Equal(t, float32(42), out[4])

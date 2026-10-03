@@ -19,7 +19,7 @@ TEST_NEON_BINARY ?= .test-neon.arm64.test
 TEST_RVV_BINARY ?= .test-rvv.riscv64.test
 TEST_LASX_BINARY ?= .test-lasx.loong64.test
 
-.PHONY: generate avx avx512 fp16-avx fp16-avx512 int4-avx2 int4-avx512 int8-avx2 int8-avx512 neon rvv lasx clean test-neon test-rvv test-lasx
+.PHONY: generate avx avx512 fp16-avx fp16-avx512 int4-avx2 int4-avx512 int8-avx2 int8-avx512 neon fp16-neon rvv lasx clean test-neon test-rvv test-lasx
 
 generate: avx avx512 fp16-avx fp16-avx512 int4-avx2 int4-avx512 int8-avx2 int8-avx512 neon rvv lasx clean
 
@@ -54,6 +54,11 @@ int4-avx512:
 	mkdir -p $(GOAT_OUTPUT_DIR)
 	$(GOAT) src/inner_product_batch_int4_avx512.c --target $(GOAT_TARGET_AMD64) -O3 -mavx2 -mavx512f -mavx512bw -e=-fno-vectorize -e=-fno-slp-vectorize -o $(GOAT_OUTPUT_DIR)
 	$(MV) $(GOAT_OUTPUT_DIR)/inner_product_batch_int4_avx512.go $(GOAT_OUTPUT_DIR)/inner_product_batch_int4_avx512.s .
+
+fp16-neon:
+	mkdir -p $(GOAT_OUTPUT_DIR)
+	$(GOAT) src/distance_batch_fp16_neon.c --target $(GOAT_TARGET_ARM64) -O3 -o $(GOAT_OUTPUT_DIR)
+	$(MV) $(GOAT_OUTPUT_DIR)/distance_batch_fp16_neon.go $(GOAT_OUTPUT_DIR)/distance_batch_fp16_neon.s .
 
 neon:
 	$(RM) -r $(GOAT_OUTPUT_DIR)

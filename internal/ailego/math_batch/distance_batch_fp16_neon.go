@@ -18,3 +18,12 @@ func fp16_dot_neon4(query, first, second, third, fourth unsafe.Pointer, size int
 
 //go:noescape
 func fp16_products_neon4(query, first, second, third, fourth unsafe.Pointer, size int64, output unsafe.Pointer)
+
+//go:noescape
+func fp16_l2_asimdhp4(query, first, second, third, fourth unsafe.Pointer, size int64, output unsafe.Pointer)
+
+//go:noescape
+func fp16_dot_asimdhp4(query, first, second, third, fourth unsafe.Pointer, size int64, output unsafe.Pointer)
+
+//go:noescape
+func fp16_products_asimdhp4(query, first, second, third, fourth unsafe.Pointer, size int64, output unsafe.Pointer)

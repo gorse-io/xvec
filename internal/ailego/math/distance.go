@@ -252,7 +252,10 @@ var kernelsFP16 = struct {
 
 // DenseDistanceFP16 computes an unchecked score for two dense binary16
 // vectors. Callers must guarantee equal, non-zero dimensions and finite
-// components. Arithmetic uses float32 accumulation.
+// components. Arithmetic uses float32 accumulation. On ARM64 CPUs with
+// FPHP and ASIMDHP, subtraction and multiplication round to binary16 before
+// widening to float32. This can underflow or overflow earlier than the
+// float32-arithmetic kernels used on other CPUs.
 type DenseDistanceFP16 func(left, right []uint16) float32
 
 // L2SquaredFP16 computes unchecked squared Euclidean distance for binary16

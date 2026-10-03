@@ -101,3 +101,91 @@ float inner_product_and_squared_norm_fp16_neon(
   *rhs_norm = right_result;
   return dot_result;
 }
+
+// Binary16 subtraction/products round before FP32 accumulation. Local target
+// attributes leave the baseline NEON symbols at their original ISA floor.
+// GoAT assembles the emitted .s separately, losing Clang's function target
+// attributes. Enable FP16 in that assembler only, not the baseline C target.
+__asm__(".arch_extension fp16");
+#define ASIMDHP __attribute__((target("fullfp16")))
+
+ASIMDHP static inline float32x4_t add_half_products(float32x4_t sum,
+                                                   float16x8_t products) {
+  sum = vaddq_f32(sum, vcvt_f32_f16(vget_low_f16(products)));
+  return vaddq_f32(sum, vcvt_high_f32_f16(products));
+}
+
+// Load exactly one element; duplicate lanes keep tail rounding identical.
+ASIMDHP static inline float16x8_t load_half_tail(const uint16_t *value) {
+  return vreinterpretq_f16_u16(vdupq_n_u16(*value));
+}
+
+ASIMDHP static inline float half_product_lane(float16x8_t left,
+                                               float16x8_t right) {
+  return vgetq_lane_f32(vcvt_f32_f16(vget_low_f16(vmulq_f16(left, right))), 0);
+}
+
+ASIMDHP float squared_euclidean_distance_fp16_asimdhp(
+    const uint16_t *lhs, const uint16_t *rhs, int64_t size) {
+  float32x4_t sum = vdupq_n_f32(0.0f);
+  int64_t index = 0;
+  for (; index + 8 <= size; index += 8) {
+    float16x8_t left = vreinterpretq_f16_u16(vld1q_u16(lhs + index));
+    float16x8_t right = vreinterpretq_f16_u16(vld1q_u16(rhs + index));
+    float16x8_t difference = vsubq_f16(left, right);
+    sum = add_half_products(sum, vmulq_f16(difference, difference));
+  }
+  float result = horizontal_add_fp32x4(sum);
+  for (; index < size; ++index) {
+    float16x8_t difference = vsubq_f16(load_half_tail(lhs + index),
+                                      load_half_tail(rhs + index));
+    result += half_product_lane(difference, difference);
+  }
+  return result;
+}
+
+ASIMDHP float inner_product_fp16_asimdhp(const uint16_t *lhs,
+                                        const uint16_t *rhs, int64_t size) {
+  float32x4_t sum = vdupq_n_f32(0.0f);
+  int64_t index = 0;
+  for (; index + 8 <= size; index += 8) {
+    float16x8_t left = vreinterpretq_f16_u16(vld1q_u16(lhs + index));
+    float16x8_t right = vreinterpretq_f16_u16(vld1q_u16(rhs + index));
+    sum = add_half_products(sum, vmulq_f16(left, right));
+  }
+  float result = horizontal_add_fp32x4(sum);
+  for (; index < size; ++index) {
+    result += half_product_lane(load_half_tail(lhs + index),
+                                load_half_tail(rhs + index));
+  }
+  return result;
+}
+
+ASIMDHP float inner_product_and_squared_norm_fp16_asimdhp(
+    const uint16_t *lhs, const uint16_t *rhs, int64_t size, float *lhs_norm,
+    float *rhs_norm) {
+  float32x4_t dot = vdupq_n_f32(0.0f);
+  float32x4_t left_sum = vdupq_n_f32(0.0f);
+  float32x4_t right_sum = vdupq_n_f32(0.0f);
+  int64_t index = 0;
+  for (; index + 8 <= size; index += 8) {
+    float16x8_t left = vreinterpretq_f16_u16(vld1q_u16(lhs + index));
+    float16x8_t right = vreinterpretq_f16_u16(vld1q_u16(rhs + index));
+    dot = add_half_products(dot, vmulq_f16(left, right));
+    left_sum = add_half_products(left_sum, vmulq_f16(left, left));
+    right_sum = add_half_products(right_sum, vmulq_f16(right, right));
+  }
+  float dot_result = horizontal_add_fp32x4(dot);
+  float left_result = horizontal_add_fp32x4(left_sum);
+  float right_result = horizontal_add_fp32x4(right_sum);
+  for (; index < size; ++index) {
+    float16x8_t left = load_half_tail(lhs + index);
+    float16x8_t right = load_half_tail(rhs + index);
+    dot_result += half_product_lane(left, right);
+    left_result += half_product_lane(left, left);
+    right_result += half_product_lane(right, right);
+  }
+  *lhs_norm = left_result;
+  *rhs_norm = right_result;
+  return dot_result;
+}
