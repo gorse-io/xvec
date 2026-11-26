@@ -6,7 +6,7 @@
 // flags: -O3
 // source: src/fht_neon.c
 
-TEXT ·fht_flip_sign_neon(SB), $0-24
+TEXT ·fht_flip_sign_neon(SB), $16-24
 	MOVD signs+0(FP), R0
 	MOVD data+8(FP), R1
 	MOVD size+16(FP), R2
@@ -269,15 +269,15 @@ LBB2_10:
 LBB2_11:
 	RET
 
-TEXT ·fht_inplace_neon(SB), $0-16
+TEXT ·fht_inplace_neon(SB), $32-16
 	MOVD data+0(FP), R0
 	MOVD size+8(FP), R1
 	WORD $0xf100083f    // cmp	x1, #2
 	BLT  LBB3_29
 	WORD $0xf81e0ff5    // str	x21, [sp, #-32]!
+	WORD $0xa9014ff4    // stp	x20, x19, [sp, #16]
 	WORD $0x91004008    // add	x8, x0, #16
 	WORD $0x52800029    // mov	w9, #1
-	WORD $0xa9014ff4    // stp	x20, x19, [sp, #16]
 	B    LBB3_3
 
 LBB3_2:

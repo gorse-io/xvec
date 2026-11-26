@@ -6,7 +6,7 @@
 // flags: -O3
 // source: src/space_excode_neon.c
 
-TEXT ·ip16_fxu1_neon(SB), $0-28
+TEXT ·ip16_fxu1_neon(SB), $16-28
 	MOVD query+0(FP), R0
 	MOVD compact_code+8(FP), R1
 	MOVD dim+16(FP), R2
@@ -176,7 +176,7 @@ LBB1_4:
 	FMOVS F0, result+24(FP)
 	RET
 
-TEXT ·ip64_fxu3_neon(SB), $0-28
+TEXT ·ip64_fxu3_neon(SB), $16-28
 	MOVD query+0(FP), R0
 	MOVD compact_code+8(FP), R1
 	MOVD dim+16(FP), R2
@@ -384,7 +384,7 @@ LBB3_4:
 	FMOVS F0, result+24(FP)
 	RET
 
-TEXT ·ip64_fxu5_neon(SB), $0-28
+TEXT ·ip64_fxu5_neon(SB), $16-28
 	MOVD query+0(FP), R0
 	MOVD compact_code+8(FP), R1
 	MOVD dim+16(FP), R2
@@ -652,7 +652,7 @@ LBB5_4:
 	FMOVS F0, result+24(FP)
 	RET
 
-TEXT ·ip64_fxu7_neon(SB), $0-28
+TEXT ·ip64_fxu7_neon(SB), $16-28
 	MOVD query+0(FP), R0
 	MOVD compact_code+8(FP), R1
 	MOVD dim+16(FP), R2
