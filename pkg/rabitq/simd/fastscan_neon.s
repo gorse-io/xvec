@@ -6,7 +6,7 @@
 // flags: -O3
 // source: src/fastscan_neon.c
 
-TEXT ·accumulate_neon(SB), $0-32
+TEXT ·accumulate_neon(SB), $16-32
 	MOVD codes+0(FP), R0
 	MOVD lp_table+8(FP), R1
 	MOVD result+16(FP), R2
@@ -83,7 +83,7 @@ LBB1_2:
 LBB1_3:
 	RET
 
-TEXT ·accumulate_hacc_neon(SB), $0-32
+TEXT ·accumulate_hacc_neon(SB), $16-32
 	MOVD codes+0(FP), R0
 	MOVD hc_lut+8(FP), R1
 	MOVD result+16(FP), R2

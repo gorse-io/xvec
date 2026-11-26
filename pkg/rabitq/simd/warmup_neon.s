@@ -6,7 +6,7 @@
 // flags: -O3
 // source: src/warmup_neon.c
 
-TEXT ·warmup_ip_x0_q_512_neon(SB), $0-44
+TEXT ·warmup_ip_x0_q_512_neon(SB), $16-44
 	MOVD  data+0(FP), R0
 	MOVD  query+8(FP), R1
 	FMOVS delta+16(FP), F0

@@ -6,7 +6,7 @@
 // flags: -O3
 // source: src/space_neon.c
 
-TEXT ·scalar_quantize_uint8_neon(SB), $0-32
+TEXT ·scalar_quantize_uint8_neon(SB), $16-32
 	MOVD  result+0(FP), R0
 	MOVD  data+8(FP), R1
 	MOVD  dimension+16(FP), R2
@@ -73,7 +73,7 @@ LBB0_7:
 	WORD $0x910043ff // add	sp, sp, #16
 	RET
 
-TEXT ·scalar_quantize_uint16_neon(SB), $0-32
+TEXT ·scalar_quantize_uint16_neon(SB), $16-32
 	MOVD  result+0(FP), R0
 	MOVD  data+8(FP), R1
 	MOVD  dimension+16(FP), R2
@@ -134,7 +134,7 @@ LBB1_7:
 	WORD $0x910043ff // add	sp, sp, #16
 	RET
 
-TEXT ·new_transpose_bin_neon(SB), $0-32
+TEXT ·new_transpose_bin_neon(SB), $16-32
 	MOVD data+0(FP), R0
 	MOVD result+8(FP), R1
 	MOVD padded_dimension+16(FP), R2
@@ -185,7 +185,7 @@ LBB2_5:
 LBB2_9:
 	RET
 
-TEXT ·new_transpose_bin_512_neon(SB), $0-32
+TEXT ·new_transpose_bin_512_neon(SB), $16-32
 	MOVD data+0(FP), R0
 	MOVD result+8(FP), R1
 	MOVD padded_dimension+16(FP), R2
@@ -261,7 +261,7 @@ LBB3_11:
 LBB3_12:
 	RET
 
-TEXT ·mask_ip_x0_q_neon(SB), $0-28
+TEXT ·mask_ip_x0_q_neon(SB), $16-28
 	MOVD query+0(FP), R0
 	MOVD data+8(FP), R1
 	MOVD padded_dimension+16(FP), R2

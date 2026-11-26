@@ -6,7 +6,7 @@
 // flags: -O3
 // source: src/rotator_neon.c
 
-TEXT ·flip_sign_neon(SB), $0-24
+TEXT ·flip_sign_neon(SB), $16-24
 	MOVD flip+0(FP), R0
 	MOVD data+8(FP), R1
 	MOVD dim+16(FP), R2
